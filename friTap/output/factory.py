@@ -127,6 +127,10 @@ def active_keylog_paths(base_keylog, protocol, protocol_registry, protocol_handl
         fmt = protocol_handler.keylog_formatter()
         if fmt is not None:
             active = [fmt]
+    # UAT (decryption-table) formatters (IPsec) write fixed-name Wireshark files
+    # in the keylog directory, not an NSS keylog at a split path, so they are not
+    # reported here (a ``<stem>.ipsec`` path would never exist on disk).
+    active = [f for f in active if not getattr(f, "writes_decryption_tables", False)]
     if not active:
         return {}
     if len(active) == 1:
@@ -135,20 +139,19 @@ def active_keylog_paths(base_keylog, protocol, protocol_registry, protocol_handl
 
 
 def _pcap_handler_class(output_config):
-    """The -p handler class: PCAPNG for a pcapng name/format, else classic PCAP.
+    """The -p handler class: PCAPNG or classic PCAP, None without -p.
 
-    The filename extension wins over ``output_format``; the latter only acts as
-    a fallback for unrecognised extensions. None without -p.
+    The container is the config's resolved ``pcap_container`` (explicit
+    ``output_format`` wins, else the extension), the same value the PCAP
+    object and the full-capture finalizer use.
     """
-    from ..pcap_utility import is_pcapng_filename
+    from ..pcap_utility import PCAP_FORMAT_PCAPNG
     from .pcap_handler import PcapOutputHandler
     from .pcapng_handler import PcapngOutputHandler
     pcap_name = output_config.pcap
     if not pcap_name:
         return None
-    if pcap_name.lower().endswith(".pcap"):
-        return PcapOutputHandler
-    if is_pcapng_filename(pcap_name) or output_config.output_format == "pcapng":
+    if output_config.pcap_container == PCAP_FORMAT_PCAPNG:
         return PcapngOutputHandler
     return PcapOutputHandler
 
@@ -236,8 +239,8 @@ class OutputHandlerFactory:
         handlers.append(ConsoleOutputHandler(verbose=config.output.verbose))
 
         pcap_name = config.output.pcap
-        # One pcapng decision (extension first, then --output-format) shared by
-        # the -p handler and the full-capture DSB injection below.
+        # One pcapng decision (the resolved pcap_container: --pcap-format, else
+        # the extension) shared by the -p handler and the full-capture DSB injection.
         wants_pcapng = _pcap_handler_class(config.output) is PcapngOutputHandler
 
         # PCAP/PCAPNG (non-live, non-full-capture only)
@@ -273,6 +276,14 @@ class OutputHandlerFactory:
                 fmt = protocol_handler.keylog_formatter()
                 if fmt is not None:
                     active = [fmt]
+            # IPsec (and any future table-based protocol) writes Wireshark UAT
+            # decryption-table files (ikev2_decryption_table / esp_sa) into the
+            # keylog's directory rather than NSS keylog lines, so it is wired to
+            # a dedicated writer and kept OUT of the line-based keylog split.
+            uat_formatters = [f for f in active
+                              if getattr(f, "writes_decryption_tables", False)]
+            active = [f for f in active
+                      if not getattr(f, "writes_decryption_tables", False)]
             # The generic memory-scan engine (--scan-keys-region) emits candidates
             # under the protocol-agnostic "scan_candidate" classifier regardless of
             # the selected --protocol, so wire its formatter whenever a scan region
@@ -282,14 +293,14 @@ class OutputHandlerFactory:
                 from .scan_candidate_formatter import ScanCandidateKeylogFormatter
                 if not any(getattr(f, "protocol", None) == "scan_candidate" for f in active):
                     active = list(active) + [ScanCandidateKeylogFormatter()]
-            if not active:
+            if not active and not uat_formatters:
                 logger.warning(
                     "--keylog set but no active protocol emits key material; "
                     "-k has no effect with --protocol %s", config.protocol,
                 )
-            elif len(active) == 1:
+            elif len(active) == 1 and not uat_formatters:
                 handlers.append(KeylogOutputHandler(keylog, formatter=active[0]))
-            else:
+            elif active:
                 split_paths = {f.protocol: split_keylog_path(keylog, f.protocol)
                                for f in active}
                 logger.info(
@@ -303,6 +314,16 @@ class OutputHandlerFactory:
                     handlers.append(KeylogOutputHandler(
                         split_paths[fmt.protocol], formatter=fmt,
                     ))
+            # IPsec decryption-table writer(s): the two Wireshark UAT files live
+            # in the -k keylog's directory (not at a split keylog path).
+            for fmt in uat_formatters:
+                from .ipsec_decryption_tables import IPsecDecryptionTableHandler
+                handler = IPsecDecryptionTableHandler(keylog, formatter=fmt)
+                handlers.append(handler)
+                logger.info(
+                    "ipsec decryption tables → %s/{ikev2_decryption_table,esp_sa}",
+                    handler._dir,
+                )
 
         # In the multi-format case, hand the split keylog paths to the PCAP
         # object so its capture manifest records every protocol's keylog under

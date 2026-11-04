@@ -37,6 +37,7 @@ from .stdout_stream import (
     mark_stream_closed,
     mark_stream_opened,
     runtime_error_fields,
+    stream_end_fields,
 )
 
 if TYPE_CHECKING:
@@ -133,7 +134,8 @@ class JsonlStdoutHandler(JsonlOutputHandler):
         The single place where a run's outcome reaches the stream: a failed run
         gets one ``error`` record (cause noted via
         :func:`~friTap.output.stdout_stream.note_runtime_error`), and
-        ``stream_end`` carries the final ``exit_code`` (null when unknown).
+        ``stream_end`` carries the final ``exit_code`` (null when unknown) and,
+        when known, ``ended_by`` (see :func:`~friTap.output.stdout_stream.ended_by`).
         """
         if not self._file:
             return
@@ -146,7 +148,7 @@ class JsonlStdoutHandler(JsonlOutputHandler):
         error = runtime_error_fields(exit_code)
         if error is not None:
             self._write_record(envelope("error", error))
-        self._write_record(envelope("stream_end", {"exit_code": exit_code}))
+        self._write_record(envelope("stream_end", stream_end_fields(exit_code)))
         if self._uses_claimed_stdout():
             mark_stream_closed()
         with self._write_lock:

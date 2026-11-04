@@ -88,7 +88,8 @@ from friTap.protocols import registry
 names = set(registry.available_protocol_names())
 # Fail-closed allowlist: every PUBLIC protocol (built-in or protocols/_ext shim)
 # must be listed here, or the publish is refused as a private-protocol leak.
-allowed = {"tls", "ssh", "mtproto", "rc4", "telegram"}
+# Pinned against the registry's built-ins by tests/unit/test_public_leak_guard_protocols.py.
+allowed = {"tls", "ipsec", "ssh", "mtproto", "rc4", "telegram"}
 extra = names - allowed
 if extra:
     print(f"      unexpected protocol(s): {sorted(extra)}", file=sys.stderr); sys.exit(1)

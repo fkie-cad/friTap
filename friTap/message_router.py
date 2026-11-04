@@ -34,6 +34,17 @@ from .ssl_logger import get_addr_string
 from .text_safety import safe_terminal_text
 
 
+def payload_protocol(payload: dict, default: str) -> str:
+    """The protocol an agent message is tagged with.
+
+    The agent (ABI >= 3) always stamps a concrete protocol: the emitting hook's
+    record protocol under ``--protocol auto|all``. ``default`` -- the protocol
+    the message's content type belongs to (e.g. ``"tls"`` for keylog/datalog,
+    ``"ssh"`` for SSH key records) -- covers a message without a tag.
+    """
+    return str(payload.get("protocol") or default)
+
+
 class _CanonicalProxy:
     """Minimal proxy satisfying DataCanonical canonical accessors (src, dst, protocol)."""
     __slots__ = ("src", "dst", "protocol")
@@ -102,6 +113,10 @@ class MessageRouter:
             self._emit_ssh_keylog(payload)
         elif content_type == ContentType.SSH_NEWKEYS:
             self._emit_ssh_newkeys(payload)
+        elif content_type == ContentType.IPSEC_IKE:
+            self._emit_ipsec_ike_keys(payload)
+        elif content_type == ContentType.IPSEC_ESP:
+            self._emit_ipsec_esp_keys(payload)
         elif content_type == ContentType.MTPROTO_KEY:
             self._emit_mtproto_key(payload)
         elif content_type == ContentType.TELEGRAM_E2E_KEY:
@@ -124,7 +139,7 @@ class MessageRouter:
     def _emit_keylog(self, payload: dict) -> None:
         self._event_bus.emit(KeylogEvent(
             key_data=payload["keylog"],
-            protocol=payload.get("protocol", "tls"),
+            protocol=payload_protocol(payload, "tls"),
         ))
 
     @staticmethod
@@ -156,7 +171,7 @@ class MessageRouter:
         if self._data_filter is not None:
             if not self._check_data_filter(
                 src_addr_str, src_port, dst_addr_str, dst_port,
-                payload.get("protocol", "tls"),
+                payload_protocol(payload, "tls"),
             ):
                 return
 
@@ -180,14 +195,16 @@ class MessageRouter:
             quic_scid=str(payload.get("quic_scid", "")),
             quic_dcid=str(payload.get("quic_dcid", "")),
             quic_stream_type=str(payload.get("quic_stream_type", "")),
-            protocol=payload.get("protocol", "tls"),
+            quic_payload=str(payload.get("quic_payload") or ""),
+            library=str(payload.get("library") or ""),
+            protocol=payload_protocol(payload, "tls"),
         ))
 
     def _emit_library_detected(self, payload: dict) -> None:
         self._event_bus.emit(LibraryDetectedEvent(
             library=payload.get("library", ""),
             path=payload.get("path", ""),
-            protocol=payload.get("protocol", "tls"),
+            protocol=payload_protocol(payload, "tls"),
         ))
 
     def _emit_anti_tamper_detected(self, payload: dict) -> None:
@@ -268,7 +285,7 @@ class MessageRouter:
         line = f"{key_type} {key_data}"
         self._event_bus.emit(KeylogEvent(
             key_data=line,
-            protocol=payload.get("protocol", "ssh"),
+            protocol=payload_protocol(payload, "ssh"),
         ))
 
     def _emit_ssh_keylog(self, payload: dict) -> None:
@@ -287,6 +304,61 @@ class MessageRouter:
                 "shared_secret": str(payload.get("shared_secret", "")),
                 "direction": str(payload.get("direction", "")),
                 "session_tag": str(payload.get("session_tag", "")),
+            },
+        ))
+
+    def _emit_ipsec_ike_keys(self, payload: dict) -> None:
+        """Emit a structured IKE_SA KeylogEvent (protocol ``"ipsec"``).
+
+        Routed to the dedicated
+        :class:`~friTap.output.ipsec_decryption_tables.IPsecDecryptionTableHandler`
+        (bound to the :class:`~friTap.protocols.ipsec_handler.IPsecKeylogFormatter`),
+        which renders one ``ikev2_decryption_table`` row. The router stays
+        protocol-agnostic and forwards the fields verbatim — SPIs and keys are
+        lowercase hex already in on-wire byte order; the formatter validates and
+        the writer de-duplicates. When ``-j`` is active the same event is also
+        picked up by the JSON handler (subject to the key-material policy).
+        """
+        keys = payload.get("keys") or {}
+        self._event_bus.emit(KeylogEvent(
+            protocol="ipsec",
+            payload={
+                "record": "ike",
+                "ike_version": payload.get("ike_version", 2),
+                "spi_i": str(payload.get("spi_i", "")),
+                "spi_r": str(payload.get("spi_r", "")),
+                "enc_alg": payload.get("enc_alg"),
+                "enc_key_len_bits": payload.get("enc_key_len_bits"),
+                "int_alg": payload.get("int_alg"),
+                "sk_ei": str(keys.get("sk_ei", "")),
+                "sk_er": str(keys.get("sk_er", "")),
+                "sk_ai": str(keys.get("sk_ai", "")),
+                "sk_ar": str(keys.get("sk_ar", "")),
+                "sk_d": str(keys.get("sk_d", "")),
+                "sk_pi": str(keys.get("sk_pi", "")),
+                "sk_pr": str(keys.get("sk_pr", "")),
+            },
+        ))
+
+    def _emit_ipsec_esp_keys(self, payload: dict) -> None:
+        """Emit a structured CHILD_SA (ESP) KeylogEvent (protocol ``"ipsec"``).
+
+        Counterpart of :meth:`_emit_ipsec_ike_keys` for the per-direction ESP
+        keys from the kernel ``add_sa``; the formatter renders one ``esp_sa``
+        row. SPI and keys are lowercase hex in on-wire order (no byte-swap).
+        """
+        self._event_bus.emit(KeylogEvent(
+            protocol="ipsec",
+            payload={
+                "record": "esp",
+                "spi": str(payload.get("spi", "")),
+                "src": str(payload.get("src", "*")),
+                "dst": str(payload.get("dst", "*")),
+                "family": str(payload.get("family", "IPv4")),
+                "enc_alg": payload.get("enc_alg"),
+                "int_alg": payload.get("int_alg"),
+                "enc_key": str(payload.get("enc_key", "")),
+                "int_key": str(payload.get("int_key", "")),
             },
         ))
 
@@ -430,7 +502,7 @@ class MessageRouter:
             data=data,
             direction=payload.get("direction", ""),
             source=payload.get("source", ""),
-            protocol=payload.get("protocol", "ohttp"),
+            protocol=payload_protocol(payload, "ohttp"),
         ))
 
     def _check_data_filter(
@@ -464,7 +536,7 @@ class MessageRouter:
         # The same coerced value also rides the emitted SessionEvent below; the
         # empty/None -> "tls" coercion is ALSO enforced inside
         # resolve_connection_key, so the two paths can never key differently.
-        protocol = str(payload.get("protocol") or "tls")
+        protocol = payload_protocol(payload, "tls")
         conn_id = resolve_connection_key(
             src_addr_str, src_port, dst_addr_str, dst_port,
             session_token=str(payload.get("ssl_session_id", "")),

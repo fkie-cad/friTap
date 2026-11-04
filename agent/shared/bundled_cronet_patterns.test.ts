@@ -92,11 +92,12 @@ test("the exported constant is the bundled generic arm64 fallback", () => {
     assert.ok(BUNDLED_OPENSSL_SSL_LOG_SECRET.arm64!.includes(GENERIC_BORINGSSL_ARM64_FALLBACK));
 });
 
+// gotls_{android,linux}.ts no longer use it: a BoringSSL ssl_log_secret match is not Go's
+// writeKeyLog (Go register decoder on a C function); they ship Go-specific patterns instead
+// (GO_WRITE_KEYLOG_PATTERNS in agent/tls/shared/go_keylog_hook.ts).
 const REFERENCING_MODULES = [
     "agent/legacy/tls/platforms/android/cronet_android.ts",
-    "agent/legacy/tls/platforms/android/gotls_android.ts",
     "agent/legacy/tls/platforms/linux/cronet_linux.ts",
-    "agent/legacy/tls/platforms/linux/gotls_linux.ts",
     "agent/legacy/tls/platforms/linux/openssl_boringssl_linux.ts",
 ];
 

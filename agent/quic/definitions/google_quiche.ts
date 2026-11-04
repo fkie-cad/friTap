@@ -13,21 +13,14 @@ import { sendQuicDatalog, AF_INET, AF_INET6 } from "../../shared/shared_structur
 import { log, devlog, devlog_debug, devlog_error, hookBreadcrumb, _isShuttingDownNow } from "../../util/log.js";
 import { pcap_enabled, getParsedPatterns, offsets, quic_capture_mode, quic_egress_headers_layer, debug_output } from "../../fritap_agent.js";
 import { MANGLED_SYMBOLS, LABEL_TO_KEY, KEY_TO_LABEL } from "../shared/google_quiche_offsets.js";
-import { quicConnectionTracker, buildQuicMessage, QuicConnectionInfo, ObservedPeer } from "../shared/quic_connection_tracker.js";
+import { quicConnectionTracker, ObservedPeer } from "../shared/quic_connection_tracker.js";
+import { QuicheHookObject } from "../shared/quiche_layout.js";
+import { resolveQuicheRecord, resolveQuicheSessionRecord, sendQuicheBody } from "../shared/quiche_records.js";
+import { bodyHookReports, installQuicheFrameHooks } from "../shared/quiche_frame_capture.js";
 import { findNonExportedSymbols, getBaseAddress, decodeSockaddr, readSockaddrFamily } from "../../shared/shared_functions.js";
 import { PatternStrategy } from "../../shared/strategies/pattern_strategy.js";
 import { isReadable, safeReadPointer, safeReadU8, safeReadULong, safeReadUtf8, resetReadableCache } from "../../util/safe_memory.js";
 import { currentPlatformKey, normalizeArchKey } from "../../util/process_infos.js";
-
-/**
- * Build the datalog message for a stream-level QUIC hook. Resolves the stream
- * pointer to its connection (when known), then to a guaranteed-parseable
- * 4-tuple (registered → synthetic), so a flow is never emitted as 0.0.0.0:0.
- */
-function resolveQuicMessage(streamPtr: string, label: string): { [key: string]: any } {
-    const connPtr = quicConnectionTracker.resolveStream(streamPtr) ?? streamPtr;
-    return buildQuicMessage(quicConnectionTracker.resolveInfo(connPtr), connPtr, label);
-}
 
 /**
  * Parse a sockaddr into the pcap-writer address encoding (AF_INET → host-order
@@ -546,7 +539,7 @@ function readHttpHeaderBlock(hhb: NativePointer, maxPairs = 256): [string, strin
  * the diagnostic devlog lines below — keep it stable (downstream tooling
  * filters by these names).
  */
-function installReadvHook(addr: NativePointer, label: string): void {
+function installReadvHook(addr: NativePointer, label: string, moduleName: string, kind: QuicheHookObject): void {
     let callCount = 0;
     const MAX_DEBUG_CALLS = 5;
 
@@ -575,8 +568,8 @@ function installReadvHook(addr: NativePointer, label: string): void {
                 const data = readIovec(this.iov, this.iovLen, bytesRead);
                 if (!data) return;
 
-                const message = resolveQuicMessage(this.streamObj.toString(), label);
-                sendQuicDatalog(message, data, -1);
+                const { message, streamId } = resolveQuicheRecord(moduleName, this.streamObj, kind, label);
+                sendQuicDatalog(message, data, streamId ?? -1);
             } catch (e) {
                 devlog_error(`[${label}] onLeave threw: ${e}`);
             }
@@ -896,8 +889,8 @@ async function resolveQuicheSymbols(moduleName: string): Promise<Map<keyof typeo
  * approach because the target functions are C++ mangled virtual methods
  * that don't fit the standard symbol resolution pipeline.
  */
-export async function installGoogleQuicheHooks(moduleName: string): Promise<void> {
-    if (!pcap_enabled) return;
+export async function installGoogleQuicheHooks(moduleName: string): Promise<boolean> {
+    if (!pcap_enabled) return false;
     log("[*] Google QUICHE: attempting to hook QuicSpdyStream in " + moduleName);
 
     // Best-effort real-peer recovery (process-wide, installed once). Kept BEFORE
@@ -909,7 +902,19 @@ export async function installGoogleQuicheHooks(moduleName: string): Promise<void
     // Batched resolution: single enumerateSymbols() pass for all QUICHE symbols.
     // Awaited because the pattern-scan fallback (Strategy 3) now uses the async
     // Memory.scan so the JS thread can service a gracefulDetach RPC mid-scan.
-    const resolved = await resolveQuicheSymbols(moduleName);
+    // Default "stream" mode: prefer the STREAM-frame boundary (raw HTTP/3 incl.
+    // HEADERS). Installed FIRST — before the slower symbol/pattern resolution —
+    // so it is live before the app opens its first connections (a connection
+    // must be seen from its start for its QPACK headers to decode). With it,
+    // the raw Readv hooks are skipped and the de-framed body hooks only report
+    // connections that started before the hooks (see quiche_connection_capture.ts).
+    // The symbol/pattern resolution runs concurrently (its pattern scan is a
+    // native async Memory.scan); the frame hooks still attach as soon as they
+    // are located, and the body hooks below need both results anyway.
+    const [frameHooked, resolved] = await Promise.all([
+        quic_capture_mode !== "app-api" ? installQuicheFrameHooks(moduleName) : Promise.resolve(false),
+        resolveQuicheSymbols(moduleName),
+    ]);
     const readvAddr = resolved.get("readv") || null;
     const quicStreamReadvAddr = resolved.get("quicStreamReadv") || null;
     const sequencerReadvAddr = resolved.get("sequencerReadv") || null;
@@ -978,6 +983,7 @@ export async function installGoogleQuicheHooks(moduleName: string): Promise<void
         || onHeadersDecodedAddr || writeHeadersAddr
         || chromiumWriteHeadersAddr || sessionWriteHeadersOnHeadersStreamAddr
     );
+    if (!hasAnyResolvedAddress && frameHooked) return true;
     if (!hasAnyResolvedAddress) {
         devlog("[Google QUICHE] could not resolve any stream functions in " + moduleName);
         devlog("[Google QUICHE] note: stripped release builds require byte patterns in default_patterns.json");
@@ -987,7 +993,7 @@ export async function installGoogleQuicheHooks(moduleName: string): Promise<void
         if (quic_capture_mode === "app-api") {
             log(`[*] Google QUICHE egress headers chain in ${moduleName}: active layer = NONE (no addresses resolved on this module)`);
         }
-        return;
+        return false;
     }
 
     // Attach to every Readv variant that resolves. Cronet's release ARM64 builds
@@ -998,16 +1004,16 @@ export async function installGoogleQuicheHooks(moduleName: string): Promise<void
     // (OnDataFramePayload / WriteOrBufferBody) instead, so skip the raw-readv
     // install loop entirely. The app-API hooks below run in both modes.
     log(`[*] Google QUICHE: quic_capture_mode = "${quic_capture_mode}"`);
-    if (quic_capture_mode !== "app-api") {
-        const readvTargets: Array<[NativePointer | null, string, string]> = [
-            [readvAddr, "QuicSpdyStream_Readv", "QuicSpdyStream::Readv"],
-            [quicStreamReadvAddr, "QuicStream_Readv", "QuicStream::Readv"],
-            [sequencerReadvAddr, "QuicStreamSequencer_Readv", "QuicStreamSequencer::Readv"],
+    if (quic_capture_mode !== "app-api" && !frameHooked) {
+        const readvTargets: Array<[NativePointer | null, string, string, QuicheHookObject]> = [
+            [readvAddr, "QuicSpdyStream_Readv", "QuicSpdyStream::Readv", "stream"],
+            [quicStreamReadvAddr, "QuicStream_Readv", "QuicStream::Readv", "stream"],
+            [sequencerReadvAddr, "QuicStreamSequencer_Readv", "QuicStreamSequencer::Readv", "sequencer"],
         ];
-        for (const [addr, label, prettyName] of readvTargets) {
+        for (const [addr, label, prettyName, kind] of readvTargets) {
             if (!addr || addr.isNull()) continue;
             try {
-                installReadvHook(addr, label);
+                installReadvHook(addr, label, moduleName, kind);
                 log(`[*] Hooked ${prettyName} for plaintext capture`);
             } catch (e) {
                 devlog_error(`[Google QUICHE] failed to hook ${prettyName}: ${e}`);
@@ -1021,9 +1027,10 @@ export async function installGoogleQuicheHooks(moduleName: string): Promise<void
     // on the body path and QuicSpdyStream::Readv is inlined in release ARM64. This
     // visitor callback delivers the clean, de-framed HTTP/3 DATA body and survives
     // devirtualisation (it's dispatched through the HttpDecoder::Visitor* vtable
-    // across the decoder TU boundary). args[0] is the HttpDecoderVisitor sub-object
-    // (used here only as a stable per-stream session key); on ARM64 the by-value
-    // std::__Cr::basic_string_view occupies x1 (data ptr) and x2 (length).
+    // across the decoder TU boundary). args[0] is the HttpDecoderVisitor
+    // ({vptr; QuicSpdyStream* stream_}), resolved to its owning stream so the body
+    // shares the request's connection key, 4-tuple and stream id; on ARM64 the
+    // by-value std::__Cr::basic_string_view occupies x1 (data ptr) and x2 (length).
     if (onDataFramePayloadAddr && !onDataFramePayloadAddr.isNull()) {
         try {
             // Built once at install time (moduleName is constant); avoids rebuilding the
@@ -1050,8 +1057,12 @@ export async function installGoogleQuicheHooks(moduleName: string): Promise<void
                         }
                         const data = dataPtr.readByteArray(dataLen);
                         if (!data) return;
-                        const message = resolveQuicMessage(args[0].toString(), "QuicSpdyStream_OnDataFramePayload");
-                        sendQuicDatalog(message, data, -1);
+                        // args[0] is the HttpDecoderVisitor; resolve its owning
+                        // stream so the body shares the request's key and 4-tuple.
+                        const record = resolveQuicheRecord(
+                            moduleName, args[0], "decoder-visitor", "QuicSpdyStream_OnDataFramePayload");
+                        if (frameHooked && !bodyHookReports(record)) return;
+                        sendQuicheBody(record, data);
                     } catch (e) {
                         devlog_error("[QuicSpdyStream_OnDataFramePayload] onEnter threw: " + e);
                     }
@@ -1152,9 +1163,12 @@ export async function installGoogleQuicheHooks(moduleName: string): Promise<void
                         // onto dense flow ids (the raw value is never displayed).
                         // This is what makes concurrent responses multiplex into
                         // separate flows instead of collapsing onto one.
-                        const streamId = this.streamObj.toUInt32();
-                        const message = resolveQuicMessage(this.streamObj.toString(), "QuicSpdyStream_OnHeadersDecoded");
-                        sendQuicDatalog(message, null, streamId, undefined, undefined, "udp", headers);
+                        // Real QUIC stream id when the connection layout is
+                        // known, else the pointer surrogate described above.
+                        const { message, streamId } = resolveQuicheRecord(
+                            moduleName, this.streamObj, "stream", "QuicSpdyStream_OnHeadersDecoded");
+                        sendQuicDatalog(message, null, streamId ?? this.streamObj.toUInt32(),
+                                        undefined, undefined, "udp", headers);
                     } catch (e) {
                         devlog_error("[QuicSpdyStream_OnHeadersDecoded] onLeave threw: " + e);
                     }
@@ -1205,9 +1219,10 @@ export async function installGoogleQuicheHooks(moduleName: string): Promise<void
                         // Same per-stream pointer surrogate as OnHeadersDecoded
                         // (this == the QuicSpdyStream), so request + response share
                         // a flow. Function name keeps Python's direction = write.
-                        const streamId = streamObj.toUInt32();
-                        const message = resolveQuicMessage(streamObj.toString(), "QuicSpdyStream_WriteHeaders");
-                        sendQuicDatalog(message, null, streamId, undefined, undefined, "udp", headers);
+                        const { message, streamId } = resolveQuicheRecord(
+                            moduleName, streamObj, "stream", "QuicSpdyStream_WriteHeaders", "write");
+                        sendQuicDatalog(message, null, streamId ?? streamObj.toUInt32(),
+                                        undefined, undefined, "udp", headers);
                     } catch (e) {
                         devlog_error("[QuicSpdyStream_WriteHeaders] onEnter threw: " + e);
                     }
@@ -1266,9 +1281,10 @@ export async function installGoogleQuicheHooks(moduleName: string): Promise<void
                         // Inner QuicSpdyStream pointer's low 32 bits — SAME
                         // surrogate that OnHeadersDecoded emits, so request
                         // pairs with its response in Python's map_qsid.
-                        const streamId = innerStream.toUInt32();
-                        const message = resolveQuicMessage(innerStream.toString(), "QuicChromiumClientStream_WriteHeaders");
-                        sendQuicDatalog(message, null, streamId, undefined, undefined, "udp", headers);
+                        const { message, streamId } = resolveQuicheRecord(
+                            moduleName, innerStream, "stream", "QuicChromiumClientStream_WriteHeaders", "write");
+                        sendQuicDatalog(message, null, streamId ?? innerStream.toUInt32(),
+                                        undefined, undefined, "udp", headers);
                     } catch (e) {
                         devlog_error("[QuicChromiumClientStream_WriteHeaders] onEnter threw: " + e);
                     }
@@ -1286,7 +1302,7 @@ export async function installGoogleQuicheHooks(moduleName: string): Promise<void
     //
     // ABI (ARM64):
     //   args[0] = QuicSpdySession*  (NOT a stream — we use it only as the
-    //                                resolveQuicMessage key; coarse but it's
+    //                                legacy record key; coarse but it's
     //                                the only handle available at this layer)
     //   args[1] = QuicStreamId      (uint32_t — read low 32 bits; this is the
     //                                REAL stream id from quiche, used directly
@@ -1295,12 +1311,12 @@ export async function installGoogleQuicheHooks(moduleName: string): Promise<void
     //                                stream-level hook — ABI gotcha)
     //   args[3] = bool fin
     //
-    // CAVEAT: the surrogate (QuicStreamId from args[1]) lives in a DIFFERENT
-    // namespace from the QuicSpdyStream-pointer surrogate used by
-    // OnHeadersDecoded, so when this layer wins the request and response will
-    // appear as two separate flows in the Python output. This is acceptable —
-    // the session-level hook is the lowest tier of defense and only fires when
-    // both higher layers have already missed.
+    // CAVEAT: args[1] is the REAL QuicStreamId. Once the connection layout is
+    // learned (quiche_layout.ts) OnHeadersDecoded also reports real ids, so
+    // request and response pair; before that (or on builds where it cannot be
+    // learned) OnHeadersDecoded falls back to its pointer surrogate and the two
+    // appear as separate flows. Acceptable — the session-level hook is the
+    // lowest tier of defense and only fires when both higher layers missed.
     const wroteAnyEgressHeaders = wroteWriteHeadersHook
         || (!!effectiveChromiumWriteHeadersAddr && !effectiveChromiumWriteHeadersAddr.isNull());
     if (quic_capture_mode === "app-api" && !wroteAnyEgressHeaders
@@ -1326,15 +1342,16 @@ export async function installGoogleQuicheHooks(moduleName: string): Promise<void
                             swhCount++;
                             devlog_debug(`[SpdySession_WriteHeadersOnHeadersStream] call #${swhCount} in ${moduleName}: ${headers.length} header(s)`);
                         }
-                        // Use the session pointer as the resolveQuicMessage
+                        // Use the session pointer as the legacy record
                         // key (best available — no per-stream `this` here).
                         // streamIdRaw is the REAL QuicStreamId from quiche,
                         // not a pointer cast — it does NOT correlate with the
                         // QuicSpdyStream-pointer surrogate used by
                         // OnHeadersDecoded, so request/response will split
                         // into two flows. Acceptable per the chain design.
-                        const message = resolveQuicMessage(sessionObj.toString(), "QuicSpdySession_WriteHeadersOnHeadersStream");
-                        sendQuicDatalog(message, null, streamIdRaw, undefined, undefined, "udp", headers);
+                        const { message, streamId } = resolveQuicheSessionRecord(
+                            moduleName, sessionObj, streamIdRaw, "QuicSpdySession_WriteHeadersOnHeadersStream", "write");
+                        sendQuicDatalog(message, null, streamId, undefined, undefined, "udp", headers);
                     } catch (e) {
                         devlog_error("[QuicSpdySession_WriteHeadersOnHeadersStream] onEnter threw: " + e);
                     }
@@ -1381,8 +1398,10 @@ export async function installGoogleQuicheHooks(moduleName: string): Promise<void
                 },
                 onLeave(_retval) {
                     if (!this.data || this.dataLen === 0) return;
-                    const message = resolveQuicMessage(this.streamObj.toString(), "QuicSpdyStream_WriteOrBufferBody");
-                    sendQuicDatalog(message, this.data, -1);
+                    const record = resolveQuicheRecord(
+                        moduleName, this.streamObj, "stream", "QuicSpdyStream_WriteOrBufferBody", "write");
+                    if (frameHooked && !bodyHookReports(record)) return;
+                    sendQuicheBody(record, this.data);
                 },
             });
             log("[*] Hooked QuicSpdyStream::WriteOrBufferBody for plaintext capture");
@@ -1421,4 +1440,5 @@ export async function installGoogleQuicheHooks(moduleName: string): Promise<void
                 `[${available.length > 0 ? available.join(", ") : "none"}]`);
         }
     }
+    return true;
 }

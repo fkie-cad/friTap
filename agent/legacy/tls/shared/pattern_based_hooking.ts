@@ -1,6 +1,7 @@
 import { devlog, devlog_error, devlog_debug, log, devlog_info, hookBreadcrumb } from "../../../util/log.js";
 import { currentPlatformKey, normalizeArchKey } from "../../../util/process_infos.js"
 import { matchNonTLSLibrary } from "../../../util/non_tls_libs.js"
+import { attachGoFunctionEntry } from "../../../shared/go_attach.js";
 
 type Pattern = {
     primary: string;
@@ -396,8 +397,10 @@ export class PatternBasedHooking {
 
                 log(`[*] ${moduleName ?? "<unknown>"}: keylog hooks installed via pattern (${pattern_name} @ ${address})`);
 
-                // Attach the hook using the provided onMatchCallback
-                Interceptor.attach(address, {
+                // Attach the hook using the provided onMatchCallback. A Go arm64 entry
+                // (stack-guard prologue) is hooked after its stack check; any other
+                // match exactly at `address` (shared/go_attach.ts).
+                attachGoFunctionEntry(address, {
                     onEnter: function (args) {
                         // Forward the InvocationContext as `this` so ABI-aware
                         // callbacks can read registers (see shared/call_abi.ts).
@@ -523,7 +526,7 @@ export class PatternBasedHooking {
                 log(`[*] ${moduleName ?? "<unknown>"}: keylog hooks installed via pattern (${pattern_name}, readable-ranges @ ${address})`);
 
                 try {
-                    Interceptor.attach(address, {
+                    attachGoFunctionEntry(address, {
                     onEnter: function (args) { onMatchCallback.call(this, args); },
                     });
                 } catch (e) {

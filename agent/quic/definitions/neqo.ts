@@ -18,6 +18,7 @@ import { log, devlog } from "../../util/log.js";
 import { pcap_enabled } from "../../fritap_agent.js";
 import { quicConnectionTracker, buildQuicMessage, QuicConnectionInfo } from "../shared/quic_connection_tracker.js";
 import { findNonExportedSymbols } from "../../shared/shared_functions.js";
+import { findModuleExport } from "../../shared/module_exports.js";
 
 
 // --- Helpers -----------------------------------------------------------------
@@ -40,7 +41,7 @@ function resolveNeqoSymbols(
 
     // Strategy 1: export table
     for (const name of symbolNames) {
-        const addr = (Module as any).findExportByName(moduleName, name) as NativePointer | null;
+        const addr = findModuleExport(moduleName, name) as NativePointer | null;
         if (addr && !addr.isNull()) {
             resolved.set(name, addr);
         } else {
@@ -276,7 +277,7 @@ function createNeqoReadResponseHook(): ExtraHookDef {
                         const data = this.buf.readByteArray(bytesRead);
                         const connKey = this.conn.toString();
                         const connInfo = quicConnectionTracker.get(connKey) || UNKNOWN_CONNECTION;
-                        const message = buildQuicMessage(connInfo, connKey, "neqo_read_response_data");
+                        const message = buildQuicMessage(connInfo, connKey, "neqo_read_response_data", "read", moduleName);
 
                         sendQuicDatalog(message, data, this.streamId, connInfo.scid, connInfo.dcid);
 
@@ -367,7 +368,7 @@ function createNeqoSendRequestBodyHook(): ExtraHookDef {
 
                         const connKey = this.conn.toString();
                         const connInfo = quicConnectionTracker.get(connKey) || UNKNOWN_CONNECTION;
-                        const message = buildQuicMessage(connInfo, connKey, "neqo_send_request_body");
+                        const message = buildQuicMessage(connInfo, connKey, "neqo_send_request_body", "write", moduleName);
 
                         sendQuicDatalog(message, data, this.streamId, connInfo.scid, connInfo.dcid);
                     } catch (e) {

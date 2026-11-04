@@ -1,31 +1,17 @@
-// Slim Wine agent bundle (fkie-cad/friTap#52): same as tsconfig.json but
-// aliases the frida-java/objc bridges to empty shims so their bytes are
-// excluded. A smaller bundle injects reliably into a freshly-created Wine
-// process, which is what lets the watcher attach the Chromium network
-// service early enough to capture its first TLS handshakes.
+// Slim Wine agent bundle (fkie-cad/friTap#52): tsconfig.json plus aliases that
+// map the frida-java/objc bridges to empty shims so their bytes are excluded.
+// A smaller bundle injects reliably into a freshly-created Wine process, which
+// is what lets the watcher attach the Chromium network service early enough to
+// capture its first TLS handshakes.
+// dev/compile_agent.sh stages this file as tsconfig.json in a private build dir
+// (re-pointing `extends` at the repo's tsconfig.json); keep `extends` as-is.
 {
+  "extends": "./tsconfig.json",
   "compilerOptions": {
-    "target": "es2020",
-    "module": "ESNext",
-    "lib": [
-      "es2020"
-    ],
-    "moduleResolution": "Node",
-    "allowJs": true,
-    "noEmit": true,
-    "strict": true,
-    "esModuleInterop": true,
-    "noImplicitAny": false,
-    "strictNullChecks": false,
-    "skipLibCheck": true,
     "baseUrl": ".",
     "paths": {
-      "frida-java-bridge": [
-        "agent/shims/frida-java-bridge"
-      ],
-      "frida-objc-bridge": [
-        "agent/shims/frida-objc-bridge"
-      ]
+      "frida-java-bridge": ["agent/shims/frida-java-bridge"],
+      "frida-objc-bridge": ["agent/shims/frida-objc-bridge"]
     }
   }
 }

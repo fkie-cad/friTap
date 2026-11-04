@@ -98,8 +98,8 @@ under autodoc).
 
 | Method | Description |
 | --- | --- |
-| `pcap(path)` | Write decrypted traffic to a PCAP file. The extension is authoritative — `.pcap` writes classic libpcap, `.pcapng` writes pcapng (with embedded DSB when keys are extracted). |
-| `pcapng(path)` | Write self-decrypting PCAPNG. Equivalent to `pcap()` with a `.pcapng` extension; the file extension still wins. |
+| `pcap(path)` | Write decrypted traffic to a PCAP file. The extension decides (`--pcap-format auto`): `.pcapng` writes pcapng (with embedded DSB when keys are extracted), anything else classic libpcap. Resets a prior `pcapng()` call. |
+| `pcapng(path)` | Write self-decrypting PCAPNG whatever the extension (`--pcap-format pcapng`): `pcapng("out.bin")` writes pcapng; a contradicting `.pcap` name is written as pcapng with a warning. |
 | `keylog(path)` | Write key material in Wireshark-loadable form for the active protocol (NSS `SSLKEYLOGFILE` for TLS). With `--protocol all/auto`, the path is split per protocol as `<stem>.<proto><ext>`. |
 | `json_output(path)` | Write session metadata as JSON. Key material is redacted unless `keylog()` or `json_keys()` is also set. |
 | `json_keys(enable=True)` | Include raw key material (`key_data`) in the JSON output, like `--json-keys`. |

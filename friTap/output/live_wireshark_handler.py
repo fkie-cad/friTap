@@ -9,6 +9,7 @@ import os
 import tempfile
 from typing import TYPE_CHECKING, Optional
 
+from ..constants import direction_label
 from .base import OutputHandler
 
 if TYPE_CHECKING:
@@ -97,7 +98,7 @@ class LiveWiresharkHandler(OutputHandler):
         try:
             self._pcap.log_plaintext_payload(
                 event.ss_family,
-                event.function,
+                direction_label(event.function, event.direction),
                 event.src_addr_raw,
                 event.src_port,
                 event.dst_addr_raw,

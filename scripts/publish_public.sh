@@ -93,6 +93,28 @@ sys.exit(1 if missing else 0)
 PY
 echo "  package.json scripts: all referenced agent files present"
 
+# --- 3.6 agent-API schemas must describe the PUBLIC build -----------------------
+# docs/api/schemas/ is generated from the protocol registry, so the committed copy
+# (built on the FULL tree) lists protocols the strip removed. Regenerate it from
+# the stripped tree so the public snapshot is self-consistent (its schema-sync
+# tests pass and it never advertises a protocol it does not ship). cd into the
+# tree so the editable full-repo install can't shadow it. Cheap, so it runs even
+# under --status.
+# Interpreter for this step and the pytest gate (4.6): $FRITAP_PYTHON, else the
+# repo's own env/ venv, else python3 on PATH. Pinned so a foreign activated venv
+# (other frida/brotli/Python) can't drive the gates.
+GATE_PY="${FRITAP_PYTHON:-$REPO_ROOT/env/bin/python3}"
+[ -x "$GATE_PY" ] || GATE_PY="python3"
+if [ -d "$TREE/docs/api/schemas" ]; then
+  # -B: write no __pycache__ into $TREE — the intended-file snapshot below would
+  # list the (gitignored) .pyc files and the completeness guard would then fail.
+  ( cd "$TREE" && "$GATE_PY" -B -m friTap.agent_api.adapters.openapi \
+      --out docs/api/schemas/openapi.json --schemas docs/api/schemas ) >"$TMP/schemas.log" 2>&1 \
+    || { echo "ERROR: regenerating docs/api/schemas on the stripped tree failed — refusing to publish." >&2
+         tail -15 "$TMP/schemas.log" >&2; exit 1; }
+  echo "  agent-API schemas: regenerated from the stripped tree"
+fi
+
 # Snapshot the INTENDED publish set NOW — a clean tree, before the gates below
 # create any __pycache__/.git scratch. The completeness guard (step 4.9) checks
 # the committed snapshot against this list, so a tracked file silently dropped by
@@ -147,10 +169,11 @@ fi
 # skip cleanly when signal is stripped — verify nothing actually FAILS here, so a
 # published tree never ships a red suite. cd into the tree so the editable full-repo
 # install can't shadow it. Guarded: skip with a warning if pytest is absent.
-if python3 -m pytest --version >/dev/null 2>&1; then
-  echo "  running public test suite on the scrubbed tree (pytest)…"
+# Interpreter: $GATE_PY (pinned in step 3.6).
+if "$GATE_PY" -m pytest --version >/dev/null 2>&1; then
+  echo "  running public test suite on the scrubbed tree (pytest, $GATE_PY: $("$GATE_PY" -c 'import sys; print(sys.version.split()[0])'))…"
   tests_ok=1
-  ( cd "$TREE" && python3 -m pytest tests/unit -q -p no:cacheprovider ) >"$TMP/pytest.log" 2>&1 || tests_ok=0
+  ( cd "$TREE" && "$GATE_PY" -m pytest tests/unit -q -p no:cacheprovider ) >"$TMP/pytest.log" 2>&1 || tests_ok=0
   if [ "$tests_ok" -eq 1 ]; then
     echo "  pytest: clean (signal-coupled tests skipped)"
   else

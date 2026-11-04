@@ -29,6 +29,7 @@ from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 
+from friTap.analysis._json_walk import exceeds_depth
 from friTap.constants import PROTOCOL_MTPROTO, PROTOCOL_TELEGRAM_E2E
 from friTap.flow import telegram_conversation as _tconv
 from friTap.flow.display import TELEGRAM_LAYER_NAMES
@@ -3078,7 +3079,7 @@ if TEXTUAL_AVAILABLE:
         def _decode_json(self, log: RichLog, body: bytes, _headers: dict) -> None:
             formatted = self._pretty_json(body)
             if formatted is not None:
-                log.write(_markup_escape(formatted))
+                self._write_pretty_json(log, formatted)
                 return
             if len(body) > self._TEXT_RENDER_LIMIT:
                 log.write("[dim yellow]JSON too large to pretty-print (raw text shown)[/]")
@@ -3091,15 +3092,25 @@ if TEXTUAL_AVAILABLE:
 
             Bodies above :attr:`_TEXT_RENDER_LIMIT` are never parsed: the
             ``loads``/``dumps(indent=2)`` round trip would run unbounded on the
-            UI thread. Deeply nested input raises ``RecursionError``; it falls
-            back to raw text like any other undecodable body.
+            UI thread. Nesting beyond ``MAX_JSON_DEPTH`` is rejected explicitly:
+            indented output grows quadratically with depth (~2·depth² chars),
+            and since CPython 3.14 ``json.loads`` no longer raises
+            ``RecursionError`` on deep input. Rejected bodies fall back to raw
+            text like any other undecodable body.
             """
             if len(body) > self._TEXT_RENDER_LIMIT:
                 return None
             try:
-                return json.dumps(json.loads(body), indent=2)
+                parsed = json.loads(body)
+                if exceeds_depth(parsed):
+                    return None
+                return json.dumps(parsed, indent=2)
             except (ValueError, UnicodeDecodeError, RecursionError):
                 return None
+
+        def _write_pretty_json(self, log: RichLog, formatted: str) -> None:
+            """Write pretty-printed JSON escaped and capped at the text render limit."""
+            write_capped_text(log, formatted.encode("utf-8"), self._TEXT_RENDER_LIMIT)
 
         def _decode_base64(self, log: RichLog, body: bytes, _headers: dict) -> None:
             import base64 as b64mod
@@ -3268,7 +3279,7 @@ if TEXTUAL_AVAILABLE:
             if "application/json" in content_type or "text/json" in content_type:
                 formatted = self._pretty_json(body)
                 if formatted is not None:
-                    log.write(_markup_escape(formatted))
+                    self._write_pretty_json(log, formatted)
                     return
 
             if ("text/" in content_type

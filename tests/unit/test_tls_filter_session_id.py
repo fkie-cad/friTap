@@ -140,3 +140,64 @@ def test_live_tls_flow_gets_detected_library():
     tls = flow.layer("tls")
     assert tls is not None and tls.library == "BoringSSL"
     assert _match("tls", flow)
+
+
+def _collector() -> tuple[EventBus, FlowCollector]:
+    bus = EventBus()
+    collector = FlowCollector(event_bus=bus)
+    bus.subscribe(DatalogEvent, collector.on_data)
+    bus.subscribe(LibraryDetectedEvent, collector.on_library_detected)
+    return bus, collector
+
+
+def test_tls_flow_keeps_tls_library_after_later_rc4_library_event():
+    # --protocol auto: an RC4 hook announcing libcrypto after the TLS library
+    # must not re-label the TLS flow.
+    bus, collector = _collector()
+    bus.emit(LibraryDetectedEvent(library="libssl.so", protocol="tls"))
+    bus.emit(LibraryDetectedEvent(library="libcrypto.so", protocol="rc4"))
+    _emit_data(bus, "tls", src_port=51010)
+
+    assert _only_flow(collector).layer("tls").library == "libssl.so"
+
+
+def test_quic_flow_uses_quic_library_not_last_tls_library():
+    bus, collector = _collector()
+    bus.emit(LibraryDetectedEvent(library="libquiche.so", protocol="quic"))
+    bus.emit(LibraryDetectedEvent(library="libssl.so", protocol="tls"))
+    _emit_data(bus, "quic", src_port=51011)
+
+    assert _only_flow(collector).layer("quic").library == "libquiche.so"
+
+
+def test_tls_flow_without_tls_library_event_gets_no_foreign_library():
+    bus, collector = _collector()
+    bus.emit(LibraryDetectedEvent(library="libcrypto.so", protocol="rc4"))
+    _emit_data(bus, "tls", src_port=51012)
+
+    tls = _only_flow(collector).layer("tls")
+    assert tls is None or tls.library == ""
+
+
+def test_empty_library_event_does_not_clear_known_library():
+    bus, collector = _collector()
+    bus.emit(LibraryDetectedEvent(library="BoringSSL", protocol="tls"))
+    bus.emit(LibraryDetectedEvent(library="", protocol="tls"))
+    _emit_data(bus, "tls", src_port=51013)
+
+    assert _only_flow(collector).layer("tls").library == "BoringSSL"
+
+
+def test_quic_flow_uses_its_records_library_not_another_family():
+    # The agent stamps the producing module on every record; QUIC libraries
+    # announced under the TLS family never leak onto QUIC flows by fallback.
+    bus, collector = _collector()
+    bus.emit(LibraryDetectedEvent(library="libssl.so", protocol="tls"))
+    bus.emit(LibraryDetectedEvent(library="libcrypto.so", protocol="rc4"))
+    bus.emit(DatalogEvent(
+        data=b"\x00\x01payload", function="hook", direction="write",
+        src_addr="10.0.0.2", src_port=51014, dst_addr="149.154.167.51",
+        dst_port=443, protocol="quic", timestamp=1000.0, library="libcronet.so",
+    ))
+
+    assert _only_flow(collector).layer("quic").library == "libcronet.so"

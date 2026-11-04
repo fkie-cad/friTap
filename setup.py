@@ -58,6 +58,11 @@ setup(
             "protobuf>=4.21",
             "bbpb>=1.0",
         ],
+        # Optional MCP server for AI agents (`fritap mcp`); the REST server
+        # (`fritap serve`) needs no extra dependencies.
+        "mcp": [
+            "mcp>=1.10,<2",
+        ],
     },
 
     # Include non-Python assets inside the package

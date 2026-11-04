@@ -295,6 +295,16 @@ export function decodeBLImm(insn: number): number {
     return imm26 * 4;                             // << 2
 }
 
+/** Target of a BL at numeric address/offset `pc` (same address space), or null when not a BL. */
+export function blTargetOffset(pc: number, insn: number): number | null {
+    return isBL(insn) ? pc + decodeBLImm(insn) : null;
+}
+
+/** `mov wReg, #imm16` (32-bit MOVZ, no shift) -> imm16, else null. */
+export function movzW(insn: number, reg: number): number | null {
+    return maskEq(insn, 0xffe0001f, 0x52800000 | reg) ? (insn >>> 5) & 0xffff : null;
+}
+
 // ---- scan-pattern builders (for native Memory.scan "pattern : mask") ----
 //
 // A Memory.scan over a 187 MB code segment is native speed; a JS readU32() walk

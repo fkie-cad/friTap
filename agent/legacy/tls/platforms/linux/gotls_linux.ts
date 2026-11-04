@@ -1,10 +1,12 @@
 
-import {GoTLS, symbol_writeKeyLog, GoTlsLogger } from "../../../../tls/libs/gotls.js";
+// The legacy GoTLS hooker (honours keylog_enabled), as on Android — not the tls/libs copy.
+import {GoTLS, symbol_writeKeyLog, GoTlsLogger } from "../../libs/gotls.js";
 import { socket_library } from "../../../../platforms/linux.js";
-import {PatternBasedHooking, get_CPU_specific_pattern, hasUsablePatternsFor } from "../../../../tls/shared/pattern_based_hooking.js";
-import { patterns, isPatternReplaced } from "../../../../fritap_agent.js"
+import { keylog_enabled } from "../../../../fritap_agent.js"
+import { installGoKeylogByPattern, GO_WRITE_KEYLOG_PATTERNS } from "../../../../tls/shared/go_keylog_hook.js";
+import { installBoringSSLSymbolHook, makeBoringSslDumpKeys } from "../../../../shared/boringssl_symbol_hook.js";
 import { devlog, devlog_error } from "../../../../util/log.js";
-import { GENERIC_BORINGSSL_ARM64_FALLBACK } from "../../../../shared/bundled_cronet_patterns.js";
+import { legacyGoPlaintext } from "../../libs/gotls_native.js";
 
 
 export class GoTLS_Linux extends GoTLS {
@@ -15,21 +17,17 @@ export class GoTLS_Linux extends GoTLS {
 
         /*
          * Default patterns for GoTLS hooking.
-         * These patterns are used to hook the writeKeyLog function in GoTLS but for now only the primary pattern for ARM64 is valid.
+         * These patterns are used to hook the writeKeyLog function in GoTLS (its function entry). x64/arm64 Go pass the arguments in registers (go_abi.ts);
+         * x86/arm32 Go pass them on the stack (ABI0), which go_abi.ts decodes from sp+4 at entry.
+         * NOTE: the x86/arm patterns below are C-style prologues (push/PIC thunk), not Go
+         * stack-checked entries; unverified against Go binaries.
          */
 
         this.default_pattern = {
-            "x64": {
-                primary: "55 41 57 41 56 41 54 53 48 83 EC 30 48 8B 47 68 48 83 B8 20 02 00 00 00 0F 84", // x64 pattern
-                fallback: "" // TODO: additional x64 patterns needed
-            },
+            ...GO_WRITE_KEYLOG_PATTERNS, // x64 + arm64 (go_keylog_hook.ts)
             "x86": {
                 primary: "55 53 57 56 83 EC 4C E8 00 00 00 00 5B 81 C3 A9 CB 13 00 8B 44 24 60", // x86 pattern
                 fallback: "" // TODO: additional x86 patterns needed
-            },
-            "arm64": {
-                primary: "90 0B 40 F9 F1 43 00 D1 3F 02 10 EB E9 10 00 54 FE 0F 17 F8 FD 83 1F F8 FD 23 00 D1 E1 53 00 F9 E3 5B 00 F9 E6 67 00 F9 09 94 40 F9 49 0F 00 B4", // ARM64 primary pattern
-                fallback: GENERIC_BORINGSSL_ARM64_FALLBACK, // ARM64 fallback pattern
             },
 
             "arm": {
@@ -48,6 +46,8 @@ export class GoTLS_Linux extends GoTLS {
 
 
     install_key_extraction_hook(){
+        // Same gate as the base class (overridden here): no key hooks unless keys were requested.
+        if (!keylog_enabled) return;
         var instance = this;
         let goTLSModule = Process.findModuleByName(this.module_name);
         let soName = this.module_name;
@@ -60,40 +60,11 @@ export class GoTLS_Linux extends GoTLS {
             }
         }
         if (this.addresses[this.module_name][symbol_writeKeyLog] === undefined || this.addresses[this.module_name][symbol_writeKeyLog] === null )  {
-
-
-
-            const hooker = new PatternBasedHooking(goTLSModule);
-
-            if (isPatternReplaced() && hasUsablePatternsFor(patterns, this.module_name, soName, "Dump-Keys")){
-                devlog("Hooking GoTLS functions by patterns from JSON file");
-                hooker.hook_DumpKeys(this.module_name,soName,patterns,(args: any[]) => {
-                    devlog("Installed writeKeyLog() hooks using byte patterns.");
-                    const labelPtr = args[2];
-                    const labelLen = args[3].toInt32();
-                    const crPtr = args[4];
-                    const crLen = args[5].toInt32();
-                    const secretPtr = args[7];
-                    const secretLen = args[8].toInt32();
-                    this.dumpKeys(labelPtr, labelLen, crPtr, crLen,  secretPtr, secretLen);  // Unpack args into dumpKeys
-                });
-            }else{
-                // This are the default patterns for hooking writeKeyLog in GoTLS
-                hooker.hookModuleByPattern(
-                    get_CPU_specific_pattern(this.default_pattern),
-                    (args) => {
-                        devlog("Installed writeKeyLog() hooks using byte patterns.");
-                        const labelPtr = args[2];
-                        const labelLen = args[3].toInt32();
-                        const crPtr = args[4];
-                        const crLen = args[5].toInt32();
-                        const secretPtr = args[7];
-                        const secretLen = args[8].toInt32();
-                        this.dumpKeys(labelPtr, labelLen, crPtr, crLen,  secretPtr, secretLen);  // Hook args passed to dumpKeys
-                    }
-                );
-            }
-
+            // Stripped binary: the shared Go pattern path (go_keylog_hook.ts) locates writeKeyLog's
+            // entry and installs the register-based Go keylog hook (Go's ABIInternal passes the
+            // arguments in registers, not in Frida's C args[]).
+            const hooker = installGoKeylogByPattern(this.module_name, this.default_pattern,
+                { soName, module: goTLSModule });
             return hooker;
         }else{
             devlog("[GoTLS] writeKeyLog symbol available");
@@ -105,42 +76,20 @@ export class GoTLS_Linux extends GoTLS {
 
     }
 
-    // instead of relying on pattern we check if the target module has a symbol of writeKeyLog()
+    /**
+     * Last resort when the writeKeyLog pattern scan found nothing. No Go function is named
+     * "ssl_log": the only such symbols are C BoringSSL's (bssl::ssl_log_secret, linked into the
+     * module via cgo), so this hooks that C function through the shared BoringSSL symbol hook —
+     * C ABI (ssl, label, secret, len) and client_random from the SSL struct. (It used to take
+     * the first symbol containing "ssl_log" and read Go-style args[2..8] off a C call.)
+     */
     execute_symbol_based_hooking(hooker){
         if(hooker === undefined || hooker === null){
             devlog("[-] Error: Hooker is undefined.");
             return;
         }
-        // Capture the dumpKeys function with the correct 'this'
-        let dumpKeysFunc = this.dumpKeys.bind(this);
-
-
-
-        if(hooker.no_hooking_success){
-            let symbols = Process.getModuleByName(this.module_name).enumerateSymbols().filter(exports => exports.name.toLowerCase().includes("ssl_log"));
-            if(symbols.length > 0){
-                devlog("Installed writeKeyLog() hooks using sybmols.");
-                try{
-                    Interceptor.attach(symbols[0].address, {
-                        onEnter: function(args) {
-                            const labelPtr = args[2];
-                            const labelLen = args[3].toInt32();
-                            const crPtr = args[4];
-                            const crLen = args[5].toInt32();
-                            const secretPtr = args[7];
-                            const secretLen = args[8].toInt32();
-                            dumpKeysFunc(labelPtr, labelLen, crPtr, crLen,  secretPtr, secretLen);  // Hook args passed to dumpKeys
-                        }
-                    });
-
-                }catch(e){
-                    // right now we ingore error's here
-                }
-            }
-
-
-        }
-
+        if(!hooker.no_hooking_success) return;
+        installBoringSSLSymbolHook(this.module_name, makeBoringSslDumpKeys(this.module_name));
     }
 
     execute_hooks(){
@@ -169,6 +118,8 @@ export function gotls_execute(moduleName:string, is_base_hook: boolean){
     }catch(error_msg){
         devlog(`gotls_execute error: ${error_msg}`)
     }
+    // Plaintext (-p, with -ed): the shared onEnter-only Go probes (no-op without -p).
+    legacyGoPlaintext(moduleName);
 
     if (is_base_hook) {
         try {

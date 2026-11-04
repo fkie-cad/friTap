@@ -406,3 +406,27 @@ def test_findings_lookup_survives_index_reset():
     index = reader._ensure_findings_index()
     reader._findings_index = None  # what a concurrent close() does
     assert index.get("f") == ["x"]
+
+
+# --- operator did-you-mean hints (FilterSyntaxError.hint) ----------------------
+
+def test_operator_hint_for_misspelled_word_operators():
+    from friTap.filter.parser import operator_hint
+
+    assert operator_hint("contians").startswith("did you mean: contains")
+    assert operator_hint("MATCHS").startswith("did you mean: matches")
+    assert operator_hint("adn").startswith("did you mean: and")
+    assert operator_hint("firefox") is None
+
+
+def test_parse_error_carries_operator_hint_but_message_is_unchanged():
+    import pytest as _pytest
+
+    from friTap.filter.errors import FilterSyntaxError
+    from friTap.filter.parser import parse_filter
+
+    with _pytest.raises(FilterSyntaxError) as info:
+        parse_filter('http.host contians "x"')
+    assert str(info.value) == "Unexpected token 'contians' (at position 10)"
+    assert "contains" in info.value.hint
+    assert FilterSyntaxError("x").hint is None

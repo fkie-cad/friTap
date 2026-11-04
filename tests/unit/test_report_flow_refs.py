@@ -21,7 +21,7 @@ from friTap.analysis.digest import build_digest, flow_ref, ordered_flow_ids, par
 from friTap.analysis.digest_flow import SCHEMA, FlowRefError, build_flow_detail
 from friTap.analysis.digest_render import render_flow_markdown, render_json
 from friTap.commands.report import run_report_cli
-from friTap.flow.layers import MtprotoLayer, SignalLayer
+from friTap.flow.layers import MtprotoLayer
 from friTap.flow.tap_reader import TapReader
 from tests.unit.test_report_digest import (
     CLIENT_RANDOM,
@@ -211,6 +211,13 @@ def test_markdown_contains_untrusted_body_in_code_block(tmp_path):
 def test_bad_refs_raise(tap, ref):
     with pytest.raises(FlowRefError):
         build_flow_detail(tap, ref)
+
+
+def test_bad_message_ref_names_valid_range(tap):
+    with pytest.raises(FlowRefError, match=r"flow has 3 messages \(m0\.\.m2\)"):
+        build_flow_detail(tap, "f3#m9")
+    with pytest.raises(FlowRefError, match=r"flow has 0 messages \(use f1\)"):
+        build_flow_detail(tap, "f1#m0")
 
 
 def test_full_flow_id_is_accepted(tap):

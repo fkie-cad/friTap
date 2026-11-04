@@ -192,19 +192,21 @@ export function emitRc4Key(keyBytes: Uint8Array, source: string, direction: stri
 // ---------------------------------------------------------------------------
 
 export type Rc4Installer = (moduleName: string) => boolean;
-export type Rc4Executor = (moduleName: string, is_base_hook: boolean) => void;
+/** Returns whether any RC4 hook was installed (ModuleHookingType: false = none, not reported). */
+export type Rc4Executor = (moduleName: string, is_base_hook: boolean) => boolean;
 
 export function makeRc4Executor(label: string, install: Rc4Installer): Rc4Executor {
-    return function (moduleName: string, is_base_hook: boolean): void {
+    return function (moduleName: string, is_base_hook: boolean): boolean {
         if (!keylog_enabled) {
             devlog(`[rc4] keylog disabled (-k not set); skipping ${label} RC4 key hooks on ${moduleName}.`);
-            return;
+            return false;
         }
         ensureRc4SelfTest();
         try {
-            install(moduleName);
+            return install(moduleName);
         } catch (e: any) {
             devlog(`[rc4] ${label} executor error on ${moduleName} (is_base_hook=${is_base_hook}): ${e && e.stack ? e.stack : e}`);
+            return false;
         }
     };
 }

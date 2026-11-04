@@ -190,6 +190,57 @@ def test_json_above_render_limit_is_not_pretty_printed():
     assert "more bytes truncated" in text
 
 
+def _nested_json(depth: int) -> bytes:
+    return b"[" * depth + b"]" * depth
+
+
+def test_pretty_json_rejects_deep_nesting_explicitly():
+    # Depth 200 parses on every Python (below the 3.13 recursion limit), so a
+    # None here proves the depth guard is explicit, not RecursionError-based.
+    widget = make_flow_detail_widget()
+    assert json.loads(_nested_json(200))
+    assert widget._pretty_json(_nested_json(200)) is None
+
+
+def test_pretty_json_accepts_nesting_at_the_depth_limit():
+    from friTap.analysis._json_walk import MAX_JSON_DEPTH
+
+    formatted = make_flow_detail_widget()._pretty_json(_nested_json(MAX_JSON_DEPTH))
+    assert formatted is not None and formatted.count("\n") == 2 * (MAX_JSON_DEPTH - 1)
+
+
+def test_deeply_nested_json_body_falls_back_to_raw_text():
+    widget = make_flow_detail_widget()
+    widget._decode_json(widget._request_log, _nested_json(200), {})
+    text = _blob(widget._request_log)
+    assert "Not valid JSON" in text and "[[[" in text
+
+
+def test_pretty_json_output_is_capped_at_render_limit():
+    widget = make_flow_detail_widget()
+    limit = FlowDetailWidget._TEXT_RENDER_LIMIT
+    body = json.dumps([1] * 120_000, separators=(",", ":")).encode()
+    assert len(body) <= limit  # parsed, but its indented form is > limit
+    widget._decode_json(widget._request_log, body, {})
+    text = _blob(widget._request_log)
+    assert text.startswith("[\n  1,") and "more bytes truncated" in text
+
+
+def test_pretty_json_below_cap_is_written_unchanged():
+    widget = make_flow_detail_widget()
+    widget._render_body_standard(
+        widget._request_log, b'{"a": "[/x]"}', {"Content-Type": "application/json"})
+    assert widget._request_log.lines == ['{\n  "a": "[/x]"\n}']
+
+
+def test_explorer_json_decoder_rejects_deep_nesting():
+    from friTap.tui.modals.explorer_modal import ExplorerModal
+
+    assert ExplorerModal._decode_plain(_nested_json(200), "json").startswith("JSON decode failed")
+    assert ExplorerModal._decode_plain(_nested_json(100_000), "json").startswith("JSON decode failed")
+    assert ExplorerModal._decode_plain(b'{"k": [1]}', "json") == '{\n  "k": [\n    1\n  ]\n}'
+
+
 @pytest.mark.parametrize("decoder", ["_decode_raw_utf8", "_decode_base64"])
 def test_text_decoders_are_capped(decoder):
     import base64

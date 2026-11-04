@@ -9,6 +9,7 @@ import { readHexFromPointer } from "../decoders/hex_utils.js";
 import { enable_default_fd } from "../../fritap_agent.js";
 import { STANDARD_SOCKET_SYMBOLS, DUMMY_SESSION_ID_GNUTLS } from "./shared_constants.js";
 import { createLifecycleHook } from "./shared_factories.js";
+import { GNUTLS_SEND_RETRY_CODES } from "../../shared/write_length.js";
 
 // Pre-allocated buffers for keylog callback (fixed size, reused across calls)
 const _serverRandomPtr = Memory.alloc(Process.pointerSize + 4);
@@ -119,6 +120,8 @@ export function createGnuTlsDefinition(): HookDefinition {
             symbol: "gnutls_record_send",
             args: { sslCtxArgIndex: 0, bufferArgIndex: 1, lengthArgIndex: 2, bytesTransferred: "arg" },
             functionLabel: "gnutls_record_send",
+            // E_AGAIN/E_INTERRUPTED: the record is buffered; the retry may pass NULL/0.
+            bufferedRetryCodes: GNUTLS_SEND_RETRY_CODES,
         },
         keylog: {
             kind: "callback_on_init",

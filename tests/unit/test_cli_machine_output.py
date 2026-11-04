@@ -197,9 +197,10 @@ def test_claim_is_idempotent_with_pipes():
 
 
 def test_factory_picks_stdout_handler_for_dash():
+    import logging
+
     from friTap.config import FriTapConfig
     from friTap.output.factory import OutputHandlerFactory
-    import logging
     config = FriTapConfig.from_legacy_params(app="x", json_output="-", keylog="k.log")
     config.output.tap_output = "x.tap"
     handlers, _ = OutputHandlerFactory.create_handlers(
@@ -579,6 +580,91 @@ def test_cli_registers_logger_exit_status(clean_stream_state):
     fritap_cli._register_stream_exit_status(fake_logger)
     fake_logger._exit_status = EXIT_RUNTIME_ERROR  # read lazily, at stream_end
     assert stdout_stream.final_exit_code() == EXIT_RUNTIME_ERROR
+
+
+# -- stream_end.ended_by ---------------------------------------------------
+
+def _fake_capture(exit_status=EXIT_OK, signal_received=False, **attrs):
+    session_manager = types.SimpleNamespace(_exit_signal_received=signal_received)
+    stops = []
+    capture = types.SimpleNamespace(_exit_status=exit_status, _session_manager=session_manager,
+                                    stop_capture_gracefully=lambda: stops.append(True), **attrs)
+    return capture, stops
+
+
+def _close_registered(capture):
+    handler, _bus, buffer = _stream_handler()
+    fritap_cli._register_stream_exit_status(capture)
+    handler.close()
+    return _records(buffer)[-1]
+
+
+def test_stream_end_ended_by_duration(clean_stream_state):
+    capture, stops = _fake_capture()
+    fritap_cli._stop_capture_after_duration(capture, 5, fritap_cli.logging.getLogger("t"))
+    capture._session_manager._exit_signal_received = True  # set by the graceful stop
+    assert stops == [True]
+    end = _close_registered(capture)
+    assert end["type"] == "stream_end" and end["ended_by"] == "duration"
+    assert end["exit_code"] == EXIT_OK
+
+
+def test_stream_end_ended_by_stopped_on_signal(clean_stream_state):
+    capture, _ = _fake_capture(signal_received=True)
+    assert _close_registered(capture)["ended_by"] == "stopped"
+
+
+def test_duration_after_stop_signal_stays_stopped(clean_stream_state):
+    capture, _ = _fake_capture(signal_received=True)
+    fritap_cli._stop_capture_after_duration(capture, 5, fritap_cli.logging.getLogger("t"))
+    assert _close_registered(capture)["ended_by"] == "stopped"
+
+
+def test_duration_after_target_exit_is_target_exited(clean_stream_state):
+    capture, _ = _fake_capture(exit_status=EXIT_TARGET_DETACHED, _session_end_claimed=True)
+    fritap_cli._stop_capture_after_duration(capture, 5, fritap_cli.logging.getLogger("t"))
+    assert _close_registered(capture)["ended_by"] == "target_exited"
+
+
+def test_stream_end_ended_by_error(clean_stream_state):
+    capture, _ = _fake_capture(exit_status=EXIT_RUNTIME_ERROR)
+    assert _close_registered(capture)["ended_by"] == "error"
+
+
+def test_stream_end_ended_by_stopped_on_keyboard_interrupt_note(clean_stream_state):
+    stdout_stream.note_end_reason("stopped")
+    stdout_stream.note_end_reason("duration")  # first wins
+    assert _close_with_exit_status(EXIT_OK)[-1]["ended_by"] == "stopped"
+
+
+def test_stream_end_omits_ended_by_when_unknown(clean_stream_state):
+    capture, _ = _fake_capture()  # clean exit, nobody said why
+    assert "ended_by" not in _close_registered(capture)
+    stdout_stream._reset_for_tests()
+    assert "ended_by" not in _close_with_exit_status(128 + 15)[-1]  # bare SIGTERM status
+
+
+def test_note_end_reason_rejects_unknown_value(clean_stream_state):
+    with pytest.raises(ValueError):
+        stdout_stream.note_end_reason("bogus")
+
+
+def test_emergency_writer_stream_end_carries_ended_by(clean_stream_state):
+    read_fd, write_fd = os.pipe()
+    err_r, err_w = os.pipe()
+    saved = os.dup(1)
+    try:
+        stdout_stream.claim_stdout_for_json_stream(stdout_fd=write_fd, stderr_fd=err_w)
+        assert stdout_stream.finish_unclosed_stream(EXIT_TARGET_DETACHED) is True
+        stdout_stream._stream.close()
+        os.close(write_fd)
+        lines = os.read(read_fd, 65536).decode().splitlines()
+    finally:
+        os.dup2(saved, 1)
+        for fd in (saved, read_fd, err_r, err_w):
+            os.close(fd)
+    end = json.loads(lines[-1])
+    assert end["type"] == "stream_end" and end["ended_by"] == "target_exited"
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX spawn path")

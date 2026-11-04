@@ -44,6 +44,14 @@ _UNI_STREAM_BIT = 0x2
 # the frame parser would misparse them, so these keep the legacy path.
 _NEQO_BODY_FUNCTIONS = ("read_response_data", "send_request_body")
 
+# Explicit payload kind the agent stamps on QUIC datalog records
+# (``quic_payload``): raw, in-order QUIC stream bytes (HTTP/3 frames, also of
+# the control and QPACK streams) vs. de-framed HTTP/3 DATA payload. Records
+# without it (neqo bodies, decoded headers, offline events) keep the legacy
+# transport-based rule.
+QUIC_PAYLOAD_STREAM = "stream"
+QUIC_PAYLOAD_BODY = "body"
+
 # Unidirectional stream kind that carries responses (server push), not control.
 _PUSH_STREAM_KIND = "push"
 
@@ -96,12 +104,34 @@ class QuicStreamFlowMixin:
         function = getattr(event, 'function', '') or ''
         return any(name in function for name in _NEQO_BODY_FUNCTIONS)
 
+    @staticmethod
+    def _quic_payload(event) -> str:
+        """The record's explicit ``quic_payload`` kind, or "" when untagged."""
+        return getattr(event, 'quic_payload', '') or ''
+
+    def _carries_stream_bytes(self, event) -> bool:
+        """True for an event without decoded headers and with a real stream id."""
+        return (getattr(event, 'http3_headers', None) is None
+                and self._quic_stream_id(event) is not None)
+
     def _is_quic_stream_event(self, conn, event) -> bool:
-        """True if *event* carries raw QUIC stream bytes with a real stream id."""
-        return (conn.transport == _TRANSPORT_QUIC
-                and getattr(event, 'http3_headers', None) is None
-                and self._quic_stream_id(event) is not None
-                and not self._is_neqo_body_event(event))
+        """True if *event* carries raw QUIC stream bytes with a real stream id.
+
+        Tagged records decide by their ``quic_payload`` whatever transport they
+        carry (under ``--protocol tls`` Chrome's QUIC records are tagged
+        ``tls``); untagged ones keep the legacy quic-transport rule.
+        """
+        if not self._carries_stream_bytes(event):
+            return False
+        payload = self._quic_payload(event)
+        if payload:
+            return payload == QUIC_PAYLOAD_STREAM
+        return conn.transport == _TRANSPORT_QUIC and not self._is_neqo_body_event(event)
+
+    def _is_quic_body_event(self, event) -> bool:
+        """True for de-framed HTTP/3 body bytes (``quic_payload`` "body")."""
+        return (self._quic_payload(event) == QUIC_PAYLOAD_BODY
+                and self._carries_stream_bytes(event))
 
     def _chunk_stream_id(self, conn, event,
                          is_quic_stream: Optional[bool] = None) -> Optional[int]:
@@ -112,7 +142,9 @@ class QuicStreamFlowMixin:
         """
         if is_quic_stream is None:
             is_quic_stream = self._is_quic_stream_event(conn, event)
-        return self._quic_stream_id(event) if is_quic_stream else None
+        if is_quic_stream or self._is_quic_body_event(event):
+            return self._quic_stream_id(event)
+        return None
 
     @staticmethod
     def _is_stream_aware(parser) -> bool:
@@ -190,11 +222,15 @@ class QuicStreamFlowMixin:
         return True
 
     def _detect_quic_parser(self, conn, candidates: list):
-        """First non-Hexdump parser detected on a candidate's stream bytes."""
+        """First non-Hexdump parser detected on a candidate's stream bytes.
+
+        Candidates are QUIC stream chunks by construction, so detection always
+        runs for the QUIC transport (also when the record is tagged ``tls``).
+        """
         for chunk in candidates:
             try:
                 detected = get_default_registry().detect(
-                    self._quic_stream_prefix(conn, chunk), transport=conn.transport)
+                    self._quic_stream_prefix(conn, chunk), transport=_TRANSPORT_QUIC)
             except Exception:
                 logger.debug("QUIC parser detection failed", exc_info=True)
                 continue
@@ -293,6 +329,34 @@ class QuicStreamFlowMixin:
             self._h2_stream_flows.pop((conn.conn_id, result.stream_id), None)
 
     # ------------------------------------------------------------------
+    # De-framed body chunks (Google QUICHE)
+    # ------------------------------------------------------------------
+
+    def _handle_quic_body_chunk(self, conn, chunk, event, pending) -> None:
+        """Append a de-framed body chunk to its stream's flow. Under lock.
+
+        Request and response bodies of one stream share that flow; the
+        streams of one connection (one 4-tuple) each get their own.
+        """
+        flow = self._quic_body_flow(conn, chunk, event, pending)
+        self._append_chunk(flow, chunk)
+        self._append_progress(pending, flow)
+
+    def _quic_body_flow(self, conn, chunk, event, pending):
+        """The flow of *chunk*'s stream: known body flow, else its decoded-headers
+        flow (app-api mode), else a new one indexed for later headers."""
+        sid = chunk.stream_id
+        dense_key = (conn.conn_id, conn.map_qsid(sid))
+        flow = self._flows.get(conn.quic_stream_flows.get(sid, ""))
+        if flow is None:
+            flow = self._flows.get(self._h2_stream_flows.get(dense_key, ""))
+        if flow is None:
+            flow = self._open_quic_flow(conn, event, pending, chunk.direction)
+            self._h2_stream_flows.setdefault(dense_key, flow.flow_id)
+        conn.quic_stream_flows[sid] = flow.flow_id
+        return flow
+
+    # ------------------------------------------------------------------
     # Result-less chunks
     # ------------------------------------------------------------------
 
@@ -353,8 +417,8 @@ class QuicStreamFlowMixin:
 
     @staticmethod
     def _is_quic_connection(conn) -> bool:
-        """True if *conn* carries the QUIC transport."""
-        return conn.transport == _TRANSPORT_QUIC
+        """True if *conn* carries the QUIC transport or owns QUIC stream flows."""
+        return conn.transport == _TRANSPORT_QUIC or bool(conn.quic_stream_flows)
 
     def _complete_quic_stream_flows(self, conn, ended: float, pending: list) -> None:
         """Commit, flush and complete every QUIC stream/control flow of *conn*."""

@@ -78,6 +78,12 @@ class DatalogMessage(BaseAgentMessage):
     # HTTP/3 pre-decoded headers (Boundary-4 app-api mode, optional)
     http3_headers: Optional[list[list[str]]] = None  # decoded [[name, value], ...]
     quic_stream_type: Optional[str] = None
+    # Explicit record direction ("read" | "write"), always set on QUIC records
+    direction: Optional[str] = None
+    # QUIC payload kind: "stream" (raw HTTP/3 stream bytes) | "body" (de-framed DATA)
+    quic_payload: Optional[str] = None
+    # Module that produced the record (e.g. "libmonochrome_64.so")
+    library: Optional[str] = None
 
 
 class ConnectionLifecycleMessage(BaseAgentMessage):
@@ -289,15 +295,47 @@ class IPSecChildSAKeysMessage(BaseAgentMessage):
 
 
 class IPSecIKEKeysMessage(BaseAgentMessage):
-    """IKE SA key material from strongSwan.
+    """IKE SA key material from strongSwan (one per IKE_SA).
 
-    Keys dictionary maps labels like ``SK_ai``, ``SK_ar``, ``SK_ei``,
-    ``SK_er``, ``SK_pi``, ``SK_pr`` to hex-encoded key bytes.
+    Emitted at ``derive_ike_keys`` onLeave. ``spi_i``/``spi_r`` are the 16-hex
+    lowercase SPIs in on-wire (big-endian) order; ``enc_alg``/``int_alg`` are
+    IANA IKEv2 transform ids and ``enc_key_len_bits`` the negotiated key length.
+    ``keys`` maps ``sk_ei``/``sk_er``/``sk_ai``/``sk_ar`` (and optionally
+    ``sk_d``/``sk_pi``/``sk_pr``) to hex-encoded key bytes. These become one
+    ``ikev2_decryption_table`` row for Wireshark.
     """
 
     contentType: Literal["ipsec_ike_keys"] = "ipsec_ike_keys"
+    ike_version: int = 2
+    spi_i: str = ""
+    spi_r: str = ""
+    enc_alg: Optional[int] = None
+    enc_key_len_bits: Optional[int] = None
+    int_alg: Optional[int] = None
     keys: Dict[str, str] = Field(default_factory=dict)
     message: str = ""
+    protocol: str = "ipsec"
+
+
+class IPSecESPKeysMessage(BaseAgentMessage):
+    """ESP CHILD_SA key material from strongSwan (one per CHILD_SA direction).
+
+    Emitted at the kernel-netlink ``add_sa``. ``spi`` is the 8-hex lowercase SPI
+    in on-wire (big-endian) order; ``src``/``dst`` are IP strings or ``"*"`` and
+    ``family`` is ``"IPv4"``/``"IPv6"``; ``enc_alg``/``int_alg`` are IANA
+    transform ids and ``enc_key``/``int_key`` the hex-encoded key bytes (the ESP
+    integrity key is empty for AEAD ciphers). Becomes one ``esp_sa`` row.
+    """
+
+    contentType: Literal["ipsec_esp_keys"] = "ipsec_esp_keys"
+    spi: str = ""
+    src: str = "*"
+    dst: str = "*"
+    family: str = "IPv4"
+    enc_alg: Optional[int] = None
+    int_alg: Optional[int] = None
+    enc_key: str = ""
+    int_key: str = ""
     protocol: str = "ipsec"
 
 
@@ -337,6 +375,7 @@ AgentMessage = Annotated[
         SSHKeylogMessage,
         IPSecChildSAKeysMessage,
         IPSecIKEKeysMessage,
+        IPSecESPKeysMessage,
         OhttpPlaintextMessage,
     ],
     Field(discriminator="contentType"),

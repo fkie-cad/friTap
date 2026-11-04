@@ -31,6 +31,11 @@ class DeviceConfig:
     enable_spawn_gating: bool = False
     spawn_gating_all: bool = False
     enable_child_gating: bool = False
+    # Follow every instrumented process across exec() (e.g. Homebrew's python3
+    # launcher exec()ing the real binary), in spawn and attach mode. It needs
+    # Frida child gating, which costs ~40-50 ms per fork; --no-follow-exec
+    # turns it off.
+    follow_exec: bool = True
     timeout: Optional[int] = None
     # Upper bound (seconds) for the agent's blocking ``script.load()``. Without
     # it a wedged agent hangs the session silently. ``0`` disables the bound.
@@ -57,7 +62,12 @@ class OutputConfig:
     # Forces plaintext hooks off even when a selected handler consumes
     # plaintext (the LSASS helper session of a -f full-capture run).
     plaintext_hooks_disabled: bool = False
+    # Requested -p container: "auto" (by extension), "pcap" or "pcapng"
+    # (--pcap-format). Writers read the resolved ``pcap_container`` instead.
     output_format: str = "auto"
+    # The resolved -p container ("pcap" or "pcapng"), set by
+    # resolve_pcap_container() when the config is built.
+    pcap_container: str = field(default="pcap", init=False)
     live: bool = False
     live_mode: str = ""  # "", "wireshark", "live_pcapng"
     verbose: bool = False
@@ -105,6 +115,17 @@ class OutputConfig:
     def __post_init__(self) -> None:
         if self.json_output is not None:
             self.set_json_target(self.json_output)
+        self.resolve_pcap_container()
+
+    def resolve_pcap_container(self) -> str:
+        """Resolve ``pcap_container`` from ``pcap`` + ``output_format`` and return it.
+
+        :class:`FriTapConfig` calls it again when it is built, so builder
+        changes made after construction (``FriTap.pcapng()``) are picked up.
+        """
+        from .pcap_utility import resolve_pcap_format
+        self.pcap_container = resolve_pcap_format(self.pcap, self.output_format)
+        return self.pcap_container
 
     def set_json_target(self, path: Optional[str]) -> None:
         """Select the -j target: a file path, or ``-`` for the stdout stream."""
@@ -300,6 +321,18 @@ class FriTapConfig:
             self.protocols = [self.protocol]
         else:
             self.protocol = self.protocols[0]
+        self._resolve_pcap_container()
+
+    def _resolve_pcap_container(self) -> None:
+        """Resolve the -p container once for this config and warn about a conflict.
+
+        A helper session sharing another session's -p file (LSASS,
+        ``auxiliary_session``) stays silent: the target session already warned.
+        """
+        from .pcap_utility import warn_pcap_format_conflict
+        self.output.resolve_pcap_container()
+        if not self.output.auxiliary_session:
+            warn_pcap_format_conflict(self.output.pcap, self.output.output_format)
 
     def validate_protocol_backend(self, protocol_handler=None, protocol_name=None) -> None:
         """Validate that the selected backend supports a configured protocol.
@@ -349,6 +382,7 @@ class FriTapConfig:
         enable_spawn_gating: bool = False,
         spawn_gating_all: bool = False,
         enable_child_gating: bool = False,
+        follow_exec: bool = True,
         mobile: bool | str = False,
         live: bool = False,
         environment_file: Optional[str] = None,
@@ -373,6 +407,7 @@ class FriTapConfig:
         custom_hook_script: Optional[str] = None,
         json_output: Optional[str] = None,
         json_keys: bool = False,
+        output_format: str = "auto",
         install_lsass_hook: bool = True,
         timeout: Optional[int] = None,
         script_load_timeout: float = 20.0,
@@ -424,6 +459,7 @@ class FriTapConfig:
                 enable_spawn_gating=enable_spawn_gating,
                 spawn_gating_all=spawn_gating_all,
                 enable_child_gating=enable_child_gating,
+                follow_exec=follow_exec,
                 timeout=timeout,
                 script_load_timeout=script_load_timeout,
             ),
@@ -432,6 +468,7 @@ class FriTapConfig:
                 keylog=keylog if isinstance(keylog, str) else (keylog or None),
                 json_output=json_output,
                 json_keys=json_keys,
+                output_format=output_format,
                 live=live,
                 verbose=verbose,
                 full_capture=full_capture,

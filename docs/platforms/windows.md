@@ -373,6 +373,27 @@ dumpbin /dependents "C:\path\to\application.exe" | Select-String -Pattern "ssl|t
 fritap --patterns windows_patterns.json -k keys.log application.exe
 ```
 
+**Go applications (`crypto/tls`):**
+```powershell
+# Go links its TLS stack into the .exe; friTap finds any Go image by content
+# (Go's build-info blob at the start of .data), whatever the file is called.
+fritap -s -k go_keys.log -- .\my_go_client.exe https://example.com/
+
+# Plaintext as well: a *tls.Conn exposes no socket, so add -ed (--enable_default_fd)
+fritap -s -k go_keys.log -p go_plain.pcap -ed -- .\my_go_client.exe https://example.com/
+```
+
+Keys come from `crypto/tls.(*Config).writeKeyLog` (by symbol, or by byte pattern for
+`-ldflags="-s -w"` builds); plaintext needs Go's symbols. Go uses the same register calling
+convention on Windows as on Linux and macOS, so the same hooks apply (amd64 and arm64;
+32-bit `GOARCH=386` gives keys only).
+
+!!! warning "Validation status"
+    The detection, the stripped-binary patterns and the register decoding were checked
+    against Go 1.21/1.24/1.25 `windows/amd64` and `windows/arm64` builds, and the keylog hook
+    ran live on `windows/arm64` binaries under Wine (aarch64). A run of friTap on a native
+    Windows host has not been done yet; please report results.
+
 ## Application Categories
 
 ### Web Browsers

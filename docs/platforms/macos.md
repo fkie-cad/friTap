@@ -10,8 +10,8 @@ This guide covers macOS-specific setup, considerations, and best practices for u
       The socket file descriptor cannot be recovered from an `SSL_read`/`SSL_write`
       on Apple platforms, so friTap installs no plaintext hooks for them — use the
       keylog with Wireshark.
-    - **LibreSSL** (`/usr/lib/libssl.48.dylib`), **NSS** and **Python's bundled
-      OpenSSL**: keys **and** decrypted plaintext (`SSL_read`/`SSL_write`).
+    - **LibreSSL** (`/usr/lib/libssl.48.dylib`), **NSS**, **GnuTLS** and **Python's
+      bundled OpenSSL**: keys **and** decrypted plaintext (`SSL_read`/`SSL_write`).
     - Apple's legacy **SecureTransport / `libcoretls`** is not hooked at all.
 
 ## Prerequisites
@@ -132,6 +132,26 @@ sudo fritap -s -k keys.log "$(pwd)/my_client"
 sudo fritap -s -k keys.log curl https://httpbin.org/get
 sudo fritap -s -k keys.log python3 my_script.py
 ```
+
+friTap follows the target across `exec()`, in spawn and attach mode: a launcher
+such as Homebrew's `python3`, which `exec()`s the real interpreter, or a running
+process that `exec()`s `curl`, is captured without extra flags. For fork-heavy
+targets that do not `exec()`, `--no-follow-exec` skips the child gating this
+needs (see [`--no-follow-exec`](../api/cli.md#-no-follow-exec)).
+
+TLS done by a child process -- `git clone https://...` hands the transfer to
+`git-remote-https` -- needs `--enable_child_gating`, which instruments the
+children and follows their `exec()` too:
+
+```bash
+fritap --enable_child_gating -s -k keys.log -- /opt/homebrew/bin/git ls-remote https://github.com/frida/frida.git
+```
+
+Apple platform binaries (`/bin/*`, `/usr/bin/*`) cannot be instrumented, so an
+`exec()` into one ends the capture of that process; use the Homebrew builds
+(`/opt/homebrew/bin/bash`, `/opt/homebrew/opt/curl/bin/curl`). A Python
+`subprocess` child (`close_fds=True`) is followed ~25 s late: see
+[`--enable_child_gating`](../api/cli.md#-enable_child_gating).
 
 !!! tip "Redirect to a file rather than piping friTap into `head` or `grep`"
     During a capture friTap writes everything to **stderr**, so a plain
@@ -285,7 +305,7 @@ sudo fritap --script-load-timeout 0 -do -k keys.log my_client > fritap.log 2>&1
 
 ## SSL/TLS Libraries on macOS
 
-`agent/platforms/macos.ts` registers twelve entries for macOS:
+`agent/platforms/macos.ts` registers thirteen entries for macOS:
 
 | Library | Module pattern | Support | Notes |
 |---------|----------------|---------|-------|
@@ -295,11 +315,13 @@ sudo fritap --script-load-timeout 0 -do -k keys.log my_client > fritap.log 2>&1
 | **OpenSSL/BoringSSL** | `libssl*.dylib` that is **not** a versioned name | Keys | Generic fallback for bundled BoringSSL copies — `libssl.dylib`, `libssl_custom.dylib`. |
 | **Cronet** | `*cronet*.dylib` | Keys only | Pattern-based; may require external patterns. |
 | **NSS** | `libnss<n>.dylib` | Keys **+ plaintext** | Mozilla NSS. |
+| **GnuTLS** | `libgnutls[.<n>].dylib` | Keys **+ plaintext** | Homebrew GnuTLS (`gnutls-cli`, `wget`, ...); not `libgnutlsxx`, its C++ wrapper. |
 | **NSS HPKE (OHTTP)** | `libnss<n>.dylib` | Keys | Oblivious HTTP; gated under the TLS family. |
 | **Cloudflare QUICHE** | `libquiche.dylib` | QUIC | Gated under the TLS family. |
 | **Google QUICHE (Chrome)** | `Google Chrome Framework` | QUIC | QUIC only — this is **not** a TLS keylog hook. |
 | **Mozilla Neqo** | `XUL` | QUIC | Firefox HTTP/3; the module is `XUL` inside `Firefox.app/Contents/MacOS/`. |
 | **libssh** | `libssh.dylib`, `libssh2.dylib` | SSH | Needs `--protocol ssh`. |
+| **Go crypto/tls** | any Go image (by content) | Keys **+ plaintext** | Go links crypto/tls into the executable itself, so the module is found by its `__go_buildinfo` section, not by name; c-shared Go `.dylib`s too. Plaintext needs `-ed` and Go symbols (not `-s -w`). See [Go applications](#go-applications). |
 
 !!! note "How the three `libssl*.dylib` entries divide the name space"
     friTap invokes **every** registry entry whose pattern matches a module, not
@@ -395,6 +417,30 @@ sudo fritap -s -k python_keys.log python3 script.py
 sudo fritap -s -k python_keys.log python3 -c \
   "import urllib.request; urllib.request.urlopen('https://example.com')"
 ```
+
+### Go applications
+
+Go programs carry their own TLS stack (`crypto/tls`) inside the executable — there is no
+TLS library to find by name. friTap recognises any Go image (main executable or a
+`-buildmode=c-shared` `.dylib`) by the build-info blob Go writes into the `__go_buildinfo`
+section, and hooks it in legacy and `--modern` mode:
+
+```bash
+# Keys (any Go binary, also stripped with -ldflags="-s -w")
+fritap -s -k go_keys.log -- ./my_go_client https://example.com/
+
+# Keys + plaintext: a *tls.Conn has no socket fd, so -ed (--enable_default_fd) is required
+fritap -s -k go_keys.log -p go_plain.pcap -ed -- ./my_go_client https://example.com/
+```
+
+- **Keys** come from `crypto/tls.(*Config).writeKeyLog`, which Go calls for every secret even
+  when the program sets no `KeyLogWriter`. Symbols are used when present; stripped binaries are
+  matched by byte pattern (validated for Go 1.18-1.26, arm64 and amd64).
+- **Plaintext** is read at `(*Conn).writeRecordLocked` (writes) and at the `runtime.memmove`
+  copy inside `(*Conn).Read` (reads). Both need Go's symbol table, so a binary built with
+  `-ldflags="-s -w"` yields keys only.
+- Go x86-64 binaries running under Rosetta 2 on Apple silicon cannot be instrumented (Frida
+  cannot attach to translated processes); use a native arm64 build.
 
 ### Pattern-based Hooking
 

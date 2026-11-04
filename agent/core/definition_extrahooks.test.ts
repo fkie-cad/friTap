@@ -56,29 +56,35 @@ test("SSH/IPSec wrappers keep the executor out of the keylog gate", () => {
 test("SSH/IPSec wrappers install via extraHooks on a -p-only run", () => {
     // keylog_enabled defaults to false in the imported agent module, so this is
     // exactly the `-p`-only scenario. Running the extraHooks (what the loader's
-    // ungated step 7 does) must still reach the legacy executor, which announces
-    // itself with a library_detected message regardless of keys/packets.
-    const G = globalThis as { send?: (m: unknown) => void };
+    // ungated step 7 does) must still reach the legacy executor, which probes the
+    // module's exports and reports its installed verdict. It must NOT send its own
+    // library_detected: the central loader sends that once (see
+    // ssh_ipsec_library_detected.test.ts).
+    const G = globalThis as { send?: (m: unknown) => void; Module: any };
     for (const { name, make } of CASES) {
         const def = make();
         const savedSend = G.send;
+        const savedFind = G.Module.findExportByName;
         const contentTypes: string[] = [];
+        const probed: string[] = [];
+        const verdicts: unknown[] = [];
         G.send = (message: unknown) => {
             if (message && typeof message === "object" && "contentType" in message) {
                 contentTypes.push(String((message as { contentType: unknown }).contentType));
             }
         };
+        G.Module.findExportByName = (_module: string, symbol: string) => { probed.push(symbol); return null; };
         try {
             for (const extra of def.extraHooks!) {
-                extra.install({}, `/fake/path/${name}.so`, {}, false);
+                verdicts.push(extra.install({}, `/fake/path/${name}.so`, {}, false));
             }
         } finally {
             G.send = savedSend;
+            G.Module.findExportByName = savedFind;
         }
-        assert.ok(
-            contentTypes.includes("library_detected"),
-            `${name} extraHooks must invoke the legacy executor (expected a ` +
-            `library_detected message, got: ${contentTypes.join(", ") || "none"})`,
-        );
+        assert.ok(probed.length > 0, `${name} extraHooks must invoke the legacy executor`);
+        assert.deepEqual(verdicts, [false], `${name}: nothing exported -> installed verdict false`);
+        assert.ok(!contentTypes.includes("library_detected"),
+            `${name} executor must leave library_detected to the loader`);
     }
 });

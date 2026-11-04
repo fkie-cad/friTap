@@ -1,7 +1,8 @@
 import { readAddresses, checkNumberOfExports, resolveOffsets, toHexString } from "../../shared/shared_functions.js";
 import { sendKeylog } from "../../shared/shared_structures.js";
-import { devlog, log } from "../../util/log.js";
-import { pcap_enabled } from "../../fritap_agent.js";
+import { devlog, devlog_error, log } from "../../util/log.js";
+import { pcap_enabled, keylog_enabled } from "../../fritap_agent.js";
+import { installRustlsFfiKeylogHooks } from "../definitions/rustls.js";
 
 
 
@@ -61,8 +62,12 @@ export class RusTLS {
                 }
 
                 try {
-                    this.library_method_mapping[`*${moduleName}*`] = ["*rustls_connection_write_tls*", "*rustls_connection_read_tls*", "*rustls_client_config_builder_new*", 
-                "*rustls_client_config_builder_new_custom*", "*rustls_client_config_builder_set_key_log*"]
+                    // Exact names: readAddresses keys each hit by the pattern minus a trailing
+                    // "*", so "*rustls_client_config_builder_new*" was stored under
+                    // "*rustls_client_config_builder_new" (leading "*" kept, and the first of
+                    // its new/new_custom matches) and the by-name lookups below never found it.
+                    this.library_method_mapping[`*${moduleName}*`] = ["rustls_connection_write_tls", "rustls_connection_read_tls", "rustls_client_config_builder_new",
+                "rustls_client_config_builder_new_custom", "rustls_client_config_builder_set_key_log"]
                 }catch(e){
                     // right now do nothing
                 }
@@ -274,10 +279,93 @@ export class RusTLS {
         // needs to be setup for the specific plattform
     }
 
+    /** Symbolized rustls-ffi: inject/shadow the keylog callback (keys only, so gated on -k). */
+    install_tls_keys_callback_hook(): boolean {
+        if (!keylog_enabled) return false;
+        const lib = this.addresses[this.module_name] || {};
+        const setKeyLogAddr = lib["rustls_client_config_builder_set_key_log"];
+        const setKeyLogFn = setKeyLogAddr && !setKeyLogAddr.isNull()
+            ? new NativeFunction(setKeyLogAddr, "uint32", ["pointer", "pointer", "pointer"])
+            : undefined;
+        return installRustlsFfiKeylogHooks(lib, setKeyLogFn, this.module_name);
+    }
+
+    /** Symbolized rustls-ffi (modern class-based path). */
+    execute_hooks(): void {
+        this.install_plaintext_read_hook();
+        this.install_plaintext_write_hook();
+        this.install_tls_keys_callback_hook();
+    }
+
+    /** Stripped build: byte-pattern key extraction (keys only, so gated on -k). */
+    execute_pattern_hooks(): void {
+        if (!keylog_enabled) return;
+        this.install_key_extraction_hook();
+    }
+
 
 
 
     
 
 
+}
+
+/**
+ * Modern class-based rustls executor (no agent/core definition): symbolized rustls-ffi
+ * modules get the callback hooks, stripped ones the platform's byte patterns.
+ */
+export function rustls_execute_class_based(rustls: RusTLS, moduleName: string, isBaseHook: boolean,
+                                           symbolized: boolean): void {
+    if (symbolized) {
+        devlog("Trying to hook RusTLS using symbols...");
+        rustls.execute_hooks();
+    } else {
+        devlog("Trying to hook RusTLS using patterns...");
+        rustls.execute_pattern_hooks();
+    }
+    if (isBaseHook) {
+        const initAddresses = rustls.addresses[moduleName];
+        if (initAddresses && Object.keys(initAddresses).length > 0) {
+            (globalThis as any).init_addresses[moduleName] = initAddresses;
+        }
+    }
+}
+
+export interface RustlsModernSteps {
+    /** The module exports rustls-ffi symbols (see hasMoreThanFiveExports). */
+    symbolized: boolean;
+    /** The data-driven definition (executeFromDefinition); async. */
+    runDefinition: () => Promise<unknown>;
+    /** The modern class-based executor (rustls_execute_class_based). */
+    runClassBased: () => void;
+}
+
+/**
+ * --modern rustls dispatch: symbolized → definition, falling back to the class-based
+ * executor when it fails; stripped → class-based pattern hooks directly.
+ * executeFromDefinition is async: a failure is a rejected promise, not a throw, so the
+ * fallback is wired through .catch as well as the synchronous try.
+ */
+export function dispatchRustlsModern(moduleName: string, steps: RustlsModernSteps): void {
+    const runClassBased = (): void => {
+        try {
+            steps.runClassBased();
+        } catch (e) {
+            devlog_error(`[rustls] class-based executor failed on ${moduleName}: ${e}`);
+        }
+    };
+    if (!steps.symbolized) {
+        runClassBased();
+        return;
+    }
+    const fallBack = (e: unknown): void => {
+        devlog(`[rustls] modern definition failed on ${moduleName} (${e}); using the class-based RusTLS executor`);
+        runClassBased();
+    };
+    try {
+        steps.runDefinition().catch(fallBack);
+    } catch (e) {
+        fallBack(e);
+    }
 }

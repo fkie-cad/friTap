@@ -19,14 +19,11 @@ from urllib.parse import parse_qsl, urlsplit
 
 from friTap.analysis._json_walk import FIELD, iter_json
 from friTap.analysis._limits import safe_json_loads
-from friTap.analysis.redaction import (
-    DIGITS_VALUE_RE as _DIGITS_RE,
-    EMAIL_VALUE_RE as _EMAIL_RE,
-    JWT_VALUE_RE as _JWT_RE,
-    PLUMBING_HEADERS,
-    UUID_VALUE_RE as _UUID_RE,
-    scrub_key_material,
-)
+from friTap.analysis.redaction import DIGITS_VALUE_RE as _DIGITS_RE
+from friTap.analysis.redaction import EMAIL_VALUE_RE as _EMAIL_RE
+from friTap.analysis.redaction import JWT_VALUE_RE as _JWT_RE
+from friTap.analysis.redaction import PLUMBING_HEADERS, scrub_key_material
+from friTap.analysis.redaction import UUID_VALUE_RE as _UUID_RE
 from friTap.analysis.reporters import _sanitize_text
 
 # Caps for strings copied out of captured traffic (prompt-injection surface).

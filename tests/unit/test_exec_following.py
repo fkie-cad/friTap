@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Spawn mode follows the target across exec(), and startup deaths exit 1.
+"""Every instrumented process is followed across exec(); startup deaths exit 1.
 
 **Exec following.** A launcher such as Homebrew's ``python3`` exec()s the real
 binary. Frida ends the old session with ``process-replaced`` and, with child
 gating on, reports the new image as a child of origin ``"exec"`` with the same
 pid, held suspended. friTap must instrument that image through the gated-child
-worker, make it the main session, resume it, and NOT tear the capture down. Fork
-and spawn children it was not asked to gate must be resumed untouched.
+worker, make it the main session, resume it, and NOT tear the capture down --
+in spawn and attach mode alike, and for every instrumented child too (with
+``--enable_child_gating``). Fork and spawn children it was not asked to gate
+must be resumed untouched.
 
 **Exit-code classification.** A target lost before the capture start point (the
 spawned target's resume) is a startup failure, exit 1; afterwards it is a
@@ -27,6 +29,7 @@ import pytest
 from friTap.backends.base import BackendTransportError
 from friTap.exit_codes import EXIT_RUNTIME_ERROR, EXIT_TARGET_DETACHED
 from friTap.legacy.ssl_logger_core import SSL_Logger
+from tests.unit.test_cli_unattended import fake_cli  # noqa: F401  (fixture)
 
 FAKE_DEVICE = "FAKE-DEVICE"
 TARGET_PID = 4242
@@ -61,7 +64,8 @@ class RecordingInstrument:
             raise self._error
 
 
-def _make_logger(instrument=None, enable_child_gating=False, spawn=True):
+def _make_logger(instrument=None, enable_child_gating=False, spawn=True,
+                 follow_exec=True):
     obj = SSL_Logger.__new__(SSL_Logger)
     obj.logger = logging.getLogger("test.exec_following")
     obj.logger.setLevel(logging.DEBUG)
@@ -78,9 +82,6 @@ def _make_logger(instrument=None, enable_child_gating=False, spawn=True):
     obj._instrument_thread_lock = threading.Lock()
     obj._suspended_pids = set()
     obj._suspended_pids_lock = threading.Lock()
-    obj._exec_lock = threading.Lock()
-    obj._exec_replaced_count = 0
-    obj._exec_image_count = 0
     obj._event_bus = MagicMock()
     obj._end_session = MagicMock(return_value=True)
     obj._report_target_crash = MagicMock()
@@ -90,9 +91,12 @@ def _make_logger(instrument=None, enable_child_gating=False, spawn=True):
         target="/opt/homebrew/bin/python3",
         device=types.SimpleNamespace(
             spawn=spawn, mobile=False, enable_child_gating=enable_child_gating,
-            enable_spawn_gating=False, spawn_gating_all=False,
+            enable_spawn_gating=False, spawn_gating_all=False, follow_exec=follow_exec,
         ),
     )
+    # No real process paths: the held-exec watchdog then sees no process.
+    obj._backend.process_paths.return_value = {}
+    obj._init_process_following()
     obj.follow_exec_of(obj.process)
     return obj
 
@@ -217,8 +221,7 @@ def test_exec_image_arriving_during_teardown_is_resumed_not_instrumented():
 
 
 def test_process_replaced_without_exec_following_is_a_detach():
-    obj = _make_logger(spawn=False)
-    obj._follow_exec = False
+    obj = _make_logger(follow_exec=False)
 
     obj.on_detach("process-replaced")
 
@@ -242,6 +245,20 @@ def test_ungated_child_is_resumed_untouched(origin):
     assert obj._suspended_pids == set()
 
 
+def test_fork_child_untouched_even_when_target_gating_failed():
+    """Without --enable_child_gating a fork child (e.g. of a spawn-gated process)
+    is never instrumented, also when the target's own gating failed."""
+    obj = _make_logger(enable_child_gating=False)
+    obj._backend.enable_child_gating.side_effect = RuntimeError("cannot gate")
+    assert obj.follow_exec_of(obj.process) is False
+
+    obj.on_child_added(FakeChild(5153, "fork"))
+
+    assert _wait_resumed(obj, 5153)
+    assert obj._instrument_thread is None and obj._instrument_queue.empty()
+    assert obj.instrument.sessions == []
+
+
 def test_ungated_child_is_not_resumed_on_the_event_thread():
     """A synchronous resume on Frida's event loop deadlocks it."""
     obj = _make_logger(enable_child_gating=False)
@@ -263,7 +280,12 @@ def test_child_with_enable_child_gating_is_instrumented(stop_worker):
 
     assert obj.instrument.called.wait(WAIT)
     assert _wait_resumed(obj, 5152)
-    obj._backend.on_detached.assert_not_called()  # a child never ends the capture
+    # Watched for its own exec(), with a handler that never ends the capture.
+    child_session = obj.instrument.sessions[0]
+    obj._backend.enable_child_gating.assert_any_call(child_session)
+    (session, handler), _ = obj._backend.on_detached.call_args
+    assert session is child_session and handler != obj.on_detach
+    assert obj.process is not child_session
 
 
 def test_exec_of_another_pid_is_not_a_handover(stop_worker):
@@ -414,4 +436,670 @@ def test_transport_error_during_startup_exits_1(caplog):
     assert obj._exit_status == EXIT_RUNTIME_ERROR
     assert "before the capture started" in caplog.text
     assert "Instrumentation failed" not in caplog.text
+    assert obj._suspended_pids == set()
+
+
+# ----------------------------------------------------------------------
+# --no-follow-exec
+# ----------------------------------------------------------------------
+
+def _gating_logger(spawn=True, follow_exec=True, enable_child_gating=False):
+    """A logger reduced to what SessionManager's gating decision reads."""
+    obj = SSL_Logger.__new__(SSL_Logger)
+    obj.logger = logging.getLogger("test.exec_following")
+    obj._backend = MagicMock()
+    obj._backend.process_paths.return_value = {}
+    obj.device = FAKE_DEVICE
+    obj.process = MagicMock(name="spawned-session")
+    obj.pid = TARGET_PID
+    obj._config = types.SimpleNamespace(device=types.SimpleNamespace(
+        spawn=spawn, follow_exec=follow_exec, enable_child_gating=enable_child_gating))
+    obj._init_process_following()
+    return obj
+
+
+def _gate(obj):
+    from friTap.legacy.session_manager import SessionManager
+    obj.follow_exec_of(obj.process)
+    SessionManager(obj)._register_child_handler(obj)
+
+
+def test_spawn_follows_exec_by_default():
+    obj = _gating_logger()
+    _gate(obj)
+    obj._backend.enable_child_gating.assert_called_once_with(obj.process)
+    obj._backend.on_child_added.assert_called_once()
+    assert obj._gates_only_to_follow_exec is True
+
+
+def test_no_follow_exec_does_not_enable_child_gating():
+    obj = _gating_logger(follow_exec=False)
+    _gate(obj)
+    obj._backend.enable_child_gating.assert_not_called()
+    obj._backend.on_child_added.assert_not_called()
+    assert obj._gates_only_to_follow_exec is False
+
+
+def test_no_follow_exec_keeps_explicit_child_gating():
+    obj = _gating_logger(follow_exec=False, enable_child_gating=True)
+    _gate(obj)
+    obj._backend.enable_child_gating.assert_called_once_with(obj.process)
+    obj._backend.on_child_added.assert_called_once()
+    assert obj._gates_only_to_follow_exec is False  # children are gated, exec is not followed
+
+
+@pytest.mark.parametrize("enable_child_gating", [False, True])
+def test_backend_without_child_events(enable_child_gating):
+    """Exec following alone tolerates a backend without child events; an
+    explicit --enable_child_gating still fails loudly."""
+    from friTap.legacy.session_manager import SessionManager
+    obj = _gating_logger(enable_child_gating=enable_child_gating)
+    obj._backend.on_child_added.side_effect = NotImplementedError
+    manager = SessionManager(obj)
+    if enable_child_gating:
+        with pytest.raises(NotImplementedError):
+            manager._register_child_handler(obj)
+    else:
+        manager._register_child_handler(obj)
+
+
+def test_attach_mode_follows_exec_by_default():
+    obj = _gating_logger(spawn=False)
+    _gate(obj)
+    obj._backend.enable_child_gating.assert_called_once_with(obj.process)
+    obj._backend.on_child_added.assert_called_once()
+    assert obj.exec_following_requested is True
+
+
+def test_no_follow_exec_in_attach_mode_gates_nothing():
+    obj = _gating_logger(spawn=False, follow_exec=False)
+    _gate(obj)
+    obj._backend.enable_child_gating.assert_not_called()
+    obj._backend.on_child_added.assert_not_called()
+    assert obj.exec_following_requested is False
+
+
+def test_follow_exec_config_defaults_on():
+    from friTap.api import FriTap
+    from friTap.config import DeviceConfig, FriTapConfig
+    assert DeviceConfig().follow_exec is True
+    assert FriTapConfig.from_legacy_params(app="t").device.follow_exec is True
+    assert FriTap("t").build_config().device.follow_exec is True
+    assert FriTap("t").follow_exec(False).build_config().device.follow_exec is False
+
+
+def test_cli_no_follow_exec_flag_reaches_the_config(fake_cli):  # noqa: F811
+    ssl_log, _ = fake_cli("--non-interactive", "-s", "--no-follow-exec", "target")
+    assert ssl_log.config.device.follow_exec is False
+
+
+def test_cli_follows_exec_by_default(fake_cli):  # noqa: F811
+    ssl_log, _ = fake_cli("--non-interactive", "-s", "target")
+    assert ssl_log.config.device.follow_exec is True
+
+
+# ----------------------------------------------------------------------
+# attach mode follows exec() too
+# ----------------------------------------------------------------------
+
+@pytest.mark.parametrize("detach_first", [True, False])
+def test_attach_mode_hands_over_to_the_exec_image(stop_worker, detach_first):
+    obj = _make_logger(spawn=False)
+    stop_worker(obj)
+    exec_child = FakeChild(TARGET_PID, "exec", "/opt/homebrew/opt/curl/bin/curl")
+
+    events = [lambda: obj.on_detach("process-replaced"),
+              lambda: obj.on_child_added(exec_child)]
+    for event in events if detach_first else reversed(events):
+        event()
+
+    assert _wait_resumed(obj, TARGET_PID)
+    assert obj.process is obj.instrument.sessions[0]
+    obj._end_session.assert_not_called()
+    assert obj._exit_status == 0
+
+
+def test_without_gating_process_replaced_reattaches(stop_worker):
+    """Fallback when the session cannot gate: re-attach to the same pid. The
+    new image was never held, so there is nothing to resume."""
+    obj = _make_logger(spawn=False)
+    stop_worker(obj)
+    obj._backend.enable_child_gating.side_effect = RuntimeError("no gating here")
+    obj.follow_exec_of(obj.process)
+    assert obj._tracker.get(TARGET_PID).gated is False
+
+    obj.on_detach("process-replaced")
+
+    assert obj.instrument.called.wait(WAIT)
+    assert obj.process is obj.instrument.sessions[0]
+    obj._backend.attach.assert_called_with(FAKE_DEVICE, str(TARGET_PID))
+    obj._end_session.assert_not_called()
+    obj._stop_instrument_thread()
+    assert (FAKE_DEVICE, TARGET_PID) not in _resumed(obj)
+
+
+def test_no_follow_exec_in_attach_mode_ends_on_exec():
+    obj = _make_logger(spawn=False, follow_exec=False)
+    obj._backend.enable_child_gating.assert_not_called()
+
+    obj.on_detach("process-replaced")
+
+    obj._end_session.assert_called_once_with("process-replaced")
+    assert obj._exit_status == EXIT_TARGET_DETACHED
+
+
+# ----------------------------------------------------------------------
+# --enable_child_gating: children are instrumented AND followed across exec()
+# ----------------------------------------------------------------------
+
+CHILD_PID = 6001
+
+
+def _wait_sessions(obj, count):
+    for _ in range(int(WAIT / 0.01)):
+        if len(obj.instrument.sessions) >= count:
+            return True
+        threading.Event().wait(0.01)
+    return False
+
+
+def _child_detach_handler(obj, session):
+    for (watched, handler), _ in obj._backend.on_detached.call_args_list:
+        if watched is session:
+            return handler
+    raise AssertionError("child session was never watched for detach")
+
+
+@pytest.mark.parametrize("origin", ["fork", "spawn"])
+def test_child_exec_is_followed(stop_worker, origin):
+    obj = _make_logger(enable_child_gating=True)
+    stop_worker(obj)
+
+    obj.on_child_added(FakeChild(CHILD_PID, origin))
+    assert _wait_sessions(obj, 1) and _wait_resumed(obj, CHILD_PID)
+    child_session = obj.instrument.sessions[0]
+    obj._backend.enable_child_gating.assert_any_call(child_session)
+
+    # git's fork child exec()s git-remote-https: detach + exec image, any order.
+    _child_detach_handler(obj, child_session)("process-replaced")
+    obj.on_child_added(FakeChild(CHILD_PID, "exec", "/usr/libexec/git-remote-https"))
+
+    assert _wait_sessions(obj, 2) and _wait_resumed(obj, CHILD_PID, times=2)
+    exec_session = obj.instrument.sessions[1]
+    assert obj._tracker.get(CHILD_PID).session is exec_session
+    obj._backend.enable_child_gating.assert_any_call(exec_session)
+    # A child's exec never touches the main session or the capture.
+    assert obj.process is not exec_session
+    obj._end_session.assert_not_called()
+    assert obj._exit_status == 0
+
+
+def test_grandchildren_of_an_instrumented_child_are_instrumented(stop_worker):
+    obj = _make_logger(enable_child_gating=True)
+    stop_worker(obj)
+
+    obj.on_child_added(FakeChild(CHILD_PID, "fork"))
+    assert _wait_sessions(obj, 1)
+    obj.on_child_added(FakeChild(CHILD_PID + 1, "fork"))  # reported via its gating
+
+    assert _wait_sessions(obj, 2) and _wait_resumed(obj, CHILD_PID + 1)
+    assert obj._tracker.pids() == {TARGET_PID, CHILD_PID, CHILD_PID + 1}
+
+
+def test_child_detach_forgets_the_child_without_ending_the_capture(stop_worker):
+    obj = _make_logger(enable_child_gating=True)
+    stop_worker(obj)
+    obj.on_child_added(FakeChild(CHILD_PID, "fork"))
+    assert _wait_sessions(obj, 1)
+
+    _child_detach_handler(obj, obj.instrument.sessions[0])("process-terminated")
+
+    assert not obj._tracker.is_tracked(CHILD_PID)
+    obj._end_session.assert_not_called()
+    assert obj._exit_status == 0
+
+
+def test_late_detach_of_the_old_image_keeps_the_exec_image(stop_worker):
+    obj = _make_logger(enable_child_gating=True)
+    stop_worker(obj)
+    obj.on_child_added(FakeChild(CHILD_PID, "fork"))
+    assert _wait_sessions(obj, 1)
+    old_handler = _child_detach_handler(obj, obj.instrument.sessions[0])
+    obj.on_child_added(FakeChild(CHILD_PID, "exec"))
+    assert _wait_sessions(obj, 2)
+
+    old_handler("process-terminated")  # the old image's session, late
+
+    assert obj._tracker.get(CHILD_PID).session is obj.instrument.sessions[1]
+
+
+def test_failed_child_exec_handover_never_ends_the_capture(stop_worker):
+    failing = RecordingInstrument()
+    obj = _make_logger(enable_child_gating=True, instrument=failing)
+    stop_worker(obj)
+    obj.on_child_added(FakeChild(CHILD_PID, "fork"))
+    assert _wait_sessions(obj, 1)
+    failing._error = BackendTransportError("child died during load")
+
+    obj.on_child_added(FakeChild(CHILD_PID, "exec"))
+
+    assert _wait_resumed(obj, CHILD_PID, times=2)
+    for _ in range(int(WAIT / 0.01)):
+        if not obj._tracker.is_tracked(CHILD_PID):
+            break
+        threading.Event().wait(0.01)
+    assert not obj._tracker.is_tracked(CHILD_PID)
+    obj._end_session.assert_not_called()
+    assert obj._exit_status == 0
+
+
+def test_child_handover_timeout_forgets_only_the_child(monkeypatch, stop_worker):
+    obj = _make_logger(enable_child_gating=True)
+    stop_worker(obj)
+    monkeypatch.setattr(obj, "EXEC_HANDOVER_TIMEOUT", 0.05)
+    obj.on_child_added(FakeChild(CHILD_PID, "fork"))
+    assert _wait_sessions(obj, 1)
+
+    _child_detach_handler(obj, obj.instrument.sessions[0])("process-replaced")
+
+    for _ in range(int(WAIT / 0.01)):
+        if not obj._tracker.is_tracked(CHILD_PID):
+            break
+        threading.Event().wait(0.01)
+    assert not obj._tracker.is_tracked(CHILD_PID)
+    obj._end_session.assert_not_called()
+    assert obj._exit_status == 0
+
+
+def test_no_follow_exec_resumes_a_childs_exec_image_untouched(stop_worker):
+    obj = _make_logger(enable_child_gating=True, follow_exec=False)
+    stop_worker(obj)
+    obj.on_child_added(FakeChild(CHILD_PID, "fork"))
+    assert _wait_sessions(obj, 1) and _wait_resumed(obj, CHILD_PID)
+
+    obj.on_child_added(FakeChild(CHILD_PID, "exec"))
+
+    assert _wait_resumed(obj, CHILD_PID, times=2)
+    assert len(obj.instrument.sessions) == 1
+
+
+# ----------------------------------------------------------------------
+# children friTap does not follow are resumed -- also at teardown
+# ----------------------------------------------------------------------
+
+def test_no_follow_exec_resumes_the_targets_exec_image():
+    obj = _make_logger(follow_exec=False, enable_child_gating=True)
+
+    obj.on_child_added(FakeChild(TARGET_PID, "exec"))
+
+    assert _wait_resumed(obj, TARGET_PID)
+    assert obj.instrument.sessions == []
+
+
+def test_teardown_resumes_a_child_whose_resume_is_still_pending():
+    obj = _make_logger()
+    release = threading.Event()
+    calls = []
+
+    def slow_first_resume(device, pid):
+        calls.append(pid)
+        if len(calls) == 1:
+            release.wait(WAIT)  # the off-thread resume is stuck in Frida
+
+    obj._backend.resume.side_effect = slow_first_resume
+    obj.on_child_added(FakeChild(5170, "fork"))
+    for _ in range(int(WAIT / 0.01)):
+        if calls:
+            break
+        threading.Event().wait(0.01)
+
+    obj._stop_instrument_thread()  # teardown, before that resume returned
+
+    assert calls.count(5170) == 2
+    release.set()
+
+
+def test_teardown_resumes_every_queued_child():
+    release = threading.Event()
+    obj = _make_logger(enable_child_gating=True,
+                       instrument=RecordingInstrument(block=release))
+    for pid in (5180, 5181, 5182):
+        obj.on_child_added(FakeChild(pid, "fork"))
+    assert obj.instrument.called.wait(WAIT)
+
+    obj._stop_instrument_thread()
+    release.set()
+
+    for pid in (5180, 5181, 5182):
+        assert _wait_resumed(obj, pid), f"pid {pid} left suspended"
+
+
+def test_child_arriving_after_teardown_is_resumed():
+    obj = _make_logger(enable_child_gating=True)
+    obj._stop_instrument_thread()
+
+    obj.on_child_added(FakeChild(5190, "fork"))
+
+    assert _wait_resumed(obj, 5190)
+    assert obj.instrument.sessions == []
+
+
+# ----------------------------------------------------------------------
+# exit status: first non-zero wins; 3 = the TARGET went away
+# ----------------------------------------------------------------------
+
+def test_main_exec_image_dying_during_load_exits_3(stop_worker):
+    obj = _make_logger(instrument=RecordingInstrument(
+        error=BackendTransportError("the connection is closed")))
+    stop_worker(obj)
+    ended = threading.Event()
+    obj._end_session.side_effect = lambda reason: ended.set()
+
+    obj.on_child_added(FakeChild(TARGET_PID, "exec"))
+
+    assert ended.wait(WAIT)
+    assert obj._exit_status == EXIT_TARGET_DETACHED
+
+
+def test_first_non_zero_exit_status_wins_over_a_later_handover_failure(stop_worker):
+    obj = _make_logger(instrument=RecordingInstrument(error=RuntimeError("load failed")))
+    stop_worker(obj)
+    obj.set_exit_status(EXIT_TARGET_DETACHED)
+    ended = threading.Event()
+    obj._end_session.side_effect = lambda reason: ended.set()
+
+    obj.on_child_added(FakeChild(TARGET_PID, "exec"))
+
+    assert ended.wait(WAIT)
+    assert obj._exit_status == EXIT_TARGET_DETACHED
+
+
+# ----------------------------------------------------------------------
+# exec'd images Frida holds without announcing them (macOS, close_fds=True)
+# ----------------------------------------------------------------------
+
+def test_held_exec_image_of_a_child_is_taken_over(stop_worker):
+    obj = _make_logger(enable_child_gating=True)
+    stop_worker(obj)
+    obj.on_child_added(FakeChild(CHILD_PID, "fork"))
+    assert _wait_sessions(obj, 1) and _wait_resumed(obj, CHILD_PID)
+
+    obj._on_held_exec_image(CHILD_PID, "/opt/homebrew/opt/curl/bin/curl")
+
+    assert _wait_sessions(obj, 2) and _wait_resumed(obj, CHILD_PID, times=2)
+    assert obj._tracker.get(CHILD_PID).session is obj.instrument.sessions[1]
+
+
+def test_held_exec_image_of_an_unknown_pid_is_ignored():
+    obj = _make_logger()
+    obj._on_held_exec_image(9999, "/bin/x")
+    assert obj._instrument_thread is None and obj._backend.resume.call_count == 0
+
+
+def test_gated_processes_are_watched_for_held_images(stop_worker):
+    obj = _make_logger(enable_child_gating=True)
+    stop_worker(obj)
+    obj._held_exec_watchdog._query_paths = lambda pids: {pid: "/same" for pid in pids}
+    assert TARGET_PID in obj._held_exec_watchdog.watched()
+
+    obj.on_child_added(FakeChild(CHILD_PID, "fork"))
+    assert _wait_sessions(obj, 1)
+    assert CHILD_PID in obj._held_exec_watchdog.watched()
+
+    obj._stop_instrument_thread()
+    assert obj._held_exec_watchdog.watched() == set()
+
+
+class _FakeClock:
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        return self.now
+
+
+def _manual(dog):
+    """No poll thread: the test drives poll_once() by hand (watch() would
+    otherwise wake the thread to poll at once)."""
+    dog._start_locked = lambda: None
+    return dog
+
+
+def _watchdog(paths, held, clock=None):
+    from friTap.legacy.exec_follow import HeldExecWatchdog
+    return _manual(HeldExecWatchdog(lambda pids: dict(paths),
+                                    lambda pid, path: held.append((pid, path)),
+                                    interval=3600, grace=2.0, clock=clock or _FakeClock()))
+
+
+def test_watchdog_reports_an_unannounced_exec_once():
+    clock, held, paths = _FakeClock(), [], {7: "/py/Python"}
+    dog = _watchdog(paths, held, clock)
+    dog.watch(7)
+    dog.poll_once()  # learns the path
+    paths[7] = "/opt/homebrew/opt/curl/bin/curl"
+    dog.poll_once()  # change seen, grace starts
+    clock.now = 1.0
+    dog.poll_once()
+    assert held == []
+    clock.now = 2.5
+    dog.poll_once()
+    assert held == [(7, "/opt/homebrew/opt/curl/bin/curl")]
+    clock.now = 10.0
+    dog.poll_once()
+    assert len(held) == 1
+    dog.stop()
+
+
+def test_watchdog_ignores_an_announced_exec():
+    clock, held, paths = _FakeClock(), [], {7: "/bin/git"}
+    dog = _watchdog(paths, held, clock)
+    dog.watch(7)
+    dog.poll_once()
+    paths[7] = "/git-core/git-remote-https"
+    dog.poll_once()
+    dog.note_exec(7)  # Frida announced it
+    clock.now = 5.0
+    dog.poll_once()
+    dog.poll_once()
+    assert held == []
+    dog.stop()
+
+
+def test_watchdog_forgets_exited_processes_and_unsupported_backends():
+    held = []
+    dog = _watchdog({}, held)
+    dog.watch(7)
+    dog.poll_once()
+    assert dog.watched() == set()
+
+    def unsupported(pids):
+        raise NotImplementedError
+
+    from friTap.legacy.exec_follow import HeldExecWatchdog
+    dog = _manual(HeldExecWatchdog(unsupported, lambda *a: held.append(a), interval=3600))
+    dog.watch(8)
+    dog.poll_once()
+    dog.watch(9)
+    assert dog.watched() == set() and held == []
+
+
+def test_tracker_counts_replaced_and_images_per_pid():
+    from friTap.legacy.exec_follow import ProcessTracker
+    tracker = ProcessTracker()
+    tracker.track(1, session="a", is_main=True, gated=True)
+    tracker.track(2, session="b", is_main=False, gated=True)
+
+    assert tracker.note_replaced(2) is True  # image still due
+    assert tracker.awaiting_image(2) and not tracker.awaiting_image(1)
+    tracker.note_image(2)
+    assert not tracker.awaiting_image(2)
+    tracker.track(2, session="b2", is_main=False, gated=True)  # exec'd image
+    assert tracker.forget(2, session="b") is False
+    assert tracker.forget(2, session="b2") is True
+    assert tracker.pids() == {1}
+
+
+def _backoff_dog(paths, held, clock=None):
+    from friTap.legacy.exec_follow import HeldExecWatchdog
+    return _manual(HeldExecWatchdog(lambda pids: dict(paths),
+                                    lambda pid, path: held.append((pid, path)),
+                                    interval=1.0, grace=2.0, clock=clock or _FakeClock(),
+                                    max_interval=8.0))
+
+
+def test_watchdog_backs_off_while_idle_up_to_the_cap():
+    dog = _backoff_dog({}, [])
+    assert [dog._next_interval(w, active=False) for w in (1.0, 2.0, 4.0, 8.0)] == \
+        [2.0, 4.0, 8.0, 8.0]
+
+
+def test_watchdog_backoff_resets_on_pending_change_and_held_report():
+    clock, held, paths = _FakeClock(), [], {7: "/py/Python"}
+    dog = _backoff_dog(paths, held, clock)
+    dog.watch(7)
+    assert dog.poll_once() is False  # learns the path: idle
+    paths[7] = "/usr/bin/curl"
+    assert dog.poll_once() is True  # change pending: keep base cadence
+    clock.now = 2.5
+    assert dog.poll_once() is True and held == [(7, "/usr/bin/curl")]
+    assert dog.poll_once() is False  # settled again
+    dog._next_interval(1.0, active=False)  # consume the reset from watch()
+    assert dog._next_interval(8.0, active=True) == 1.0
+    dog.stop()
+
+
+def test_watchdog_backoff_resets_on_watch_and_note_exec():
+    dog = _backoff_dog({7: "/bin/git"}, [])
+    dog.watch(7)
+    assert dog._next_interval(8.0, active=False) == 1.0  # watch() resets
+    assert dog._next_interval(1.0, active=False) == 2.0
+    dog.note_exec(7)
+    assert dog._next_interval(8.0, active=False) == 1.0  # note_exec() resets
+    dog.watch(8)
+    assert dog._next_interval(4.0, active=False) == 1.0
+    dog.stop()
+
+
+def test_watchdog_thread_waits_with_the_backed_off_interval(monkeypatch):
+    dog = _backoff_dog({7: "/bin/git"}, [])
+    waits = []
+
+    def fake_wait(timeout=None):
+        waits.append(timeout)
+        if len(waits) > 4:
+            dog._stop.set()
+        return False
+
+    monkeypatch.setattr(dog._wake, "wait", fake_wait)
+    with dog._lock:
+        dog._watched[7] = __import__("friTap.legacy.exec_follow",
+                                     fromlist=["_WatchState"])._WatchState()
+    dog._run()
+    assert waits == [1.0, 2.0, 4.0, 8.0, 8.0]
+
+
+def test_watchdog_default_backoff_cap_is_five_seconds():
+    from friTap.legacy.exec_follow import HeldExecWatchdog
+    dog = _manual(HeldExecWatchdog(lambda pids: {}, lambda *a: None))
+    assert dog._next_interval(4.0, active=False) == 5.0
+    assert dog._next_interval(5.0, active=False) == 5.0
+
+
+def test_watchdog_watch_wakes_a_backed_off_poll_thread():
+    """A newly watched pid is polled at once, not after the backed-off wait,
+    so its path is learnt before it can exec()."""
+    from friTap.legacy.exec_follow import HeldExecWatchdog
+    polled = threading.Event()
+
+    def query(pids):
+        if 8 in pids:
+            polled.set()
+        return {pid: "/bin/sh" for pid in pids}
+
+    dog = HeldExecWatchdog(query, lambda *a: None, interval=60, max_interval=60)
+    dog.watch(7)
+    threading.Event().wait(0.2)  # the thread is now in its 60 s wait
+    started = __import__("time").monotonic()
+    dog.watch(8)
+    assert polled.wait(WAIT)
+    assert __import__("time").monotonic() - started < WAIT
+    dog.stop()
+
+
+def test_watchdog_stop_ends_the_poll_thread_promptly():
+    from friTap.legacy.exec_follow import HeldExecWatchdog
+    dog = HeldExecWatchdog(lambda pids: {pid: "/bin/sh" for pid in pids},
+                           lambda *a: None, interval=60, max_interval=60)
+    dog.watch(7)
+    thread = dog._thread
+    dog.stop()
+    thread.join(WAIT)
+    assert not thread.is_alive()
+
+
+# ----------------------------------------------------------------------
+# ResumeWorker: one resumer thread instead of one thread per child
+# ----------------------------------------------------------------------
+
+def test_resume_worker_resumes_every_pid_in_order_on_one_thread():
+    from friTap.legacy.exec_follow import ResumeWorker
+    resumed, threads, done = [], set(), threading.Event()
+
+    def resume(pid):
+        resumed.append(pid)
+        threads.add(threading.current_thread().name)
+        if len(resumed) == 30:
+            done.set()
+
+    worker = ResumeWorker(resume)
+    for pid in range(30):
+        worker.submit(pid)
+    assert done.wait(WAIT)
+    assert resumed == list(range(30))
+    assert threads == {"fritap-resume"} and len({id(t) for t in [worker._thread]}) == 1
+
+
+def test_resume_worker_never_runs_on_the_submitting_thread():
+    from friTap.legacy.exec_follow import ResumeWorker
+    seen, done = [], threading.Event()
+    worker = ResumeWorker(lambda pid: (seen.append(threading.current_thread()), done.set()))
+    worker.submit(1)
+    assert done.wait(WAIT)
+    assert seen[0] is not threading.current_thread()
+
+
+def test_resume_worker_survives_a_failing_resume_and_retires_when_idle():
+    from friTap.legacy.exec_follow import ResumeWorker
+    resumed, done = [], threading.Event()
+
+    def resume(pid):
+        if pid == 1:
+            raise RuntimeError("frida says no")
+        resumed.append(pid)
+        done.set()
+
+    worker = ResumeWorker(resume, idle_timeout=0.05)
+    worker.submit(1)
+    worker.submit(2)
+    assert done.wait(WAIT) and resumed == [2]
+    for _ in range(int(WAIT / 0.01)):
+        if worker._thread is None:
+            break
+        threading.Event().wait(0.01)
+    assert worker._thread is None  # retired
+    done.clear()
+    worker.submit(3)  # restarts on demand
+    assert done.wait(WAIT) and resumed == [2, 3]
+
+
+def test_unasked_fork_children_share_one_resumer_thread(stop_worker):
+    obj = _make_logger()
+    stop_worker(obj)
+    before = threading.active_count()
+    for pid in range(5000, 5030):
+        obj.on_child_added(FakeChild(pid, "fork"))
+    for pid in range(5000, 5030):
+        assert _wait_resumed(obj, pid)
+    assert threading.active_count() <= before + 1
     assert obj._suspended_pids == set()

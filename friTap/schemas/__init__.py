@@ -23,6 +23,7 @@ _AGENT_MESSAGE_NAMES = (
     "DatalogMessage",
     "IPSecChildSAKeysMessage",
     "IPSecIKEKeysMessage",
+    "IPSecESPKeysMessage",
     "KeylogMessage",
     "LibraryDetectedMessage",
     "NetlogMessage",
@@ -75,6 +76,7 @@ __all__ = [
     # IPSec
     "IPSecChildSAKeysMessage",
     "IPSecIKEKeysMessage",
+    "IPSecESPKeysMessage",
     # Canonical pipeline events
     "Direction",
     "AddressFamily",

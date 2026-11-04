@@ -14,6 +14,8 @@ import { cronet_execute } from "../legacy/tls/platforms/macos/cronet_macos.js";
 import { cronet_execute_modern } from "../tls/platforms/macos/cronet_macos.js";
 import { nss_execute } from "../legacy/tls/platforms/macos/nss_macos.js";
 import { nss_execute_modern } from "../tls/platforms/macos/nss_macos.js";
+import { gnutls_execute } from "../legacy/tls/platforms/macos/gnutls_macos.js";
+import { gnutls_execute_modern } from "../tls/platforms/macos/gnutls_macos.js";
 import { ssh_detect_execute } from "../ssh/platforms/linux/ssh_linux.js";
 import { openssh_execute_modern } from "../ssh/platforms/macos/openssh_macos.js";
 import { libssh_execute_modern } from "../ssh/platforms/macos/libssh_macos.js";
@@ -21,6 +23,9 @@ import { nss_hpke_execute_macos } from "../ohttp/platforms/macos/nss_hpke_macos.
 import { quiche_execute } from "../quic/platforms/macos/quiche_macos.js";
 import { google_quiche_execute } from "../quic/platforms/macos/google_quiche_macos.js";
 import { neqo_execute } from "../quic/platforms/macos/neqo_macos.js";
+import { gotls_execute } from "../legacy/tls/platforms/macos/gotls_macos.js";
+import { gotls_execute_modern } from "../tls/platforms/macos/gotls_macos.js";
+import { isGoModule } from "../shared/go_binary_detection.js";
 
 
 var plattform_name: Platform = PLATFORM_DARWIN;
@@ -80,6 +85,12 @@ export function load_macos_hooking_agent() {
         // byte-pattern works. cronet_execute_modern kept imported for a future fix.
         { platform: plattform_name, pattern: /.*cronet.*\.dylib/, hookFn: cronet_execute, library: "Cronet", libraryType: "boringssl", protocol: "tls" },
         { platform: plattform_name, pattern: /.*libnss[0-9]*\.dylib/, hookFn: (use_modern ? nss_execute_modern : nss_execute), library: "NSS", libraryType: "nss", protocol: "tls" },
+        // GnuTLS (Homebrew libgnutls.30.dylib); not libgnutlsxx, the C++ wrapper over it.
+        { platform: plattform_name, pattern: /.*libgnutls(\.[0-9]+)*\.dylib/, hookFn: (use_modern ? gnutls_execute_modern : gnutls_execute), library: "GnuTLS", libraryType: "gnutls", protocol: "tls" },
+        // Go crypto/tls: linked into the Go image itself — usually the main executable, under
+        // any name — so it is found by content (Go's __go_buildinfo section,
+        // shared/go_binary_detection.ts), not by name; c-shared Go .dylibs likewise.
+        { platform: plattform_name, pattern: /.*/, contentFilter: isGoModule, hookFn: (use_modern ? gotls_execute_modern : gotls_execute), library: "Go TLS", libraryType: "gotls", protocol: "tls" },
         // SSH binaries / libraries
         { platform: plattform_name, pattern: /.*libssh2?\.dylib/, hookFn: (use_modern ? libssh_execute_modern : ssh_detect_execute), library: "libssh", protocol: "ssh" },
         { platform: plattform_name, pattern: /^(\/.+\/)?(ssh|sshd|sshd-session|scp|sftp-server)$/, hookFn: (use_modern ? openssh_execute_modern : ssh_detect_execute), library: "OpenSSH", protocol: "ssh" },

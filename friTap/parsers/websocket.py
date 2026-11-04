@@ -17,6 +17,7 @@ from __future__ import annotations
 import zlib
 from typing import Optional
 
+from friTap.analysis._json_walk import exceeds_depth
 from friTap.constants import PROTOCOL_WEBSOCKET
 from friTap.decoder_isolation import (
     DecoderContextLost,
@@ -460,8 +461,9 @@ def _is_websocket_data(data: bytes) -> bool:
 def _detect_json(payload: bytes) -> str:
     """Return ``"application/json"`` if *payload* is valid JSON, else ``""``.
 
-    Payloads over :data:`_MAX_JSON_DETECT_BYTES` are not parsed, and deeply
-    nested input (``RecursionError``) counts as not-JSON.
+    Payloads over :data:`_MAX_JSON_DETECT_BYTES` are not parsed, and nesting
+    beyond ``MAX_JSON_DEPTH`` counts as not-JSON (checked explicitly: since
+    CPython 3.14 ``json.loads`` no longer raises ``RecursionError`` on it).
     """
     if len(payload) > _MAX_JSON_DETECT_BYTES:
         return ""
@@ -470,8 +472,7 @@ def _detect_json(payload: bytes) -> str:
         return ""
     try:
         import json
-        json.loads(payload)
-        return "application/json"
+        return "" if exceeds_depth(json.loads(payload)) else "application/json"
     except (json.JSONDecodeError, UnicodeDecodeError, ValueError, RecursionError):
         return ""
 

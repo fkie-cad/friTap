@@ -37,12 +37,26 @@ _stream: Optional[IO] = None
 
 #: Exit code reported when friTap fails at runtime (mirrors friTap.exit_codes).
 _EXIT_RUNTIME_ERROR = 1
+#: Exit code reported when the target exited/detached (mirrors friTap.exit_codes).
+_EXIT_TARGET_DETACHED = 3
+
+#: Why the run ended (``stream_end``'s ``ended_by``). Omitted when unknown.
+ENDED_BY_DURATION = "duration"
+ENDED_BY_STOPPED = "stopped"
+ENDED_BY_TARGET_EXITED = "target_exited"
+ENDED_BY_ERROR = "error"
+_END_REASONS = frozenset({ENDED_BY_DURATION, ENDED_BY_STOPPED,
+                          ENDED_BY_TARGET_EXITED, ENDED_BY_ERROR})
 
 # Run outcome, read once when the stream closes (``stream_end``): the first
 # runtime error noted by the CLI, and a callable returning the process's final
 # exit status (SSL_Logger's first-non-zero-wins status).
 _first_runtime_error: Optional[dict] = None
 _exit_status_provider: Optional[Callable[[], Optional[int]]] = None
+# Why a clean (exit 0) run ended: the first reason noted by the CLI (e.g. the
+# --duration timer) wins over the provider (e.g. "a stop signal arrived").
+_noted_end_reason: Optional[str] = None
+_end_reason_provider: Optional[Callable[[], Optional[str]]] = None
 
 # Envelope progress of the claimed stream: ``stream_start`` written / the
 # closing record (``stream_end`` or ``usage_error``) written. Lets
@@ -176,6 +190,63 @@ def runtime_error_fields(exit_code: Optional[int]) -> Optional[dict]:
     return {**error, "exit_code": exit_code}
 
 
+def note_end_reason(reason: str) -> None:
+    """Remember why a clean run is ending (``duration``/``stopped``); first wins.
+
+    Only consulted for exit code 0: a failure exit code is its own reason.
+    """
+    global _noted_end_reason
+    if reason not in _END_REASONS:
+        raise ValueError(f"unknown end reason: {reason!r}")
+    with _lock:
+        if _noted_end_reason is None:
+            _noted_end_reason = reason
+
+
+def register_end_reason_provider(provider: Callable[[], Optional[str]]) -> None:
+    """Install the fallback callable that says why a clean run ended (or None)."""
+    global _end_reason_provider
+    with _lock:
+        _end_reason_provider = provider
+
+
+def _provided_end_reason() -> Optional[str]:
+    provider = _end_reason_provider
+    if provider is None:
+        return None
+    try:
+        reason = provider()
+    except Exception:  # noqa: BLE001 - never block the stream's end
+        return None
+    return reason if reason in _END_REASONS else None
+
+
+def ended_by(exit_code: Optional[int]) -> Optional[str]:
+    """``stream_end``'s ``ended_by`` for *exit_code*, or None when unknown.
+
+    A target detach (3) and a failure (exit 1, or any non-zero exit with a
+    noted cause) speak for themselves; a clean exit (0) reports the noted
+    reason, else the provider's. Anything else (unknown exit code, a bare
+    signal status, a clean exit nobody explained) is left out.
+    """
+    if exit_code == _EXIT_TARGET_DETACHED:
+        return ENDED_BY_TARGET_EXITED
+    if exit_code == 0:
+        return _noted_end_reason or _provided_end_reason()
+    if runtime_error_fields(exit_code) is not None:
+        return ENDED_BY_ERROR
+    return None
+
+
+def stream_end_fields(exit_code: Optional[int]) -> dict:
+    """The ``stream_end`` record's fields: ``exit_code`` (+ ``ended_by`` when known)."""
+    fields = {"exit_code": exit_code}
+    reason = ended_by(exit_code)
+    if reason is not None:
+        fields["ended_by"] = reason
+    return fields
+
+
 def mark_stream_opened() -> None:
     """Record that ``stream_start`` was written to the claimed stream."""
     global _stream_opened
@@ -200,7 +271,7 @@ def _closing_records(exit_code: Optional[int]) -> list:
     error = runtime_error_fields(exit_code)
     if error is not None:
         records.append({"type": "error", **error})
-    records.append({"type": "stream_end", "exit_code": exit_code})
+    records.append({"type": "stream_end", **stream_end_fields(exit_code)})
     return records
 
 
@@ -229,11 +300,13 @@ def finish_unclosed_stream(exit_code: Optional[int], *,
 def _reset_for_tests() -> None:
     """Forget the claimed stream and run outcome (unit tests only; no fd restore)."""
     global _stream, _first_runtime_error, _exit_status_provider
-    global _stream_opened, _stream_closed
+    global _stream_opened, _stream_closed, _noted_end_reason, _end_reason_provider
     with _lock:
         _stream = None
         _first_runtime_error = None
         _exit_status_provider = None
+        _noted_end_reason = None
+        _end_reason_provider = None
         _stream_opened = False
         _stream_closed = False
 
@@ -245,13 +318,21 @@ __all__ = [
     "envelope",
     "write_stream_record",
     "claim_stdout_for_json_stream",
+    "ENDED_BY_DURATION",
+    "ENDED_BY_ERROR",
+    "ENDED_BY_STOPPED",
+    "ENDED_BY_TARGET_EXITED",
+    "ended_by",
     "final_exit_code",
     "finish_unclosed_stream",
     "is_stream_closed",
     "mark_stream_closed",
     "mark_stream_opened",
     "is_stdout_target",
+    "note_end_reason",
     "note_runtime_error",
+    "register_end_reason_provider",
     "register_exit_status_provider",
     "runtime_error_fields",
+    "stream_end_fields",
 ]

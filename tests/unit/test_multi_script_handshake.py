@@ -243,6 +243,7 @@ def _make_logger(backend):
     obj._instrument_thread_lock = threading.Lock()
     obj._suspended_pids = set()
     obj._suspended_pids_lock = threading.Lock()
+    obj._init_process_following()  # exec-following tracker, watchdog, resumer
 
     obj.offsets_data = None
     obj.pattern_data = None

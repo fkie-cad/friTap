@@ -145,7 +145,10 @@ class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
         self._max_event_ts = 0.0
         # Cheaply-available metadata stamped onto each new Flow. Populated by
         # on_library_detected() and set_capture_target(); read under _lock.
-        self._detected_library: str = ""
+        # Last detected library per protocol tag (LibraryDetectedEvent.protocol
+        # -> library). Keyed by protocol so that under --protocol auto an RC4/
+        # SSH/... library announcement never re-labels TLS/QUIC flows.
+        self._detected_libraries: dict[str, str] = {}
         self._capture_target: str = ""
         self._process_name: str = ""
         self._package_name: str = ""
@@ -271,12 +274,17 @@ class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
     def on_library_detected(self, event) -> None:
         """EventBus subscriber for LibraryDetectedEvent.
 
-        Records the detected TLS/SSL library so it can be stamped onto each
-        new Flow's ``tls.library`` (or ``quic.library`` for QUIC flows).
+        Records the detected library under the event's protocol tag so it can
+        be stamped onto each new Flow of that same protocol (``tls.library`` /
+        ``quic.library``). Data events carry no library/module of their own, so
+        the protocol tag is the finest attribution available.
         """
         library = getattr(event, 'library', '') or ''
+        if not library:
+            return
+        protocol = getattr(event, 'protocol', 'tls') or 'tls'
         with self._lock:
-            self._detected_library = library
+            self._detected_libraries[protocol] = library
 
     def on_keylog(self, event) -> None:
         """EventBus subscriber for KeylogEvent — feed Signal keys to the live
@@ -427,6 +435,9 @@ class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
             # buffering, upgrade or trailing-data handling — one event, one packet.
             elif self._is_pinned_transport(conn):
                 self._feed_pinned_packet(conn, chunk, event, pending)
+            # De-framed QUIC body bytes with a real stream id: their stream's flow.
+            elif self._is_quic_body_event(event):
+                self._handle_quic_body_chunk(conn, chunk, event, pending)
             # QUIC raw stream bytes with a real stream id: per-stream HTTP/3.
             elif is_quic_stream:
                 self._handle_quic_stream_chunk(conn, chunk, event, pending)
@@ -1900,21 +1911,26 @@ class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
 
     # Transports whose layer carries a ``library`` field (TlsLayer/QuicLayer).
     _LIBRARY_TRANSPORTS = ("tls", "quic")
+    def _stamp_detected_library(self, flow: Flow, event) -> None:
+        """Stamp the producing library onto the flow's transport layer.
 
-    def _stamp_detected_library(self, flow: Flow) -> None:
-        """Stamp the detected TLS library onto the flow's transport layer.
-
-        Only TLS and QUIC flows get it, on ``flow.tls`` / ``flow.quic``
-        respectively. Attribute access auto-creates the layer, so stamping any
-        other transport (MTProto, Telegram E2E, ...) would attach a stray
-        layer and make the flow match the "tls"/"quic" filter.
+        Prefers the record's own ``library`` (the module that produced it);
+        falls back to the last library announced for the flow's own transport
+        (no cross-family fallback). Only TLS and QUIC flows get it, on
+        ``flow.tls`` / ``flow.quic`` respectively. Attribute access
+        auto-creates the layer, so stamping any other transport (MTProto,
+        Telegram E2E, ...) would attach a stray layer and make the flow match
+        the "tls"/"quic" filter.
         """
-        if (not self._detected_library
-                or flow.transport not in self._LIBRARY_TRANSPORTS):
+        if flow.transport not in self._LIBRARY_TRANSPORTS:
+            return
+        library = (getattr(event, 'library', '') or ''
+                   or self._detected_libraries.get(flow.transport, ''))
+        if not library:
             return
         layer = getattr(flow, flow.transport)
         if not layer.library:
-            layer.library = self._detected_library
+            layer.library = library
 
     def _stamp_metadata(self, flow: Flow, event) -> None:
         """Stamp cheaply-available metadata onto a freshly-created Flow.
@@ -1928,7 +1944,7 @@ class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
         # connection key. Set FIRST so the layer pipeline picks TlsLayer vs
         # QuicLayer and the metadata backfill below targets the right layer.
         flow.transport = getattr(event, 'protocol', 'tls') or 'tls'
-        self._stamp_detected_library(flow)
+        self._stamp_detected_library(flow, event)
         # Backfill handshake metadata cached from an earlier SESSION_STARTED/
         # RESUMED for this connection (handshake arrives before the first data
         # event, so _stamp_tls_metadata found no flow to stamp at that time).

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import re
 
+from ..suggest import did_you_mean as suggestion_hint
 from .ast_nodes import (
     AndNode,
     ASTNode,
@@ -60,7 +61,8 @@ class _Parser:
         if self._peek().type != TokenType.EOF:
             tok = self._peek()
             raise FilterSyntaxError(
-                f"Unexpected token {tok.value!r}", tok.position
+                f"Unexpected token {tok.value!r}", tok.position,
+                hint=operator_hint(tok.value),
             )
         return node
 
@@ -286,6 +288,24 @@ _OP_MAP = {
     TokenType.CONTAINS: "contains",
     TokenType.MATCHES: "matches",
 }
+
+
+#: Word operators and connectives a misspelled bare word is matched against.
+WORD_OPERATORS = ("contains", "matches", "and", "or", "not")
+#: Comparison operators of the grammar (listed in the operator hint).
+COMPARISON_OPERATORS = ("==", "!=", ">", ">=", "<", "<=", "contains", "matches")
+_OPERATOR_CUTOFF = 0.6
+
+
+def operator_hint(word: str) -> str | None:
+    """Did-you-mean hint for a misspelled word operator (``contians``).
+
+    Returns ``None`` when ``word`` is not close to any word operator.
+    """
+    hint = suggestion_hint(word.lower(), WORD_OPERATORS, limit=2, cutoff=_OPERATOR_CUTOFF)
+    if hint is None:
+        return None
+    return hint + " | operators: " + ", ".join(COMPARISON_OPERATORS) + ", and, or, not"
 
 
 def parse_filter(text: str) -> ASTNode:

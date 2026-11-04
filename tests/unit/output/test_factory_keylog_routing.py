@@ -15,6 +15,9 @@ from friTap.output.factory import (  # noqa: E402
     OutputHandlerFactory,
     _active_keylog_formatters,
 )
+from friTap.output.ipsec_decryption_tables import (  # noqa: E402
+    IPsecDecryptionTableHandler,
+)
 from friTap.output.keylog_handler import KeylogOutputHandler  # noqa: E402
 from friTap.protocols.registry import create_default_registry  # noqa: E402
 from friTap.protocols.ssh_handler import SshKeylogFormatter  # noqa: E402
@@ -44,14 +47,16 @@ class TestActiveKeylogFormatters:
     def test_all_includes_every_keylog_protocol(self):
         reg = create_default_registry()  # full registry
         formatters = _active_keylog_formatters("all", reg)
-        expected = ["mtproto", "rc4", "ssh", "telegram", "tls"]
+        # IPsec's formatter writes Wireshark UAT tables (not NSS lines) but is
+        # still an active keylog formatter under --protocol all.
+        expected = ["ipsec", "mtproto", "rc4", "ssh", "telegram", "tls"]
         if _SIGNAL_AVAILABLE:
             expected = sorted(expected + ["signal"])
         assert sorted(f.protocol for f in formatters) == expected
 
     def test_auto_matches_all(self):
         reg = create_default_registry()
-        expected = ["mtproto", "rc4", "ssh", "telegram", "tls"]
+        expected = ["ipsec", "mtproto", "rc4", "ssh", "telegram", "tls"]
         if _SIGNAL_AVAILABLE:
             expected = sorted(expected + ["signal"])
         assert sorted(f.protocol for f in _active_keylog_formatters("auto", reg)) == expected
@@ -223,20 +228,31 @@ class TestFactoryKeylogRouting:
             "signal": str(tmp_path / "keys.signal.log"),
         }
 
-    def test_warns_when_no_formatter_active(self, silent_logger, tmp_path, caplog):
-        """``--protocol ipsec`` has no formatter today — warn and create no handler."""
+    def test_ipsec_wires_decryption_table_handler(self, silent_logger, tmp_path, caplog):
+        """``--protocol ipsec`` now wires the Wireshark UAT writer (not a keylog).
+
+        The two decryption tables live in the -k keylog's directory and no
+        "no active protocol" warning is logged.
+        """
         keylog = str(tmp_path / "k.log")
-        reg = create_default_registry()  # tls + ssh
+        reg = create_default_registry()
         config = self._config(keylog, "ipsec")
 
         with caplog.at_level(logging.WARNING):
             handlers, _ = OutputHandlerFactory.create_handlers(
-                config, None, None, {}, silent_logger,
+                config, None, reg.get("ipsec"), {}, silent_logger,
                 protocol_registry=reg,
             )
 
+        # No NSS-keylog handler; exactly one IPsec decryption-table handler.
         assert _keylog_handlers(handlers) == []
-        # Warning is logged via the passed-in logger, which propagates through
-        # caplog. Tolerate exact wording but require core substring.
-        assert any("-k has no effect" in rec.getMessage() for rec in caplog.records) or \
-               any("no active protocol emits key material" in rec.getMessage() for rec in caplog.records)
+        uat = [h for h in handlers if isinstance(h, IPsecDecryptionTableHandler)]
+        assert len(uat) == 1
+        assert uat[0].table_path("ikev2_decryption_table") == \
+            str(tmp_path / "ikev2_decryption_table")
+        assert uat[0].table_path("esp_sa") == str(tmp_path / "esp_sa")
+        # The stale "-k has no effect" warning must NOT fire anymore.
+        assert not any("-k has no effect" in rec.getMessage() for rec in caplog.records)
+        assert not any(
+            "no active protocol emits key material" in rec.getMessage()
+            for rec in caplog.records)

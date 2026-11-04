@@ -148,18 +148,21 @@ def register_protocol_handler(name, factory, implies=None) -> None:
 
 def _register_builtin_handler_factories() -> None:
     """Populate the public built-in factory table (deferred imports keep this
-    module's import light and avoid cycles). Idempotent."""
+    module's import light and avoid cycles). Idempotent.
+
+    A new built-in must also be added to the protocol allowlist in
+    ``scripts/check_public_denylist.sh`` (pinned by
+    ``tests/unit/test_public_leak_guard_protocols.py``)."""
     if _BUILTIN_HANDLER_FACTORIES:
         return
+    from .ipsec_handler import IPSecHandler
     from .mtproto_handler import MTProtoHandler
-
-    #    from .ipsec_handler import IPSecHandler # needs to be impl.
     from .ssh_handler import SSHHandler
     from .telegram_handler import TelegramHandler
     from .tls_handler import TLSHandler
     _BUILTIN_HANDLER_FACTORIES.update({
         "tls": TLSHandler,
-#        "ipsec": IPSecHandler,  # needs to be impl.
+        "ipsec": IPSecHandler,
         "ssh": SSHHandler,
         "mtproto": MTProtoHandler,
         "telegram": TelegramHandler,

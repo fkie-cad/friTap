@@ -22,7 +22,7 @@
 import { HookDefinition, ResolvedFunctions } from "../../core/hook_definition.js";
 import { STANDARD_SOCKET_SYMBOLS } from "../../tls/definitions/shared_constants.js";
 import { noOpClientRandomDecoder } from "../../tls/definitions/shared_factories.js";
-import { ssh_detect_execute } from "../platforms/linux/ssh_linux.js";
+import { installSshHooks } from "../platforms/linux/ssh_linux.js";
 
 function opensshFdDecoder(_ctx: NativePointer, _fns: ResolvedFunctions): number {
     return -1;
@@ -68,13 +68,14 @@ export function createOpenSshDefinition(): HookDefinition {
         keylog: { kind: "none" },
         extraHooks: [
             {
-                // Delegate to the legacy executor. It handles cookie
-                // correlation, kex_derive_keys, cipher_init, sshenc-walk
-                // fallback, and packet plaintext extraction in one place.
+                // Delegate to the legacy executor's synchronous installer. It handles
+                // cookie correlation, kex_derive_keys, cipher_init, sshenc-walk
+                // fallback, and packet plaintext extraction in one place. A stripped
+                // build's functions were already located by openssh_execute_modern.
                 // extraHooks always runs in the loader (step 7), independent of
                 // keylog_enabled — so `-p`-only runs still install packet hooks.
                 install: (_addresses, moduleName, _resolvedFns, _enableDefaultFd) => {
-                    ssh_detect_execute(moduleName, /* is_base_hook */ true);
+                    return installSshHooks(moduleName);
                 },
             },
         ],

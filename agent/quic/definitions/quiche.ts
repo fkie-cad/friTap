@@ -225,9 +225,10 @@ function createStreamRecvHook(): ExtraHookDef {
                     const connKey = this.conn.toString();
                     const connInfo = quicConnectionTracker.get(connKey);
                     if (!connInfo) return;
-                    const message = buildQuicMessage(connInfo, connKey, "quiche_stream_recv");
+                    const message = buildQuicMessage(connInfo, connKey, "quiche_stream_recv", "read", moduleName);
                     if (n > 0) {
-                        sendQuicDatalog(message, this.buf.readByteArray(n), this.streamId, connInfo.scid, connInfo.dcid);
+                        sendQuicDatalog(message, this.buf.readByteArray(n), this.streamId, connInfo.scid, connInfo.dcid,
+                                        "udp", undefined, "stream");
                     }
                     // Check fin flag for stream completion
                     if (this.finPtr && !this.finPtr.isNull()) {
@@ -276,11 +277,12 @@ function createStreamSendHook(): ExtraHookDef {
                     // For write, use the actual bytes written (retval), not buf_len
                     const bytesToCapture = n > 0 ? n : 0;
                     if (bytesToCapture > 0) {
-                        const message = buildQuicMessage(connInfo, connKey, "quiche_stream_send");
-                        sendQuicDatalog(message, this.buf.readByteArray(bytesToCapture), this.streamId, connInfo.scid, connInfo.dcid);
+                        const message = buildQuicMessage(connInfo, connKey, "quiche_stream_send", "write", moduleName);
+                        sendQuicDatalog(message, this.buf.readByteArray(bytesToCapture), this.streamId, connInfo.scid,
+                                        connInfo.dcid, "udp", undefined, "stream");
                     }
                     if (this.fin) {
-                        const message = buildQuicMessage(connInfo, connKey, "quiche_stream_send");
+                        const message = buildQuicMessage(connInfo, connKey, "quiche_stream_send", "write");
                         sendConnectionLifecycle("stream_fin", {
                             ...message,
                             stream_id: this.streamId,

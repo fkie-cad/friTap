@@ -14,7 +14,7 @@ import logging
 import time
 from typing import IO, TYPE_CHECKING, List, Optional
 
-from ..constants import is_read_function
+from ..constants import DIRECTION_READ, direction_for_function
 from ..sinks.tcp_state import (
     TcpSessionTracker,
     build_framed_packets_from_fields,
@@ -115,7 +115,7 @@ class PcapngOutputHandler(OutputHandler):
             src_port=event.src_port,
             dst_addr=event.dst_addr_raw,
             dst_port=event.dst_port,
-            is_read=is_read_function(event.function),
+            is_read=direction_for_function(event.function, event.direction) == DIRECTION_READ,
             data=event.data,
             tracker=self._tracker,
             transport=event.transport,

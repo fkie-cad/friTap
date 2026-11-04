@@ -8,8 +8,9 @@ bombs). Each input must:
 * raise only the target's documented exception types when called directly
   (most targets document "never raises"),
 * not let any exception escape :class:`SafeParserAdapter` (stream parsers),
-* finish in < 2 s (``time.perf_counter``) and, for every
-  ``TRACE_EVERY``-th input, keep the ``tracemalloc`` peak < 64 MiB.
+* finish in < 2 s (``time.perf_counter``, on an untraced run) and, for every
+  ``TRACE_EVERY``-th input and every bomb, keep the ``tracemalloc`` peak
+  < 64 MiB (measured on a second, traced run).
 
 Stdlib-only: ``random.Random`` seeded per (target, seed), no fuzzing library.
 A failure message carries the exact mutated bytes as a hex reproducer.

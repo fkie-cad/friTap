@@ -7,6 +7,7 @@
 // became the default) and matches the layout the legacy GoTlsLogger used.
 
 import { toHexString } from "../../shared/shared_functions.js";
+import { goKeyLogArgs, GoKeyLogArgs } from "../../shared/go_abi.js";
 
 /**
  * Bounds check: positive, non-zero, and below 1024 bytes — the largest
@@ -17,81 +18,36 @@ function isPlausibleLen(len: number): boolean {
     return len > 0 && len < 1024;
 }
 
-interface KeylogParts {
-    labelPtr: NativePointer;
-    labelLen: number;
-    crPtr: NativePointer;
-    crLen: number;
-    secretPtr: NativePointer;
-    secretLen: number;
-}
-
-/**
- * x64: Go ABIInternal places writeKeyLog params in
- *   RBX = label, RCX = labelLen, RDI = clientRandom, RSI = crLen,
- *   R9  = secret, R10 = secretLen.
- */
-function readPartsX64(ctx: X64CpuContext): KeylogParts {
-    return {
-        labelPtr: ctx.rbx,
-        labelLen: ctx.rcx.toInt32(),
-        crPtr: ctx.rdi,
-        crLen: ctx.rsi.toInt32(),
-        secretPtr: ctx.r9,
-        secretLen: ctx.r10.toInt32(),
-    };
-}
-
-/**
- * ARM64: Go ABIInternal places writeKeyLog params in
- *   X1 = label, X2 = labelLen, X3 = clientRandom, X4 = crLen,
- *   X5 = secret, X6 = secretLen.
- */
-function readPartsArm64(ctx: Arm64CpuContext): KeylogParts {
-    return {
-        labelPtr: ctx.x1,
-        labelLen: ctx.x2.toInt32(),
-        crPtr: ctx.x3,
-        crLen: ctx.x4.toInt32(),
-        secretPtr: ctx.x5,
-        secretLen: ctx.x6.toInt32(),
-    };
-}
-
 /**
  * Validate that every pointer is non-null and every length is plausible.
  * Returns false (and the caller bails) when anything looks suspect.
  */
-function partsAreValid(p: KeylogParts): boolean {
-    if (p.labelPtr.isNull() || !isPlausibleLen(p.labelLen)) return false;
-    if (p.crPtr.isNull() || !isPlausibleLen(p.crLen)) return false;
-    if (p.secretPtr.isNull() || !isPlausibleLen(p.secretLen)) return false;
+function partsAreValid(p: GoKeyLogArgs): boolean {
+    if (p.label.isNull() || !isPlausibleLen(p.labelLength)) return false;
+    if (p.clientRandom.isNull() || !isPlausibleLen(p.clientRandomLength)) return false;
+    if (p.secret.isNull() || !isPlausibleLen(p.secretLength)) return false;
     return true;
 }
 
 /**
  * Extract a single SSLKEYLOGFILE line ("LABEL CR_HEX SECRET_HEX") from
- * the Go ABIInternal registers in `ctx`. Returns null when the
- * architecture is unsupported, any pointer is null, any length is
- * implausible, or memory reads throw.
+ * the writeKeyLog arguments in `ctx`, read via go_abi.ts goKeyLogArgs:
+ *   x64:   RBX/RCX = label, RDI/RSI = clientRandom, R9/R10 = secret
+ *   arm64: X1/X2   = label, X3/X4   = clientRandom, X6/X7  = secret
+ *   386/arm (stack): words 1/2 = label, 3/4 = clientRandom, 6/7 = secret at sp+4+4*word
+ * (X5 / R8 hold clientRandom's cap — the arm64 layout once read X5/X6 as the secret).
+ * Returns null when the architecture is unsupported, any pointer is null,
+ * any length is implausible, or memory reads throw.
  */
-export function extractKeylogFromRegisters(ctx: CpuContext): string | null {
-    let parts: KeylogParts;
-    if (Process.arch === "x64") {
-        parts = readPartsX64(ctx as X64CpuContext);
-    } else if (Process.arch === "arm64") {
-        parts = readPartsArm64(ctx as Arm64CpuContext);
-    } else {
-        return null;
-    }
-
-    if (!partsAreValid(parts)) return null;
+export function extractKeylogFromRegisters(ctx: CpuContext, arch: string = Process.arch): string | null {
+    const parts = goKeyLogArgs(ctx, arch);
+    if (parts === null || !partsAreValid(parts)) return null;
 
     try {
-        const labelStr = parts.labelPtr.readUtf8String(parts.labelLen);
+        const labelStr = parts.label.readUtf8String(parts.labelLength);
         if (!labelStr) return null;
-        const crHex = toHexString(parts.crPtr.readByteArray(parts.crLen));
-        const secretHex = toHexString(parts.secretPtr.readByteArray(parts.secretLen));
+        const crHex = toHexString(parts.clientRandom.readByteArray(parts.clientRandomLength));
+        const secretHex = toHexString(parts.secret.readByteArray(parts.secretLength));
         return `${labelStr} ${crHex} ${secretHex}`;
     } catch (e) {
         return null;

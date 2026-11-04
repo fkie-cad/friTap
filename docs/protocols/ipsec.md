@@ -14,47 +14,48 @@ yet functional.**
     or **`--protocol auto`**: the agent then hooks every supported protocol,
     including IPsec, on both the legacy and `--modern` paths.
 
-!!! warning "EXPERIMENTAL — detection works, key extraction does not (yet)"
-    IPsec support is at the **detection-only stub** stage. With
-    `--protocol all`/`auto` the agent installs the strongSwan hook definition and
-    detects the connection, but it **does not yet decrypt IKEv2 or ESP traffic**.
+!!! success "IKEv2 + ESP key extraction works on stock strongSwan"
+    friTap extracts IKEv2 SA keys and ESP (CHILD_SA) keys from a **stock,
+    stripped** `charon` (the build Debian/Ubuntu ship) and writes the Wireshark
+    decryption tables, so a captured IKE_SA + CHILD_SA exchange decrypts in
+    Wireshark/tshark. The key routines are not exported in release builds, so
+    friTap locates them by the DBG format-string anchors they reference — no
+    symbols and no per-version byte patterns required (verified end-to-end on
+    strongSwan 5.9.13, AES-CBC-256/HMAC-SHA2-256-128 and AES-GCM-128).
 
-    The strongSwan definition is explicitly described in source as a
-    *"detection-only stub"* (`agent/ipsec/definitions/strongswan.ts:4`).
-    **Partial, non-functional** `derive_ike_keys` and
-    `ikev2_derive_child_sa_keys` hooks exist in the legacy executor, but they do
-    not currently produce usable Wireshark decryption material. Do not rely on
-    IPsec key recovery for real work yet.
+    Limitation: IKE-key capture relies on the `DBG4` key-dump log statements
+    being compiled in (`DEBUG_LEVEL >= 4`, the stock default). On a reduced
+    compile-time debug build those statements — and their format-string
+    anchors — are gone, and IKE-key capture degrades; ESP key extraction (via
+    the kernel-netlink `add_sa` struct fields) is independent of the debug level.
 
 ## What works today
 
 | Capability | Status |
 |---|---|
 | Detect a strongSwan / libcharon IPsec stack | **Works** |
-| Hook IPsec targets on the legacy (default) and `--modern` agent paths (via `--protocol all`/`auto`) | **Works** |
-| Select IPsec alone with `--protocol ipsec` | **Not yet** (handler not registered) |
-| Emit synthetic, metadata-only flow records for the connection | **Works** |
-| Extract IKEv2 SA keys (`derive_ike_keys`) | **Partial / non-functional** |
-| Extract ESP Child SA keys (`ikev2_derive_child_sa_keys`) | **Partial / non-functional** |
-| Produce Wireshark IKEv2 + ESP SA decryption tables | **Future work** |
+| Hook IPsec targets on the legacy (default) and `--modern` agent paths | **Works** |
+| Select IPsec alone with `--protocol ipsec` | **Works** |
+| Extract IKEv2 SA keys (SPIi/SPIr, SK_ei/er/ai/ar) from stripped `charon` | **Works** |
+| Extract ESP Child SA keys (SPI, enc/auth keys) via kernel-netlink `add_sa` | **Works** |
+| Produce Wireshark `ikev2_decryption_table` + `esp_sa` tables | **Works** |
 
-What you can expect right now: friTap will **acknowledge the IPsec connection**
-and surface **metadata-only** flow records for it. It will **not** hand you
-decrypted IKEv2 or ESP payloads. Treat any IPsec run as a detection and
-groundwork exercise, not a decryption workflow.
+With `-k <path>` friTap writes `ikev2_decryption_table` and `esp_sa` next to the
+keylog path, in strongSwan's own `save-keys` format. Point Wireshark/tshark at
+them (they live in the Wireshark config/profile directory) and enable ESP
+decryption (`-o esp.enable_encryption_decode:TRUE`) to read the IKE_AUTH and ESP
+payloads.
 
 ## How to enable the IPsec hooks
 
-`ipsec` is **not** one of the `--protocol` choices yet: the CLI only accepts
-protocols registered in `friTap/protocols/registry.py`, and the IPsec handler
-there is still commented out, so `--protocol ipsec` fails with an
-"unknown protocol" error. The agent-side strongSwan hooks are installed when
-every protocol is hooked, i.e. with `--protocol all` (asks for confirmation;
-skip with `-y`) or `--protocol auto`:
+`ipsec` is a first-class `--protocol` choice, and the strongSwan hooks also run
+under `--protocol all`/`auto`. Attach to the running `charon` daemon and start
+(or re-key) the tunnel so the key derivation runs while friTap is attached:
 
 ```bash
-# Detect a strongSwan target (Linux). Key extraction is NOT yet functional.
-sudo fritap --protocol auto -p out.pcapng -- /usr/sbin/charon
+# Attach to charon and write the Wireshark decryption tables next to keys.log.
+sudo fritap --protocol ipsec -k keys.log <charon-pid>
+# then, in another shell: swanctl --initiate --child <name>
 ```
 
 Once the handler is registered, `ipsec` will become a selectable, **exclusive**
@@ -69,40 +70,37 @@ protocol (only the IPsec hooks install, not TLS/QUIC/SSH).
 
 ## Under the hood
 
-The strongSwan `HookDefinition` (`agent/ipsec/definitions/strongswan.ts`)
-delegates installation to the legacy `ipsec_detect_execute` path
-(`agent/ipsec/platforms/linux/ipsec_linux.ts`), which is the source of truth for
-runtime behaviour today. The definition advertises a set of strongSwan symbols
-that **future** work will target:
+The strongSwan key routines are not exported in release builds, so friTap does
+not rely on symbols. The extractor (`agent/ipsec/libs/strongswan_keys.ts`)
+locates them by the unique DBG format-string literals they reference, using the
+generic string-anchor locator (`agent/shared/string_anchor_functions.ts`):
 
-| Symbol | Intended future role |
-|---|---|
-| `derive_ike_keys` | IKEv2 SA key derivation |
-| `ikev2_derive_child_sa_keys` | ESP Child SA key derivation |
-| `child_sa_install` | Child SA installation |
-| `child_sa_set_spi` | Child SA SPI assignment |
-| `keymat_v2_create` | Keying-material construction |
+| Target (located by anchor) | Role | Capture |
+|---|---|---|
+| `derive_ike_keys` (libcharon) | IKEv2 SA key derivation | SPIi/SPIr from the `ike_sa_id` arg, enc/integ algorithms from the proposal, and SK_ei/er/ai/ar read at the `charon->bus->log` key-dump calls while live |
+| `add_sa` (kernel-netlink plugin) | ESP CHILD_SA installation | SPI, src/dst, enc_alg/enc_key, int_alg/int_key read from the `kernel_ipsec_sa_id_t` / `kernel_ipsec_add_sa_t` structs |
 
-None of these symbols are required to resolve today — they may not be exported,
-especially in stripped production builds where vtable-based hooking will
-eventually be needed. The generic read/write executors are intentionally not
-wired for IPsec; key extraction is meant to live in dedicated key-derivation
-hooks once they are completed.
+The IKE encryption/integrity keys are `chunk_split` "move" slices into a buffer
+that is freed before `derive_ike_keys` returns, so they are captured at their
+`DBG4` key-dump call site (via the charon bus logger) rather than at function
+return. The ESP path reads plain struct fields, independent of the debug level.
 
-The planned end state is a register-aware reimplementation of those hooks backed
-by a Wireshark-compatible IPsec keylog formatter on the Python side, emitting
-IKEv2 + ESP SA decryption tables. That work has not landed.
+On the Python side, `friTap/protocols/ipsec_handler.py` maps the IANA transform
+ids to Wireshark algorithm names (mirroring strongSwan's `save-keys` plugin) and
+`friTap/output/ipsec_decryption_tables.py` writes the `ikev2_decryption_table`
+and `esp_sa` UAT files.
 
 ## Limitations
 
-* **No IKEv2/ESP decryption today.** The key-derivation hooks are present but
-  non-functional. Captured output is synthetic metadata only.
+* **IKE-key capture needs `DEBUG_LEVEL >= 4` at compile time** (the stock
+  default). A reduced-debug build omits the `DBG4` key dumps and their anchors,
+  so IKE-key capture degrades; ESP extraction (struct-field reads at `add_sa`)
+  is unaffected.
 * **strongSwan / libcharon only.** Other IPsec implementations are out of scope.
-* **Not selectable on its own yet.** `--protocol ipsec` is rejected until the
-  IPsec handler is registered; use `--protocol all`/`auto`.
-* **No agent-path override.** IPsec no longer forces `--modern`; its hooks
+* **Addresses in `esp_sa` default to the `*` wildcard** (Wireshark matches ESP by
+  SPI); IPv6 endpoint extraction is not yet implemented.
+* **No agent-path override.** IPsec keeps the agent path you choose; its hooks
   run on the default legacy path unless you pass `--modern` explicitly.
-  (The modern path is itself EXPERIMENTAL for IPsec.)
 
 ## Next steps
 

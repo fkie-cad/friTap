@@ -7,6 +7,7 @@
 
 import { log, devlog } from "../../util/log.js";
 import { sendWithProtocol } from "../../shared/shared_structures.js";
+import { findModuleExport } from "../../shared/module_exports.js";
 
 export class SSH_OpenSSH {
     module_name: string;
@@ -55,7 +56,7 @@ export class SSH_OpenSSH {
 
         let resolved = 0;
         for (const fn of targetFunctions) {
-            const addr = (Module as any).findExportByName(this.module_name, fn);
+            const addr = findModuleExport(this.module_name, fn);
             if (addr) {
                 this.addresses[fn] = addr;
                 resolved++;

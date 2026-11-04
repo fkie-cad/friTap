@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "oneOf": [
+    {
+      "required": [
+        "tap"
+      ]
+    },
+    {
+      "required": [
+        "session_id"
+      ]
+    }
+  ],
+  "properties": {
+    "session_id": {
+      "description": "Id of a capture session started with start_capture.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "tap": {
+      "description": "Path to a .tap capture file (inside the sandbox root).",
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "title": "list_protocols parameters",
+  "type": "object"
+}

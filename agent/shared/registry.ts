@@ -71,8 +71,17 @@
      pattern: RegExp;
      /** The hooking function to invoke when the pattern matches */
      hookFn: ModuleHookingType;
-     /** Protocol this hook targets */
+     /**
+      * Protocol selection this hook INSTALLS under (matched against the
+      * requested set, including companion implications).
+      */
      protocol: string;
+     /**
+      * Protocol the records this hook emits belong to; defaults to `protocol`.
+      * Bound once by the loader (see agent/shared/record_protocol.ts), so hook
+      * code never stamps a `protocol` on its messages.
+      */
+     recordProtocol?: string;
      /** Human-readable library name for logging/display */
      library: string;
      /** Higher priority = tried first (default 100) */
@@ -133,6 +142,15 @@
       * tls" and blocked every BoringSSL rescue path.
       */
      supplementary?: boolean;
+     /**
+      * Content predicate over the loaded module, for libraries a name cannot
+      * identify — e.g. Go's crypto/tls, linked into an arbitrarily named main
+      * executable (see agent/shared/go_binary_detection.ts). Evaluated LAST, after
+      * every cheap name/path gate, so it only runs for modules those gates let
+      * through; it must be cheap and cache its verdict, since it runs on each
+      * module the loader sees. FAILS CLOSED: false or a throw excludes the hook.
+      */
+     contentFilter?: (moduleName: string, modulePath?: string) => boolean;
  }
 
  /**
@@ -431,9 +449,9 @@ function protocolMatches(hookProtocol: string, requested: Set<string>): boolean 
      /**
       * Check whether a matched hook should be skipped.
       *
-      * Four independent gates, evaluated as a FALL-THROUGH chain: the non-TLS
+      * Five independent gates, evaluated as a FALL-THROUGH chain: the non-TLS
       * denylist, `excludePattern` (name), `excludePathFilter` (path, negative),
-      * and `pathFilter` (path, positive). Every gate that applies is evaluated.
+      * `pathFilter` (path, positive) and `contentFilter` (module content). Every gate that applies is evaluated.
       * Do NOT reintroduce an early `return false` for a gate that passes — an
       * earlier version ended the `pathFilter` branch with `return excluded`,
       * which silently made any gate below it dead code for hooks carrying both.
@@ -486,6 +504,15 @@ function protocolMatches(hookProtocol: string, requested: Set<string>): boolean 
              }
              if (!pathMatches(modulePath, hook.pathFilter)) {
                  devlogExclusionOnce(`registry: skipping ${moduleName} for "${hook.library}" — pathFilter ${hook.pathFilter} not found in path ${modulePath}`);
+                 return true;
+             }
+         }
+         // Content predicate (last: the most expensive gate). Fails closed, and
+         // silently — it rejects nearly every module, so no exclusion log.
+         if (hook.contentFilter) {
+             try {
+                 if (!hook.contentFilter(moduleName, modulePath)) return true;
+             } catch (e) {
                  return true;
              }
          }

@@ -1,5 +1,6 @@
 import { readAddresses, getPortsAndAddresses, resolveOffsets } from "../../shared/shared_functions.js";
 import { sendDatalog } from "../../shared/shared_structures.js";
+import { attachPlaintextWriteHook } from "../../shared/write_hooks.js";
 import { log } from "../../util/log.js";
 import { enable_default_fd, pcap_enabled } from "../../fritap_agent.js";
 import { resolveWithPipelineAsync } from "../../shared/pipeline_utils.js";
@@ -110,16 +111,14 @@ export class WolfSSL {
         if (!pcap_enabled) return;
         var current_module_name = this.module_name;
         var lib_addesses = this.addresses;
-        Interceptor.attach(this.addresses[this.moduleName]["wolfSSL_write"],
-        {
-            onEnter: function (args: any) {
-                var message = getPortsAndAddresses(WolfSSL.wolfSSL_get_fd(args[0]) as number, false, lib_addesses[current_module_name], enable_default_fd)
-                message["ssl_session_id"] = WolfSSL.getSslSessionId(args[0])
-                message["function"] = "wolfSSL_write"
-                sendDatalog(message, args[1].readByteArray(parseInt(args[2])))
-            },
-            onLeave: function (retval: any) {
-            }
+        // wolfSSL_write(ssl, data, sz) -> bytes written, <= 0 on error / WANT_WRITE (the app
+        // retries with the same data): emitted in onLeave with the written count only.
+        attachPlaintextWriteHook(this.addresses[this.moduleName]["wolfSSL_write"], (args) => {
+            var message = getPortsAndAddresses(WolfSSL.wolfSSL_get_fd(args[0]) as number, false, lib_addesses[current_module_name], enable_default_fd)
+            if (message === null) return null
+            message["ssl_session_id"] = WolfSSL.getSslSessionId(args[0])
+            message["function"] = "wolfSSL_write"
+            return message
         })
     }
 

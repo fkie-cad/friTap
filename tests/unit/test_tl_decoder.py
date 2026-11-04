@@ -192,6 +192,41 @@ def test_object_vector_summary_still_walks_all_items():
     assert not stopped_early(node)
 
 
+def test_paramless_constructor_is_a_field_less_node():
+    node = decode_tl(u32(INPUT_PEER_EMPTY))
+    assert (node.name, node.fields, node.offset, node.length, node.note) == (
+        "inputPeerEmpty", (), 0, 4, "")
+
+
+def test_paramless_object_vector_walk_keeps_offsets():
+    """Overflow items of a param-less ctor are walked cheaply, offsets stay exact."""
+    node = decode_tl(u32(VECTOR) + i32(40) + u32(BOOL_TRUE) * 40 + b"\x01\x02\x03\x04")
+    items = node.value("items")
+    assert (items.total, items.note) == (40, "… 20 more")
+    assert [item.name for item in items.items] == ["boolTrue"] * 20
+    assert [item.offset for item in items.items[:2]] == [8, 12]
+    assert node.value("<trailing>").data == b"\x01\x02\x03\x04"
+
+
+@pytest.mark.parametrize("count, prefix, offset", [(2, 1, 12), (30, 29, 124)])
+def test_truncated_fixed_read_reports_need(count, prefix, offset):
+    """A short ctor id (inside or past the kept items) aborts with the usual reason."""
+    data = u32(VECTOR) + i32(count) + u32(BOOL_TRUE) * prefix + b"\x01\x02"
+    node = decode_tl(data)
+    assert node.value("items").note == f"stopped at item {prefix} of {count}"
+    assert [r.reason for r in _raws(node)] == [f"truncated: need 4 B at offset {offset}, 2 B left"]
+
+
+def test_wide_paramless_vector_decodes_fast():
+    """The fuzz-suite TL bomb #5 shape: 100k boolTrue walked in advance-only mode."""
+    data = u32(VECTOR) + i32(100_000) + u32(BOOL_TRUE) * 100_000
+    start = time.perf_counter()
+    node = decode_tl(data)
+    elapsed = time.perf_counter() - start
+    assert node.value("items").total == 100_000 and not stopped_early(node)
+    assert elapsed < 1.0
+
+
 # --------------------------------------------------------------------------- #
 # Vector element-type heuristic (untyped rpc_result)
 # --------------------------------------------------------------------------- #

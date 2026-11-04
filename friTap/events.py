@@ -86,6 +86,10 @@ class DatalogEvent(FriTapEvent):
     quic_scid: str = ""
     quic_dcid: str = ""
     quic_stream_type: str = ""
+    # QUIC payload kind stamped by the agent: "stream" (raw HTTP/3 stream
+    # bytes) | "body" (de-framed DATA payload) | "" (untagged / not QUIC).
+    quic_payload: str = ""
+    library: str = ""  # module that produced the record (e.g. libssl.so)
 
 
 @dataclass

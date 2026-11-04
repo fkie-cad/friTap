@@ -23,6 +23,7 @@ from scapy.utils import PcapReader  # noqa: E402
 
 from friTap.constants import SSL_READ, SSL_WRITE  # noqa: E402
 from friTap.pcap import PCAP  # noqa: E402
+from friTap.pcap_utility import resolve_pcap_format  # noqa: E402
 from friTap.sinks import tcp_state  # noqa: E402
 from friTap.sinks.tcp_state import (  # noqa: E402
     TcpSessionTracker,
@@ -260,6 +261,7 @@ class TestTempCaptureValidation:
     def _pcap(self, tmp_path, name):
         pcap = object.__new__(PCAP)
         pcap.pcap_file_name = str(tmp_path / name)
+        pcap.pcap_container = resolve_pcap_format(name)
         pcap.logger = MagicMock()
         return pcap
 

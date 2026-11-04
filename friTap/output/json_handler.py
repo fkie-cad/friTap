@@ -150,6 +150,11 @@ class JsonOutputHandler(OutputHandler):
                 "tier": payload.get("tier", ""),
                 "source": payload.get("source", ""),
             })
+        elif event.protocol == "ipsec" and event.payload:
+            # IPsec IKE/ESP SA key material is structured (no NSS key_data
+            # line). Surface the whole payload so -j carries the SA; "payload"
+            # is a KEY_MATERIAL_FIELD, so it is redacted unless -k/--json-keys.
+            record["payload"] = dict(event.payload)
         if self._writer is None:
             return
         record = apply_key_material_policy(record, self._include_key_material)

@@ -1,6 +1,7 @@
 import { get_hex_string_from_byte_array, readAddresses, isSymbolAvailable, getPortsAndAddresses } from "../../../shared/shared_functions.js";
 import { checkNumberOfExports } from "../../shared/shared_functions_legacy.js";
 import { sendKeylog, sendDatalog } from "../../../shared/shared_structures.js";
+import { attachPlaintextWriteHook } from "../../../shared/write_hooks.js";
 import { devlog, devlog_debug, devlog_error } from "../../../util/log.js";
 import { safeKeyLenLogged } from "../../../shared/keylog_length.js";
 import { LruMap } from "../../../shared/lru.js";
@@ -309,21 +310,19 @@ export class Cronet {
         var instance = this;
         var current_module_name = this.module_name;
 
-        Interceptor.attach(this.addresses[this.moduleName]["SSL_write"],
-        {
-            onEnter: function (args: any) {
-                this.fd = instance.SSL_get_fd(args[0])
-                if(this.fd < 0 && enable_default_fd == false) {
-                    return
-                }
-                var message = getPortsAndAddresses(this.fd as number, false, lib_addesses[current_module_name], enable_default_fd)
-                if (message === null) { return; }
-                message["ssl_session_id"] = instance.getSslSessionId(args[0])
-                message["function"] = "SSL_write"
-                sendDatalog(message, args[1].readByteArray(args[2].toInt32()))
-            },
-            onLeave: function (retval: any) {
+        // BoringSSL SSL_write(ssl, buf, num) -> bytes written (fewer with
+        // SSL_MODE_ENABLE_PARTIAL_WRITE), <= 0 on error / WANT_WRITE (retried with the same
+        // buffer): emitted in onLeave with the written count only.
+        attachPlaintextWriteHook(this.addresses[this.moduleName]["SSL_write"], (args) => {
+            var fd = instance.SSL_get_fd(args[0])
+            if(fd < 0 && enable_default_fd == false) {
+                return null
             }
+            var message = getPortsAndAddresses(fd as number, false, lib_addesses[current_module_name], enable_default_fd)
+            if (message === null) { return null; }
+            message["ssl_session_id"] = instance.getSslSessionId(args[0])
+            message["function"] = "SSL_write"
+            return message
         })
     }
 

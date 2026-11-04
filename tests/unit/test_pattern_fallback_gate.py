@@ -140,6 +140,10 @@ def test_libs_with_hardcoded_defaults_absent_from_default_patterns(default_patte
         )
 
 
+# Shared helper that owns the Go pattern gate for the Go platform files.
+GO_KEYLOG_PATTERN_HELPER = "agent/tls/shared/go_keylog_hook.ts"
+
+
 @pytest.mark.parametrize("rel_path", AFFECTED_LEGACY_LIBS)
 def test_legacy_lib_gate_uses_emptiness_predicate(fritap_root, rel_path):
     """Every affected legacy lib must gate the JSON branch on hasUsablePatternsFor.
@@ -148,6 +152,9 @@ def test_legacy_lib_gate_uses_emptiness_predicate(fritap_root, rel_path):
     ``isPatternReplaced()`` alone (which silently bypasses the hardcoded default).
     """
     src = (fritap_root / rel_path).read_text(encoding="utf-8")
+    if "installGoKeylogByPattern" in src:
+        # Go platforms delegate the gate to the shared Go keylog-by-pattern helper.
+        src = (fritap_root / GO_KEYLOG_PATTERN_HELPER).read_text(encoding="utf-8")
     assert "hasUsablePatternsFor" in src, (
         f"{rel_path} no longer references hasUsablePatternsFor — the per-library "
         "emptiness gate was removed; the shipped hardcoded default may be bypassed."

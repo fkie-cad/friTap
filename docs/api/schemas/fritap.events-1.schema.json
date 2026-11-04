@@ -1,0 +1,188 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "fritap.events/1 stream record",
+  "description": "One line of the `fritap -j -` JSONL event stream (friTap/output/stdout_stream.py, friTap/output/jsonl_stdout_handler.py). The stream starts with a `stream_start` record and ends with `stream_end` (or with a single `usage_error` record). Event kinds are open: `type` is the snake_case of the event class (minus `Event`), so unknown types must be tolerated. `bytes` values are hex-encoded. Records are open objects: an event carries all fields of its event class.",
+  "type": "object",
+  "required": ["schema", "type", "timestamp"],
+  "properties": {
+    "schema": {
+      "const": "fritap.events/1",
+      "description": "Schema/version marker carried by every line; bumped on incompatible changes."
+    },
+    "type": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Record kind. Envelope records: `stream_start`, `stream_end`, `usage_error`, and the closing runtime `error` record (no `event` field). Event kinds: `keylog`, `data`, `session`, `library`, `console`, `error`, `detach` (explicit names) and the snake_case of any other event class, e.g. `instrument`, `platform_report`, `script_loaded`, `socket_trace`, `ohttp`, `message`, `anti_tamper_detected`, `live_ready`.",
+      "examples": [
+        "stream_start", "stream_end", "usage_error", "keylog", "data", "session",
+        "library", "console", "error", "detach", "instrument", "platform_report",
+        "script_loaded", "socket_trace", "ohttp", "message"
+      ]
+    },
+    "timestamp": {
+      "type": "number",
+      "description": "Epoch seconds. Envelope records get the write time; event records keep the event's own timestamp."
+    },
+    "event": {
+      "type": "string",
+      "description": "Event class name (e.g. `KeylogEvent`). Present on every event record; absent on envelope records (`stream_start`, `stream_end`, `usage_error`, closing runtime `error`).",
+      "examples": ["KeylogEvent", "DatalogEvent", "ErrorEvent"]
+    },
+    "event_type": {
+      "type": "string",
+      "description": "Present on every event record (alongside `event`); absent on envelope records. Inherited from the file JSONL record: the event class name, except for `session` records where it is the SessionEvent's own `event_type` field (e.g. `started`).",
+      "examples": ["KeylogEvent", "DatalogEvent", "started"]
+    },
+    "protocol": {
+      "type": "string",
+      "description": "Protocol of the event (e.g. `tls`, `ssh`, `mtproto`). Present on event records."
+    }
+  },
+  "additionalProperties": true,
+  "allOf": [
+    {
+      "if": {"required": ["event"]},
+      "then": {"required": ["event_type"]}
+    },
+    {
+      "if": {"properties": {"type": {"const": "stream_start"}}, "required": ["type"]},
+      "then": {"$ref": "#/$defs/stream_start"}
+    },
+    {
+      "if": {"properties": {"type": {"const": "stream_end"}}, "required": ["type"]},
+      "then": {"$ref": "#/$defs/stream_end"}
+    },
+    {
+      "if": {"properties": {"type": {"const": "usage_error"}}, "required": ["type"]},
+      "then": {"$ref": "#/$defs/usage_error"}
+    },
+    {
+      "if": {"properties": {"type": {"const": "error"}}, "required": ["type"]},
+      "then": {
+        "if": {"required": ["event"]},
+        "then": {"$ref": "#/$defs/error_event"},
+        "else": {"$ref": "#/$defs/runtime_error"}
+      }
+    },
+    {
+      "if": {"properties": {"type": {"const": "keylog"}}, "required": ["type"]},
+      "then": {
+        "if": {"required": ["redacted"]},
+        "then": {"$ref": "#/$defs/keylog_redacted"},
+        "else": {"$ref": "#/$defs/keylog_with_key_material"}
+      }
+    },
+    {
+      "if": {"properties": {"type": {"const": "data"}}, "required": ["type"]},
+      "then": {"$ref": "#/$defs/data"}
+    }
+  ],
+  "$defs": {
+    "exit_code": {
+      "type": "integer",
+      "description": "Process exit status: 0 ok, 1 runtime error, 2 usage error, 3 target detached, 128+signum for a non-SIGINT signal."
+    },
+    "stream_start": {
+      "description": "First line of the stream.",
+      "required": ["key_material"],
+      "properties": {
+        "key_material": {
+          "type": "boolean",
+          "description": "True when keylog records carry the secret (`-k` or `--json-keys`); false when they are redacted."
+        }
+      },
+      "not": {"required": ["event"]}
+    },
+    "stream_end": {
+      "description": "Last line of a normally closed stream.",
+      "required": ["exit_code"],
+      "properties": {
+        "exit_code": {
+          "oneOf": [{"$ref": "#/$defs/exit_code"}, {"type": "null"}],
+          "description": "Final exit status; null when it is not known."
+        },
+        "ended_by": {
+          "type": "string",
+          "enum": ["duration", "stopped", "target_exited", "error"],
+          "description": "Why the run ended: `duration` (--duration timer), `stopped` (stop signal / Ctrl+C), `target_exited` (exit code 3), `error` (runtime failure). Omitted when the reason is unknown."
+        }
+      },
+      "not": {"required": ["event"]}
+    },
+    "usage_error": {
+      "description": "The only line of a stream that failed argument parsing (no stream_start/stream_end).",
+      "required": ["error", "exit_code"],
+      "properties": {
+        "error": {"type": "string"},
+        "exit_code": {"const": 2, "description": "EXIT_USAGE_ERROR."}
+      },
+      "not": {"required": ["event"]}
+    },
+    "runtime_error": {
+      "description": "Closing runtime-error record written right before stream_end of a failed run. Carries no `event` field.",
+      "required": ["error_type", "message", "exit_code"],
+      "properties": {
+        "error_type": {"type": "string", "examples": ["RuntimeError", "ExecutableNotFoundError"]},
+        "message": {"type": "string"},
+        "hint": {"type": "string", "description": "Only present when friTap has a concrete next step."},
+        "exit_code": {
+          "allOf": [{"$ref": "#/$defs/exit_code"}, {"not": {"const": 0}}],
+          "description": "The final (non-zero) exit status."
+        }
+      }
+    },
+    "error_event": {
+      "description": "Agent-side ErrorEvent (`event` is present).",
+      "required": ["event"],
+      "properties": {
+        "error": {"type": "string"},
+        "description": {"type": "string"},
+        "stack": {"type": "string"},
+        "file": {"type": "string"},
+        "line": {"type": "string"},
+        "severity": {"type": "string", "examples": ["info", "warning", "error", "fatal"]}
+      }
+    },
+    "keylog_redacted": {
+      "description": "Keylog record without key material (default policy). Secret fields are removed.",
+      "required": ["redacted"],
+      "properties": {
+        "redacted": {"const": true},
+        "label": {
+          "type": "string",
+          "description": "Keylog label, or `unknown` when the line carried no recognisable label. Absent when the record had no key_data (e.g. a payload-only SSH record).",
+          "examples": ["CLIENT_RANDOM", "CLIENT_TRAFFIC_SECRET_0", "SHARED_SECRET", "unknown"]
+        },
+        "client_random": {
+          "type": "string",
+          "pattern": "^(([0-9a-fA-F]{2})+|\\?\\?\\?)$",
+          "description": "Public client_random; only present for a genuine NSS keylog line. `???` when the agent could not read it (the label is still set)."
+        }
+      },
+      "not": {
+        "anyOf": [{"required": ["key_data"]}, {"required": ["payload"]}]
+      }
+    },
+    "keylog_with_key_material": {
+      "description": "Keylog record carrying the secret (only with `-k` or `--json-keys`).",
+      "required": ["key_data"],
+      "properties": {
+        "key_data": {"type": "string", "description": "Pre-formatted keylog line (may be empty when `payload` is used)."},
+        "payload": {"type": ["object", "null"], "description": "Structured key material, e.g. an SSH KEX shared secret."}
+      }
+    },
+    "data": {
+      "description": "Decrypted application data (DatalogEvent).",
+      "properties": {
+        "data": {
+          "type": "string",
+          "pattern": "^([0-9a-f]{2})*$",
+          "description": "Hex-encoded plaintext."
+        },
+        "direction": {"type": "string", "examples": ["read", "write"]},
+        "src_port": {"type": "integer"},
+        "dst_port": {"type": "integer"}
+      }
+    }
+  }
+}

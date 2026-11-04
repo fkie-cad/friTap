@@ -12,16 +12,81 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - `-j -` and the file outputs now share one key-redaction policy.
 
 ### Added
+  - IPsec/strongSwan IKEv2 + ESP key extraction now works on stock, stripped `charon` (Debian/Ubuntu): friTap locates the non-exported `derive_ike_keys` and the kernel-netlink `add_sa` by their DBG format-string anchors (no symbols, no per-version byte patterns) and extracts IKE SA keys (SPIi/SPIr, SK_ei/er/ai/ar) and ESP CHILD_SA keys (SPI, enc/auth keys) with a register-/ABI-correct layout. `--protocol ipsec` is now accepted.
+  - `-k <path>` with IPsec writes Wireshark decryption tables next to the keylog: `ikev2_decryption_table` (IKEv2) and `esp_sa` (ESP), matching strongSwan's own `save-keys` plugin format, so a captured IKE_SA + CHILD_SA exchange decrypts in Wireshark/tshark (verified end-to-end for AES-CBC-256/HMAC-SHA2-256-128 and AES-GCM-128). For AEAD (GCM/CCM) ESP the `esp_sa` integrity column is `NULL`, which current Wireshark requires to decrypt.
+  - The two IPsec agent messages gained structured fields (additive, `fritap.*` schema versions unchanged): `ipsec_ike_keys` now carries `ike_version`, `spi_i`, `spi_r`, `enc_alg`, `enc_key_len_bits`, `int_alg`; the new `ipsec_esp_keys` carries `spi`, `src`, `dst`, `family`, `enc_alg`, `int_alg`, `enc_key`, `int_key`.
   - `--json-keys` (Python API: `.json_keys()`) writes raw key material into the JSON output without `-k`.
   - `--json-keys` turns on agent key extraction like `-k`, without writing a keylog file.
+  - `--no-follow-exec` (Python API: `.follow_exec(False)`) stops friTap from following instrumented processes across `exec()` and skips the child gating that needs (~40-50 ms per fork).
+  - `--enable_child_gating` follows every instrumented child across `exec()` and instruments its children in turn, so `git clone https://...` (`git-remote-https`) and `subprocess` -> `curl` chains are captured; an exec'd image Frida holds without reporting it (macOS, Python `subprocess` with `close_fds=True`, ~25 s late) is detected and taken over.
+  - Agent API (`friTap.agent_api`): one registry of 14 tools (discover, capture, read, export) with JSON-Schema parameters, a shared error document and token-budgeted, size-capped results.
+  - `fritap q <tool>` runs any agent tool from the shell and prints JSON (`--list`, `--help-json`).
+  - `fritap mcp` serves the tools over MCP (stdio, or streamable HTTP with `--http`); install with `pip install 'fritap[mcp]'`.
+  - `fritap serve` serves the tools as a local REST API with `/openapi.json` (no extra dependencies); `GET /healthz` is an unauthenticated liveness probe returning only `{"status": "ok"}`.
+  - Server options `--root`, `--allow-capture`, `--allow-target`, `--allow-secrets`, `--max-response-bytes`, `--host`, `--port`, `--token` (`FRITAP_API_TOKEN`); live capture is off unless `--allow-capture`, and a non-loopback bind requires a token.
+  - Live capture sessions for agents: `start_capture`, `capture_status`, `mark_phase`, `stop_capture`, `list_sessions`.
+  - Committed OpenAPI 3.1 document and per-tool JSON Schemas in `docs/api/schemas/`, plus JSON Schemas for `fritap.events/1` and `fritap.digest/2`; a unit test fails when they drift from the code.
+  - Docs: "Using friTap from AI agents" (`docs/api/agent.md`), a privacy audit playbook, `AGENTS.md` and `llms.txt`.
+  - `capture_status` reports `ended_by` (`target_exited`, `duration`, `stopped`, `error`) so a normal target exit (exit code 3) is not mistaken for a failure; `mark_phase` adds `t_rel` (seconds since capture start) next to the epoch `t`.
+  - `fritap q` accepts its q-level options (`--root`, `--allow-secrets`, `--compact`, `--max-response-bytes`) before the tool name, and a mistyped tool name (`get_digets`, `list_flows`) now gets an `unknown_tool` JSON error with a did-you-mean hint instead of falling through to capture mode.
+  - Display-filter errors suggest the operator for typos (`contians` -> `contains`, `=` -> `==`); surfaced as the `bad_filter` hint of the agent API.
+  - Server option `--allow-values` (`fritap mcp` / `fritap serve`): `show_values: true` is refused with `forbidden` unless the server was started with it; `fritap q` and the Python API keep allowing it (`ToolContext.allow_values`).
+  - `--pcap-format {auto,pcap,pcapng}` sets the `-p` container for plaintext and `-f` captures; `auto` (default) keeps choosing by extension (`.pcapng` -> pcapng, else pcap).
+  - `capture_status` reports `protocols_in_use`, `idle_hooks` and a per-protocol `status` (`active`, `idle`, `no_library_seen`, `failed`), plus an `other_events` counter.
+  - macOS: GnuTLS (Homebrew `libgnutls.30.dylib`) is now hooked for keys and plaintext, in legacy and `--modern` mode.
+  - Chrome/Chromium/Cronet HTTP/3 (Google QUICHE): request line, status and all header fields are captured from the raw STREAM frames (QPACK incl. dynamic table) for connections seen from their start; late-joined connections fall back to bodies only.
+  - QUIC data records carry their real connection 4-tuple and stream id (Google QUICHE, when its layout is learned), an explicit `direction`, the producing `library` and a `quic_payload` kind (`stream` raw HTTP/3 bytes | `body` de-framed DATA).
+  - Android Chromium monoliths (Monochrome, Chrome, WebView): TCP TLS plaintext from the statically linked, stripped BoringSSL `SSL_read`/`SSL_write` (located via `ssl_lib.cc` anchors); keys still come from the Cronet hooks.
+  - Go TLS on macOS and Windows (legacy and `--modern`): keys from `writeKeyLog` (symbols, or the byte patterns for `-ldflags="-s -w"` builds) and, with `-p -ed`, plaintext; Go images are found by their build-info blob, so any executable name and c-shared libraries work.
+  - Linux: Go binaries under any name (and c-shared `.so`) are detected by content too; the `*.go1.x` / `*.go.so` name rows stay.
+  - Linux: programs that statically link rustls are detected by content (the `rustls-0.2x` crate-path string panic metadata keeps in `.rodata`, surviving `strip`), so a plain Rust binary under any name (e.g. `myapp`) is hooked for keys — not just modules named `*rustls*`. The name row stays; verified on rustls 0.22.4 and 0.23.x, TLS 1.2 + 1.3, legacy and `--modern`.
+  - Android: stripped rustls `.so`s are hooked with the shared static-rustls byte-pattern table (arm64 + x64 — the same patterns Linux uses) in both the legacy and `--modern` paths, falling back to the built-in Android patterns for the other versions/architectures.
+  - Legacy (default) Go TLS plaintext on every platform: `-p` with `-ed` now captures Go records without `--modern` (same `writeRecordLocked` / `(*Conn).Read` probes).
+  - SSH (OpenSSH): the stripped `ssh` that Debian (12, 13) and Ubuntu (22.04, 24.04) ship is hooked, arm64 and x86-64, in legacy and `--modern` mode. The locator also resolves their `sshd`/`sshd-session`, but that path has not been run-tested. friTap finds the functions it does not export by the log strings they use (their own name and messages). The shared locator, `agent/shared/string_anchor_functions.ts`, works for any stripped ELF.
 
 ### Changed
+  - Behaviour change: attach mode follows the target across `exec()` too (child gating on the attached process; its fork children are resumed at once); `--no-follow-exec` turns it off.
   - Behaviour change: add `--json-keys` (or `-k`) to get the old JSON output with `key_data`.
   - `-j file.json` / `-j file.jsonl` on their own now capture plaintext `data` events (previously only `-j -`, `-p` or `--tap` turned the plaintext hooks on).
+  - Agent API: `list_endpoints` and `list_findings` return 20 rows by default (was 50); pass `limit` for more.
+  - Agent API: the per-call keylog confirmation of `export` is `confirm_secrets` (renamed from `allow_secrets`, the server-policy name); a keylog export needs both keys, e.g. `fritap q export --format keylog --out k.log --allow-secrets --confirm-secrets`.
+  - Agent API: the `patterns` capture option is a file path only (inside `--root`); inline JSON is rejected like `--patterns` itself does. `offsets` still accepts a path or inline JSON.
+  - Agent ABI 3 (`AGENT_ABI_VERSION`): every agent message carries a concrete record `protocol` and a hook executor may report that it installed nothing; rebuild custom bundles (`python dev/generate_agent_types.py`, `./dev/compile_agent.sh`).
+  - `dev/compile_agent.sh` builds the slim Wine bundle in a private staging directory instead of temporarily swapping the tracked `tsconfig.json`.
+  - Behaviour change: an explicit pcap format now wins over the `-p` extension; `FriTap.pcapng("a.pcap")` writes pcapng (with a warning) instead of classic pcap.
 
 ### Fixed
+  - SSH (OpenSSH): `ssh` no longer dies right after start under friTap; offset probes called the target's `sshbuf_len()` on non-buffers, which OpenSSH answers with `raise(SIGSEGV)`. Buffers are now read by struct with guarded reads.
+  - SSH (OpenSSH): keys and packets from a spawned `ssh` are no longer lost; its `closefrom(3)` closed the agent's channel, so friTap now keeps the agent's descriptors open across `closefrom()` (Linux).
+  - SSH (OpenSSH): cookies are read from `ssh->kex->my/peer` (KEXINIT bodies without a type byte) instead of a wrong `state->kex` walk, and `SHARED_SECRET` is written without the 4-byte length prefix, so Wireshark derives the right keys.
+  - SSH plaintext PCAP: outgoing/incoming packets are matched by their real layout at the hook points and written as RFC 4253 frames (synthetic padding).
+  - SSH (OpenSSH): the per-direction key fallback read from `struct newkeys` found nothing. `readCString(31)` read past the cipher name's NUL, and chacha20-poly1305's `iv_len` of 0 was rejected.
+  - SSH (OpenSSH 8.x, e.g. Ubuntu 22.04): buffers were rejected because `struct sshbuf` still has `dont_free` before `refcount`. Both layouts are accepted now.
+  - SSH (OpenSSH): the `closefrom()` guard no longer fails with "already replaced this function" when ssh's own `closefrom` is also the global lookup result.
+  - arm64 string-xref scans (BoringSSL tier 4, QUICHE STREAM-frame locator, SSH anchors) found nothing on Frida <= 17.15 (the release for Python 3.10). Those Frida versions reject a match pattern that starts with a wildcard byte.
+  - A gated child friTap does not instrument stays tracked until its resume returns, so a teardown racing that resume still resumes it.
   - `SSL_read_ex` records (e.g. CPython) were labelled as writes; read/write direction now comes from one shared list of hook names.
   - A TLS 1.3 connection no longer splits into a request flow and a response flow in legacy mode when only the responses carry a session id.
+  - Records are never labelled with protocol `auto` or `all` (the `--protocol` hook selection): the router uses the hook's own protocol tag, falling back to the message type's protocol, so e.g. SSH and Signal records under `--protocol auto` are labelled `ssh` / `signal`.
+  - Agent API: capture option files (`protocol_options.offsets` / `patterns`) are resolved inside the `--root` sandbox like every other path.
+  - pcap vs pcapng is decided in one place: `-p out.bin` with pcapng requested no longer gets a classic pcap header and a pcapng header in the same file, and `-f` finalization, its DSB key injection and the Windows LSASS helper now use the same format.
+  - `capture_status` under automatic protocol detection no longer makes speculative hooks look like protocol use: e.g. the RC4 hooks on libssl/libcrypto now show as `idle` and outside `protocols_in_use`.
+  - wolfSSL, GnuTLS, NSS and legacy Android Cronet write records carry only the bytes the call actually wrote: partial writes and `WANT_WRITE`/`EAGAIN` retries no longer duplicate plaintext.
+  - GnuTLS: a record buffered by `GNUTLS_E_AGAIN`/`GNUTLS_E_INTERRUPTED` and flushed by a `NULL`/0 retry is now captured (once).
+  - Go TLS plaintext hooks (not yet installed by default) read their arguments from Go's register ABI instead of the C argument slots.
+  - Modern Cronet (`--modern`) `SSL_write` records carry only the bytes the call wrote, like the legacy Cronet hook.
+  - Go TLS on arm64: keys are logged again; the secret was read from the client random's capacity register (X5/X6 instead of X6/X7).
+  - Go TLS on arm64: `writeKeyLog` and `writeRecordLocked` hooks no longer fail with "unable to intercept function"; they fall back to the instruction after Go's stack check.
+  - Go TLS: symbols that are not dynamic exports (the usual case) are found again via the debug-symbol and export fallbacks, and a found `writeKeyLog` no longer aborts the legacy Go hooker.
+  - Go TLS, stripped binaries (legacy and `--modern`): keys are logged from the byte-pattern match of `writeKeyLog`, read from Go's registers like the symbol path (they were read from the C argument slots). New x64/arm64 patterns match Go 1.18-1.26, and `--modern` now runs the pattern fallback instead of skipping key extraction.
+  - `--modern` Go TLS plaintext: no return hooks on Go functions (goroutines can move between threads); writes come from `writeRecordLocked` and reads from the copy inside `(*Conn).Read`, with Go register arguments on x64 and arm64. Records still need `--enable_default_fd`.
+  - Go TLS on 32-bit x86 and ARM (`GOARCH=386`/`arm`): `writeKeyLog` keys are read from Go's stack arguments (these targets have no register ABI). Plaintext hooks stay off on these targets.
+  - Go TLS on legacy Linux and Android: without `-k`, no key hooks are installed for stripped binaries (the pattern path ignored the setting), and the symbol fallback now hooks BoringSSL's `ssl_log_secret` with C arguments, not Go argument slots.
+  - Go TLS on arm64: a hooked Go function no longer overruns the goroutine stack (crashes with "unexpected return pc" / SIGBUS, mostly with `-p`); its stack check is widened so Go grows the stack before the hook runs.
+  - "found & will be hooked" console lines name the protocol (e.g. `(tls)`, `(rc4)`), and a library is reported only for protocols whose hooks were installed: without `-k` the RC4 key hooks install nothing, so rc4 no longer appears as an idle protocol.
+  - Flows are stamped with the library detected for their own protocol: under `--protocol auto` an RC4/SSH library announcement no longer relabels TLS/QUIC flows (QUIC falls back to the TLS-family library).
+  - `-f` with a pcapng (or BPF-filtered pcap) output no longer leaves the `_<name>` staging capture next to the output; it is kept only when it could not be converted, and its path is logged.
+  - The full-capture hint matches the output format: a pcapng says the keys are embedded and Wireshark decrypts it directly; a pcap points at the `-k` keylog file.
 
 ## [2.6.1] - 2026-11-02
 

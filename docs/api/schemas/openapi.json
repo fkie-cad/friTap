@@ -1,0 +1,3012 @@
+{
+  "components": {
+    "schemas": {
+      "Error": {
+        "additionalProperties": true,
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "error_type": {
+            "type": "string"
+          },
+          "exit_code": {
+            "type": "integer"
+          },
+          "hint": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error",
+          "error_type",
+          "exit_code"
+        ],
+        "type": "object"
+      },
+      "GenericResult": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "ToolDescriptor": {
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "mutating": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "params_schema": {
+            "type": "object"
+          },
+          "summary": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "summary",
+          "kind",
+          "mutating",
+          "params_schema"
+        ],
+        "type": "object"
+      },
+      "ToolList": {
+        "properties": {
+          "tools": {
+            "items": {
+              "$ref": "#/components/schemas/ToolDescriptor"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "tools"
+        ],
+        "type": "object"
+      },
+      "capture_status_params": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "description": "Id returned by start_capture.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "type": "object"
+      },
+      "capture_status_result": {
+        "properties": {
+          "capture": {
+            "type": "string"
+          },
+          "detach_reason": {
+            "type": "string"
+          },
+          "duration_s": {
+            "type": "integer"
+          },
+          "elapsed_s": {
+            "type": "number"
+          },
+          "ended_by": {
+            "description": "Why the session ended (null while active): target_exited, duration, stopped or error. Only 'error' is a failure.",
+            "enum": [
+              "target_exited",
+              "duration",
+              "stopped",
+              "error",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error": {
+            "type": "object"
+          },
+          "exit_code": {
+            "description": "friTap's exit code: 0 = duration elapsed / stopped, 3 = target exited (normal end, see ended_by).",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "hook_status": {
+            "description": "attached once any protocol's hooks attached (not proof of traffic; see protocols_in_use).",
+            "enum": [
+              "attached",
+              "no_library_seen",
+              "failed"
+            ],
+            "type": "string"
+          },
+          "idle_hooks": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "description": "{protocol: libraries} hooked without any activity (speculative under protocols=auto; not in use).",
+            "type": "object"
+          },
+          "keylog": {
+            "type": "string"
+          },
+          "keylog_files": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "pcap": {
+            "type": "string"
+          },
+          "phases": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "pid": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "protocols": {
+            "additionalProperties": {
+              "properties": {
+                "data_bytes": {
+                  "type": "integer"
+                },
+                "data_events": {
+                  "type": "integer"
+                },
+                "errors": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "hook_status": {
+                  "description": "Hook level only (attached even when idle); read status for in-use.",
+                  "enum": [
+                    "attached",
+                    "no_library_seen",
+                    "failed"
+                  ],
+                  "type": "string"
+                },
+                "keys": {
+                  "type": "integer"
+                },
+                "libraries": {
+                  "description": "Libraries this protocol's hooks attached to.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "other_events": {
+                  "description": "Session / OHTTP / message records of this protocol.",
+                  "type": "integer"
+                },
+                "status": {
+                  "description": "active = keys/plaintext/session records seen (in use); idle = hooks installed but nothing seen -- under protocols=auto hooks are speculative, so idle does NOT mean the target uses this protocol; no_library_seen / failed = not hooked.",
+                  "enum": [
+                    "active",
+                    "idle",
+                    "no_library_seen",
+                    "failed"
+                  ],
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "type": "object"
+          },
+          "protocols_in_use": {
+            "description": "Protocols with keys, plaintext or session records (status active). The answer to 'what does the target use'.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "records": {
+            "type": "integer"
+          },
+          "schema": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "starting",
+              "running",
+              "stopped",
+              "failed"
+            ],
+            "type": "string"
+          },
+          "stderr_log": {
+            "type": "string"
+          },
+          "stderr_tail": {
+            "type": "string"
+          },
+          "tap": {
+            "type": "string"
+          },
+          "tap_bytes": {
+            "type": "integer"
+          },
+          "target": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "export_params": {
+        "additionalProperties": false,
+        "oneOf": [
+          {
+            "required": [
+              "tap"
+            ]
+          },
+          {
+            "required": [
+              "session_id"
+            ]
+          }
+        ],
+        "properties": {
+          "app_protocol": {
+            "description": "Only flows of this application protocol group.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "confirm_secrets": {
+            "default": false,
+            "description": "keylog: confirm writing TLS key material (the server must also allow secrets).",
+            "type": "boolean"
+          },
+          "filter": {
+            "description": "Display filter expression (Wireshark-like syntax).",
+            "minLength": 1,
+            "type": "string"
+          },
+          "format": {
+            "description": "har (HTTP archive), markdown (report) or keylog (secrets).",
+            "enum": [
+              "har",
+              "markdown",
+              "keylog"
+            ],
+            "type": "string"
+          },
+          "include_bodies": {
+            "default": false,
+            "description": "har: embed request/response bodies.",
+            "type": "boolean"
+          },
+          "out": {
+            "description": "Output file path inside the sandbox root.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "overwrite": {
+            "default": false,
+            "description": "Replace an existing output file.",
+            "type": "boolean"
+          },
+          "protocol": {
+            "description": "Only flows carrying this protocol (e.g. tls, http2, mtproto).",
+            "minLength": 1,
+            "type": "string"
+          },
+          "session_id": {
+            "description": "Id of a capture session started with start_capture.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "show_values": {
+            "default": false,
+            "description": "Show raw captured values instead of redacting them.",
+            "type": "boolean"
+          },
+          "tap": {
+            "description": "Path to a .tap capture file (inside the sandbox root).",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "format",
+          "out"
+        ],
+        "type": "object"
+      },
+      "export_result": {
+        "properties": {
+          "bytes": {
+            "type": "integer"
+          },
+          "format": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "schema": {
+            "const": "fritap.export/1"
+          },
+          "sha256": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "get_digest_params": {
+        "additionalProperties": false,
+        "oneOf": [
+          {
+            "required": [
+              "tap"
+            ]
+          },
+          {
+            "required": [
+              "session_id"
+            ]
+          }
+        ],
+        "properties": {
+          "app_protocol": {
+            "description": "Only flows of this application protocol group.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "budget": {
+            "default": 1500,
+            "description": "Approximate token budget; low-volume rows drop first.",
+            "maximum": 8000,
+            "minimum": 100,
+            "type": "integer"
+          },
+          "filter": {
+            "description": "Display filter expression (Wireshark-like syntax).",
+            "minLength": 1,
+            "type": "string"
+          },
+          "focus": {
+            "default": "all",
+            "description": "Findings focus: all, privacy (pii) or security.",
+            "enum": [
+              "all",
+              "privacy",
+              "security"
+            ],
+            "type": "string"
+          },
+          "format": {
+            "default": "json",
+            "description": "json (structured) or md (compact Markdown).",
+            "enum": [
+              "json",
+              "md"
+            ],
+            "type": "string"
+          },
+          "protocol": {
+            "description": "Only flows carrying this protocol (e.g. tls, http2, mtproto).",
+            "minLength": 1,
+            "type": "string"
+          },
+          "session_id": {
+            "description": "Id of a capture session started with start_capture.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "show_values": {
+            "default": false,
+            "description": "Show raw captured values instead of redacting them.",
+            "type": "boolean"
+          },
+          "tap": {
+            "description": "Path to a .tap capture file (inside the sandbox root).",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "get_digest_result": {
+        "properties": {
+          "estimated_tokens": {
+            "type": "integer"
+          },
+          "findings": {
+            "type": "object"
+          },
+          "markdown": {
+            "type": "string"
+          },
+          "notice": {
+            "type": "string"
+          },
+          "params": {
+            "type": "object"
+          },
+          "protocols": {
+            "additionalProperties": {
+              "type": "object"
+            },
+            "type": "object"
+          },
+          "schema": {
+            "enum": [
+              "fritap.digest/2",
+              "fritap.digest_md/1"
+            ]
+          },
+          "source": {
+            "properties": {
+              "file": {
+                "type": "string"
+              },
+              "flows_selected": {
+                "type": "integer"
+              },
+              "flows_total": {
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "truncated": {}
+        },
+        "type": "object"
+      },
+      "get_flow_params": {
+        "additionalProperties": false,
+        "oneOf": [
+          {
+            "required": [
+              "tap"
+            ]
+          },
+          {
+            "required": [
+              "session_id"
+            ]
+          }
+        ],
+        "properties": {
+          "fields": {
+            "description": "Only these parts (default: all).",
+            "items": {
+              "enum": [
+                "flow",
+                "request",
+                "response",
+                "messages"
+              ],
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "max_bytes": {
+            "default": 4096,
+            "description": "Cap per body/message preview.",
+            "maximum": 16384,
+            "minimum": 64,
+            "type": "integer"
+          },
+          "ref": {
+            "description": "Flow ref from get_digest/list_endpoints, e.g. f12 or f12#m3.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "session_id": {
+            "description": "Id of a capture session started with start_capture.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "show_values": {
+            "default": false,
+            "description": "Show raw captured values instead of redacting them.",
+            "type": "boolean"
+          },
+          "tap": {
+            "description": "Path to a .tap capture file (inside the sandbox root).",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "ref"
+        ],
+        "type": "object"
+      },
+      "get_flow_result": {
+        "properties": {
+          "flow": {
+            "type": "object"
+          },
+          "messages": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "messages_total": {
+            "type": "integer"
+          },
+          "notice": {
+            "type": "string"
+          },
+          "params": {
+            "type": "object"
+          },
+          "request": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "response": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "schema": {
+            "const": "fritap.flow/1"
+          },
+          "source": {
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
+      "list_apps_params": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "description": "Opaque cursor from a previous page's next_cursor.",
+            "pattern": "^[0-9]+$",
+            "type": "string"
+          },
+          "device": {
+            "description": "'local' (default), 'usb' (first USB device) or a Frida device id.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "host": {
+            "description": "Remote frida-server as ip:port (wins over device).",
+            "minLength": 1,
+            "type": "string"
+          },
+          "limit": {
+            "default": 50,
+            "description": "Maximum rows per page.",
+            "maximum": 200,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "running": {
+            "default": false,
+            "description": "Only list running apps/processes.",
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "list_apps_result": {
+        "properties": {
+          "apps": {
+            "items": {
+              "properties": {
+                "identifier": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "kind": {
+                  "enum": [
+                    "app",
+                    "process"
+                  ],
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "pid": {
+                  "type": "integer"
+                }
+              },
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "device": {
+            "type": "object"
+          },
+          "next_cursor": {
+            "type": "string"
+          },
+          "schema": {
+            "type": "string"
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "list_devices_params": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "list_devices_result": {
+        "properties": {
+          "devices": {
+            "items": {
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "schema": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "list_endpoints_params": {
+        "additionalProperties": false,
+        "oneOf": [
+          {
+            "required": [
+              "tap"
+            ]
+          },
+          {
+            "required": [
+              "session_id"
+            ]
+          }
+        ],
+        "properties": {
+          "app_protocol": {
+            "description": "Only flows of this application protocol group.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "cursor": {
+            "description": "Opaque cursor from a previous page's next_cursor.",
+            "pattern": "^[0-9]+$",
+            "type": "string"
+          },
+          "filter": {
+            "description": "Display filter expression (Wireshark-like syntax).",
+            "minLength": 1,
+            "type": "string"
+          },
+          "limit": {
+            "default": 20,
+            "description": "Maximum rows per page.",
+            "maximum": 200,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "protocol": {
+            "description": "Only flows carrying this protocol (e.g. tls, http2, mtproto).",
+            "minLength": 1,
+            "type": "string"
+          },
+          "session_id": {
+            "description": "Id of a capture session started with start_capture.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "tap": {
+            "description": "Path to a .tap capture file (inside the sandbox root).",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "list_endpoints_result": {
+        "properties": {
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "notice": {
+            "type": "string"
+          },
+          "rows": {
+            "items": {
+              "properties": {
+                "body_kind": {
+                  "type": "string"
+                },
+                "bytes": {
+                  "type": "integer"
+                },
+                "count": {
+                  "type": "integer"
+                },
+                "protocol": {
+                  "type": "string"
+                },
+                "ref": {
+                  "type": "string"
+                },
+                "status": {
+                  "additionalProperties": {
+                    "type": "integer"
+                  },
+                  "type": "object"
+                },
+                "untrusted": {
+                  "type": "object"
+                }
+              },
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "schema": {
+            "const": "fritap.endpoints/1"
+          },
+          "source": {
+            "properties": {
+              "file": {
+                "type": "string"
+              },
+              "flows_selected": {
+                "type": "integer"
+              },
+              "flows_total": {
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "list_findings_params": {
+        "additionalProperties": false,
+        "oneOf": [
+          {
+            "required": [
+              "tap"
+            ]
+          },
+          {
+            "required": [
+              "session_id"
+            ]
+          }
+        ],
+        "properties": {
+          "app_protocol": {
+            "description": "Only flows of this application protocol group.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "category": {
+            "description": "Only this finding category.",
+            "enum": [
+              "network",
+              "pii",
+              "protocol",
+              "secret",
+              "uncategorized"
+            ],
+            "type": "string"
+          },
+          "cursor": {
+            "description": "Opaque cursor from a previous page's next_cursor.",
+            "pattern": "^[0-9]+$",
+            "type": "string"
+          },
+          "filter": {
+            "description": "Display filter expression (Wireshark-like syntax).",
+            "minLength": 1,
+            "type": "string"
+          },
+          "limit": {
+            "default": 20,
+            "description": "Maximum rows per page.",
+            "maximum": 200,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "min_severity": {
+            "description": "Only findings at least this severe.",
+            "enum": [
+              "critical",
+              "high",
+              "medium",
+              "low",
+              "info"
+            ],
+            "type": "string"
+          },
+          "protocol": {
+            "description": "Only flows carrying this protocol (e.g. tls, http2, mtproto).",
+            "minLength": 1,
+            "type": "string"
+          },
+          "session_id": {
+            "description": "Id of a capture session started with start_capture.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "show_values": {
+            "default": false,
+            "description": "Show raw captured values instead of redacting them.",
+            "type": "boolean"
+          },
+          "tap": {
+            "description": "Path to a .tap capture file (inside the sandbox root).",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "list_findings_result": {
+        "properties": {
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "notice": {
+            "type": "string"
+          },
+          "rows": {
+            "items": {
+              "properties": {
+                "category": {
+                  "type": "string"
+                },
+                "count": {
+                  "type": "integer"
+                },
+                "ref": {
+                  "type": "string"
+                },
+                "severity": {
+                  "type": "string"
+                },
+                "source": {
+                  "type": "string"
+                },
+                "untrusted": {
+                  "type": "object"
+                }
+              },
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "schema": {
+            "const": "fritap.findings/1"
+          },
+          "source": {
+            "properties": {
+              "file": {
+                "type": "string"
+              },
+              "flows_selected": {
+                "type": "integer"
+              },
+              "flows_total": {
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "summary": {
+            "properties": {
+              "by_category": {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              "by_severity": {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              "total": {
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "list_protocols_params": {
+        "additionalProperties": false,
+        "oneOf": [
+          {
+            "required": [
+              "tap"
+            ]
+          },
+          {
+            "required": [
+              "session_id"
+            ]
+          }
+        ],
+        "properties": {
+          "session_id": {
+            "description": "Id of a capture session started with start_capture.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "tap": {
+            "description": "Path to a .tap capture file (inside the sandbox root).",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "list_protocols_result": {
+        "properties": {
+          "app_protocols": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object"
+          },
+          "known_protocols": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "protocols": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object"
+          },
+          "schema": {
+            "const": "fritap.protocols/1"
+          },
+          "source": {
+            "properties": {
+              "file": {
+                "type": "string"
+              },
+              "flows_selected": {
+                "type": "integer"
+              },
+              "flows_total": {
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
+      "list_sessions_params": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "list_sessions_result": {
+        "properties": {
+          "schema": {
+            "type": "string"
+          },
+          "sessions": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "list_supported_protocols_params": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "list_supported_protocols_result": {
+        "properties": {
+          "capture_modes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "default": {
+            "type": "string"
+          },
+          "protocols": {
+            "items": {
+              "properties": {
+                "backends": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "capture_modes": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "category": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "display_name": {
+                  "type": "string"
+                },
+                "implies": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "options": {
+                  "items": {
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "platforms": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "schema": {
+            "const": "fritap.capture_protocols/1"
+          }
+        },
+        "type": "object"
+      },
+      "mark_phase_params": {
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "session_id": {
+            "description": "Id returned by start_capture.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "label"
+        ],
+        "type": "object"
+      },
+      "mark_phase_result": {
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "schema": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "t": {
+            "description": "Epoch seconds of the marker.",
+            "type": "number"
+          },
+          "t_rel": {
+            "description": "Seconds since the capture started (null if not started).",
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "start_capture_params": {
+        "additionalProperties": false,
+        "properties": {
+          "args": {
+            "description": "Arguments for a spawned executable (spawn=true only).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "capture": {
+            "default": "plaintext",
+            "description": "keys: + keylog; plaintext: .tap only; full: + keylog + pcap.",
+            "enum": [
+              "keys",
+              "plaintext",
+              "full"
+            ],
+            "type": "string"
+          },
+          "device": {
+            "description": "'local' (default), 'usb' (first USB device) or a Frida device id.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "duration_s": {
+            "default": 60,
+            "description": "The capture stops cleanly after this many seconds.",
+            "maximum": 3600,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "follow_exec": {
+            "default": true,
+            "description": "Spawn mode: follow the target across exec().",
+            "type": "boolean"
+          },
+          "host": {
+            "description": "Remote frida-server as ip:port (wins over device).",
+            "minLength": 1,
+            "type": "string"
+          },
+          "protocol_options": {
+            "additionalProperties": false,
+            "description": "Protocol capture options; see list_supported_protocols.",
+            "properties": {
+              "force_scan": {
+                "description": "Modules to force the BoringSSL pattern scan on (regex with 're:').",
+                "items": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "library_scan": {
+                "description": "Pre-scan for renamed/statically linked TLS libraries.",
+                "type": "boolean"
+              },
+              "no_loader_hook": {
+                "description": "Android: skip the android_dlopen_ext loader hook.",
+                "type": "boolean"
+              },
+              "offsets": {
+                "description": "Hook offsets JSON file or inline JSON string.",
+                "minLength": 1,
+                "type": "string"
+              },
+              "pairip_safe": {
+                "description": "Android: minimal scan-free hooks for PairIP-protected apps.",
+                "type": "boolean"
+              },
+              "patterns": {
+                "description": "Byte-pattern JSON file (path inside the sandbox root; no inline JSON).",
+                "minLength": 1,
+                "type": "string"
+              },
+              "quic_only": {
+                "description": "Install only QUIC hooks (Android/Linux).",
+                "type": "boolean"
+              }
+            },
+            "type": "object"
+          },
+          "protocols": {
+            "description": "Protocols to hook; omit for automatic detection.",
+            "items": {
+              "enum": [
+                "custom",
+                "ipsec",
+                "mtproto",
+                "rc4",
+                "ssh",
+                "telegram",
+                "tls"
+              ],
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "spawn": {
+            "default": true,
+            "description": "Spawn the target (true) or attach to a running process.",
+            "type": "boolean"
+          },
+          "target": {
+            "description": "App identifier, process name, pid or executable path.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "target"
+        ],
+        "type": "object"
+      },
+      "start_capture_result": {
+        "properties": {
+          "argv": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "schema": {
+            "type": "string"
+          },
+          "session_dir": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "tap": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "stop_capture_params": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "description": "Id returned by start_capture.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "type": "object"
+      },
+      "stop_capture_result": {
+        "properties": {
+          "capture": {
+            "type": "string"
+          },
+          "detach_reason": {
+            "type": "string"
+          },
+          "duration_s": {
+            "type": "integer"
+          },
+          "elapsed_s": {
+            "type": "number"
+          },
+          "ended_by": {
+            "description": "Why the session ended (null while active): target_exited, duration, stopped or error. Only 'error' is a failure.",
+            "enum": [
+              "target_exited",
+              "duration",
+              "stopped",
+              "error",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error": {
+            "type": "object"
+          },
+          "exit_code": {
+            "description": "friTap's exit code: 0 = duration elapsed / stopped, 3 = target exited (normal end, see ended_by).",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "hook_status": {
+            "description": "attached once any protocol's hooks attached (not proof of traffic; see protocols_in_use).",
+            "enum": [
+              "attached",
+              "no_library_seen",
+              "failed"
+            ],
+            "type": "string"
+          },
+          "idle_hooks": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "description": "{protocol: libraries} hooked without any activity (speculative under protocols=auto; not in use).",
+            "type": "object"
+          },
+          "keylog": {
+            "type": "string"
+          },
+          "keylog_files": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "pcap": {
+            "type": "string"
+          },
+          "phases": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "pid": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "protocols": {
+            "additionalProperties": {
+              "properties": {
+                "data_bytes": {
+                  "type": "integer"
+                },
+                "data_events": {
+                  "type": "integer"
+                },
+                "errors": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "hook_status": {
+                  "description": "Hook level only (attached even when idle); read status for in-use.",
+                  "enum": [
+                    "attached",
+                    "no_library_seen",
+                    "failed"
+                  ],
+                  "type": "string"
+                },
+                "keys": {
+                  "type": "integer"
+                },
+                "libraries": {
+                  "description": "Libraries this protocol's hooks attached to.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "other_events": {
+                  "description": "Session / OHTTP / message records of this protocol.",
+                  "type": "integer"
+                },
+                "status": {
+                  "description": "active = keys/plaintext/session records seen (in use); idle = hooks installed but nothing seen -- under protocols=auto hooks are speculative, so idle does NOT mean the target uses this protocol; no_library_seen / failed = not hooked.",
+                  "enum": [
+                    "active",
+                    "idle",
+                    "no_library_seen",
+                    "failed"
+                  ],
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "type": "object"
+          },
+          "protocols_in_use": {
+            "description": "Protocols with keys, plaintext or session records (status active). The answer to 'what does the target use'.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "records": {
+            "type": "integer"
+          },
+          "schema": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "starting",
+              "running",
+              "stopped",
+              "failed"
+            ],
+            "type": "string"
+          },
+          "stderr_log": {
+            "type": "string"
+          },
+          "stderr_tail": {
+            "type": "string"
+          },
+          "tap": {
+            "type": "string"
+          },
+          "tap_bytes": {
+            "type": "integer"
+          },
+          "target": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "bearer": {
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "title": "friTap agent API",
+    "version": "2.6.3"
+  },
+  "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "openapi": "3.1.0",
+  "paths": {
+    "/healthz": {
+      "get": {
+        "operationId": "healthz",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenericResult"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "Liveness probe"
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "operationId": "openapi",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenericResult"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "This OpenAPI document"
+      }
+    },
+    "/v1/tools": {
+      "get": {
+        "operationId": "list_tools",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolList"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "List every tool with its parameter schema"
+      }
+    },
+    "/v1/tools/capture_status": {
+      "post": {
+        "operationId": "capture_status",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/capture_status_params"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/capture_status_result"
+                }
+              }
+            },
+            "description": "Tool result"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid parameters or request body"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing or wrong bearer token"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Forbidden by server policy (sandbox root, capture, secrets)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unknown tool or resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict (e.g. capture still running)"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Request body too large"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Tool runtime error"
+          }
+        },
+        "summary": "State, hook status, protocols in use (vs. idle hooks) and per-protocol counters of a session.",
+        "tags": [
+          "capture"
+        ],
+        "x-fritap-mutating": false
+      }
+    },
+    "/v1/tools/export": {
+      "post": {
+        "operationId": "export",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/export_params"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/export_result"
+                }
+              }
+            },
+            "description": "Tool result"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid parameters or request body"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing or wrong bearer token"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Forbidden by server policy (sandbox root, capture, secrets)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unknown tool or resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict (e.g. capture still running)"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Request body too large"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Tool runtime error"
+          }
+        },
+        "summary": "Write a capture to a file as har, markdown or keylog; returns path and sha256.",
+        "tags": [
+          "export"
+        ],
+        "x-fritap-mutating": true
+      }
+    },
+    "/v1/tools/get_digest": {
+      "post": {
+        "operationId": "get_digest",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/get_digest_params"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/get_digest_result"
+                }
+              }
+            },
+            "description": "Tool result"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid parameters or request body"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing or wrong bearer token"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Forbidden by server policy (sandbox root, capture, secrets)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unknown tool or resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict (e.g. capture still running)"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Request body too large"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Tool runtime error"
+          }
+        },
+        "summary": "Start here: token-budgeted summary of hosts, endpoints, messages and findings.",
+        "tags": [
+          "read"
+        ],
+        "x-fritap-mutating": false
+      }
+    },
+    "/v1/tools/get_flow": {
+      "post": {
+        "operationId": "get_flow",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/get_flow_params"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/get_flow_result"
+                }
+              }
+            },
+            "description": "Tool result"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid parameters or request body"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing or wrong bearer token"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Forbidden by server policy (sandbox root, capture, secrets)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unknown tool or resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict (e.g. capture still running)"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Request body too large"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Tool runtime error"
+          }
+        },
+        "summary": "One flow by ref (f12 or f12#m3): metadata, request/response, messages.",
+        "tags": [
+          "read"
+        ],
+        "x-fritap-mutating": false
+      }
+    },
+    "/v1/tools/list_apps": {
+      "post": {
+        "operationId": "list_apps",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/list_apps_params"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/list_apps_result"
+                }
+              }
+            },
+            "description": "Tool result"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid parameters or request body"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing or wrong bearer token"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Forbidden by server policy (sandbox root, capture, secrets)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unknown tool or resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict (e.g. capture still running)"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Request body too large"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Tool runtime error"
+          }
+        },
+        "summary": "List installed apps (or processes) of a device; running ones first.",
+        "tags": [
+          "discover"
+        ],
+        "x-fritap-mutating": false
+      }
+    },
+    "/v1/tools/list_devices": {
+      "post": {
+        "operationId": "list_devices",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/list_devices_params"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/list_devices_result"
+                }
+              }
+            },
+            "description": "Tool result"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid parameters or request body"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing or wrong bearer token"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Forbidden by server policy (sandbox root, capture, secrets)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unknown tool or resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict (e.g. capture still running)"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Request body too large"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Tool runtime error"
+          }
+        },
+        "summary": "List Frida devices (id, name, type) usable as capture device.",
+        "tags": [
+          "discover"
+        ],
+        "x-fritap-mutating": false
+      }
+    },
+    "/v1/tools/list_endpoints": {
+      "post": {
+        "operationId": "list_endpoints",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/list_endpoints_params"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/list_endpoints_result"
+                }
+              }
+            },
+            "description": "Tool result"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid parameters or request body"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing or wrong bearer token"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Forbidden by server policy (sandbox root, capture, secrets)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unknown tool or resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict (e.g. capture still running)"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Request body too large"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Tool runtime error"
+          }
+        },
+        "summary": "Paginated endpoint clusters (method, path template, key shapes), busiest first.",
+        "tags": [
+          "read"
+        ],
+        "x-fritap-mutating": false
+      }
+    },
+    "/v1/tools/list_findings": {
+      "post": {
+        "operationId": "list_findings",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/list_findings_params"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/list_findings_result"
+                }
+              }
+            },
+            "description": "Tool result"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid parameters or request body"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing or wrong bearer token"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Forbidden by server policy (sandbox root, capture, secrets)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unknown tool or resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict (e.g. capture still running)"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Request body too large"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Tool runtime error"
+          }
+        },
+        "summary": "Paginated analyzer findings (secrets, PII, IOCs), most severe first; values redacted.",
+        "tags": [
+          "read"
+        ],
+        "x-fritap-mutating": false
+      }
+    },
+    "/v1/tools/list_protocols": {
+      "post": {
+        "operationId": "list_protocols",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/list_protocols_params"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/list_protocols_result"
+                }
+              }
+            },
+            "description": "Tool result"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid parameters or request body"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing or wrong bearer token"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Forbidden by server policy (sandbox root, capture, secrets)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unknown tool or resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict (e.g. capture still running)"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Request body too large"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Tool runtime error"
+          }
+        },
+        "summary": "Protocols and app protocols in a capture, with flow counts; valid slice names.",
+        "tags": [
+          "read"
+        ],
+        "x-fritap-mutating": false
+      }
+    },
+    "/v1/tools/list_sessions": {
+      "post": {
+        "operationId": "list_sessions",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/list_sessions_params"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/list_sessions_result"
+                }
+              }
+            },
+            "description": "Tool result"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid parameters or request body"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing or wrong bearer token"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Forbidden by server policy (sandbox root, capture, secrets)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unknown tool or resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict (e.g. capture still running)"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Request body too large"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Tool runtime error"
+          }
+        },
+        "summary": "List the capture sessions of this server.",
+        "tags": [
+          "capture"
+        ],
+        "x-fritap-mutating": false
+      }
+    },
+    "/v1/tools/list_supported_protocols": {
+      "post": {
+        "operationId": "list_supported_protocols",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/list_supported_protocols_params"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/list_supported_protocols_result"
+                }
+              }
+            },
+            "description": "Tool result"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid parameters or request body"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing or wrong bearer token"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Forbidden by server policy (sandbox root, capture, secrets)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unknown tool or resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict (e.g. capture still running)"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Request body too large"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Tool runtime error"
+          }
+        },
+        "summary": "List protocols friTap can capture, with platforms and capture options.",
+        "tags": [
+          "discover"
+        ],
+        "x-fritap-mutating": false
+      }
+    },
+    "/v1/tools/mark_phase": {
+      "post": {
+        "operationId": "mark_phase",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/mark_phase_params"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/mark_phase_result"
+                }
+              }
+            },
+            "description": "Tool result"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid parameters or request body"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing or wrong bearer token"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Forbidden by server policy (sandbox root, capture, secrets)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unknown tool or resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict (e.g. capture still running)"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Request body too large"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Tool runtime error"
+          }
+        },
+        "summary": "Record a timestamped phase label (e.g. 'login') in a running capture.",
+        "tags": [
+          "capture"
+        ],
+        "x-fritap-mutating": true
+      }
+    },
+    "/v1/tools/start_capture": {
+      "post": {
+        "operationId": "start_capture",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/start_capture_params"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/start_capture_result"
+                }
+              }
+            },
+            "description": "Tool result"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid parameters or request body"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing or wrong bearer token"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Forbidden by server policy (sandbox root, capture, secrets)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unknown tool or resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict (e.g. capture still running)"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Request body too large"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Tool runtime error"
+          }
+        },
+        "summary": "Start a live capture of a target in the background; returns a session_id.",
+        "tags": [
+          "capture"
+        ],
+        "x-fritap-mutating": true
+      }
+    },
+    "/v1/tools/stop_capture": {
+      "post": {
+        "operationId": "stop_capture",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/stop_capture_params"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/stop_capture_result"
+                }
+              }
+            },
+            "description": "Tool result"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid parameters or request body"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing or wrong bearer token"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Forbidden by server policy (sandbox root, capture, secrets)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unknown tool or resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict (e.g. capture still running)"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Request body too large"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Tool runtime error"
+          }
+        },
+        "summary": "Stop a capture session (SIGINT, clean teardown) and return its final status.",
+        "tags": [
+          "capture"
+        ],
+        "x-fritap-mutating": true
+      }
+    }
+  }
+}

@@ -15,7 +15,6 @@ from unittest.mock import MagicMock
 import pytest
 
 from friTap.exit_codes import EXIT_TARGET_DETACHED
-
 from tests.unit import test_memory_scan_teardown as _teardown
 from tests.unit.test_memory_scan_teardown import _FakePcap, _make_logger  # noqa: F401
 

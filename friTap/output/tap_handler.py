@@ -73,7 +73,12 @@ class TapOutputHandler(OutputHandler):
 
     def _subscribe_collector(self, event_bus: "EventBus") -> None:
         """Same event wiring as the TUI's live capture (minus FlowEvent re-emit)."""
-        from ..events import DatalogEvent, LibraryDetectedEvent, OhttpEvent, SessionEvent
+        from ..events import (
+            DatalogEvent,
+            LibraryDetectedEvent,
+            OhttpEvent,
+            SessionEvent,
+        )
         event_bus.subscribe(DatalogEvent, self._collector.on_data)
         event_bus.subscribe(OhttpEvent, self._collector.on_ohttp)
         event_bus.subscribe(LibraryDetectedEvent, self._collector.on_library_detected)

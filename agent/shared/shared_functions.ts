@@ -1,10 +1,11 @@
 import { log, devlog, devlog_error, hookBreadcrumb } from "../util/log.js";
 import { toHexString } from "../util/hex.js";
-import { AF_INET, AF_INET6, AddressFamilyMapping, unwantedFDs, Platform } from "./shared_structures.js";
+import { AF_INET, AF_INET6, AddressFamilyMapping, unwantedFDs, Platform, hookExecutorInstalled, isPendingHookOutcome } from "./shared_structures.js";
 import { HookRegistration, HookRegistry, RequestedProtocol, protocolLabel } from "./registry.js";
 import { Java, JavaWrapper } from "./javalib.js";
-import { offsets, ohttp_enabled, selected_protocol, selected_protocols } from "./shared_structures.js";
-import { announceSiblingCoverage, executorModuleName, isModuleHooked, isSupplementaryHookInstalled, recordHookInstalled } from "./library_scanner.js";
+import { offsets, ohttp_enabled, resolveProtocolTag, selected_protocol, selected_protocols } from "./shared_structures.js";
+import { announceSiblingCoverage, executorModuleName, isModuleHooked, isRowHandled, recordHookInstalled } from "./library_scanner.js";
+import { executeHookRow, recordProtocolOf } from "./record_protocol.js";
 import { isDeepSymbolResolutionEnabled } from "./deep_symbol_resolution.js";
 import { warnAntiTamper } from "../util/anti_tamper.js";
 import { watchFunctionEntries } from "../util/hw_breakpoint.js";
@@ -140,13 +141,11 @@ export function ssl_library_loader(platform: Platform, hookRegistry: HookRegistr
         }
 
         for (let match of matches) {
-            if (isSupplementaryHookInstalled(match, module_name, protocolTag)) {
+            if (isRowHandled(match, module_name, protocolTag)) {
                 devlog(`${module_name}: ${match.library} already installed, skipping`);
                 continue;
             }
             try {
-                log(`${module_name} found & will be hooked on ${platformOs}!`)
-
                 try {
                     Process.getModuleByName(module_name).ensureInitialized();
                 } catch (error) {
@@ -159,15 +158,7 @@ export function ssl_library_loader(platform: Platform, hookRegistry: HookRegistr
                 // instrumented library instead of an empty breadcrumb (#64).
                 hookBreadcrumb(`install-tls-hooks: ${module_name}`);
 
-                // Invoke the hook function
-                match.hookFn(module_name, is_base_hook);
-                // Supplementary hooks are recorded under their own tag, so
-                // they never mark the module as covered for protocolTag.
-                recordHookInstalled(match, module_name, protocolTag);
-
-                // Notify host that a library was detected
-                send({contentType: "library_detected", library: module_name, path: modulePath || "", protocol: protocolTag});
-
+                installHookRow(match, module_name, is_base_hook, protocolTag, modulePath, `found & will be hooked on ${platformOs}`);
             } catch (error) {
                 if (checkNumberOfExports(module_name) > 3) {
                     devlog_error(`error: skipping module ${module_name}`)
@@ -176,6 +167,41 @@ export function ssl_library_loader(platform: Platform, hookRegistry: HookRegistr
             }
         }
     }
+}
+
+/**
+ * Run one registry row's executor on `moduleName`, then announce and report it. The row is
+ * recorded as handled either way (supplementary rows under their own tag, so they never
+ * mark the module as covered for protocolTag), so a declined row is not re-run on every
+ * rescan; the executor runs under the row's record protocol (record_protocol.ts), so every
+ * listener it attaches tags its records with it; the console line — naming that protocol, since one module can match
+ * several (libssl: tls and rc4 under --protocol auto) — and library_detected are emitted
+ * only when the executor installed hooks (ModuleHookingType: `false` = nothing installed).
+ * An executor exception propagates: nothing is recorded or reported.
+ */
+function installHookRow(match: HookRegistration, moduleName: string, is_base_hook: boolean,
+                        protocolTag: string, modulePath: string | undefined, announcement: string): void {
+    const protocol = resolveProtocolTag(protocolTag, recordProtocolOf(match));
+    const outcome = executeHookRow(match, moduleName, is_base_hook);
+    recordHookInstalled(match, moduleName, protocolTag);
+    const report = (settled: unknown) => reportHookRow(match, moduleName, protocol, modulePath, announcement, settled);
+    if (isPendingHookOutcome(outcome)) {
+        outcome.then(report, (e: unknown) => devlog(`${moduleName}: ${match.library} install failed: ${e}`));
+        return;
+    }
+    report(outcome);
+}
+
+/** Announce and report (library_detected) a row once its executor's verdict is known. */
+function reportHookRow(match: HookRegistration, moduleName: string, protocol: string,
+                       modulePath: string | undefined, announcement: string, outcome: unknown): void {
+    if (!hookExecutorInstalled(outcome)) {
+        devlog(`${moduleName}: ${match.library} installed no ${protocol} hooks; not reported`);
+        return;
+    }
+    log(`${moduleName} ${announcement} (${protocol})!`);
+    // Notify host that a library was detected
+    send({contentType: "library_detected", library: moduleName, path: modulePath || "", protocol});
 }
 
 /**
@@ -451,17 +477,12 @@ export function hookDynamicLoader(
                         announceSiblingCoverage(drop.moduleName, drop.siblingName, drop.reason, protocolTag);
                     }
                     for (let match of matches) {
-                        if (isSupplementaryHookInstalled(match, moduleName, protocolTag)) {
+                        if (isRowHandled(match, moduleName, protocolTag)) {
                             devlog(`${moduleName}: ${match.library} already installed, skipping (dynamic loader)`);
                             continue;
                         }
-                        log(`${moduleName} was loaded & will be hooked on ${config.platformLabel}!`);
                         try {
-                            match.hookFn(moduleName, is_base_hook);
-                            recordHookInstalled(match, moduleName, protocolTag);
-
-                            // Notify host that a library was detected
-                            send({contentType: "library_detected", library: moduleName, path: modulePath || "", protocol: protocolTag});
+                            installHookRow(match, moduleName, is_base_hook, protocolTag, modulePath, `was loaded & will be hooked on ${config.platformLabel}`);
                         } catch (error_msg) {
                             devlog(`${config.platformLabel} dynamic loader error: ${error_msg}`);
                         }
@@ -583,6 +604,15 @@ export function checkNumberOfExports(moduleName: string): number {
         devlog(`Error checking exports for module "${moduleName}": ${error}`);
         return -1;
     }
+}
+
+/**
+ * Symbol-vs-pattern heuristic: a module exporting more than five symbols is treated as
+ * symbolized (hook by name); fewer means stripped (hook by byte pattern). Shared by both
+ * hook paths; agent/legacy/shared/shared_functions_legacy.ts keeps its own copy.
+ */
+export function hasMoreThanFiveExports(moduleName: string): boolean {
+    return checkNumberOfExports(moduleName) > 5;
 }
 
 export function readAddresses(moduleName: string, library_method_mapping: { [key: string]: Array<string> }): { [library_name: string]: { [functionName: string]: NativePointer } } {

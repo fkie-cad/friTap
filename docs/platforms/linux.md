@@ -276,8 +276,8 @@ sudo fritap -k node_keys.log node app.js
 # Python HTTPS requests
 sudo fritap -k python_keys.log python3 -c "import requests; requests.get('https://httpbin.org/get')"
 
-# Go applications
-sudo fritap -k go_keys.log ./my_go_app
+# Go applications (any binary name: found by Go's .go.buildinfo section; plaintext needs -ed)
+sudo fritap -s -k go_keys.log -p go_plain.pcap -ed ./my_go_app
 
 # Java applications
 sudo fritap -k java_keys.log java -jar app.jar

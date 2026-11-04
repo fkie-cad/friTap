@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "bytes": {
+      "type": "integer"
+    },
+    "format": {
+      "type": "string"
+    },
+    "path": {
+      "type": "string"
+    },
+    "schema": {
+      "const": "fritap.export/1"
+    },
+    "sha256": {
+      "type": "string"
+    }
+  },
+  "title": "export result",
+  "type": "object"
+}

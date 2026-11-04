@@ -233,6 +233,26 @@ export function patternByteLength(pattern: string): number {
     return pattern.split(":")[0].trim().split(/\s+/).filter((t) => t.length > 0).length;
 }
 
+/**
+ * `pattern` without its leading wildcard bytes ("??" or mask 00), and how many were
+ * dropped. Frida up to at least 17.15 (the last release for Python 3.10, e.g. Ubuntu
+ * 22.04) rejects a pattern that starts with a wildcard ("invalid match pattern"). Every
+ * ADD/LDR-imm word pattern does, because its first byte holds only register bits, so the
+ * scan used to find nothing on those runtimes. A pattern of wildcards only is kept as is.
+ */
+export function withoutLeadingWildcards(pattern: string): { pattern: string; skipped: number } {
+    const [needleHalf, maskHalf] = pattern.split(":");
+    const tokens = (half: string) => half.trim().split(/\s+/).filter((t) => t.length > 0);
+    const needle = tokens(needleHalf);
+    const mask = maskHalf === undefined ? null : tokens(maskHalf);
+    const isWildcard = (i: number) => needle[i] === "??" || (mask !== null && /^0+$/.test(mask[i] ?? ""));
+    let skipped = 0;
+    while (skipped < needle.length && isWildcard(skipped)) skipped++;
+    if (skipped === 0 || skipped === needle.length) return { pattern, skipped: 0 };
+    const rest = needle.slice(skipped).join(" ");
+    return { pattern: mask === null ? rest : `${rest} : ${mask.slice(skipped).join(" ")}`, skipped };
+}
+
 /** Compile once per pass when Frida's MatchPattern exists (absent under Node tests). */
 function compilePattern(pattern: string): string | MatchPattern {
     try {
@@ -257,7 +277,8 @@ export async function scanRangesChunked(
     yieldFn: () => Promise<void> = yieldToEventLoop,
 ): Promise<void> {
     if (jobs.length === 0) return;
-    const compiled = jobs.map((j) => compilePattern(j.pattern));
+    const shapes = jobs.map((j) => withoutLeadingWildcards(j.pattern));
+    const compiled = shapes.map((shape) => compilePattern(shape.pattern));
     const overlap = Math.max(...jobs.map((j) => patternByteLength(j.pattern))) - 1;
     for (const range of ranges) {
         for (let off = 0; off < range.size; off += chunkBytes) {
@@ -270,8 +291,13 @@ export async function scanRangesChunked(
                 try {
                     hits = Memory.scanSync(chunkStart, scanSize, compiled[i]);
                 } catch (_e) { continue; /* unreadable slice */ }
+                const skipped = shapes[i].skipped;
                 for (const hit of hits) {
-                    if (hit.address.compare(chunkEnd) < 0) jobs[i].onMatch(hit.address);
+                    // The full pattern starts `skipped` bytes before the hit: report it from
+                    // the chunk it starts in (never from before the range).
+                    const start = skipped === 0 ? hit.address : hit.address.sub(skipped);
+                    if (skipped > 0 && start.compare(chunkStart) < 0) continue;
+                    if (start.compare(chunkEnd) < 0) jobs[i].onMatch(start);
                 }
             }
             await yieldFn();
@@ -369,8 +395,9 @@ async function findPointerSlots(
  * Async, native-scan, multi-target counterpart of findStringLoadSites(): for
  * each target, the ADRP addresses of the sequences that materialise it (shape
  * (1)) or load it from a pointer slot (shape (2)), ascending, capped at
- * MAX_LOAD_SITES. Result index i belongs to targets[i]. ONE pass over the code
- * ranges serves every target, yielding between chunks.
+ * MAX_LOAD_SITES (or `maxSites`, for callers that need every reference, e.g.
+ * all error sites of one source file). Result index i belongs to targets[i].
+ * ONE pass over the code ranges serves every target, yielding between chunks.
  *
  * Shape (3), the linker-relaxed `adr Xd, target`, is found by findAdrSites:
  * an ADR reaches only ±1 MB, so only the code within that window of each
@@ -385,6 +412,7 @@ export async function findStringLoadSitesAsync(
     targets: NativePointer[],
     chunkBytes: number = XREF_SCAN_CHUNK_BYTES,
     yieldFn: () => Promise<void> = yieldToEventLoop,
+    maxSites: number = MAX_LOAD_SITES,
 ): Promise<NativePointer[][]> {
     const sites: NativePointer[][] = targets.map(() => []);
     const slots = await findPointerSlots(mod, targets, chunkBytes, yieldFn);
@@ -416,7 +444,7 @@ export async function findStringLoadSitesAsync(
         await scanRangesChunked([range], codeJobs, chunkBytes, yieldFn);
     }
     await findAdrSites(mod, targets, sites, chunkBytes, yieldFn);
-    return sites.map((list) => dedupeSorted(list).slice(0, MAX_LOAD_SITES));
+    return sites.map((list) => dedupeSorted(list).slice(0, maxSites));
 }
 
 // ---- shape (3): linker-relaxed ADR ------------------------------------------
@@ -535,6 +563,66 @@ export async function findAnchorStringsAsync(
         await scanRangesChunked(ranges, toJobs(jobs), chunkBytes, yieldFn);
     }
     return found;
+}
+
+// ---- anchor literal -> load sites -> containing functions --------------------
+
+/** An anchor literal whose referencing code is wanted. */
+export interface AnchorSpec {
+    /** ASCII text; a NUL is appended to pin the literal's end. */
+    text: string;
+    /** `text` is only the tail of a longer literal (e.g. a __FILE__ path): xref its start. */
+    literalSuffix?: boolean;
+    /** Load sites kept for this anchor (default MAX_LOAD_SITES). */
+    maxSites?: number;
+}
+
+/** Anything that bounds the function containing an address (e.g. EhFrameFunctionTable). */
+export interface FunctionBoundsSource {
+    bounds(addr: NativePointer): { start: NativePointer; end: NativePointer | null } | null;
+}
+
+/** One load site of an anchor and its containing function (null when unbounded). */
+export interface AnchorSite {
+    at: NativePointer;
+    fn: { start: NativePointer; end: NativePointer | null } | null;
+}
+
+/** Start of the NUL-terminated string containing `inside` (bounded walk back). */
+export function literalStart(inside: NativePointer, maxBack: number = 512): NativePointer {
+    let p = inside;
+    for (let i = 0; i < maxBack; i++) {
+        try { if (p.sub(1).readU8() === 0) return p; } catch (_e) { return p; }
+        p = p.sub(1);
+    }
+    return p;
+}
+
+/**
+ * For every anchor (index-aligned): its load sites, each with the function that
+ * contains it. One rodata pass finds the literals, one code pass finds every
+ * literal's load sites; an anchor whose literal is absent yields [].
+ */
+export async function anchorSiteFunctions(
+    mod: Module, functions: FunctionBoundsSource, anchors: AnchorSpec[],
+): Promise<AnchorSite[][]> {
+    const hits = await findAnchorStringsAsync(mod, anchors.map((a) => a.text + "\u0000"));
+    const found = anchors.map((a, i) => ({ a, hit: hits[i] })).filter((x) => x.hit !== null);
+    const targets = found.map(({ a, hit }) => a.literalSuffix ? literalStart(hit!) : hit!);
+    const maxSites = Math.max(MAX_LOAD_SITES, ...anchors.map((a) => a.maxSites ?? MAX_LOAD_SITES));
+    const loads = targets.length > 0
+        ? await findStringLoadSitesAsync(mod, targets, XREF_SCAN_CHUNK_BYTES, yieldToEventLoop, maxSites)
+        : [];
+    const sitesByAnchor = new Map<AnchorSpec, AnchorSite[]>();
+    found.forEach(({ a }, k) => sitesByAnchor.set(a, loads[k]
+        .slice(0, a.maxSites ?? MAX_LOAD_SITES)
+        .map((at) => ({ at, fn: functions.bounds(at) }))));
+    return anchors.map((a) => sitesByAnchor.get(a) ?? []);
+}
+
+/** "+0x<offset>" of `p` inside `mod`, or `missing` when null (locator diagnostics). */
+export function moduleOffsetLabel(mod: Module, p: NativePointer | null, missing: string = "?"): string {
+    return p === null ? missing : "+0x" + p.sub(mod.base).toString(16);
 }
 
 /**

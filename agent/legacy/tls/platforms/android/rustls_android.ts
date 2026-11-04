@@ -6,6 +6,7 @@ import { hasMoreThanFiveExports } from "../../../shared/shared_functions_legacy.
 import { sendKeylog } from "../../../../shared/shared_structures.js";
 import { PatternBasedHooking, get_CPU_specific_pattern, hasUsablePatternsFor } from "../../../tls/shared/pattern_based_hooking.js";
 import { patterns, isPatternReplaced} from "../../../../fritap_agent.js"
+import { installRustlsStaticPatternHooks } from "../../../../tls/shared/rustls_static_patterns.js";
 
 export class Rustls_Android extends RusTLS {
     private default_pattern_tls13: { [arch: string]: { primary: string, fallback:string } };
@@ -95,11 +96,19 @@ export class Rustls_Android extends RusTLS {
 
         const isEx = this.module_name.includes("_ex");
         const isX64 = Process.arch === "x64";
+        const jsonModuleName = isEx ? "librustls_ex.so" : "librustls.so";
+        const usesJsonPatterns = isPatternReplaced() && hasUsablePatternsFor(patterns, this.module_name, jsonModuleName, "Dump-Keys");
 
-        this.install_key_extraction_hook_tls13(hooker, isEx, isX64);
+        // Stripped Android rustls .so: try the shared static-rustls table (rustls 0.22/0.23,
+        // arm64 + x64 — same patterns Linux uses) first, picked by Process.arch inside the
+        // helper; the older built-in Android patterns below (which also cover arm / x86) run
+        // only for a TLS version the table did not hook. JSON --patterns still win when given.
+        const shared = usesJsonPatterns ? { tls13: false, tls12: false } : installRustlsStaticPatternHooks(rusTLSModule);
+
+        if (!shared.tls13) this.install_key_extraction_hook_tls13(hooker, isEx, isX64);
         // TLS 1.2 has no JSON pattern support, so install its hardcoded hook whenever we
         // are NOT using usable JSON patterns (absent/empty JSON -> fall back to shipped default).
-        if (!isPatternReplaced() || !hasUsablePatternsFor(patterns, this.module_name, isEx ? "librustls_ex.so" : "librustls.so", "Dump-Keys")) {
+        if (!shared.tls12 && !usesJsonPatterns) {
             this.install_key_extraction_hook_tls12(hooker, isEx, isX64);
         }
     }
@@ -248,92 +257,11 @@ export class Rustls_Android extends RusTLS {
         this.install_tls_keys_callback_hook();
     }
 
-    // Extract the configBuilder from call to rustls_client_config_builder_new / _custom and set keyLogCB
-    install_tls_keys_callback_hook() {
-        RusTLS.rustls_client_config_set_key_log = new NativeFunction(this.addresses[this.moduleName]["rustls_client_config_builder_set_key_log"], 'uint32', ['pointer', 'pointer', 'pointer']);
-
-        // Attach to both functions, which can create a config builder
-        Interceptor.attach(this.addresses[this.moduleName]["rustls_client_config_builder_new"],
-            {
-                onLeave: function(retval: NativePointer) {
-                    if (retval.isNull()) {
-                        devlog("Error: retval is null");
-                        return;
-                    }
-                    RusTLS.rustls_client_config_set_key_log(retval, RusTLS.keyLogCB, ptr('0'));
-                    devlog("Attached keyLogCB to rustls_client_config_set_key_log");
-                }
-            })
-
-        Interceptor.attach(this.addresses[this.moduleName]["rustls_client_config_builder_new_custom"],
-            {
-                onLeave: function(retval: NativePointer) {
-                    if (retval.isNull()) {
-                        devlog("Error: retval is null");
-                        return;
-                    }
-                    RusTLS.rustls_client_config_set_key_log(retval, RusTLS.keyLogCB, ptr('0'));
-                    devlog("Attached keyLogCB to rustls_client_config_set_key_log");
-                }
-            })
-
-        // If the target sets its own Callback, Rustls.keyLogCB will be overwritten.
-        // In this case we want to hook the Callback set by user.
-        Interceptor.attach(this.addresses[this.moduleName]["rustls_client_config_builder_set_key_log"],
-            {
-                onEnter: function(args: any) {
-                    // Extract the Address of the new Callback
-                    var userCallbackAddress = args[1];
-                    devlog("User set CB to: " + userCallbackAddress);
-                    this.userCallbackAddress = userCallbackAddress;
-                },
-                onLeave: function(retval: any) {
-                    // Check if the Callback was set
-                    if (retval != 7000) {
-                        // If the Callback was not set the keyLogCB has not been overwritten.
-                        return;
-                    } else {
-                        // In case the keyLogCB has been overwritten, we attach to it.
-                        Interceptor.attach(this.userCallbackAddress, {
-                            onEnter(args: any) {
-                                devlog ("Hooking user-defined callback for Rustls");
-                                // Parse the arguments
-                                var labelPtr = args[0];
-                                var label_len = args[1].toInt32();
-                                var client_random: NativePointer = args[2];
-                                var client_random_len = args[3].toInt32();
-                                var secret: NativePointer = args[4];
-                                var secret_len = args[5].toInt32();
-
-                                if (client_random.isNull() || client_random_len != 32) {
-                                    devlog("Invalid client_random: " + client_random + " or client_random_lenght: " + client_random_len);
-                                    return;
-                                }
-
-                                if (secret.isNull() || secret_len <= 0 || secret_len > 48) {
-                                    devlog("Invalid secret or secret_length");
-                                    return;
-                                }
-
-
-                                // Read the client random and secrets as strings
-                                var clientRandomStr = client_random.readByteArray(client_random_len);
-                                var secretStr = secret.readByteArray(secret_len);
-                                var labelStr = labelPtr.readUtf8String(label_len);
-
-                                // Convert byte arrays to hex strings for better logging
-                                var clientRandomHex = toHexString(clientRandomStr);
-                                var secretHex = toHexString(secretStr);
-
-                                // Construct the keylog message
-                                sendKeylog(`${labelStr} ${clientRandomHex} ${secretHex}`);
-
-                                return 1;
-                            }
-                        })
-                    }
-                }
-            })
+    // Extract the configBuilder from call to rustls_client_config_builder_new / _custom and set keyLogCB.
+    // Shared, fixed implementation in the legacy RusTLS base class (new_custom writes the
+    // builder through its out-parameter; its return value is a rustls_result status).
+    install_tls_keys_callback_hook(): boolean {
+        return super.install_tls_keys_callback_hook();
     }
 }
 

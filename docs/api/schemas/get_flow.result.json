@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "flow": {
+      "type": "object"
+    },
+    "messages": {
+      "items": {
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "messages_total": {
+      "type": "integer"
+    },
+    "notice": {
+      "type": "string"
+    },
+    "params": {
+      "type": "object"
+    },
+    "request": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "response": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "schema": {
+      "const": "fritap.flow/1"
+    },
+    "source": {
+      "type": "object"
+    }
+  },
+  "title": "get_flow result",
+  "type": "object"
+}

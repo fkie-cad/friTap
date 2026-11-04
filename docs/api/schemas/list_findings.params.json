@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "oneOf": [
+    {
+      "required": [
+        "tap"
+      ]
+    },
+    {
+      "required": [
+        "session_id"
+      ]
+    }
+  ],
+  "properties": {
+    "app_protocol": {
+      "description": "Only flows of this application protocol group.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "category": {
+      "description": "Only this finding category.",
+      "enum": [
+        "network",
+        "pii",
+        "protocol",
+        "secret",
+        "uncategorized"
+      ],
+      "type": "string"
+    },
+    "cursor": {
+      "description": "Opaque cursor from a previous page's next_cursor.",
+      "pattern": "^[0-9]+$",
+      "type": "string"
+    },
+    "filter": {
+      "description": "Display filter expression (Wireshark-like syntax).",
+      "minLength": 1,
+      "type": "string"
+    },
+    "limit": {
+      "default": 20,
+      "description": "Maximum rows per page.",
+      "maximum": 200,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "min_severity": {
+      "description": "Only findings at least this severe.",
+      "enum": [
+        "critical",
+        "high",
+        "medium",
+        "low",
+        "info"
+      ],
+      "type": "string"
+    },
+    "protocol": {
+      "description": "Only flows carrying this protocol (e.g. tls, http2, mtproto).",
+      "minLength": 1,
+      "type": "string"
+    },
+    "session_id": {
+      "description": "Id of a capture session started with start_capture.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "show_values": {
+      "default": false,
+      "description": "Show raw captured values instead of redacting them.",
+      "type": "boolean"
+    },
+    "tap": {
+      "description": "Path to a .tap capture file (inside the sandbox root).",
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "title": "list_findings parameters",
+  "type": "object"
+}

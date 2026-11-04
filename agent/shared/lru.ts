@@ -10,7 +10,9 @@
 export class LruMap<K, V> {
     private _map = new Map<K, V>();
 
-    constructor(private readonly _max: number) {}
+    /** `onEvict` is told about every entry dropped for capacity (not delete()/overwrite). */
+    constructor(private readonly _max: number,
+                private readonly _onEvict?: (key: K, value: V) => void) {}
 
     get(key: K): V | undefined {
         const val = this._map.get(key);
@@ -27,7 +29,11 @@ export class LruMap<K, V> {
         this._map.delete(key);
         if (this._map.size >= this._max) {
             const oldest = this._map.keys().next().value;
-            if (oldest !== undefined) this._map.delete(oldest);
+            if (oldest !== undefined) {
+                const evicted = this._map.get(oldest)!;
+                this._map.delete(oldest);
+                this._onEvict?.(oldest, evicted);
+            }
         }
         this._map.set(key, value);
     }

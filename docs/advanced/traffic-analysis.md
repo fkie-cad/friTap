@@ -675,7 +675,9 @@ capture (1-based, ordered by start time; ties keep the `.tap` flow-index order)
 and `f<N>#m<k>` is the k-th decoded E2E message of that flow (0-based, counted
 across all of the flow's transcript layers). Refs are a pure function of the
 `.tap`, so they stay the same across runs and digest filters. To save tokens,
-no ref → flow-id table is emitted; `--flow` resolves a ref.
+no ref → flow-id table is emitted; `--flow` resolves a ref. A finding row's
+`ref` is the flow of the cluster's first finding, or `""` (empty) when that
+finding is not tied to a selected flow.
 
 **Budget.** When the digest exceeds `--budget`, rows are dropped in this order
 until it fits: `info` findings first, then traffic rows and low/medium findings

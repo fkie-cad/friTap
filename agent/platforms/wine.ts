@@ -1,5 +1,6 @@
 import { hookRegistry, HookRegistration, protocolLabel } from "../shared/registry.js";
-import { installTagFor, isModuleHooked, recordHookInstalled } from "../shared/library_scanner.js";
+import { installTagFor, isModuleHooked, isRowHandled, recordHookInstalled } from "../shared/library_scanner.js";
+import { executeHookRow } from "../shared/record_protocol.js";
 import { selected_protocols, use_modern, getParsedPatterns } from "../fritap_agent.js";
 import { log, devlog } from "../util/log.js";
 import { readProcSelfMaps } from "../util/proc_maps.js";
@@ -476,11 +477,11 @@ function arm_wine_late_install(): void {
  */
 function hookWineDllOnce(match: HookRegistration, dllName: string, is_base_hook: boolean): void {
     const protocolTag = protocolLabel(selected_protocols);
-    if (isModuleHooked(dllName, installTagFor(match, protocolTag))) {
+    if (isModuleHooked(dllName, installTagFor(match, protocolTag)) || isRowHandled(match, dllName, protocolTag)) {
         devlog(`[Wine] ${dllName}: ${match.library} already installed, skipping`);
         return;
     }
-    match.hookFn(dllName, is_base_hook);
+    executeHookRow(match, dllName, is_base_hook);
     recordHookInstalled(match, dllName, protocolTag);
 }
 

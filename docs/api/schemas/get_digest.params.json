@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "oneOf": [
+    {
+      "required": [
+        "tap"
+      ]
+    },
+    {
+      "required": [
+        "session_id"
+      ]
+    }
+  ],
+  "properties": {
+    "app_protocol": {
+      "description": "Only flows of this application protocol group.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "budget": {
+      "default": 1500,
+      "description": "Approximate token budget; low-volume rows drop first.",
+      "maximum": 8000,
+      "minimum": 100,
+      "type": "integer"
+    },
+    "filter": {
+      "description": "Display filter expression (Wireshark-like syntax).",
+      "minLength": 1,
+      "type": "string"
+    },
+    "focus": {
+      "default": "all",
+      "description": "Findings focus: all, privacy (pii) or security.",
+      "enum": [
+        "all",
+        "privacy",
+        "security"
+      ],
+      "type": "string"
+    },
+    "format": {
+      "default": "json",
+      "description": "json (structured) or md (compact Markdown).",
+      "enum": [
+        "json",
+        "md"
+      ],
+      "type": "string"
+    },
+    "protocol": {
+      "description": "Only flows carrying this protocol (e.g. tls, http2, mtproto).",
+      "minLength": 1,
+      "type": "string"
+    },
+    "session_id": {
+      "description": "Id of a capture session started with start_capture.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "show_values": {
+      "default": false,
+      "description": "Show raw captured values instead of redacting them.",
+      "type": "boolean"
+    },
+    "tap": {
+      "description": "Path to a .tap capture file (inside the sandbox root).",
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "title": "get_digest parameters",
+  "type": "object"
+}

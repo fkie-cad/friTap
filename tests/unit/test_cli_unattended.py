@@ -29,8 +29,8 @@ from friTap.exit_codes import (
 from friTap.fritap_utility import Failure
 from friTap.legacy.session_manager import SessionManager
 from friTap.legacy.ssl_logger_core import SSL_Logger
-from tests.unit.test_memory_scan_teardown import _FakePcap, _make_logger
 from tests.unit import test_memory_scan_teardown as _teardown
+from tests.unit.test_memory_scan_teardown import _FakePcap, _make_logger
 
 exits = _teardown.exits
 
@@ -330,6 +330,7 @@ def test_stop_capture_gracefully_is_noop_once_teardown_started():
 
 def test_request_graceful_stop_runs_sigint_teardown(exits, monkeypatch):
     import signal
+
     from friTap.legacy import session_manager as sm_mod
     monkeypatch.setattr(sm_mod.os, "_exit", lambda code: exits.append(code))
     seen = []

@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "cursor": {
+      "description": "Opaque cursor from a previous page's next_cursor.",
+      "pattern": "^[0-9]+$",
+      "type": "string"
+    },
+    "device": {
+      "description": "'local' (default), 'usb' (first USB device) or a Frida device id.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "host": {
+      "description": "Remote frida-server as ip:port (wins over device).",
+      "minLength": 1,
+      "type": "string"
+    },
+    "limit": {
+      "default": 50,
+      "description": "Maximum rows per page.",
+      "maximum": 200,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "running": {
+      "default": false,
+      "description": "Only list running apps/processes.",
+      "type": "boolean"
+    }
+  },
+  "title": "list_apps parameters",
+  "type": "object"
+}

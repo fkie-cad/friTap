@@ -58,6 +58,26 @@ def test_generated_constants_match_the_host_abi():
     )
 
 
+def test_generated_message_schema_matches_the_python_schema():
+    """agent/schemas/messages.ts mirrors friTap/schemas/agent_messages.py.
+
+    A field added to a Pydantic agent message (e.g. DatalogMessage.direction /
+    quic_payload / library) must also land in the TS interface the agent
+    compiles against.
+    """
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "dev" / "generate_agent_types.py"), "--check"],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode == 0, (
+        "generated TS schema/constants are stale — run "
+        f"`python dev/generate_agent_types.py`:\n{result.stdout}{result.stderr}"
+    )
+
+
 def test_shipped_bundle_matches_the_host_abi():
     """The single check that catches "bumped the constant, forgot to rebuild"."""
     source = BUNDLE_PATH.read_text(encoding="utf-8", errors="replace")

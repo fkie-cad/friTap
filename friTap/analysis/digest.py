@@ -121,8 +121,11 @@ def _matches_app_protocol(group: str, app_protocol: str | None) -> bool:
 
 
 @dataclass
-class _Selector:
-    """Flow selection from ``protocol`` / ``app_protocol`` / ``filter_expr``."""
+class FlowSelector:
+    """Flow selection from ``protocol`` / ``app_protocol`` / ``filter_expr``.
+
+    Raises ``FilterSyntaxError`` (or a subclass) on a malformed filter.
+    """
 
     protocol: str | None = None
     app_protocol: str | None = None
@@ -383,7 +386,8 @@ def _message_rows(messages: dict) -> list[dict]:
     return sorted(rows, key=lambda d: (-d["count"], d["layer"], d["untrusted"]["kind"], d["ref"]))
 
 
-def _protocol_sections(agg: _Aggregator) -> dict[str, dict]:
+def protocol_sections(agg: _Aggregator) -> dict[str, dict]:
+    """Per digest group: flow/byte totals and sorted host/endpoint/message rows."""
     ordered = sorted(agg.groups.items(), key=lambda kv: (-kv[1].flows, kv[0]))
     return {
         name: {
@@ -411,17 +415,24 @@ _ANALYZER_CATEGORIES: dict[str, frozenset[str]] = {
 }
 
 
-def _analyzer_names_for(focus: str, names: Iterable[str]) -> list[str]:
-    """The analyzers whose findings can survive the *focus* category filter."""
-    wanted = _FOCUS_CATEGORIES[focus]
+def _analyzer_names_for(focus: str, names: Iterable[str],
+                        categories: frozenset[str] | None = None) -> list[str]:
+    """The analyzers whose findings can survive the *focus* (or *categories*) filter."""
+    wanted = categories if categories is not None else _FOCUS_CATEGORIES[focus]
     return [name for name in sorted(names)
             if wanted is None or not wanted.isdisjoint(_ANALYZER_CATEGORIES.get(name, wanted))]
 
 
-def _builtin_analyzers(show_values: bool, focus: str = "all") -> list:
+def builtin_analyzers(show_values: bool, focus: str = "all",
+                      categories: frozenset[str] | None = None) -> list:
+    """Fresh built-in analyzers whose findings can survive the *focus* filter.
+
+    *categories* (finding categories, e.g. ``{"network"}``) overrides *focus*,
+    so analyzers that cannot emit a wanted category do not run at all.
+    """
     from friTap.analysis.registry import ANALYZER_REGISTRY, resolve_analyzers
 
-    names = _analyzer_names_for(focus, ANALYZER_REGISTRY)
+    names = _analyzer_names_for(focus, ANALYZER_REGISTRY, categories)
     return resolve_analyzers(",".join(names), reveal_pii=show_values)
 
 
@@ -442,8 +453,8 @@ def _shown_title(finding: Finding, show_values: bool) -> str:
     return safe_untrusted(title, 80)
 
 
-def _finding_rows(findings: list[Finding], show_values: bool,
-                  ordinals: dict[str, int]) -> list[dict]:
+def finding_rows(findings: list[Finding], show_values: bool,
+                 ordinals: dict[str, int]) -> list[dict]:
     """Cluster findings by (severity, category, source, title); most severe first.
 
     Redaction leaves severity/category/source alone, so clustering needs only
@@ -477,7 +488,7 @@ def _findings_section(findings: list[Finding], focus: str, show_values: bool,
         "total": stats["total"],
         "by_severity": dict(sorted(stats["by_severity"].items(), key=lambda kv: severity_rank(kv[0]))),
         "by_category": dict(sorted(stats["by_category"].items())),
-        "top": _finding_rows(selected, show_values, ordinals)[:TOP_FINDINGS],
+        "top": finding_rows(selected, show_values, ordinals)[:TOP_FINDINGS],
     }
 
 
@@ -584,12 +595,11 @@ def _remove_rows(candidates: list, dropped_ids: set[int]) -> None:
 # Public entry point
 # ---------------------------------------------------------------------------
 
-def _iter_selected_flows(reader: Any, selector: _Selector) -> Iterator[tuple["Flow", int, int]]:
+def _iter_selected_flows(reader: Any, selector: FlowSelector) -> Iterator[tuple["Flow", int, int]]:
     """Yield ``(flow, bytes, ordinal)`` for selected flows (ordinal: see :func:`ordered_flow_ids`)."""
     # Same ordering as ordered_flow_ids(); summaries are needed for sizes.
-    for ordinal, summary in enumerate(reader.read_flow_summaries(), start=1):
-        flow = reader.read_flow(summary.flow_id)
-        if flow is not None and selector.matches(flow):
+    for ordinal, summary, flow in reader.iter_flows():
+        if selector.matches(flow):
             yield flow, _flow_bytes(flow, getattr(summary, "total_size", 0)), ordinal
 
 
@@ -600,6 +610,11 @@ def _capture_info(reader: Any) -> tuple[int, str]:
 
 
 def _validate(focus: str, budget_tokens: int) -> None:
+    validate_digest_args(focus, budget_tokens)
+
+
+def validate_digest_args(focus: str, budget_tokens: int) -> None:
+    """Raise ``ValueError`` for an unknown *focus* or a non-positive *budget_tokens*."""
     if focus not in FOCUS_CHOICES:
         raise ValueError(f"unknown focus {focus!r}; choose from {', '.join(FOCUS_CHOICES)}")
     if budget_tokens <= 0:
@@ -607,24 +622,51 @@ def _validate(focus: str, budget_tokens: int) -> None:
 
 
 @dataclass
-class _ScanResult:
+class ScanResult:
+    """One pass over the selected flows of a capture.
+
+    Attributes:
+        agg: Per-group aggregation (render with :func:`protocol_sections`).
+        findings: Raw (unredacted) findings of the analyzers that ran.
+        ordinals: flow_id -> ref ordinal (in-memory only, never emitted).
+        flows_total: Flows in the capture (set by :func:`scan_tap`).
+        fritap_version: friTap version recorded in the capture.
+    """
+
     agg: _Aggregator
     findings: list
-    ordinals: dict  # flow_id -> ref ordinal (in-memory only, never emitted)
+    ordinals: dict
+    flows_total: int = 0
+    fritap_version: str = ""
 
     @property
     def selected(self) -> int:
         return len(self.ordinals)
 
 
-def _scan(reader: Any, selector: _Selector, analyzers: Iterable) -> _ScanResult:
-    result = _ScanResult(agg=_Aggregator(), findings=[], ordinals={})
+def _scan(reader: Any, selector: FlowSelector, analyzers: Iterable) -> ScanResult:
+    result = ScanResult(agg=_Aggregator(), findings=[], ordinals={})
     for flow, nbytes, ordinal in _iter_selected_flows(reader, selector):
         result.ordinals[flow.flow_id] = ordinal
         result.agg.add_flow(flow, nbytes, ordinal)
         for analyzer in analyzers:
             result.findings.extend(run_analyzer_safely(analyzer, flow))
     return result
+
+
+def scan_tap(tap_path: str, selector: FlowSelector | None = None,
+             analyzers: Iterable = ()) -> ScanResult:
+    """Open *tap_path* and aggregate the flows *selector* keeps (all if ``None``).
+
+    *analyzers* run on every selected flow (see :func:`builtin_analyzers`).
+    """
+    from friTap.flow.tap_reader import TapReader
+
+    with TapReader(tap_path) as reader:
+        total_flows, fritap_version = _capture_info(reader)
+        scan = _scan(reader, selector or FlowSelector(), list(analyzers))
+    scan.flows_total, scan.fritap_version = total_flows, fritap_version
+    return scan
 
 
 def build_digest(
@@ -636,6 +678,7 @@ def build_digest(
     filter_expr: str | None = None,
     budget_tokens: int = DEFAULT_BUDGET_TOKENS,
     show_values: bool = False,
+    scan: ScanResult | None = None,
 ) -> dict:
     """Build a token-budgeted digest of the capture at *tap_path*.
 
@@ -650,26 +693,26 @@ def build_digest(
         filter_expr: Display-filter expression (see ``friTap.filter``).
         budget_tokens: Soft size limit; lowest-volume rows are dropped first.
         show_values: Reveal finding values (default: redacted).
+        scan: A precomputed :func:`scan_tap` result of the same selection, run
+            with ``builtin_analyzers(show_values, focus)`` (e.g. a cached one);
+            skips the capture pass. ``None`` scans *tap_path*.
 
     Raises:
         ValueError: bad focus/budget; ``FilterSyntaxError`` for a bad filter.
     """
     _validate(focus, budget_tokens)
-    selector = _Selector(protocol=protocol, app_protocol=app_protocol, filter_expr=filter_expr)
-    from friTap.flow.tap_reader import TapReader
-
-    with TapReader(tap_path) as reader:
-        total_flows, fritap_version = _capture_info(reader)
-        scan = _scan(reader, selector, _builtin_analyzers(show_values, focus))
+    if scan is None:
+        selector = FlowSelector(protocol=protocol, app_protocol=app_protocol, filter_expr=filter_expr)
+        scan = scan_tap(tap_path, selector, builtin_analyzers(show_values, focus))
     digest: dict[str, Any] = {
         "schema": SCHEMA,
-        "source": {"file": os.path.basename(tap_path), "fritap_version": fritap_version,
-                   "flows_total": total_flows, "flows_selected": scan.selected},
+        "source": {"file": os.path.basename(tap_path), "fritap_version": scan.fritap_version,
+                   "flows_total": scan.flows_total, "flows_selected": scan.selected},
         "params": {"focus": focus, "protocol": protocol, "app_protocol": app_protocol,
                    "filter": filter_expr, "budget_tokens": budget_tokens,
                    "show_values": show_values},
         "notice": UNTRUSTED_NOTICE,
-        "protocols": _protocol_sections(scan.agg),
+        "protocols": protocol_sections(scan.agg),
         "findings": _findings_section(scan.findings, focus, show_values, scan.ordinals),
         "truncated": False,
     }
@@ -683,8 +726,15 @@ __all__ = [
     "FOCUS_CHOICES",
     "UNTRUSTED_NOTICE",
     "DEFAULT_BUDGET_TOKENS",
+    "FlowSelector",
+    "ScanResult",
     "build_digest",
+    "builtin_analyzers",
+    "validate_digest_args",
     "estimate_tokens",
+    "finding_rows",
+    "protocol_sections",
+    "scan_tap",
     "flow_group",
     "flow_ref",
     "parse_ref",

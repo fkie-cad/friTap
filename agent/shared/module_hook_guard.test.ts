@@ -207,3 +207,114 @@ test("a basename shared by two loaded images falls back to the unambiguous path"
         assert.equal(executorModuleName(SYMLINK), CELLAR);
     } finally { unload(brew); unload(system); }
 });
+
+// WHY: `--protocol auto` recorded every SSL_read/SSL_write twice. The main pass
+// ran under the selection label "auto"; installOhttpHooks then re-ran the TLS
+// loader (initial scan + dlopen hook) under "tls". The module-level marker is
+// keyed by the selection label, so the second pass did not see the first and
+// re-installed the same OpenSSL row. The row-identity marker closes that gap.
+test("a row installed under --protocol auto is not re-installed by a later tls pass (OHTTP re-run)", () => {
+    const m = load(CELLAR, "0xa000");
+    try {
+        const reg = new HookRegistry();
+        const openssl = counter();
+        opensslRow(reg, openssl.hookFn);
+        ssl_library_loader(PLATFORM_DARWIN, reg, ["libssl.3.dylib"], "MacOS", true, new Set(["auto"]));
+        ssl_library_loader(PLATFORM_DARWIN, reg, ["libssl.3.dylib"], "MacOS", true, "tls");
+        assert.equal(openssl.calls.length, 1);
+    } finally { unload(m); }
+});
+
+test("auto and tls dlopen hooks both firing for one load install the row once", () => {
+    const m = load(CELLAR, "0xb000");
+    try {
+        const reg = new HookRegistry();
+        const openssl = counter();
+        opensslRow(reg, openssl.hookFn);
+        const autoLoader = dlopenHook(reg, "dlopen_auto_test", "auto");
+        const tlsLoader = dlopenHook(reg, "dlopen_ohttp_test", "tls");
+        autoLoader(SYMLINK);
+        tlsLoader(SYMLINK);
+        assert.equal(openssl.calls.length, 1);
+    } finally { unload(m); }
+});
+
+test("a multi-protocol selection labelled by a non-tls protocol does not double the TLS row", () => {
+    const m = load(CELLAR, "0xc000");
+    try {
+        const reg = new HookRegistry();
+        const openssl = counter();
+        opensslRow(reg, openssl.hookFn);
+        ssl_library_loader(PLATFORM_DARWIN, reg, ["libssl.3.dylib"], "MacOS", true, "rc4,tls");
+        ssl_library_loader(PLATFORM_DARWIN, reg, ["libssl.3.dylib"], "MacOS", true, "tls");
+        assert.equal(openssl.calls.length, 1);
+    } finally { unload(m); }
+});
+
+test("a row installed under auto still lets a different row on the module install later", () => {
+    const m = load(CELLAR, "0xd000");
+    try {
+        const reg = new HookRegistry();
+        const tls = counter();
+        opensslRow(reg, tls.hookFn, "tls", "OpenSSL");
+        ssl_library_loader(PLATFORM_DARWIN, reg, ["libssl.3.dylib"], "MacOS", true, "auto");
+        const ssh = counter();
+        opensslRow(reg, ssh.hookFn, "ssh", "OpenSSL (ssh row test)");
+        ssl_library_loader(PLATFORM_DARWIN, reg, ["libssl.3.dylib"], "MacOS", true, "ssh");
+        assert.equal(tls.calls.length, 1);
+        assert.equal(ssh.calls.length, 1);
+    } finally { unload(m); }
+});
+
+// Under --protocol auto, libssl matches the TLS row AND the RC4 key-hook row. The console
+// line did not name the protocol (two identical "libssl found & will be hooked" lines), and
+// library_detected was sent for RC4 even when its executor installed nothing (no -k): rc4
+// was then reported as an idle protocol. An executor returning false is now not reported.
+function captureSends(run: () => void): { consoles: string[]; detected: any[] } {
+    const consoles: string[] = [];
+    const detected: any[] = [];
+    const original = G.send;
+    G.send = (msg: any) => {
+        if (msg?.contentType === "library_detected") detected.push(msg);
+        else if (typeof msg?.console === "string") consoles.push(msg.console);
+    };
+    try { run(); } finally { G.send = original; }
+    return { consoles, detected };
+}
+
+for (const [label, loader] of [["initial scan", "scan"], ["dlopen", "dlopen"]] as const) {
+    test(`${label}: the console line names the protocol; a declining executor is neither announced nor reported`, () => {
+        const m = load(CELLAR, label === "scan" ? "0x6000" : "0x7000");
+        try {
+            const reg = new HookRegistry();
+            const rc4Calls: string[] = [];
+            opensslRow(reg, () => { }, "tls", "OpenSSL");
+            opensslRow(reg, (moduleName: string) => { rc4Calls.push(moduleName); return false; }, "rc4", "OpenSSL RC4");
+            const { consoles, detected } = captureSends(() => {
+                if (loader === "scan") ssl_library_loader(PLATFORM_DARWIN, reg, ["libssl.3.dylib"], "MacOS", true, "auto");
+                else dlopenHook(reg, `dlopen_report_${label}`, "auto")(CELLAR);
+            });
+            assert.equal(rc4Calls.length, 1, "the RC4 executor still ran");
+            assert.deepEqual(detected.map((d) => d.protocol), ["tls"]);
+            const announced = consoles.filter((c) => c.includes("will be hooked"));
+            assert.equal(announced.length, 1);
+            assert.match(announced[0], /libssl\.3\.dylib (found|was loaded) & will be hooked on MacOS \(tls\)!/);
+            // Recorded as handled: a rescan does not re-run the declined executor.
+            ssl_library_loader(PLATFORM_DARWIN, reg, ["libssl.3.dylib"], "MacOS", false, "auto");
+            assert.equal(rc4Calls.length, 1);
+        } finally { unload(m); }
+    });
+}
+
+test("an executor returning true (or void) is reported under its own protocol", () => {
+    const m = load(CELLAR, "0x8000");
+    try {
+        const reg = new HookRegistry();
+        opensslRow(reg, () => { }, "tls", "OpenSSL");
+        opensslRow(reg, () => true, "rc4", "OpenSSL RC4");
+        const { consoles, detected } = captureSends(() =>
+            ssl_library_loader(PLATFORM_DARWIN, reg, ["libssl.3.dylib"], "MacOS", true, "auto"));
+        assert.deepEqual(detected.map((d) => d.protocol), ["tls", "rc4"]);
+        assert.deepEqual(consoles.filter((c) => c.includes("will be hooked")).map((c) => c.match(/\((\w+)\)!$/)?.[1]), ["tls", "rc4"]);
+    } finally { unload(m); }
+});

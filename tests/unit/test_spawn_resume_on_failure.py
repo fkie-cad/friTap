@@ -34,6 +34,7 @@ def _make_logger(spawn=True, pid=4242, device="dev"):
     obj.pid = pid
     obj._suspended_pids = {pid}  # spawned, not yet resumed
     obj._suspended_pids_lock = threading.Lock()
+    obj._init_process_following()  # exec-following tracker, watchdog, resumer
     # start_fritap_session's preamble — stubbed so nothing real happens.
     obj.connect_live = lambda: None
     obj._setup_live_scan = lambda: None

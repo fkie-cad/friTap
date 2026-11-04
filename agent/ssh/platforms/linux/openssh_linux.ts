@@ -14,7 +14,12 @@ import { socket_library } from "../../../platforms/linux.js";
 import { enable_default_fd } from "../../../fritap_agent.js";
 import { executeFromDefinition } from "../../../core/loader.js";
 import { createOpenSshDefinition } from "../../definitions/openssh.js";
+import { withOpenSshFunctions } from "../../shared/openssh_functions.js";
 
-export function openssh_execute_modern(moduleName: string, is_base_hook: boolean): void {
-    executeFromDefinition(createOpenSshDefinition(), moduleName, socket_library, is_base_hook, enable_default_fd);
+// Returns the definition's installed verdict (ModuleHookingType) so the loader
+// reports library_detected only once hooks are actually in place. A stripped build
+// first has its functions located by string anchors (openssh_functions.ts).
+export function openssh_execute_modern(moduleName: string, is_base_hook: boolean): Promise<boolean> {
+    return Promise.resolve(withOpenSshFunctions(moduleName, () =>
+        executeFromDefinition(createOpenSshDefinition(), moduleName, socket_library, is_base_hook, enable_default_fd)));
 }

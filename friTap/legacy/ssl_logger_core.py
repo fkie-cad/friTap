@@ -24,7 +24,10 @@ from watchdog.observers import Observer
 
 from ..about import __version__
 from ..backends.base import (
-    BackendName, BackendScriptLoadTimeout, BackendTransportError, ScriptRuntime,
+    BackendName,
+    BackendScriptLoadTimeout,
+    BackendTransportError,
+    ScriptRuntime,
 )
 from ..config import FriTapConfig, effective_script_load_timeout
 from ..constants import AGENT_ABI_VERSION, SSL_READ, SSL_WRITE
@@ -42,10 +45,11 @@ from ..events import (
     SessionEvent,
     SocketTraceEvent,
 )
-from ..fritap_utility import setup_fritap_logging, sha256_file
 from ..exit_codes import EXIT_OK, EXIT_RUNTIME_ERROR, EXIT_TARGET_DETACHED
+from ..fritap_utility import setup_fritap_logging, sha256_file
 from ..pcap import PCAP
 from ..text_safety import safe_terminal_text
+from .exec_follow import HeldExecWatchdog, ProcessTracker, ResumeWorker
 
 if TYPE_CHECKING:
     # Annotation-only; the runtime import stays function-local in _build_script_context.
@@ -65,10 +69,16 @@ class _InstrumentRequest:
     # False for processes that were never Frida-suspended (the Wine process
     # watcher attaches to running processes): there is nothing to Frida-resume.
     resume: bool = True
-    # True for the spawned target's own exec'd image (child gating, origin
-    # "exec", same pid): the instrumented image replaces the main session
-    # instead of joining the capture as an extra child.
+    # True for the exec'd image of a process friTap already instruments (child
+    # gating, origin "exec", same pid): the new image replaces that process's
+    # session -- for the target, the main session -- instead of joining the
+    # capture as an extra child.
     exec_handover: bool = False
+    # How the instrumented process is watched across exec() (see
+    # SSL_Logger._watch_process): True as the main target (its loss ends the
+    # capture), False as a child (its loss never does), None when it is not
+    # watched (followed by other means, e.g. the Wine process watcher).
+    watch_as_main: Optional[bool] = None
 
 
 class TargetOS(NamedTuple):
@@ -401,11 +411,7 @@ class SSL_Logger():
         # Teardown resumes whatever is left (see _resume_suspended_pids).
         self._suspended_pids: set = set()
         self._suspended_pids_lock = threading.Lock()
-        # Spawn-mode exec following (see _follow_exec_of): how many
-        # 'process-replaced' detaches and exec'd images of the target were seen.
-        self._exec_lock = threading.Lock()
-        self._exec_replaced_count = 0
-        self._exec_image_count = 0
+        self._init_process_following()
         self.target_threads = None
         self.tmpdir = None
         self.filename = ""
@@ -675,6 +681,18 @@ class SSL_Logger():
         return self._config.device.enable_child_gating
 
     @property
+    def exec_following_requested(self) -> bool:
+        """Every instrumented process is followed across exec() (spawned or
+        attached target, instrumented children) unless --no-follow-exec."""
+        return bool(getattr(self._config.device, "follow_exec", True))
+
+    @property
+    def gates_children(self) -> bool:
+        """Whether instrumented sessions gate their children: an exec() is only
+        caught that way, and --enable_child_gating instruments the children."""
+        return self.exec_following_requested or bool(self.enable_child_gating)
+
+    @property
     def live(self) -> bool:
         return self._config.output.live
 
@@ -790,7 +808,8 @@ class SSL_Logger():
                                   target_package=self.target_app,
                                   target_pid=getattr(self, 'pid', None),
                                   include_loopback=getattr(self._config.output, 'include_loopback', False),
-                                  filter_infrastructure=getattr(self._config.output, 'filter_infrastructure', True))
+                                  filter_infrastructure=getattr(self._config.output, 'filter_infrastructure', True),
+                                  pcap_format=self._config.output.pcap_container)
             self._seed_known_server_ports()
 
 
@@ -1802,9 +1821,9 @@ class SSL_Logger():
         if reason == "application-requested":
             return
 
-        # The spawned target exec()ed: its old image's session ends here, while
-        # the new image arrives as an exec child and takes over the capture.
-        if reason == "process-replaced" and self._on_target_replaced():
+        # The target exec()ed: its old image's session ends here, while the new
+        # image arrives as an exec child (or is re-attached) and takes over.
+        if reason == "process-replaced" and self._on_process_replaced(self.pid):
             return
 
         # A native crash inside a hook (or a native abort in the target during
@@ -2258,7 +2277,6 @@ class SSL_Logger():
         Pure with respect to the session: reads only ``self`` / ``self._config``
         and posts nothing, so it can be rebuilt for every script that asks.
         """
-        from ..output.factory import OutputHandlerFactory
         from ..output.key_material import json_key_material_enabled
         return {
             'offsets': self.offsets_data,
@@ -2407,113 +2425,213 @@ class SSL_Logger():
         self._message_router.route(payload, data)
 
     def on_child_added(self, child):
-        """Schedule child instrumentation on the instrument worker.
+        """Route a gated child; never block here.
 
-        Runs on Frida's event thread — enqueue and return fast (same
-        pattern as the updated frida-python child_gating.py example
-        which uses Reactor.schedule()).
+        Runs on Frida's event thread: instrumentation goes to the worker, a
+        resume to the resumer thread (same pattern as the updated frida-python
+        child_gating.py example, which uses Reactor.schedule()).
         """
-        if self._is_target_exec(child):
-            self._on_target_exec_image(child)
-            return
-        if self._follow_exec and not self.enable_child_gating:
-            # Gating is on only to follow the target's exec (spawn mode): a
-            # fork/spawn child was not asked for, so it runs on untouched.
-            self.logger.debug("Resuming %s child pid %s uninstrumented",
-                              getattr(child, "origin", "?"), child.pid)
-            self._resume_off_event_thread(child.pid)
-            return
-        self._enqueue_instrumentation(child.pid, "child process",
-                                      getattr(child, "identifier", None))
+        origin = getattr(child, "origin", None)
+        if origin == "exec" and self._tracker.is_tracked(child.pid):
+            path = getattr(child, "path", None) or getattr(child, "identifier", None)
+            self._on_exec_image(child.pid, path)
+        elif not self._gates_only_to_follow_exec:
+            self._enqueue_instrumentation(child.pid, "child process",
+                                          getattr(child, "identifier", None),
+                                          watch_as_main=False)
+        else:
+            # Gating is on only to follow exec(): a fork/spawn child was not
+            # asked for (no --enable_child_gating), so it runs on untouched.
+            self._resume_untouched(child.pid, origin)
 
     # ------------------------------------------------------------------
-    # Spawn mode: follow the target across exec()
+    # Exec following: every instrumented process, across exec()
     # ------------------------------------------------------------------
     #
-    # A launcher such as Homebrew's python3 exec()s the real binary. Frida then
-    # ends the session with 'process-replaced' and, with child gating on,
-    # reports the new image as a child of origin "exec" with the SAME pid, held
-    # suspended. The new image is instrumented by the gated-child worker and
-    # becomes the main session; the outputs (keylog, pcap, JSON) never close.
-    # Both events may arrive in either order (the detach is handled on its own
-    # thread), so they are matched by count rather than by order.
+    # Each process friTap instruments -- the spawned or attached target and,
+    # with --enable_child_gating, every instrumented child or spawned process --
+    # is watched by _watch_process before its agent loads: child gating on its
+    # session, a detach handler, and the held-exec watchdog. When it exec()s
+    # (e.g. Homebrew's python3 launcher, or git's fork child becoming
+    # git-remote-https), Frida ends the old image's session with
+    # 'process-replaced' and reports the new image as a child of origin "exec"
+    # with the SAME pid, held suspended. The worker instruments that image and
+    # it replaces the old session (for the target: the main session; the
+    # outputs never close). Both events may arrive in either order (the detach
+    # runs on its own thread), so they are matched per pid by count.
 
     # How long a 'process-replaced' waits for its exec'd image before the
-    # capture ends as "target detached" (e.g. exec into an image Frida cannot
-    # gate, such as an Apple platform binary).
+    # process counts as gone (e.g. exec into an image Frida cannot gate, such
+    # as an Apple platform binary). For the target that ends the capture.
     EXEC_HANDOVER_TIMEOUT = 5.0
-    _follow_exec = False
+
+    def _init_process_following(self) -> None:
+        """Create the exec-following and resume helpers (see __init__)."""
+        self._tracker = ProcessTracker()
+        self._held_exec_watchdog = HeldExecWatchdog(
+            self._query_process_paths, self._on_held_exec_image)
+        self._resumer = ResumeWorker(self._resume_and_untrack)
+
+    @property
+    def _gates_only_to_follow_exec(self) -> bool:
+        """Sessions are gated only to follow exec(): fork/spawn children they
+        report were not asked for (no --enable_child_gating).
+
+        Decided by the options alone: every gated session (the target, a
+        spawn-gated process, an exec'd image) is then gated for exec() only,
+        whether or not the target's own gating succeeded."""
+        return self.exec_following_requested and not self.enable_child_gating
 
     def follow_exec_of(self, process) -> bool:
-        """Gate *process*'s children so an exec() of the spawned target is caught.
+        """Watch the target's own session (spawn or attach mode) for exec() and,
+        with --enable_child_gating, for children. True when it is gated.
 
-        Called for the spawned target and again for every exec'd image (chained
-        exec). With --enable_child_gating a failure propagates as before;
-        otherwise gating is only a means to follow exec and a backend that
-        cannot gate simply does not follow it.
+        With --enable_child_gating a gating failure propagates as before;
+        otherwise gating is only a means to follow exec(), and without it a
+        'process-replaced' is followed by re-attaching (see
+        _on_process_replaced). The detach handler is SessionManager's.
         """
-        try:
-            self._backend.enable_child_gating(process)
-        except Exception:
-            if self.enable_child_gating:
-                raise
-            self.logger.debug("child gating unavailable; exec() will not be followed",
-                              exc_info=True)
+        pid = getattr(self, "pid", None)
+        if pid is None:
+            pid = getattr(process, "pid", None)
+        return self._gate_and_track(process, pid, is_main=True,
+                                    required=self.enable_child_gating)
+
+    def _gate_and_track(self, session, pid, is_main, required=False) -> bool:
+        """Gate *session*'s children when asked to, track *pid* and, when gated,
+        watch it for held exec images. True when it is gated."""
+        gated = self._gate_children_of(session, required=required)
+        self._tracker.track(pid, session=session, is_main=is_main, gated=gated)
+        if gated:
+            self._held_exec_watchdog.watch(pid)
+        return gated
+
+    def _gate_children_of(self, session, required=False) -> bool:
+        """Turn child gating on for *session* when exec following or
+        --enable_child_gating asks for it; True when it is on."""
+        if not self.gates_children:
             return False
-        self._follow_exec = True
+        try:
+            self._backend.enable_child_gating(session)
+        except Exception:
+            if required:
+                raise
+            self.logger.debug("child gating unavailable for this session; an exec() "
+                              "of it is followed by re-attaching", exc_info=True)
+            return False
         return True
 
-    def _is_target_exec(self, child) -> bool:
-        return (self._follow_exec and getattr(child, "origin", None) == "exec"
-                and self.pid is not None and child.pid == self.pid)
+    def _watch_process(self, session, pid, is_main) -> None:
+        """Watch a freshly attached process before its agent loads, so a death
+        during the load and its own exec() are already caught. The target's
+        exec'd image becomes the main session."""
+        self._gate_and_track(session, pid, is_main=is_main)
+        if is_main:
+            self.process = session
+            self._backend.on_detached(session, self.on_detach)
+        else:
+            self._watch_child_detach(session, pid)
 
-    def _on_target_exec_image(self, child) -> None:
-        """The spawned target exec()ed: hand its new image to the worker."""
-        with self._exec_lock:
-            self._exec_image_count += 1
-        path = getattr(child, "path", None) or getattr(child, "identifier", None)
-        self.logger.info("Target pid %s exec()ed %s; following it", child.pid, path)
-        self._enqueue_instrumentation(child.pid, "exec'd image", path,
-                                      exec_handover=True)
+    def _watch_child_detach(self, session, pid) -> None:
+        handler = functools.partial(self._on_child_detached, pid, session)
+        try:
+            self._backend.on_detached(session, handler)
+        except Exception:  # noqa: BLE001 - a child's detach is informational
+            self.logger.debug("cannot watch child pid %s for detach", pid, exc_info=True)
 
-    def _on_target_replaced(self) -> bool:
+    def _on_child_detached(self, pid, session, reason, crash=None) -> None:
+        """An instrumented child's session ended: a hand-over when it exec()ed,
+        otherwise the child is gone. Never the end of the capture."""
+        if reason == "process-replaced" and self._on_process_replaced(pid):
+            return
+        if self._forget_process(pid, session):
+            self.logger.debug("Instrumented child pid %s detached (%s)", pid, reason)
+
+    def _forget_process(self, pid, session=None) -> bool:
+        forgotten = self._tracker.forget(pid, session)
+        if forgotten:
+            self._held_exec_watchdog.forget(pid)
+        return forgotten
+
+    def _on_exec_image(self, pid, path) -> None:
+        """An instrumented process exec()ed and Frida holds its new image:
+        instrument it (the worker resumes it), or with --no-follow-exec let it
+        run untouched."""
+        self._tracker.note_image(pid)
+        self._held_exec_watchdog.note_exec(pid)
+        entry = self._tracker.get(pid)
+        if entry is None or not self.exec_following_requested:
+            self._resume_untouched(pid, "exec")
+            return
+        self.logger.info("%s pid %s exec()ed %s; following it",
+                         "Target" if entry.is_main else "Child", pid, path)
+        self._enqueue_instrumentation(pid, "exec'd image", path, exec_handover=True,
+                                      watch_as_main=entry.is_main)
+
+    def _on_process_replaced(self, pid) -> bool:
         """The old image's 'process-replaced' detach. True when it is a hand-over
-        to an exec'd image (no teardown); False when exec is not followed."""
-        if not self._follow_exec:
+        to the exec'd image (no teardown); False when exec is not followed."""
+        entry = self._tracker.get(pid)
+        if entry is None or not self.exec_following_requested:
             return False
-        with self._exec_lock:
-            self._exec_replaced_count += 1
-            awaiting = self._exec_replaced_count > self._exec_image_count
-        self.logger.debug("Target pid %s replaced by exec(); handing over", self.pid)
-        if awaiting:
+        if not entry.gated:
+            # Nothing holds the new image: attach to it at once. Its first
+            # instants run uninstrumented (gating, when available, avoids that).
+            self.logger.info("pid %s exec()ed; re-attaching to its new image", pid)
+            self._enqueue_instrumentation(pid, "exec'd image", None, resume=False,
+                                          exec_handover=True, watch_as_main=entry.is_main)
+            return True
+        self.logger.debug("pid %s replaced by exec(); handing over", pid)
+        if self._tracker.note_replaced(pid):
             timer = threading.Timer(self.EXEC_HANDOVER_TIMEOUT,
-                                    self._on_exec_handover_timeout)
+                                    self._on_exec_handover_timeout, args=(pid,))
             timer.name = "fritap-exec-handover"
             timer.daemon = True
             timer.start()
         return True
 
-    def _on_exec_handover_timeout(self) -> None:
-        """No exec'd image arrived for a 'process-replaced': the target is gone
-        from friTap's view, so end the capture like any other detach."""
-        with self._exec_lock:
-            missing = self._exec_replaced_count > self._exec_image_count
-        if not missing or not self.running or getattr(self, "_cleanup_done", False):
+    def _on_exec_handover_timeout(self, pid) -> None:
+        """No exec'd image arrived for a 'process-replaced': the process is gone
+        from friTap's view. For the target the capture ends like any detach."""
+        if (not self._tracker.awaiting_image(pid) or not self.running
+                or getattr(self, "_cleanup_done", False)):
+            return
+        entry = self._tracker.get(pid)
+        if entry is None or not entry.is_main:
+            self.logger.warning(
+                "Child pid %s exec()ed an image friTap could not follow (no exec "
+                "child within %.0fs).", pid, self.EXEC_HANDOVER_TIMEOUT)
+            self._forget_process(pid)
             return
         self.logger.error(
             "Target pid %s exec()ed an image friTap could not follow (no exec "
             "child within %.0fs; e.g. an Apple platform binary).",
-            self.pid, self.EXEC_HANDOVER_TIMEOUT)
+            pid, self.EXEC_HANDOVER_TIMEOUT)
         self._mark_unexpected_detach()
         self._event_bus.emit(DetachEvent(reason="process-replaced"))
         self._end_session("process-replaced")
 
-    def _adopt_exec_image(self, session) -> None:
-        """Make the exec'd image the main session. Done before its agent loads,
-        so a death during the load, and its own exec, are already watched."""
-        self.follow_exec_of(session)
-        self.process = session
-        self._backend.on_detached(session, self.on_detach)
+    def _query_process_paths(self, pids):
+        return self._backend.process_paths(self.device, pids)
+
+    def _on_held_exec_image(self, pid, path) -> None:
+        """The watchdog found an exec'd image Frida holds but never announced
+        (see HeldExecWatchdog): take it over like an announced one."""
+        if not self._tracker.is_tracked(pid):
+            return
+        self.logger.warning(
+            "pid %s exec()ed %s but Frida never reported the new image (the process "
+            "closed Frida's descriptors before exec(), e.g. Python's subprocess "
+            "with close_fds=True); taking it over now.", pid, path)
+        self._on_exec_image(pid, path)
+
+    def _on_failed_handover(self, request, exc) -> None:
+        if request.watch_as_main:
+            self._end_after_failed_handover(request.pid, exc)
+            return
+        self.logger.warning("Could not instrument the exec'd image of child pid %s "
+                            "(%s); it runs uninstrumented.", request.pid, exc)
+        self._forget_process(request.pid)
 
     def _end_after_failed_handover(self, pid, exc) -> None:
         """The exec'd image could not be instrumented: it now runs without
@@ -2531,6 +2649,13 @@ class SSL_Logger():
         threading.Thread(target=self._end_session, args=("exec hand-over failed",),
                          name="fritap-session-end", daemon=True).start()
 
+    def _resume_untouched(self, pid, origin) -> None:
+        """Let a gated process friTap does not instrument run on. Tracked until
+        resumed, so a teardown racing the resume still resumes it."""
+        self.logger.debug("Resuming %s child pid %s uninstrumented", origin or "?", pid)
+        self._track_suspended(pid)
+        self._resume_off_event_thread(pid)
+
     def _handle_child_added(self, child):
         """Forward a queued child to the instrument worker.
 
@@ -2541,7 +2666,8 @@ class SSL_Logger():
         Frida callback thread, only this very thread could have delivered.
         """
         self._enqueue_instrumentation(child.pid, "child process",
-                                      getattr(child, "identifier", None))
+                                      getattr(child, "identifier", None),
+                                      watch_as_main=False)
 
     def on_spawn_added(self, spawn):
         # Runs on Frida's device event thread: decide here, instrument on the
@@ -2549,7 +2675,8 @@ class SSL_Logger():
         # (old behavior); otherwise filter by target app identifier.
         if self.spawn_gating_all or self._should_instrument_spawn(spawn.identifier):
             self.logger.info(f"Instrumenting spawned process with pid {spawn.pid}. Name: {spawn.identifier}")
-            self._enqueue_instrumentation(spawn.pid, "spawned process", spawn.identifier)
+            self._enqueue_instrumentation(spawn.pid, "spawned process", spawn.identifier,
+                                          watch_as_main=False)
         else:
             # Resume unrelated processes immediately to prevent them from hanging
             # (off the event thread: see _resume_off_event_thread).
@@ -2561,10 +2688,11 @@ class SSL_Logger():
     # ------------------------------------------------------------------
 
     def _enqueue_instrumentation(self, pid, label, identifier=None, resume=True,
-                                 exec_handover=False):
+                                 exec_handover=False, watch_as_main=None):
         """Hand a gated process to the serial instrument worker. ``resume=False``
         for a process that is already running (not Frida-gated);
-        ``exec_handover`` for the spawned target's own exec'd image."""
+        ``exec_handover`` for the exec'd image of an instrumented process;
+        ``watch_as_main`` how it is watched across exec() (see _watch_process)."""
         if resume:
             self._track_suspended(pid)
         if not self.running or self._instrument_stop.is_set():
@@ -2581,7 +2709,8 @@ class SSL_Logger():
             return
 
         request = _InstrumentRequest(pid=pid, label=label, identifier=identifier,
-                                     resume=resume, exec_handover=exec_handover)
+                                     resume=resume, exec_handover=exec_handover,
+                                     watch_as_main=watch_as_main)
         queue_full = False
         with self._instrument_thread_lock:
             # Re-checked under the lock _stop_instrument_thread sets the stop
@@ -2614,22 +2743,20 @@ class SSL_Logger():
         if resume:
             self._resume_off_event_thread(pid)
 
-    def _resume_off_event_thread(self, pid) -> threading.Thread:
-        """Resume *pid* on a short-lived thread.
+    def _resume_off_event_thread(self, pid) -> None:
+        """Resume *pid* on the resumer thread (see ResumeWorker).
 
         The gating callbacks run on Frida's event loop, and a synchronous
         ``device.resume()`` there deadlocks it (verified live: a fork child
         resumed inline from 'child-added' hung the target and every later Frida
         call). The pid stays tracked until the resume returned, so a teardown
-        racing this thread still resumes it (a second resume is harmless).
+        racing the resumer still resumes it (a second resume is harmless).
         """
-        def resume():
-            self._resume_quietly(pid)
-            self._untrack_suspended(pid)
+        self._resumer.submit(pid)
 
-        worker = threading.Thread(target=resume, name="fritap-resume", daemon=True)
-        worker.start()
-        return worker
+    def _resume_and_untrack(self, pid) -> None:
+        self._resume_quietly(pid)
+        self._untrack_suspended(pid)
 
     def _start_instrument_thread(self):
         """Start the serial worker that instruments gated processes.
@@ -2679,13 +2806,13 @@ class SSL_Logger():
         try:
             self.logger.info("Attached to %s with pid %s", request.label, request.pid)
             session = self._backend.attach(self.device, str(request.pid))
-            if request.exec_handover:
-                self._adopt_exec_image(session)
+            if request.watch_as_main is not None:
+                self._watch_process(session, request.pid, request.watch_as_main)
             self.instrument(session, self.own_message_handler)
         except Exception as exc:
             if not request.exec_handover:
                 raise
-            self._end_after_failed_handover(request.pid, exc)
+            self._on_failed_handover(request, exc)
         finally:
             if request.resume:
                 self._resume_suspended(request.pid)
@@ -2825,6 +2952,7 @@ class SSL_Logger():
         it competes for the same queue, and anything it wins there is
         instrumented and resumed by ``_instrument_gated_process`` anyway.
         """
+        self._held_exec_watchdog.stop()  # finds no more images to hand to the worker
         with self._instrument_thread_lock:
             # Set under the lock so _enqueue_instrumentation's locked check sees
             # either "not stopping" (and queues before the drain) or "stopping".

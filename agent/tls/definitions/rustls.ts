@@ -1,8 +1,9 @@
 // agent/tls/definitions/rustls.ts
 //
 // Data-driven Rustls hook definition for symbol-resolvable rustls-ffi builds.
-// Pattern-only stripped variants (librustls_android_*_ex.so etc.) continue to
-// route through the legacy executor — see rustls_linux.ts / rustls_android.ts.
+// Pattern-only stripped variants (librustls_android_*_ex.so etc.) route through
+// the modern class-based executor (../libs/rustls.ts, rustls_execute_class_based)
+// — see ../platforms/{linux,android}/rustls_*.ts.
 
 import {
     HookDefinition,
@@ -98,6 +99,88 @@ function attachUserKeylogShadow(addr: NativePointer): void {
     });
 }
 
+/** rustls_result RUSTLS_RESULT_OK in rustls-ffi (7000); some builds report 0. */
+function isRustlsOk(status: number): boolean {
+    return status === 7000 || status === 0;
+}
+
+/**
+ * Pick the `struct rustls_client_config_builder **builder_out` argument of
+ * rustls_client_config_builder_new_custom. rustls-ffi <= 0.10 passed it 5th
+ * (cipher_suites, len, tls_versions, len, out); >= 0.13 passes it 4th
+ * (provider, tls_versions, len, out). In the old layout args[3] is a small
+ * length, never a pointer.
+ */
+export function rustlsBuilderOutArg(args: NativePointer[]): NativePointer {
+    const fourth = args[3];
+    return fourth.compare(ptr("0x10000")) < 0 ? args[4] : fourth;
+}
+
+/**
+ * Install the rustls-ffi keylog hooks on one module:
+ *  - inject our keylog callback into every config builder
+ *    (rustls_client_config_builder_new returns the builder;
+ *     rustls_client_config_builder_new_custom returns a rustls_result and
+ *     writes the builder through its out-param);
+ *  - shadow any callback the application installs itself via set_key_log.
+ * Shared by the definition (agent/core loader) and the class-based fallback
+ * (../libs/rustls.ts). Returns whether at least one hook was attached.
+ */
+export function installRustlsFfiKeylogHooks(
+    lib: { [fn: string]: NativePointer },
+    setKeyLogFn: NativeFunction<any, any> | undefined,
+    modName: string,
+): boolean {
+    if (!setKeyLogFn) {
+        devlog("[rustls] set_key_log unresolved; cannot install builder hook");
+        return false;
+    }
+    const injectInto = (builder: NativePointer): void => {
+        if (builder.isNull()) return;
+        setKeyLogFn(builder, getRustlsKeylogCb(), ptr("0"));
+    };
+    let installed = false;
+
+    const builderNewAddr = lib["rustls_client_config_builder_new"];
+    if (builderNewAddr && !builderNewAddr.isNull()) {
+        Interceptor.attach(builderNewAddr, {
+            onLeave(retval: NativePointer) {
+                injectInto(retval);
+            },
+        });
+        installed = true;
+    }
+    const customNewAddr = lib["rustls_client_config_builder_new_custom"];
+    if (customNewAddr && !customNewAddr.isNull()) {
+        Interceptor.attach(customNewAddr, {
+            onEnter(args: any) {
+                this.builderOut = rustlsBuilderOutArg(args);
+            },
+            onLeave(retval: any) {
+                if (!isRustlsOk(retval.toInt32()) || this.builderOut.isNull()) return;
+                try {
+                    injectInto(this.builderOut.readPointer());
+                } catch (e) {
+                    devlog_error(`[rustls new_custom] ${e}`);
+                }
+            },
+        });
+        installed = true;
+    }
+
+    // Shadow any user-installed callback so we still extract keys.
+    const setKeyLogAddr = lib["rustls_client_config_builder_set_key_log"];
+    if (setKeyLogAddr && !setKeyLogAddr.isNull()) {
+        attachUserKeylogShadow(setKeyLogAddr);
+        installed = true;
+    }
+
+    if (installed) {
+        log(`[*] ${modName}: keylog hooks installed via rustls_client_config_builder_set_key_log`);
+    }
+    return installed;
+}
+
 export function createRustlsDefinition(): HookDefinition {
     return {
         libraryId: "rustls",
@@ -127,49 +210,12 @@ export function createRustlsDefinition(): HookDefinition {
         // would emit garbage. Legacy also marks these "TBD".
         keylog: {
             kind: "custom",
-            install: (addresses, modName, resolvedFns, _enableDefaultFd) => {
-                const lib = addresses[modName] || {};
-                const setKeyLogFn = resolvedFns["rustls_client_config_builder_set_key_log"];
-                if (!setKeyLogFn) {
-                    devlog("[rustls] set_key_log unresolved; cannot install builder hook");
-                    return false;
-                }
-                let installed = false;
-
-                // Inject our keylog callback on every config builder creation.
-                const builderNewAddr = lib["rustls_client_config_builder_new"];
-                if (builderNewAddr && !builderNewAddr.isNull()) {
-                    Interceptor.attach(builderNewAddr, {
-                        onLeave(retval: NativePointer) {
-                            if (retval.isNull()) return;
-                            setKeyLogFn(retval, getRustlsKeylogCb(), ptr("0"));
-                        },
-                    });
-                    installed = true;
-                }
-                const customNewAddr = lib["rustls_client_config_builder_new_custom"];
-                if (customNewAddr && !customNewAddr.isNull()) {
-                    Interceptor.attach(customNewAddr, {
-                        onLeave(retval: NativePointer) {
-                            if (retval.isNull()) return;
-                            setKeyLogFn(retval, getRustlsKeylogCb(), ptr("0"));
-                        },
-                    });
-                    installed = true;
-                }
-
-                // Shadow any user-installed callback so we still extract keys.
-                const setKeyLogAddr = lib["rustls_client_config_builder_set_key_log"];
-                if (setKeyLogAddr && !setKeyLogAddr.isNull()) {
-                    attachUserKeylogShadow(setKeyLogAddr);
-                    installed = true;
-                }
-
-                if (installed) {
-                    log(`[*] ${modName}: keylog hooks installed via rustls_client_config_builder_set_key_log`);
-                }
-                return installed;
-            },
+            install: (addresses, modName, resolvedFns, _enableDefaultFd) =>
+                installRustlsFfiKeylogHooks(
+                    addresses[modName] || {},
+                    resolvedFns["rustls_client_config_builder_set_key_log"],
+                    modName,
+                ),
         },
         libraryType: "rustls",
     };

@@ -29,10 +29,15 @@ import { flutter_execute, flutter_execute_modern } from "../tls/platforms/androi
 import { mono_btls_execute, mono_btls_execute_modern } from "../tls/platforms/android/mono_btls_android.js";
 import { patterns, isPatternReplaced, selected_protocols, use_modern, scan_results, library_scan_enabled, quic_only, no_loader_hook, spawned, stealth_loader, pairip_safe } from "../fritap_agent.js"
 import { processScanResults, isModuleHooked, markModuleHooked } from "../shared/library_scanner.js";
-import { buildPairipSafeRegistrations, matchPairipSafeLib } from "../shared/pairip_safe_libs.js";
+import { buildPairipSafeRegistrations, matchPairipSafeLib, PairipExecutorTable } from "../shared/pairip_safe_libs.js";
+// Unity (statically-linked MbedTLS 3.x): offset-based master-secret scrape,
+// one implementation used by both hook paths' --pairip-safe tables.
+import { unity_mbedtls_execute, unity_mbedtls_execute_modern } from "../tls/platforms/android/unity_mbedtls_android.js";
 import { pattern_execute } from "../tls/platforms/android/pattern_android.js"
-import { rustls_execute, rustls_execute_modern } from "../tls/platforms/android/rustls_android.js";
-import { gotls_execute, gotls_execute_modern } from "../tls/platforms/android/gotls_android.js";
+import { rustls_execute_modern } from "../tls/platforms/android/rustls_android.js";
+import { rustls_execute } from "../legacy/tls/platforms/android/rustls_android.js";
+import { gotls_execute_modern } from "../tls/platforms/android/gotls_android.js";
+import { gotls_execute } from "../legacy/tls/platforms/android/gotls_android.js";
 import { metartc_execute } from "../tls/platforms/android/metartc.js";
 import { ipsec_detect_execute } from "../ipsec/platforms/linux/ipsec_linux.js";
 import { strongswan_execute_modern } from "../ipsec/platforms/android/strongswan_android.js";
@@ -45,6 +50,7 @@ import { telegram_execute_modern } from "../telegram/platforms/android/telegram_
 import { nss_hpke_execute_android } from "../ohttp/platforms/android/nss_hpke_android.js";
 import { quiche_execute } from "../quic/platforms/android/quiche_android.js";
 import { google_quiche_execute } from "../quic/platforms/android/google_quiche_android.js";
+import { chromium_plaintext_execute } from "../tls/platforms/android/chromium_plaintext_android.js";
 import { neqo_execute } from "../quic/platforms/android/neqo_android.js";
 
 var plattform_name: Platform = PLATFORM_LINUX;
@@ -141,6 +147,31 @@ function install_pattern_based_hooks(){
 }
 
 
+
+/**
+ * --pairip-safe executor tables, one per hook path. pairip_safe_libs.ts (shared)
+ * names only executor FAMILIES; the path-specific executors are bound here so
+ * legacy mode keeps the legacy (class-based) hookers and --modern uses the
+ * modern-tree ones, without agent/shared importing agent/legacy/**.
+ */
+export const LEGACY_PAIRIP_EXECUTORS: PairipExecutorTable = {
+    boringssl: boring_execute,
+    httpengine: httpengine_execute,
+    conscrypt: conscrypt_native_execute,
+    unity_mbedtls: unity_mbedtls_execute,
+};
+export const MODERN_PAIRIP_EXECUTORS: PairipExecutorTable = {
+    boringssl: boring_execute_modern,
+    httpengine: httpengine_execute_modern,
+    conscrypt: conscrypt_execute_modern,
+    unity_mbedtls: unity_mbedtls_execute_modern,
+};
+
+/** The --pairip-safe executor table for the active hook path. */
+export function pairipSafeExecutors(modern: boolean): PairipExecutorTable {
+    return modern ? MODERN_PAIRIP_EXECUTORS : LEGACY_PAIRIP_EXECUTORS;
+}
+
 export function load_android_hooking_agent() {
     const __androidHooks: Parameters<typeof hookRegistry.registerAll>[0] = [
         // TLS libraries (TLS protocol family — also covers QUIC and OHTTP below)
@@ -217,6 +248,7 @@ export function load_android_hooking_agent() {
         // IPSec libraries — strongSwan VPN is common on Android (detection stub, key extraction still needs to be done)
         { platform: plattform_name, pattern: /.*libcharon\.so/, hookFn: (use_modern ? strongswan_execute_modern : ipsec_detect_execute), library: "strongSwan (charon)", libraryType: "ipsec_strongswan", protocol: "ipsec" },
         { platform: plattform_name, pattern: /.*libstrongswan\.so/, hookFn: (use_modern ? strongswan_execute_modern : ipsec_detect_execute), library: "strongSwan", libraryType: "ipsec_strongswan", protocol: "ipsec" },
+        { platform: plattform_name, pattern: /.*kernel-netlink\.so/, hookFn: (use_modern ? strongswan_execute_modern : ipsec_detect_execute), library: "strongSwan (kernel-netlink)", libraryType: "ipsec_strongswan", protocol: "ipsec" },
         // SSH binaries / libraries (Termux ships OpenSSH at $PREFIX/bin/ssh, sshd)
         { platform: plattform_name, pattern: /.*libssh2?\.so/, hookFn: (use_modern ? libssh_execute_modern : ssh_detect_execute), library: "libssh", protocol: "ssh" },
         { platform: plattform_name, pattern: /^(\/.+\/)?(ssh|sshd|sshd-session|scp|sftp-server)$/, hookFn: (use_modern ? openssh_execute_modern : ssh_detect_execute), library: "OpenSSH", protocol: "ssh" },
@@ -244,6 +276,13 @@ export function load_android_hooking_agent() {
         // not a substring of "libmainlinecronet". Needs its own entry.
         { platform: plattform_name, pattern: /^libmainlinecronet\.[\d.]+\.so$/, hookFn: google_quiche_execute, library: "Google QUICHE (Mainline Cronet APEX)", libraryType: "google_quiche", protocol: "tls", supplementary: true },
         { platform: plattform_name, pattern: /.*monochrome.*\.so/, hookFn: google_quiche_execute, library: "Google QUICHE (Monochrome)", libraryType: "google_quiche", protocol: "tls", supplementary: true },
+        // TCP TLS plaintext for the Chromium monoliths, whose BoringSSL is statically linked
+        // and stripped: SSL_read/SSL_write are located via ssl_lib.cc error-site anchors
+        // (tls/shared/boringssl_plaintext_locator.ts). `supplementary`: keys still come from
+        // the Cronet rows above; these rows only add the plaintext hooks.
+        { platform: plattform_name, pattern: /.*monochrome.*\.so/, hookFn: chromium_plaintext_execute, library: "BoringSSL plaintext (Monochrome)", protocol: "tls", supplementary: true },
+        { platform: plattform_name, pattern: /.*libchrome\.so/, hookFn: chromium_plaintext_execute, library: "BoringSSL plaintext (Chrome)", protocol: "tls", supplementary: true },
+        { platform: plattform_name, pattern: /.*libwebviewchromium.*\.so/, hookFn: chromium_plaintext_execute, library: "BoringSSL plaintext (WebView Chromium)", protocol: "tls", supplementary: true },
         { platform: plattform_name, pattern: /.*libxul\.so/, hookFn: neqo_execute, library: "Mozilla Neqo (Firefox HTTP/3)", libraryType: "neqo", protocol: "tls", supplementary: true },
         // Hooks contributed by optional, separately bundled units (empty in the
         // public build; a full build's private unit registers its rows before the
@@ -257,7 +296,7 @@ export function load_android_hooking_agent() {
     // (Cronet) libs or installs the dynamic-loader hook, so every cronet/webview/
     // pattern/quic entry is excluded and the pattern (Memory.scan) tier is
     // hard-disabled elsewhere. Add a library by adding ONE entry to PAIRIP_SAFE_LIBS.
-    const pairipSafeHooks = buildPairipSafeRegistrations(plattform_name, use_modern);
+    const pairipSafeHooks = buildPairipSafeRegistrations(plattform_name, pairipSafeExecutors(use_modern));
     // --quic-only: install ONLY the Google QUICHE hooks (skip every TLS-library
     // hook and its keylog pattern scans). Faster attach, no Java VM sync, less
     // risk of stalling an already-busy target.

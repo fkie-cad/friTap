@@ -8,6 +8,7 @@ This preserves the original on_fritap_message inline output logic.
 
 from datetime import datetime, timezone
 
+from ..constants import direction_label
 from ..output.keylog_format import is_safe_keylog_line, warn_dropped_keylog_line
 
 try:
@@ -245,12 +246,12 @@ def handle_message_legacy(logger_instance, payload, data, message):
                 logger_instance.session_data["statistics"]["total_bytes_captured"] += len(data) if data else 0
 
     if logger_instance.pcap_name and payload["contentType"] == "datalog" and not logger_instance.full_capture:
-        logger_instance.pcap_obj.log_plaintext_payload(payload["ss_family"], payload["function"], payload["src_addr"],
+        logger_instance.pcap_obj.log_plaintext_payload(payload["ss_family"], direction_label(payload["function"], payload.get("direction")), payload["src_addr"],
                  payload["src_port"], payload["dst_addr"], payload["dst_port"], data)
 
     if logger_instance.live and payload["contentType"] == "datalog" and not logger_instance.full_capture:
         try:
-            logger_instance.pcap_obj.log_plaintext_payload(payload["ss_family"], payload["function"], payload["src_addr"],
+            logger_instance.pcap_obj.log_plaintext_payload(payload["ss_family"], direction_label(payload["function"], payload.get("direction")), payload["src_addr"],
                      payload["src_port"], payload["dst_addr"], payload["dst_port"], data)
         except (BrokenPipeError, IOError):
             logger_instance.detach_with_timeout(logger_instance.process)

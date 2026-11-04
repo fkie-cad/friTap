@@ -420,6 +420,14 @@ class Backend(ABC):
         """List running processes on the target device."""
         raise NotImplementedError(f"{self.name} backend does not support process enumeration")
 
+    def process_paths(self, device: Any, pids: list[int]) -> dict[int, str]:
+        """Return ``{pid: executable path}`` for those of *pids* still running.
+
+        Cheap per-pid lookup used to notice an exec() of an instrumented process
+        (its path changes). Backends without it raise NotImplementedError.
+        """
+        raise NotImplementedError(f"{self.name} backend does not support process paths")
+
     def check_connectivity(self, device: Any) -> bool:
         """Test whether *device* is reachable without materializing full process list.
 

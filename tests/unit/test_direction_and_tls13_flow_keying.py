@@ -20,7 +20,12 @@ from friTap.connection_index import (
     has_usable_endpoints,
     resolve_connection_key,
 )
-from friTap.constants import SSL_READ, SSL_WRITE, direction_for_function, is_read_function
+from friTap.constants import (
+    SSL_READ,
+    SSL_WRITE,
+    direction_for_function,
+    is_read_function,
+)
 from friTap.events import SESSION_ENDED, DatalogEvent, EventBus, SessionEvent
 from friTap.flow.collector import FlowCollector
 from friTap.message_router import MessageRouter

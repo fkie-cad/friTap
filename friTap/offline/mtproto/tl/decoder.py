@@ -57,6 +57,7 @@ GZIP_TRUNCATED_NOTE = "gzip_packed truncated (partial inflate)"
 #: ``MAX_INFLATE`` (16 MiB) is defined with the generic bounded inflater in
 #: :mod:`friTap.parsers.decompress` and re-exported above.
 
+_UINT32 = struct.Struct("<I")
 _FIXED_PRIMS = {"int": ("<i", 4), "long": ("<q", 8), "double": ("<d", 8), "#": ("<I", 4)}
 _WIDE_PRIMS = {"int128": 16, "int256": 32}
 _OBJECT = parse_type("Object")
@@ -113,6 +114,18 @@ class _Reader:
                 f"truncated: need {count} B at offset {self.pos}, {self.remaining} B left",
             ))
 
+    def _advance(self, size: int) -> int:
+        """Move past *size* (>= 0) bytes and return where they start.
+
+        The hot path of every fixed-width read: one bounds check, falling back
+        to :meth:`_need` only to raise its "truncated" abort.
+        """
+        pos = self.pos
+        if size > self.end - pos:
+            self._need(size)
+        self.pos = pos + size
+        return pos
+
     def take(self, count: int) -> bytes:
         self._need(count)
         start = self.pos
@@ -120,13 +133,10 @@ class _Reader:
         return bytes(self.data[start:self.pos])
 
     def unpack(self, fmt: str, size: int) -> Any:
-        self._need(size)
-        value = struct.unpack_from(fmt, self.data, self.pos)[0]
-        self.pos += size
-        return value
+        return struct.unpack_from(fmt, self.data, self._advance(size))[0]
 
     def uint32(self) -> int:
-        return self.unpack("<I", 4)
+        return _UINT32.unpack_from(self.data, self._advance(4))[0]
 
     def peek_uint32(self) -> Optional[int]:
         if self.remaining < 4:
@@ -296,6 +306,8 @@ class _TlDecoder:
     def _read_combinator(self, reader: _Reader, combinator: TlCombinator, start: int,
                          depth: int) -> Optional[TlNode]:
         build = self._enter(reader, depth)
+        if not combinator.params:  # boolTrue, inputPeerEmpty, ...: nothing to read
+            return self._node(combinator, [], start, reader, "") if build else None
         fields: List[TlField] = []
         flags: dict = {}
         omitted = False

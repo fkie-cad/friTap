@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "apps": {
+      "items": {
+        "properties": {
+          "identifier": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "enum": [
+              "app",
+              "process"
+            ],
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "pid": {
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "device": {
+      "type": "object"
+    },
+    "next_cursor": {
+      "type": "string"
+    },
+    "schema": {
+      "type": "string"
+    },
+    "total": {
+      "type": "integer"
+    }
+  },
+  "title": "list_apps result",
+  "type": "object"
+}

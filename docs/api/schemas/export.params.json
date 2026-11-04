@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "oneOf": [
+    {
+      "required": [
+        "tap"
+      ]
+    },
+    {
+      "required": [
+        "session_id"
+      ]
+    }
+  ],
+  "properties": {
+    "app_protocol": {
+      "description": "Only flows of this application protocol group.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "confirm_secrets": {
+      "default": false,
+      "description": "keylog: confirm writing TLS key material (the server must also allow secrets).",
+      "type": "boolean"
+    },
+    "filter": {
+      "description": "Display filter expression (Wireshark-like syntax).",
+      "minLength": 1,
+      "type": "string"
+    },
+    "format": {
+      "description": "har (HTTP archive), markdown (report) or keylog (secrets).",
+      "enum": [
+        "har",
+        "markdown",
+        "keylog"
+      ],
+      "type": "string"
+    },
+    "include_bodies": {
+      "default": false,
+      "description": "har: embed request/response bodies.",
+      "type": "boolean"
+    },
+    "out": {
+      "description": "Output file path inside the sandbox root.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "overwrite": {
+      "default": false,
+      "description": "Replace an existing output file.",
+      "type": "boolean"
+    },
+    "protocol": {
+      "description": "Only flows carrying this protocol (e.g. tls, http2, mtproto).",
+      "minLength": 1,
+      "type": "string"
+    },
+    "session_id": {
+      "description": "Id of a capture session started with start_capture.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "show_values": {
+      "default": false,
+      "description": "Show raw captured values instead of redacting them.",
+      "type": "boolean"
+    },
+    "tap": {
+      "description": "Path to a .tap capture file (inside the sandbox root).",
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "format",
+    "out"
+  ],
+  "title": "export parameters",
+  "type": "object"
+}

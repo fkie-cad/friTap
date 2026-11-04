@@ -173,6 +173,7 @@ def test_full_capture_info_logs_name_only_the_existing_output(tmp_path):
         logger.removeHandler(capture)
     pcap = object.__new__(PCAP)
     pcap.pcap_file_name = str(output)
+    pcap.pcap_container = "pcap"
     pcap.logger = MagicMock()
     pcap._write_capture_manifest = MagicMock()
     pcap._observed_server_ports = {}
@@ -269,6 +270,9 @@ def test_pull_returns_the_local_path_and_logs_adbs_stderr_summary():
 
 def _session(pcap_obj, mobile="emulator-5556"):
     ssl_log = MagicMock()
+    # Real PCAP attributes the decryption hint reads.
+    pcap_obj.pcap_file_name = "cap.pcap"
+    pcap_obj.pcap_container = "pcap"
     ssl_log.pcap_obj = pcap_obj
     ssl_log.keylog_file = None
     ssl_log.full_capture = True

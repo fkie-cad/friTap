@@ -4,7 +4,7 @@ import { devlog, devlog_error, log, devlog_info } from "../../util/log.js";
 import { initializePipeline as sharedInitializePipeline, resolveWithPipelineAsync as sharedResolveWithPipelineAsync } from "../../shared/pipeline_utils.js";
 import { sendKeylog } from "../../shared/shared_structures.js";
 import { readKeylogLine, isNssKeylogLine } from "../shared/keylog_line.js";
-import { addModuleMethod, hasResolvableSslSurface } from "../../legacy/tls/libs/ssl_method_mapping.js";
+import { addModuleMethod, hasResolvableSslSurface } from "../shared/ssl_method_mapping.js";
 import { SslPlaintextHooks } from "../../shared/ssl_plaintext_hooks.js";
 
 class ModifyReceiver{

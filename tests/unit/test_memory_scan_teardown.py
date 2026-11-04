@@ -83,6 +83,7 @@ def _make_logger(pcap):
         obj.pcap_cleanup_calls += 1
 
     obj.pcap_cleanup = _pcap_cleanup
+    obj._init_process_following()  # on_detach consults the exec tracker
     obj._stop_instrument_thread = lambda: None
     obj._stop_consumer_thread = lambda: None
     obj._finalize_live_scan = lambda: None

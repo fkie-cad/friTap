@@ -1,16 +1,26 @@
 /**
  * IPSec key extraction hooks for Linux (strongSwan).
  *
- * Hooks ikev2_derive_child_sa_keys() and derive_ike_keys()
- * to extract ESP and IKE SA key material.
+ * The real, stock-charon key extraction lives in
+ * agent/ipsec/libs/strongswan_keys.ts (installStrongswanKeyHooks): it locates
+ * the non-exported derive_ike_keys / add_sa by their DBG format-string anchors
+ * and reads IKE + ESP key material with a verified, version-specific layout.
+ *
+ * The symbol-based blocks below are the ORIGINAL best-effort path for the rare
+ * build that actually exports ikev2_derive_child_sa_keys / derive_ike_keys.
+ * They resolve nothing on stock Debian/Ubuntu charon (those symbols are not
+ * exported) and are kept as a harmless fallback so no existing behaviour is
+ * removed; ipsec_execute() now ALSO runs the anchor-based extractor.
  *
  * Based on keys-in-flux research:
  * https://github.com/fkie-cad/keys-in-flux-paper-material
  */
 
 import { log, devlog } from "../../../util/log.js";
-import { sendWithProtocol, sendKeyMaterial } from "../../../shared/shared_structures.js";
+import { sendKeyMaterial } from "../../../shared/shared_structures.js";
 import { toHexString } from "../../../shared/shared_functions.js";
+import { findModuleExport } from "../../../shared/module_exports.js";
+import { scheduleStrongswanKeyHooks } from "../../libs/strongswan_keys.js";
 
 function readKeyMaterial(ptr: NativePointer, label: string): string | null {
     try {
@@ -32,19 +42,23 @@ function readKeyMaterial(ptr: NativePointer, label: string): string | null {
     return null;
 }
 
-export function ipsec_execute(moduleName: string, is_base_hook: boolean): void {
+/**
+ * Install the strongSwan key hooks on `moduleName`. Returns whether any hook was
+ * installed (ModuleHookingType): the central loader announces the module and sends
+ * its single library_detected from that verdict.
+ */
+export function ipsec_execute(moduleName: string, is_base_hook: boolean): boolean {
     devlog(`[IPSec] Installing IPSec hooks for: ${moduleName}`);
-    log(`[*] IPSec library found: ${moduleName}`);
 
-    // Notify Python side about the detected library
-    sendWithProtocol({
-        contentType: "library_detected",
-        library: moduleName,
-        message: `IPSec library detected: ${moduleName}`,
-    });
+    // Primary path: locate the non-exported strongSwan key routines by their
+    // DBG anchor strings and extract IKE + ESP key material (stock charon). The
+    // anchor scan is asynchronous (it yields to the event loop); this returns a
+    // synchronous verdict (true when a targeted strongSwan module is present)
+    // and schedules the install in the background.
+    const anchorScheduled = scheduleStrongswanKeyHooks(moduleName);
 
     // Hook ikev2_derive_child_sa_keys() — ESP key material
-    const deriveChildSaKeys = (Module as any).findExportByName(moduleName, "ikev2_derive_child_sa_keys");
+    const deriveChildSaKeys = findModuleExport(moduleName, "ikev2_derive_child_sa_keys");
     if (deriveChildSaKeys) {
         Interceptor.attach(deriveChildSaKeys, {
             onEnter: function (args) {
@@ -89,7 +103,7 @@ export function ipsec_execute(moduleName: string, is_base_hook: boolean): void {
     }
 
     // Hook derive_ike_keys() — IKE SA keys (SK_ai, SK_ar, SK_ei, SK_er)
-    const deriveIkeKeys = (Module as any).findExportByName(moduleName, "derive_ike_keys");
+    const deriveIkeKeys = findModuleExport(moduleName, "derive_ike_keys");
     if (deriveIkeKeys) {
         Interceptor.attach(deriveIkeKeys, {
             onEnter: function (args) {
@@ -128,6 +142,7 @@ export function ipsec_execute(moduleName: string, is_base_hook: boolean): void {
     } else {
         devlog(`[IPSec] derive_ike_keys not found in ${moduleName}`);
     }
+    return anchorScheduled || Boolean(deriveChildSaKeys || deriveIkeKeys);
 }
 
 // Keep backward-compatible export name for existing registrations

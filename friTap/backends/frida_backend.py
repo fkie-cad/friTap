@@ -582,6 +582,13 @@ class FridaBackend(Backend):
             for p in device.enumerate_processes()
         ]
 
+    @_wrap_frida_errors
+    def process_paths(self, device: Any, pids: list[int]) -> dict[int, str]:
+        # Filtered by pid and without icons: a few ms even on a remote device.
+        processes = device.enumerate_processes(pids=list(pids), scope="metadata")
+        return {p.pid: p.parameters["path"] for p in processes
+                if isinstance(p.parameters.get("path"), str)}
+
     def get_device_manager(self) -> Any:
         return frida.get_device_manager()
 

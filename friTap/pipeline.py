@@ -25,7 +25,12 @@ from typing import TYPE_CHECKING, runtime_checkable
 from typing import Protocol as TypingProtocol
 
 from .connection_index import DUMMY_SESSION_ID_BASE, NSS_DUMMY_SESSION_ID
-from .constants import INFRASTRUCTURE_PORTS, LOOPBACK_ADDRS, SSL_READ, is_read_function
+from .constants import (
+    INFRASTRUCTURE_PORTS,
+    LOOPBACK_ADDRS,
+    SSL_READ,
+    direction_for_function,
+)
 from .schemas.canonical import (
     AddressFamily,
     DataCanonical,
@@ -160,7 +165,7 @@ class NormalizeStage:
         )
 
         function = msg.get("function", "")
-        ctx.direction = Direction.READ if is_read_function(function) else Direction.WRITE
+        ctx.direction = Direction(direction_for_function(function, msg.get("direction")))
         ssl_session_id = str(msg.get("ssl_session_id", ""))
         if ssl_session_id.startswith(DUMMY_SESSION_ID_BASE) or ssl_session_id == NSS_DUMMY_SESSION_ID:
             ssl_session_id = ""

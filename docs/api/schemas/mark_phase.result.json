@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "label": {
+      "type": "string"
+    },
+    "schema": {
+      "type": "string"
+    },
+    "session_id": {
+      "type": "string"
+    },
+    "t": {
+      "description": "Epoch seconds of the marker.",
+      "type": "number"
+    },
+    "t_rel": {
+      "description": "Seconds since the capture started (null if not started).",
+      "type": [
+        "number",
+        "null"
+      ]
+    }
+  },
+  "title": "mark_phase result",
+  "type": "object"
+}

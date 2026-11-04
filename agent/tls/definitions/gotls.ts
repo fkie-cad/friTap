@@ -11,26 +11,29 @@
 //      NativeFunction wrapping.
 //   2. Go's ABIInternal passes writeKeyLog params in CPU registers, not
 //      the System V slots Frida's args[] exposes. The keylog hook reads
-//      the registers directly via extractKeylogFromRegisters
-//      (see ../decoders/gotls_registers.ts).
+//      the registers directly (installGoKeyLogHook, ../shared/go_keylog_hook.ts —
+//      shared with the legacy symbol- and pattern-based paths).
+//   3. Go functions must not get onLeave hooks (goroutines migrate between OS
+//      threads across blocking calls; the swapped return address breaks Go's
+//      stack unwinder), so the generic readHook/writeHook executors — onLeave,
+//      C args[] — cannot be used. The plaintext hooks are onEnter-only probes
+//      installed as extraHooks (see ../shared/go_plaintext.ts).
 //
-// Stripped binaries without enumerable Go symbols continue to route
-// through the legacy pattern-based path — see gotls_linux.ts /
-// gotls_android.ts wrappers.
+// Stripped binaries without enumerable Go symbols: the keylog install scans
+// the writeKeyLog byte patterns itself (installGoKeylogByPattern). If the
+// whole pipeline fails, the modern platform wrappers (gotls_linux.ts /
+// gotls_android.ts) fall back to the class-based GoTLS executor in
+// ../libs/gotls.ts — never to the legacy tree.
 
 import { HookDefinition, ResolvedFunctions } from "../../core/hook_definition.js";
-import { sendKeylog } from "../../shared/shared_structures.js";
 import { getPortsAndAddresses } from "../../shared/shared_functions.js";
 import { devlog, devlog_error, log } from "../../util/log.js";
 import { STANDARD_SOCKET_SYMBOLS } from "./shared_constants.js";
 import { noOpClientRandomDecoder } from "./shared_factories.js";
-import {
-    GO_SYMBOL_CONN_READ,
-    GO_SYMBOL_CONN_WRITE,
-    GO_SYMBOL_WRITE_KEYLOG,
-    resolveGoSymbols,
-} from "../shared/go_symbol_resolver.js";
-import { extractKeylogFromRegisters } from "../decoders/gotls_registers.js";
+import { GO_SYMBOL_WRITE_KEYLOG, resolveGoSymbols } from "../shared/go_symbol_resolver.js";
+import { GO_WRITE_KEYLOG_PATTERNS, installGoKeyLogHook, installGoKeylogByPattern } from "../shared/go_keylog_hook.js";
+import { installGoPlaintextHooks } from "../shared/go_plaintext.js";
+import { pcap_enabled } from "../../fritap_agent.js";
 
 /**
  * Go's crypto/tls doesn't expose an fd accessor for *Conn — keep the
@@ -59,21 +62,14 @@ function installGoKeylogHook(
 ): boolean {
     const addr = addresses[moduleName]?.[GO_SYMBOL_WRITE_KEYLOG];
     if (!addr || addr.isNull()) {
-        devlog(`[gotls] ${GO_SYMBOL_WRITE_KEYLOG} unresolved in ${moduleName}; skipping keylog hook`);
-        return false;
+        devlog(`[gotls] ${GO_SYMBOL_WRITE_KEYLOG} unresolved in ${moduleName}; trying the byte patterns (stripped binary)`);
+        // Stripped binary: the shared pattern path (go_keylog_hook.ts). The executor's legacy
+        // fallback never fires here (an unresolved symbol is not an error), so scan here.
+        return installGoKeylogByPattern(moduleName, GO_WRITE_KEYLOG_PATTERNS) !== null;
     }
     try {
-        Interceptor.attach(addr, {
-            onEnter: function (_args: any) {
-                try {
-                    devlog(`invoking writeKeyLog from Go crypto/tls (${moduleName})`);
-                    const line = extractKeylogFromRegisters(this.context);
-                    if (line !== null) sendKeylog(line);
-                } catch (e) {
-                    devlog_error(`[gotls keylog] ${e}`);
-                }
-            },
-        });
+        // Shared Go keylog hook (go_keylog_hook.ts): Go registers, onEnter-only.
+        installGoKeyLogHook(addr);
         log(`[*] ${moduleName}: keylog hooks installed via Go writeKeyLog`);
         return true;
     } catch (e) {
@@ -96,6 +92,20 @@ function goCustomAddressExtractor(
     return getPortsAndAddresses(-1, isRead, {}, enableDefaultFd);
 }
 
+/**
+ * onEnter-only plaintext hooks (go_plaintext.ts, shared with the legacy executors): writes at
+ * (*Conn).writeRecordLocked, reads at the plaintext copy inside (*Conn).Read.
+ */
+function installGoPlaintextHooksFromDefinition(
+    addresses: { [key: string]: { [fn: string]: NativePointer } },
+    moduleName: string,
+    _resolvedFns: ResolvedFunctions,
+    enableDefaultFd: boolean,
+): void {
+    if (!pcap_enabled) return;
+    installGoPlaintextHooks(moduleName, addresses[moduleName] || {}, enableDefaultFd);
+}
+
 export function createGoTlsDefinition(): HookDefinition {
     return {
         libraryId: "gotls",
@@ -113,30 +123,14 @@ export function createGoTlsDefinition(): HookDefinition {
         fdDecoder: goFdDecoder,
         sessionIdDecoder: goSessionIdDecoder,
         clientRandomDecoder: noOpClientRandomDecoder,
-        readHook: {
-            symbol: GO_SYMBOL_CONN_READ,
-            args: {
-                sslCtxArgIndex: 0,
-                bufferArgIndex: 1,
-                bytesTransferred: "retval",
-            },
-            functionLabel: "Go_Conn_Read",
-        },
-        writeHook: {
-            symbol: GO_SYMBOL_CONN_WRITE,
-            args: {
-                sslCtxArgIndex: 0,
-                bufferArgIndex: 1,
-                lengthArgIndex: 2,
-                bytesTransferred: "arg",
-            },
-            functionLabel: "Go_Conn_Write",
-        },
+        // No readHook/writeHook: the generic executors attach onLeave and read C
+        // args[] — both wrong for Go. See installGoPlaintextHooksFromDefinition (extraHooks).
         keylog: {
             kind: "custom",
             install: (addresses, modName, _resolvedFns, _enableDefaultFd) =>
                 installGoKeylogHook(addresses, modName),
         },
+        extraHooks: [{ install: installGoPlaintextHooksFromDefinition }],
         customAddressExtractor: goCustomAddressExtractor,
         libraryType: "gotls",
     };

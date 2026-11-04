@@ -77,6 +77,7 @@ def _make_logger(instrument=None, maxsize=16, running=True,
     obj._instrument_thread_lock = threading.Lock()
     obj._suspended_pids = set()
     obj._suspended_pids_lock = threading.Lock()
+    obj._init_process_following()  # exec-following tracker, watchdog, resumer
     obj.pid = None
     obj.instrument = MagicMock() if instrument is None else instrument
     obj._config = types.SimpleNamespace(
@@ -136,7 +137,7 @@ def _assert_never_on_caller_thread(stub, caller):
 def test_child_is_not_instrumented_inline_on_event_thread():
     """on_child_added runs on Frida's event thread: enqueue, never instrument."""
     stub = ThreadRecordingInstrument()
-    obj = _make_logger(instrument=stub)
+    obj = _make_logger(instrument=stub, enable_child_gating=True)  # children are instrumented only with --enable_child_gating
     caller = threading.current_thread()
     try:
         obj.on_child_added(FakeChild(pid=1234, identifier="com.example.app:svc"))
@@ -229,7 +230,7 @@ def test_resume_is_called_even_when_instrument_raises():
 def test_worker_survives_a_failing_child_and_instruments_the_next():
     """One unusable child must not end gating for every later one."""
     stub = ThreadRecordingInstrument(raise_on=(1,))
-    obj = _make_logger(instrument=stub)
+    obj = _make_logger(instrument=stub, enable_child_gating=True)  # children are instrumented only with --enable_child_gating
     try:
         obj.on_child_added(FakeChild(pid=11))
         assert stub.called.wait(2), "first child was never attempted"
@@ -321,7 +322,7 @@ def test_drain_keeps_going_when_a_resume_raises():
 def test_worker_instrumented_requests_are_not_double_resumed_by_the_drain():
     """The drain runs after the join, so it must find nothing left to do."""
     stub = ThreadRecordingInstrument()
-    obj = _make_logger(instrument=stub)
+    obj = _make_logger(instrument=stub, enable_child_gating=True)  # children are instrumented only with --enable_child_gating
     obj.on_child_added(FakeChild(pid=31))
     assert stub.called.wait(2), "child was never instrumented"
 

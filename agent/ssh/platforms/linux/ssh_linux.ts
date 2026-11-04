@@ -13,6 +13,9 @@
  *   - SSH plaintext PCAPNG records via installSshPacketHooks() — see
  *     ssh_packet_hooks.ts for the binary-packet interception path.
  *
+ * Hook addresses come from the module's exports, or — for the stripped `ssh`/`sshd` that
+ * Debian and Ubuntu ship — from the string anchors in ../../shared/openssh_functions.ts.
+ *
  * Notes on the legacy struct walk:
  *  - The pre-rewrite implementation here read `state` at offset 0 of struct ssh
  *    and then walked `state[0]/state[8]` as if it were `newkeys[2]`. That was
@@ -32,6 +35,12 @@ import { sendWithProtocol, sendKeyMaterial } from "../../../shared/shared_struct
 import { toHexString, readAddresses } from "../../../shared/shared_functions.js";
 import { installSshPacketHooks } from "./ssh_packet_hooks.js";
 import { keylog_enabled } from "../../../fritap_agent.js";
+import { findModuleExport } from "../../../shared/module_exports.js";
+import {
+    KexLayout, kexinitCookie, probeKexLayout, readPointerAt, readShortCString, readSshbuf, sharedSecretBytes,
+} from "../../shared/sshbuf_view.js";
+import { guardAgentFdsAgainstClosefrom } from "../../shared/closefrom_guard.js";
+import { locatedByAnchors, openSshFunction, withOpenSshFunctions } from "../../shared/openssh_functions.js";
 
 // ---------------------------------------------------------------------------
 // sshenc struct offsets (OpenSSH 7.6+ on 64-bit LP64) — used only by the
@@ -158,128 +167,54 @@ function consumeCookies(sshPtr: NativePointer): CookiePair {
 }
 
 // ---------------------------------------------------------------------------
-// Cookie extraction from struct ssh -> state -> kex -> {my, peer} (sshbuf*).
+// Cookie extraction from struct ssh -> kex -> {my, peer} (sshbuf*).
 //
-// The SSH_MSG_KEXINIT payload layout is:
-//     [u8 type=20]  [16 bytes cookie]  [name-list ...]
-// kex_send_kexinit fills ssh->kex->my with this assembled buffer; the
-// dispatch handler for SSH_MSG_KEXINIT (kex_input_kexinit) stores the peer's
-// version in ssh->kex->peer.
+// kex->my / kex->peer hold the KEXINIT *bodies* — `cookie[16] || name-lists ...`, without
+// the SSH_MSG_KEXINIT type byte. kex_send_kexinit fills `my`; kex_input_kexinit copies
+// the peer's body into `peer` (the adjacent field). `kex` is a direct member of struct
+// ssh (the 2nd field), not of session_state.
 //
-// Walking three pointer hops (ssh → state → kex → my/peer) is the most
-// reliable way to recover both cookies on OpenSSH 7.6+. The intermediate
-// offsets vary per build (state has #ifdef WITH_ZLIB), so we use a small
-// scanner to discover state→kex once per process. After that the position
-// of `my` and `peer` within struct kex is stable enough to walk with fixed
-// offsets — we still validate the dereference each time before reading.
+// The offsets are discovered once per process by content (probeKexLayout) and every
+// candidate is read with guarded struct reads (sshbuf_view.ts). Never call the target's
+// sshbuf_len()/sshbuf_ptr() on an unverified pointer: sshbuf_check_sanity() raises
+// SIGSEGV on anything that is not a sane sshbuf, killing the target.
 // ---------------------------------------------------------------------------
 
 const ptrSize = Process.pointerSize;
-// peer cookie always lives at `kex->my + ptrSize` (kex_send_kexinit fills `my`
-// and the dispatch handler for SSH_MSG_KEXINIT stores into `peer`, the two
-// adjacent struct fields). We probe `my` only and derive `peer` from it.
-let kexOffsetInState: number | null = null;
-let myOffsetInKex: number | null = null;
+let kexLayout: KexLayout | null = null;
 
-let sshbuf_ptr_fn: NativeFunction<NativePointer, [NativePointer]> | null = null;
-let sshbuf_len_fn: NativeFunction<number | UInt64, [NativePointer]> | null = null;
-
-function ensureSshbufAccessors(moduleName: string): boolean {
-    if (sshbuf_ptr_fn && sshbuf_len_fn) return true;
-    try {
-        const ptrAddr = (Module as any).findExportByName(moduleName, "sshbuf_ptr");
-        const lenAddr = (Module as any).findExportByName(moduleName, "sshbuf_len");
-        if (!ptrAddr || !lenAddr) return false;
-        sshbuf_ptr_fn = new NativeFunction(ptrAddr, "pointer", ["pointer"]);
-        sshbuf_len_fn = new NativeFunction(lenAddr, "size_t", ["pointer"]) as any;
-        return true;
-    } catch (e) {
-        devlog(`[SSH] sshbuf accessor resolution failed: ${e}`);
-        return false;
-    }
+/** Whether the module exports the sshbuf API, i.e. is an OpenSSH build we understand. */
+function hasSshbufExports(moduleName: string): boolean {
+    return findModuleExport(moduleName, "sshbuf_ptr") !== null
+        && findModuleExport(moduleName, "sshbuf_len") !== null;
 }
 
-function looksLikeSshbufWithKexinitPayload(maybeSshbuf: NativePointer): boolean {
-    if (!sshbuf_ptr_fn || !sshbuf_len_fn) return false;
-    try {
-        if (maybeSshbuf.isNull()) return false;
-        const len = Number((sshbuf_len_fn as any)(maybeSshbuf));
-        if (len < 17 || len > 8192) return false;
-        const data = (sshbuf_ptr_fn as any)(maybeSshbuf) as NativePointer;
-        if (data.isNull()) return false;
-        // First byte of an SSH_MSG_KEXINIT payload is the message type 0x14 (20).
-        const firstByte = data.readU8();
-        return firstByte === 0x14;
-    } catch {
-        return false;
-    }
+/**
+ * Whether `moduleName` is an OpenSSH build whose structs sshbuf_view.ts reads: one that
+ * exports the sshbuf API, or a stripped one whose functions the string anchors located
+ * (the anchors are OpenSSH's own log literals).
+ */
+export function isOpenSshBuild(moduleName: string): boolean {
+    return hasSshbufExports(moduleName) || locatedByAnchors(moduleName);
 }
 
-function probeKexAndCookieOffsets(sshPtr: NativePointer): boolean {
-    if (kexOffsetInState !== null && myOffsetInKex !== null) {
-        return true;
+/** ssh->kex, probing the layout on first use (needs kex->my filled). */
+function kexOf(sshPtr: NativePointer): NativePointer | null {
+    if (kexLayout === null) {
+        kexLayout = probeKexLayout(sshPtr);
+        if (kexLayout === null) return null;
+        devlog(`[SSH] probed offsets: ssh->kex=${kexLayout.kexInSsh}, kex->my=${kexLayout.myInKex}, ` +
+            `kex->peer=${kexLayout.myInKex + ptrSize}`);
     }
-    try {
-        const state = sshPtr.readPointer();
-        if (state.isNull()) return false;
-
-        // We're walking two layers of struct: ssh->state->kex, then kex->my
-        // (and kex->peer at +ptrSize). The outer scan finds `kex` by looking
-        // for a pointer whose interior contains two adjacent sshbufs both
-        // carrying an SSH_MSG_KEXINIT payload (first byte 0x14).
-        for (let kexOff = 0; kexOff < 512; kexOff += ptrSize) {
-            let kexCandidate: NativePointer;
-            try {
-                kexCandidate = state.add(kexOff).readPointer();
-            } catch {
-                continue;
-            }
-            if (kexCandidate.isNull()) continue;
-
-            for (let myOff = 0; myOff < 1024; myOff += ptrSize) {
-                let myCand: NativePointer;
-                let peerCand: NativePointer;
-                try {
-                    myCand = kexCandidate.add(myOff).readPointer();
-                    peerCand = kexCandidate.add(myOff + ptrSize).readPointer();
-                } catch {
-                    continue;
-                }
-                const myOk = looksLikeSshbufWithKexinitPayload(myCand);
-                const peerOk = looksLikeSshbufWithKexinitPayload(peerCand);
-                if (myOk || peerOk) {
-                    kexOffsetInState = kexOff;
-                    myOffsetInKex = myOff;
-                    devlog(
-                        `[SSH] probed offsets: state->kex=${kexOff}, ` +
-                        `kex->my=${myOff}, kex->peer=${myOff + ptrSize} ` +
-                        `(my=${myOk ? "valid" : "unknown"}, peer=${peerOk ? "valid" : "unknown"})`
-                    );
-                    return true;
-                }
-            }
-        }
-    } catch (e) {
-        devlog(`[SSH] probe error: ${e}`);
-    }
-    return false;
+    return readPointerAt(sshPtr, kexLayout.kexInSsh);
 }
 
-function readCookieFrom(sshbufPtr: NativePointer): string | null {
-    if (!sshbuf_ptr_fn || !sshbuf_len_fn) return null;
-    try {
-        if (sshbufPtr.isNull()) return null;
-        const len = Number((sshbuf_len_fn as any)(sshbufPtr));
-        if (len < 17) return null;
-        const data = (sshbuf_ptr_fn as any)(sshbufPtr) as NativePointer;
-        if (data.isNull()) return null;
-        if (data.readU8() !== 0x14) return null; // not a SSH_MSG_KEXINIT buffer
-        const bytes = data.add(1).readByteArray(16);
-        if (!bytes) return null;
-        return toHexString(bytes);
-    } catch {
-        return null;
-    }
+/** The local (`my`) or peer KEXINIT cookie of this session as hex, or null. */
+function readKexinitCookie(sshPtr: NativePointer, side: "local" | "peer"): string | null {
+    const kex = kexOf(sshPtr);
+    if (kex === null || kexLayout === null) return null;
+    const slot = kexLayout.myInKex + (side === "peer" ? ptrSize : 0);
+    return kexinitCookie(readPointerAt(kex, slot), toHexString);
 }
 
 // ---------------------------------------------------------------------------
@@ -289,7 +224,7 @@ function readCookieFrom(sshbufPtr: NativePointer): string | null {
 // offset 0 of `state`. We now scan `state` for two consecutive pointers that
 // both pass plausibility checks: dereferencing them yields a struct whose
 // first slot points to printable ASCII (cipher name) and whose +20/+24
-// uint32 values are sane (8..64 for key_len, 8..32 for iv_len).
+// uint32 values are sane (8..64 for key_len, 0..32 for iv_len).
 // ---------------------------------------------------------------------------
 let newkeysOffsetInState: number | null = null;
 
@@ -298,13 +233,15 @@ function plausibleSshencSlot(slotPtr: NativePointer): boolean {
         if (slotPtr.isNull()) return false;
         const namePtr = slotPtr.add(SSHENC_CIPHER_NAME_OFFSET).readPointer();
         if (namePtr.isNull()) return false;
-        const name = namePtr.readCString(31);
+        // Bounded NUL-terminated read: readCString(31) would read 31 bytes past the NUL.
+        const name = readShortCString(namePtr, 32);
         if (!name || name.length === 0) return false;
         if (!/^[\x20-\x7e]+$/.test(name)) return false;
         const keyLen = slotPtr.add(SSHENC_KEY_LEN_OFFSET).readU32();
         const ivLen = slotPtr.add(SSHENC_IV_LEN_OFFSET).readU32();
         if (keyLen < 8 || keyLen > 64) return false;
-        if (ivLen < 8 || ivLen > 32) return false;
+        // chacha20-poly1305@openssh.com derives its nonce from the sequence number: iv_len 0.
+        if (ivLen > 32) return false;
         return true;
     } catch {
         return false;
@@ -372,7 +309,7 @@ function scanForNewkeysAndExtract(sshPtr: NativePointer): void {
 // ---------------------------------------------------------------------------
 
 function hookCipherInit(moduleName: string): boolean {
-    const addr = (Module as any).findExportByName(moduleName, "cipher_init");
+    const addr = findModuleExport(moduleName, "cipher_init");
     if (!addr) return false;
     Interceptor.attach(addr, {
         onEnter(args) {
@@ -414,7 +351,7 @@ function hookCipherInit(moduleName: string): boolean {
 }
 
 function hookKexSendKexinit(moduleName: string): boolean {
-    const addr = (Module as any).findExportByName(moduleName, "kex_send_kexinit");
+    const addr = openSshFunction(moduleName, "kex_send_kexinit");
     if (!addr) return false;
     Interceptor.attach(addr, {
         onEnter(args) {
@@ -423,13 +360,7 @@ function hookKexSendKexinit(moduleName: string): boolean {
         onLeave(_retval) {
             try {
                 if (!this.sshPtr || (this.sshPtr as NativePointer).isNull()) return;
-                if (!probeKexAndCookieOffsets(this.sshPtr as NativePointer)) return;
-                if (myOffsetInKex === null || kexOffsetInState === null) return;
-                const state = (this.sshPtr as NativePointer).readPointer();
-                const kex = state.add(kexOffsetInState).readPointer();
-                if (kex.isNull()) return;
-                const myBuf = kex.add(myOffsetInKex).readPointer();
-                const cookieHex = readCookieFrom(myBuf);
+                const cookieHex = readKexinitCookie(this.sshPtr as NativePointer, "local");
                 if (cookieHex) recordCookie(this.sshPtr as NativePointer, "local", cookieHex);
             } catch (e) {
                 devlog(`[SSH] kex_send_kexinit onLeave error: ${e}`);
@@ -441,7 +372,7 @@ function hookKexSendKexinit(moduleName: string): boolean {
 }
 
 function hookKexInputKexinit(moduleName: string): boolean {
-    const addr = (Module as any).findExportByName(moduleName, "kex_input_kexinit");
+    const addr = openSshFunction(moduleName, "kex_input_kexinit");
     if (!addr) return false;
     Interceptor.attach(addr, {
         onEnter(args) {
@@ -451,13 +382,7 @@ function hookKexInputKexinit(moduleName: string): boolean {
         onLeave(_retval) {
             try {
                 if (!this.sshPtr || (this.sshPtr as NativePointer).isNull()) return;
-                if (!probeKexAndCookieOffsets(this.sshPtr as NativePointer)) return;
-                if (myOffsetInKex === null || kexOffsetInState === null) return;
-                const state = (this.sshPtr as NativePointer).readPointer();
-                const kex = state.add(kexOffsetInState).readPointer();
-                if (kex.isNull()) return;
-                const peerBuf = kex.add(myOffsetInKex + ptrSize).readPointer();
-                const cookieHex = readCookieFrom(peerBuf);
+                const cookieHex = readKexinitCookie(this.sshPtr as NativePointer, "peer");
                 if (cookieHex) recordCookie(this.sshPtr as NativePointer, "peer", cookieHex);
             } catch (e) {
                 devlog(`[SSH] kex_input_kexinit onLeave error: ${e}`);
@@ -469,7 +394,7 @@ function hookKexInputKexinit(moduleName: string): boolean {
 }
 
 function hookKexDeriveKeys(moduleName: string): boolean {
-    const addr = (Module as any).findExportByName(moduleName, "kex_derive_keys");
+    const addr = openSshFunction(moduleName, "kex_derive_keys");
     if (!addr) return false;
     Interceptor.attach(addr, {
         onEnter(args) {
@@ -492,12 +417,13 @@ function hookKexDeriveKeys(moduleName: string): boolean {
                 const secretBuf = this.secretBuf as NativePointer;
                 if (!sshPtr || sshPtr.isNull()) return;
                 if (!secretBuf || secretBuf.isNull()) return;
-                if (!sshbuf_ptr_fn || !sshbuf_len_fn) return;
-                const len = Number((sshbuf_len_fn as any)(secretBuf));
-                if (len <= 0 || len > 16384) return;
-                const data = (sshbuf_ptr_fn as any)(secretBuf) as NativePointer;
-                if (data.isNull()) return;
-                const sharedSecretHex = toHexString(data.readByteArray(len));
+                // Guarded struct read, never the target's sshbuf_len(): see sshbuf_view.ts.
+                const view = readSshbuf(secretBuf);
+                if (view === null || view.len <= 0 || view.len > 16384) return;
+                const secret = sharedSecretBytes(view);
+                if (secret === null) return;
+                const len = secret.byteLength;
+                const sharedSecretHex = toHexString(secret);
                 const cookies = consumeCookies(sshPtr);
                 sendKeyMaterial({
                     contentType: "ssh_keylog",
@@ -522,7 +448,7 @@ function hookKexDeriveKeys(moduleName: string): boolean {
 }
 
 function hookSshSetNewkeys(moduleName: string, fallbackToScan: boolean): boolean {
-    const addr = (Module as any).findExportByName(moduleName, "ssh_set_newkeys");
+    const addr = openSshFunction(moduleName, "ssh_set_newkeys");
     if (!addr) return false;
     Interceptor.attach(addr, {
         onEnter(args) {
@@ -553,15 +479,21 @@ function hookSshSetNewkeys(moduleName: string, fallbackToScan: boolean): boolean
 // Public entry point — invoked from agent/platforms/{linux,android,macos}.ts
 // when the loader matches an SSH binary / library.
 // ---------------------------------------------------------------------------
-export function ssh_execute(moduleName: string, _is_base_hook: boolean): void {
-    devlog(`[SSH] Installing SSH hooks for: ${moduleName}`);
-    log(`[*] SSH library found: ${moduleName}`);
+//
+// Returns whether any hook was installed (ModuleHookingType): the central loader
+// announces the module and sends its single library_detected from that verdict. A
+// stripped OpenSSH first has its functions located by string anchors, so the verdict
+// then arrives as a Promise (openssh_functions.ts withOpenSshFunctions).
+export function ssh_execute(moduleName: string, _is_base_hook: boolean): boolean | Promise<boolean> {
+    return withOpenSshFunctions(moduleName, () => installSshHooks(moduleName));
+}
 
-    sendWithProtocol({
-        contentType: "library_detected",
-        library: moduleName,
-        message: `SSH library detected: ${moduleName}`,
-    });
+/**
+ * Install every SSH hook on `moduleName` whose function is known (exported, or already
+ * located by anchors). Synchronous; returns whether any hook was installed.
+ */
+export function installSshHooks(moduleName: string): boolean {
+    devlog(`[SSH] Installing SSH hooks for: ${moduleName}`);
 
     // Resolve libc socket helpers once for getPortsAndAddresses() inside the
     // plaintext hooks. The mapping keys here mirror what TLS hooks use.
@@ -574,23 +506,29 @@ export function ssh_execute(moduleName: string, _is_base_hook: boolean): void {
         devlog(`[SSH] readAddresses for socket helpers failed: ${e}`);
     }
 
-    // 1. Buffer accessors first — most other hooks need them.
-    const haveSshbuf = ensureSshbufAccessors(moduleName);
+    // 1. An OpenSSH build whose sshbufs the hooks read (by struct): exported sshbuf API,
+    //    or a stripped build identified by its located functions.
+    const haveSshbuf = isOpenSshBuild(moduleName);
     if (!haveSshbuf) {
-        devlog(`[SSH] sshbuf_ptr/sshbuf_len not exported in ${moduleName}; cookie + K extraction degraded.`);
+        devlog(`[SSH] ${moduleName} is not a recognised OpenSSH build; cookie + K extraction skipped.`);
     }
 
-    // 2. Cookie capture (best-effort — only useful if sshbuf accessors resolved).
+    // ssh's main() calls closefrom(3), which would close the agent's channel in spawn mode
+    // and silently drop every message the hooks below send.
+    guardAgentFdsAgainstClosefrom(moduleName);
+
+    // 2. Cookie capture (best-effort).
+    let installed = false;
     if (haveSshbuf) {
-        hookKexSendKexinit(moduleName);
-        hookKexInputKexinit(moduleName);
+        installed = hookKexSendKexinit(moduleName) || installed;
+        installed = hookKexInputKexinit(moduleName) || installed;
     }
 
     // 3. Shared-secret extraction → ssh_keylog (preferred for Wireshark side-car).
     if (haveSshbuf) {
-        hookKexDeriveKeys(moduleName);
+        installed = hookKexDeriveKeys(moduleName) || installed;
     } else {
-        devlog(`[SSH] Skipping kex_derive_keys hook (sshbuf accessors unresolved).`);
+        devlog(`[SSH] Skipping kex_derive_keys hook (not a recognised OpenSSH build).`);
     }
 
     // 4. Per-direction key extraction → ssh_key with C2S/S2C labels.
@@ -600,14 +538,16 @@ export function ssh_execute(moduleName: string, _is_base_hook: boolean): void {
     if (!cipherInitHooked) {
         devlog(`[SSH] cipher_init not resolvable in ${moduleName}; falling back to sshenc scan.`);
     }
-    hookSshSetNewkeys(moduleName, /* fallbackToScan */ !cipherInitHooked);
+    installed = hookSshSetNewkeys(moduleName, /* fallbackToScan */ !cipherInitHooked) || cipherInitHooked || installed;
 
     // 5. Plaintext PCAPNG capture — separate file (ssh_packet_hooks.ts).
     try {
-        installSshPacketHooks(moduleName, methodAddresses);
+        installed = installSshPacketHooks(moduleName, methodAddresses) || installed;
     } catch (e) {
         devlog_error(`[SSH] installSshPacketHooks failed for ${moduleName}: ${e}`);
     }
+    if (!installed) devlog(`[SSH] no SSH hook resolvable in ${moduleName}`);
+    return installed;
 }
 
 // Backward-compatible alias used by the platform loaders.

@@ -1,8 +1,16 @@
 import { readAddresses, get_hex_string_from_byte_array, getBaseAddress, isSymbolAvailable } from "../../shared/shared_functions.js";
-import { sendKeylog, sendDatalog } from "../../shared/shared_structures.js";
-import { devlog, devlog_error, log } from "../../util/log.js";
+import { sendKeylog } from "../../shared/shared_structures.js";
+import {
+    GO_WRITE_KEYLOG_PATTERNS,
+    GoKeyLogArchPatterns,
+    GoKeyLogPatternHooker,
+    installGoKeyLogHook,
+    installGoKeylogByPattern,
+} from "../shared/go_keylog_hook.js";
+import { installBoringSSLSymbolHook, makeBoringSslDumpKeys } from "../../shared/boringssl_symbol_hook.js";
+import { devlog, devlog_error } from "../../util/log.js";
 import { GoRuntimeParser } from "../../util/go_runtime_parser.js";
-import { pcap_enabled } from "../../fritap_agent.js";
+import { keylog_enabled } from "../../fritap_agent.js";
 
 
 interface KeyLogEntry {
@@ -52,6 +60,9 @@ export class GoTLS {
             }else{
                 this.library_method_mapping[`*${socket_library}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"]
             }
+            // The Go symbols found below are pushed onto this entry: without it every found
+            // symbol threw (undefined.push) and aborted the whole Go executor.
+            this.library_method_mapping[`*${moduleName}*`] ??= [];
 
             
 
@@ -158,31 +169,25 @@ export class GoTLS {
 
     resolve_symbol_with_fallback(symbol: string): NativePointer | null {
         try {
-            // Try exact symbol match first
-            let address = Module.getGlobalExportByName(symbol);
+            // Exact export first. The find* lookups return null when the name is missing;
+            // the get* variants THROW, which (caught below) skipped every fallback.
+            let address: NativePointer | null = Module.findGlobalExportByName(symbol);
             if (address) return address;
 
-            // Try module-specific export
-            try {
-                address = Process.getModuleByName(this.module_name).getExportByName(symbol);
-                if (address) return address;
-            } catch (e) {
-                // Module might not be loaded yet, continue
-            }
+            // Module-specific export (the module might not be loaded yet: findModuleByName -> null)
+            const module = Process.findModuleByName(this.module_name);
+            address = module?.findExportByName(symbol) ?? null;
+            if (address) return address;
 
             // Get all symbol variants (mangled names)
             const symbolVariants = this.getGoSymbolVariants(symbol);
             
             // Try each variant as exact export
             for (const variant of symbolVariants) {
-                try {
-                    address = Process.getModuleByName(this.module_name).getExportByName(variant);
-                    if (address) {
-                        devlog(`[GoTLS] Found symbol ${symbol} as ${variant}`);
-                        return address;
-                    }
-                } catch (e) {
-                    // Continue to next variant
+                address = module?.findExportByName(variant) ?? null;
+                if (address) {
+                    devlog(`[GoTLS] Found symbol ${symbol} as ${variant}`);
+                    return address;
                 }
             }
 
@@ -208,10 +213,12 @@ export class GoTLS {
                 }
             }
 
-            // Last resort: fuzzy matching on export names
+            // Last resort: an export whose method name is this symbol's (".Read", "_Read").
+            // Only the method-name boundary counts: a substring match ("read" in "pthread_*")
+            // would hook an unrelated function now that this fallback is actually reached.
             const symbolBase = symbol.split('.').pop() || symbol;
             for (const exp of exports) {
-                if (exp.name.toLowerCase().includes(symbolBase.toLowerCase())) {
+                if (exp.name.endsWith(`.${symbolBase}`) || exp.name.endsWith(`_${symbolBase}`)) {
                     devlog(`[GoTLS] Found symbol ${symbol} via fuzzy match: ${exp.name}`);
                     return exp.address;
                 }
@@ -306,9 +313,52 @@ export class GoTLS {
         }
     
     
-        install_key_extraction_hook(){
-            // needs to be setup for the specific plattform
+    /** The name a module is loaded under when `module_name` is a path ("/x/y/libgojni.so"). */
+    getSoName(modulePath: string): string {
+        const m = modulePath.match(/([^\/\\]+\.so)$/);
+        return m ? m[1] : modulePath;
+    }
+
+    /**
+     * Keylog hook on crypto/tls.(*Config).writeKeyLog: by symbol when resolved, else (stripped
+     * binary) by the per-arch writeKeyLog entry patterns (go_keylog_hook.ts; the Android
+     * --experimental gate lives there). Nothing is hooked unless keys were requested (-k).
+     * Returns a GoTlsLogger (symbol path), the scanning hooker (pattern path) or undefined.
+     */
+    install_key_extraction_hook(archPatterns: GoKeyLogArchPatterns = GO_WRITE_KEYLOG_PATTERNS): GoTlsLogger | GoKeyLogPatternHooker | null | undefined {
+        if (!keylog_enabled) return undefined;
+        let soName = this.module_name;
+        let goTLSModule = Process.findModuleByName(soName);
+        if (goTLSModule === null) {
+            soName = this.getSoName(this.module_name);
+            goTLSModule = Process.findModuleByName(soName);
+            if (goTLSModule === null) {
+                devlog("[-] GoTLS Error: Unable to find module: " + this.module_name);
+                return undefined;
+            }
         }
+        const writeKeyLog = this.addresses[this.module_name]?.[symbol_writeKeyLog];
+        if (writeKeyLog === undefined || writeKeyLog === null) {
+            return installGoKeylogByPattern(this.module_name, archPatterns, { soName, module: goTLSModule });
+        }
+        devlog("[GoTLS] writeKeyLog symbol available");
+        return new GoTlsLogger(goTLSModule, true, this.install_tls_keys_callback_hook());
+    }
+
+    /**
+     * Last resort when the writeKeyLog pattern scan found nothing: the cgo-linked C BoringSSL
+     * bssl::ssl_log_secret (C ABI), via the shared BoringSSL symbol hook. No Go function is
+     * named "ssl_log". `hooker` is what install_key_extraction_hook returned.
+     */
+    execute_symbol_based_hooking(hooker: any): void {
+        if (!keylog_enabled) return;
+        if (hooker === undefined || hooker === null) {
+            devlog("[-] Error: Hooker is undefined.");
+            return;
+        }
+        if (!hooker.no_hooking_success) return;
+        installBoringSSLSymbolHook(this.module_name, makeBoringSslDumpKeys(this.module_name));
+    }
     
     // Enhanced debug function to list all exports and runtime functions for troubleshooting
     debug_list_exports(): void {
@@ -380,182 +430,13 @@ export class GoTLS {
     }
 
     install_tls_keys_callback_hook(): boolean {
-        Interceptor.attach(this.addresses[this.module_name][symbol_writeKeyLog],
-            {
-                onEnter: function (args: any) {
-                    try{
-                        //instance.SSL_CTX_set_keylog_callback(args[0], OpenSSL_BoringSSL.keylog_callback);
-                        
-                        /**
-                         * GoTLS Key Extraction - Multi-Architecture Support
-                         * 
-                         * Go's crypto/tls package calls a key logging callback with TLS key material.
-                         * The register mapping differs between architectures due to calling conventions:
-                         * 
-                         * x64 (System V ABI):
-                         *   RBX: label string pointer
-                         *   RCX: label string length
-                         *   RDI: client_random pointer  
-                         *   RSI: client_random length
-                         *   R9:  secret key pointer
-                         *   R10: secret key length
-                         * 
-                         * ARM64 (AAPCS64):
-                         *   X1: label string pointer
-                         *   X2: label string length
-                         *   X3: client_random pointer
-                         *   X4: client_random length
-                         *   X5: secret key pointer
-                         *   X6: secret key length
-                         */
-                        
-                        let labelStr: string, client_random: string, secret_key: string;
-                        
-                        if (Process.arch === 'x64') {
-                            // x64 calling convention: RBX, RCX, RDI, RSI, R9, R10
-                            const ctx = this.context as X64CpuContext;
-                            
-                            // Validate pointers and lengths before reading
-                            const labelLen = ctx.rcx.toInt32();
-                            const randomLen = ctx.rsi.toInt32();
-                            const secretLen = ctx.r10.toInt32();
-                            
-                            if (labelLen > 0 && labelLen < 1024 && !ctx.rbx.isNull()) {
-                                labelStr = ctx.rbx.readUtf8String(labelLen);
-                            } else {
-                                throw new Error(`Invalid label parameters: ptr=${ctx.rbx}, len=${labelLen}`);
-                            }
-                            
-                            if (randomLen > 0 && randomLen < 1024 && !ctx.rdi.isNull()) {
-                                client_random = get_hex_string_from_byte_array(ctx.rdi.readByteArray(randomLen));
-                            } else {
-                                throw new Error(`Invalid client_random parameters: ptr=${ctx.rdi}, len=${randomLen}`);
-                            }
-                            
-                            if (secretLen > 0 && secretLen < 1024 && !ctx.r9.isNull()) {
-                                secret_key = get_hex_string_from_byte_array(ctx.r9.readByteArray(secretLen));
-                            } else {
-                                throw new Error(`Invalid secret parameters: ptr=${ctx.r9}, len=${secretLen}`);
-                            }
-                            
-                        } else if (Process.arch === 'arm64') {
-                            // ARM64 calling convention: X0-X7 for arguments, X19-X28 for callee-saved
-                            const ctx = this.context as Arm64CpuContext;
-                            
-                            // Validate pointers and lengths before reading
-                            const labelLen = ctx.x2.toInt32();
-                            const randomLen = ctx.x4.toInt32();
-                            const secretLen = ctx.x6.toInt32();
-                            
-                            if (labelLen > 0 && labelLen < 1024 && !ctx.x1.isNull()) {
-                                labelStr = ctx.x1.readUtf8String(labelLen);
-                            } else {
-                                throw new Error(`Invalid label parameters: ptr=${ctx.x1}, len=${labelLen}`);
-                            }
-                            
-                            if (randomLen > 0 && randomLen < 1024 && !ctx.x3.isNull()) {
-                                client_random = get_hex_string_from_byte_array(ctx.x3.readByteArray(randomLen));
-                            } else {
-                                throw new Error(`Invalid client_random parameters: ptr=${ctx.x3}, len=${randomLen}`);
-                            }
-                            
-                            if (secretLen > 0 && secretLen < 1024 && !ctx.x5.isNull()) {
-                                secret_key = get_hex_string_from_byte_array(ctx.x5.readByteArray(secretLen));
-                            } else {
-                                throw new Error(`Invalid secret parameters: ptr=${ctx.x5}, len=${secretLen}`);
-                            }
-                            
-                        } else {
-                            devlog_error(`[GoTLS] Architecture ${Process.arch} not supported for register-based key extraction`);
-                            devlog_error(`[GoTLS] Supported architectures: x64, arm64`);
-                            devlog_error(`[GoTLS] Consider using function argument-based hooking for this platform`);
-                            return false;
-                        }
-                        
-                        // Send the extracted TLS key log message
-                        sendKeylog(`${labelStr} ${client_random} ${secret_key}`);
-                        devlog(`[GoTLS] Key extracted on ${Process.arch}: ${labelStr} ${client_random.substring(0, 16)}...`);
-                        return true;
-                    }catch (e) {
-                        devlog_error(`Error in writeKeyLog hook: ${e}`);
-                        return false
-                    }
-                    
-                }
-        
-            });
+        if (!keylog_enabled) return false;
+        // Shared Go keylog hook (go_keylog_hook.ts): Go registers, onEnter-only, on arm64
+        // possibly after the Go stack check. Same hook as the pattern-based fallback.
+        installGoKeyLogHook(this.addresses[this.module_name][symbol_writeKeyLog]);
         return false;
     }
 
-    install_plaintext_write_hook(): void {
-        if (!pcap_enabled) return;
-        const symbol = "crypto_tls.(*Conn).writeRecordLocked";
-        try {
-            const address = this.resolve_symbol_with_fallback(symbol);
-            if (!address) {
-                devlog(`[GoTLS] ${symbol} not found, skipping write hook`);
-                return;
-            }
-            
-            Interceptor.attach(address, {
-                onEnter(args) {
-                    const recordType = args[2].toInt32();
-                    if (recordType !== 23) return; // Only application data
-
-                    const dataPtr = args[3];
-                    const len = args[4].toInt32();
-                    if (len > 0) {
-                        const buf = dataPtr.readByteArray(len);
-                        devlog(`[GoTLS] write plaintext (${len} bytes): ${buf ? buf.toString() : "[unreadable]"}`);
-                        
-                        // Send plaintext data to friTap
-                        sendDatalog({
-                            function: "SSL_write"
-                        }, buf);
-                    }
-                }
-            });
-            this.hooked_functions.add(symbol);
-            log(`[GoTLS] Successfully hooked ${symbol}`);
-        } catch (err) {
-            devlog(`[GoTLS] Failed to hook writeRecordLocked: ${err}`);
-        }
-    }
-
-    install_plaintext_read_hook(): void {
-        if (!pcap_enabled) return;
-        const symbol = "crypto_tls.(*Conn).Read";
-        try {
-            const address = this.resolve_symbol_with_fallback(symbol);
-            if (!address) {
-                devlog(`[GoTLS] ${symbol} not found, skipping read hook`);
-                return;
-            }
-            
-            Interceptor.attach(address, {
-                onEnter(args) {
-                    this.x0 = args[0]; // Go slice pointer
-                },
-                onLeave(retval) {
-                    const len = retval.toInt32();
-                    if (len <= 0) return;
-                    
-                    const buf = this.x0.readByteArray(len);
-                    devlog(`[GoTLS] read plaintext (${len} bytes): ${buf ? buf.toString() : "[unreadable]"}`);
-                    
-                    // Send plaintext data to friTap
-                    sendDatalog({
-                        function: "SSL_read"
-                    }, buf);
-                }
-            });
-            this.hooked_functions.add(symbol);
-            log(`[GoTLS] Successfully hooked ${symbol}`);
-        } catch (err) {
-            devlog(`[GoTLS] Failed to hook Read: ${err}`);
-        }
-    }      
-    
     // Enhanced runtime parser hook installation currently not used - needs further testing
     install_runtime_parser_hooks(): void {
         try {
@@ -593,4 +474,33 @@ export class GoTLS {
     
 }
 
-
+/**
+ * Class-based Go keylog executor of the modern path (the fallback of gotls_execute_modern when
+ * the data-driven definition fails): symbol resolution with the GoTLS fallback cascade, the
+ * writeKeyLog byte patterns for stripped binaries, then the cgo BoringSSL last resort.
+ * Keys only; Go plaintext is installed by the definition (go_plaintext.ts) alone.
+ */
+export function gotls_execute_class_based(moduleName: string, socketLibrary: string, isBaseHook: boolean,
+                                          archPatterns: GoKeyLogArchPatterns = GO_WRITE_KEYLOG_PATTERNS): GoTLS {
+    const gotls = new GoTLS(moduleName, socketLibrary, isBaseHook);
+    try {
+        const hooker = gotls.install_key_extraction_hook(archPatterns);
+        // The pattern scan reports no_hooking_success asynchronously; check it after the scan.
+        setTimeout(() => {
+            try {
+                gotls.execute_symbol_based_hooking(hooker);
+            } catch (e) {
+                devlog("[-] Error in gotls.execute_symbol_based_hooking: " + e);
+            }
+        }, 1500);
+    } catch (e) {
+        devlog(`gotls_execute_class_based error: ${e}`);
+    }
+    if (isBaseHook) {
+        const initAddresses = gotls.addresses[moduleName];
+        if (initAddresses && Object.keys(initAddresses).length > 0) {
+            (globalThis as any).init_addresses[moduleName] = initAddresses;
+        }
+    }
+    return gotls;
+}

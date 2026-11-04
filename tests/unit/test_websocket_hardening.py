@@ -222,6 +222,12 @@ def test_deeply_nested_json_does_not_raise():
     assert ws._detect_json(b"[" * 100000 + b"]" * 100000) == ""
 
 
+def test_json_nested_beyond_depth_limit_is_not_detected():
+    # Depth 200 parses on every Python: the rejection must be the explicit guard.
+    assert ws._detect_json(b"[" * 200 + b"]" * 200) == ""
+    assert ws._detect_json(b'{"a": [{"b": 1}]}') == "application/json"
+
+
 def test_large_json_is_not_parsed(monkeypatch):
     monkeypatch.setattr(ws, "_MAX_JSON_DETECT_BYTES", 8)
     assert ws._detect_json(b'{"a": 1}') == "application/json"

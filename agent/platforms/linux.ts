@@ -26,8 +26,12 @@ import { cronet_execute } from "../legacy/tls/platforms/linux/cronet_linux.js";
 import { cronet_execute_modern } from "../tls/platforms/linux/cronet_linux.js";
 // V1-only (re-exported from legacy)
 import { matrixSSL_execute, matrixSSL_execute_modern } from "../tls/platforms/linux/matrixssl_linux.js";
-import { rustls_execute, rustls_execute_modern } from "../tls/platforms/linux/rustls_linux.js";
-import { gotls_execute, gotls_execute_modern } from "../tls/platforms/linux/gotls_linux.js";
+import { rustls_execute_modern } from "../tls/platforms/linux/rustls_linux.js";
+import { rustls_execute } from "../legacy/tls/platforms/linux/rustls_linux.js";
+import { gotls_execute_modern } from "../tls/platforms/linux/gotls_linux.js";
+import { gotls_execute } from "../legacy/tls/platforms/linux/gotls_linux.js";
+import { isGoModule, GO_LINUX_NAMED_MODULE } from "../shared/go_binary_detection.js";
+import { isRustlsModule, RUSTLS_LINUX_NAMED_MODULE } from "../shared/rustls_binary_detection.js";
 import { ipsec_detect_execute } from "../ipsec/platforms/linux/ipsec_linux.js";
 import { strongswan_execute_modern } from "../ipsec/platforms/linux/strongswan_linux.js";
 import { ssh_detect_execute } from "../ssh/platforms/linux/ssh_linux.js";
@@ -141,12 +145,27 @@ export function load_linux_hooking_agent(skipLoaderHook: boolean = false) {
         { platform: plattform_name, pattern: /libssl_s.a/, hookFn: (use_modern ? matrixSSL_execute_modern : matrixSSL_execute), library: "MatrixSSL", libraryType: "matrixssl", protocol: "tls" },
         { platform: plattform_name, pattern: /.*libs2n.so/, hookFn: (use_modern ? s2ntls_execute_modern : s2ntls_execute), library: "s2n-tls", libraryType: "s2ntls", protocol: "tls" },
         { platform: plattform_name, pattern: /.*rustls.*/, hookFn: (use_modern ? rustls_execute_modern : rustls_execute), library: "Rustls", libraryType: "rustls", protocol: "tls" },
+        // Any other image that statically links rustls (the main executable under any name,
+        // e.g. `myapp`): found by CONTENT — the "rustls-0.2" crate-path marker that panic
+        // metadata keeps in .rodata (shared/rustls_binary_detection.ts). excludePattern is the
+        // name-based row above, so a module it matches is not hooked twice (ssl_library_loader
+        // invokes every match). Same shape as the content-based Go TLS row below.
+        { platform: plattform_name, pattern: /.*/, excludePattern: RUSTLS_LINUX_NAMED_MODULE, contentFilter: isRustlsModule, hookFn: (use_modern ? rustls_execute_modern : rustls_execute), library: "Rustls", libraryType: "rustls", protocol: "tls" },
         { platform: plattform_name, pattern: /.*\.go.so$/, hookFn: (use_modern ? gotls_execute_modern : gotls_execute), library: "Go TLS", libraryType: "gotls", protocol: "tls" },
         { platform: plattform_name, pattern: /.*go[0-9.]+$/, hookFn: (use_modern ? gotls_execute_modern : gotls_execute), library: "Go TLS", libraryType: "gotls", protocol: "tls" },
+        // Any other Go image (the main executable under any name, or a c-shared .so): found by
+        // content — Go's build-info blob (shared/go_binary_detection.ts). excludePattern is the
+        // union of the two name rows above, so a module matching one of them is not hooked twice
+        // (ssl_library_loader invokes every match).
+        { platform: plattform_name, pattern: /.*/, excludePattern: GO_LINUX_NAMED_MODULE, contentFilter: isGoModule, hookFn: (use_modern ? gotls_execute_modern : gotls_execute), library: "Go TLS", libraryType: "gotls", protocol: "tls" },
         // IPSec libraries (detection stubs — key extraction in the future)
         { platform: plattform_name, pattern: /.*libcharon\.so/, hookFn: (use_modern ? strongswan_execute_modern : ipsec_detect_execute), library: "strongSwan (charon)", libraryType: "ipsec_strongswan", protocol: "ipsec" },
         { platform: plattform_name, pattern: /.*libstrongswan\.so/, hookFn: (use_modern ? strongswan_execute_modern : ipsec_detect_execute), library: "strongSwan", libraryType: "ipsec_strongswan", protocol: "ipsec" },
         { platform: plattform_name, pattern: /.*libipsec\.so/, hookFn: (use_modern ? strongswan_execute_modern : ipsec_detect_execute), library: "strongSwan (IPSec)", libraryType: "ipsec_strongswan", protocol: "ipsec" },
+        // strongSwan kernel-netlink plugin: carries the CHILD_SA/ESP keys to the
+        // kernel via add_sa(); hooked for ESP key extraction. Its name does not
+        // match the libstrongswan.so pattern above, so it needs its own row.
+        { platform: plattform_name, pattern: /.*kernel-netlink\.so/, hookFn: (use_modern ? strongswan_execute_modern : ipsec_detect_execute), library: "strongSwan (kernel-netlink)", libraryType: "ipsec_strongswan", protocol: "ipsec" },
         // SSH binaries / libraries
         { platform: plattform_name, pattern: /.*libssh2?\.so/, hookFn: (use_modern ? libssh_execute_modern : ssh_detect_execute), library: "libssh", protocol: "ssh" },
         { platform: plattform_name, pattern: /^(\/.+\/)?(ssh|sshd|sshd-session|scp|sftp-server)$/, hookFn: (use_modern ? openssh_execute_modern : ssh_detect_execute), library: "OpenSSH", protocol: "ssh" },

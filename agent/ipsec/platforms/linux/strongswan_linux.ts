@@ -16,6 +16,8 @@ import { enable_default_fd } from "../../../fritap_agent.js";
 import { executeFromDefinition } from "../../../core/loader.js";
 import { createStrongswanDefinition } from "../../definitions/strongswan.js";
 
-export function strongswan_execute_modern(moduleName: string, is_base_hook: boolean): void {
-    executeFromDefinition(createStrongswanDefinition(), moduleName, socket_library, is_base_hook, enable_default_fd);
+// Returns the definition's installed verdict (ModuleHookingType) so the loader
+// reports library_detected only once hooks are actually in place.
+export function strongswan_execute_modern(moduleName: string, is_base_hook: boolean): Promise<boolean> {
+    return executeFromDefinition(createStrongswanDefinition(), moduleName, socket_library, is_base_hook, enable_default_fd);
 }

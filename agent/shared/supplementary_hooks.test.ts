@@ -208,3 +208,39 @@ test("processScanResults: a primary registry match still suppresses the library_
     assert.equal(cronet.calls.length, 0);
     assert.equal(isModuleHooked("libscan_primary.so", "tls"), false);
 });
+
+// ModuleHookingType: an async executor's verdict is its resolved value. The loader
+// reports library_detected only once the Promise resolves to anything but `false`.
+async function runAsyncRow(moduleName: string, verdict: boolean | void): Promise<any[]> {
+    const reg = new HookRegistry();
+    reg.registerAll([
+        { platform: PLATFORM_ANDROID, pattern: new RegExp(moduleName.replace(".", "\\.")), hookFn: async () => verdict,
+          library: "Async Supp", libraryType: "google_quiche", protocol: "tls", supplementary: true },
+    ]);
+    sent.length = 0;
+    ssl_library_loader(PLATFORM_ANDROID, reg, [moduleName], "Android", true, "tls");
+    assert.equal(sent.filter(m => m.contentType === "library_detected").length, 0, "not reported before the executor settles");
+    await new Promise(resolve => setImmediate(resolve));
+    return sent.filter(m => m.contentType === "library_detected" && m.library === moduleName);
+}
+
+test("ssl_library_loader: an async executor resolving false is not reported", async () => {
+    assert.equal((await runAsyncRow("libasync_false.so", false)).length, 0);
+    assert.equal(isModuleHooked("libasync_false.so", "tls:supplementary:Async Supp"), true, "still recorded: no rerun per rescan");
+});
+
+test("ssl_library_loader: an async executor resolving true (or void) is reported once", async () => {
+    assert.equal((await runAsyncRow("libasync_true.so", true)).length, 1);
+    assert.equal((await runAsyncRow("libasync_void.so", undefined)).length, 1);
+});
+
+test("ssl_library_loader: a sync executor returning false is not reported", () => {
+    const reg = new HookRegistry();
+    reg.registerAll([
+        { platform: PLATFORM_ANDROID, pattern: /libsync_false\.so/, hookFn: () => false,
+          library: "Sync Supp", libraryType: "google_quiche", protocol: "tls", supplementary: true },
+    ]);
+    sent.length = 0;
+    ssl_library_loader(PLATFORM_ANDROID, reg, ["libsync_false.so"], "Android", true, "tls");
+    assert.equal(sent.filter(m => m.contentType === "library_detected").length, 0);
+});

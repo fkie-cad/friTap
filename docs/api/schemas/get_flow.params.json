@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "oneOf": [
+    {
+      "required": [
+        "tap"
+      ]
+    },
+    {
+      "required": [
+        "session_id"
+      ]
+    }
+  ],
+  "properties": {
+    "fields": {
+      "description": "Only these parts (default: all).",
+      "items": {
+        "enum": [
+          "flow",
+          "request",
+          "response",
+          "messages"
+        ],
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "max_bytes": {
+      "default": 4096,
+      "description": "Cap per body/message preview.",
+      "maximum": 16384,
+      "minimum": 64,
+      "type": "integer"
+    },
+    "ref": {
+      "description": "Flow ref from get_digest/list_endpoints, e.g. f12 or f12#m3.",
+      "maxLength": 256,
+      "minLength": 1,
+      "type": "string"
+    },
+    "session_id": {
+      "description": "Id of a capture session started with start_capture.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "show_values": {
+      "default": false,
+      "description": "Show raw captured values instead of redacting them.",
+      "type": "boolean"
+    },
+    "tap": {
+      "description": "Path to a .tap capture file (inside the sandbox root).",
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "ref"
+  ],
+  "title": "get_flow parameters",
+  "type": "object"
+}

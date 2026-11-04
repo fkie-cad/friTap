@@ -39,6 +39,13 @@ After a run the working directory contains:
 | `keys.log` (when `-k` set) | friTap keylog handler | Human-readable per-direction SSH keys |
 | `out.ssh.log` (auto-derived from `-p`) | friTap SSH keylog side-car | Wireshark `Edit → Preferences → Protocols → SSH → Key log filename` |
 
+!!! note "Spawn mode and `closefrom()`"
+    The OpenSSH client calls `closefrom(3)` at the top of `main()`, which would
+    also close the Frida agent's channel to friTap in spawn mode (the hooks keep
+    running, but no key or packet ever arrives). On Linux friTap therefore guards
+    `closefrom()` so the descriptors that were open when the hooks were
+    installed stay open; every other descriptor is still closed.
+
 ## What the PCAPNG contains
 
 friTap hooks **`ssh_packet_send2_wrapped`** (write path) and
@@ -46,7 +53,9 @@ friTap hooks **`ssh_packet_send2_wrapped`** (write path) and
 where the fully-assembled SSH binary packet is in memory in cleartext —
 post-compression on the send side, post-decryption + decompression on the
 receive side. friTap reads `state->outgoing_packet` / `state->incoming_packet`
-via `sshbuf_ptr` + `sshbuf_len`, fabricates an IPv4/IPv6 + TCP frame using
+directly from the `struct sshbuf` fields (sanity-checked guarded reads — the
+target's own `sshbuf_len()` is never called on a probe candidate, because
+OpenSSH deliberately `raise(SIGSEGV)`s on a malformed buffer), fabricates an IPv4/IPv6 + TCP frame using
 the same 5-tuple lookup TLS uses (`getsockname` / `getpeername` on the
 SSH socket fd), and emits an Enhanced Packet Block into the PCAPNG file.
 
@@ -69,6 +78,9 @@ The bytes form the RFC 4253 §6 SSH binary packet protocol:
 ```
 [u32 packet_length] [u8 padding_length] [payload ...] [padding]
 ```
+
+The padding is synthetic (4 zero bytes): the real random padding is not part
+of the plaintext and, on the send side, is generated only after the hook point.
 
 The first message in each direction is the SSH version banner; subsequent
 messages are KEXINIT, KEXDH_INIT, KEXDH_REPLY, NEWKEYS, USERAUTH_REQUEST,
@@ -98,7 +110,9 @@ fritap --protocol ssh -p /tmp/dummy.pcapng \
 Format details:
 - One line per (re)keying: `<32-hex-cookie> SHARED_SECRET <K-hex>`.
 - `cookie` is the 16-byte random from `SSH_MSG_KEXINIT` (hex-encoded).
-- `SHARED_SECRET` is the post-DH shared key K. Wireshark performs the
+- `SHARED_SECRET` is the post-DH shared key K, as the *contents* of its
+  `mpint` / `string` encoding (no 4-byte length prefix — Wireshark adds the
+  encoding itself). Wireshark performs the
   RFC 4253 §7.2 KDF internally — friTap does **not** emit pre-derived
   per-direction encryption / IV / MAC keys here.
 - Wireshark accepts a match against either side's cookie; friTap writes
@@ -207,18 +221,41 @@ and the target binary basename matches `sshd` or `sshd-session`, friTap
 
 ## Symbol availability
 
-friTap resolves symbols via `Module.findExportByName` and falls back to a
-`.symtab` scan (`findNonExportedSymbol`). This covers:
+friTap resolves each hooked function through the module's exports first. When a
+function is not exported, as in the stripped `ssh`/`sshd` that Debian and Ubuntu
+ship, friTap finds it through the string literals it logs: OpenSSH's log macros
+pass the function's own name (`__func__`), and each function also logs messages
+that only it uses. friTap finds the code that loads each literal and the function
+that contains it (from `.eh_frame_hdr`). It accepts a function only when every
+anchor points to that one function (`agent/ssh/shared/openssh_functions.ts`,
+`agent/shared/string_anchor_functions.ts`).
 
 | Build | Status |
 |---|---|
-| Debian / Ubuntu / Fedora / Arch (default `sshd`/`ssh` packages) | Works out of the box |
+| Self-built OpenSSH with exported symbols (`--export-dynamic`) | Exported symbols |
+| Debian 12 (9.2p1) / 13 (10.0p1), `ssh`, arm64 + amd64 | String anchors. All hooks except `cipher_init` |
+| Ubuntu 22.04 (8.9p1) / 24.04 (9.6p1), `ssh`, arm64 + amd64 | String anchors. Receive hook on `ssh_packet_read_poll_seqnr`, see below |
+| The same distros' `sshd` / `sshd-session` | Same anchors, located correctly (checked against debug symbols); not run-tested |
 | Termux openssh (Android) | Works out of the box |
 | Alpine Linux (stripped sshd) | Pattern matching required; v1 ships placeholder entries — see the [pattern file format](../advanced/patterns.md#pattern-file-format) and the [pattern derivation guide](../advanced/patterns.md#automating-with-boringsecrethunter) |
 | Custom statically-stripped builds | Same as Alpine |
 
+Notes on stripped builds:
+
+* `cipher_init` logs nothing, so it has no anchor. friTap instead reads the
+  per-direction keys (`SSH_ENC_KEY_*` / `SSH_IV_*`) from `struct newkeys` when
+  `ssh_set_newkeys` returns. The Wireshark `SHARED_SECRET` line still comes from
+  `kex_derive_keys`.
+* Ubuntu builds OpenSSH with LTO. LTO inlines `ssh_packet_read_poll2` into
+  `ssh_packet_read_poll_seqnr`, so the receive hook sits on that caller. It has
+  the same signature. The few transport messages the caller consumes itself
+  (IGNORE, DEBUG, UNIMPLEMENTED, PING/PONG, DISCONNECT) are therefore missing
+  from the plaintext capture.
+* `ssh_packet_get_connection_in/out` are inlined on Ubuntu. friTap reads the
+  descriptors straight from `struct session_state`.
+
 When all primary plaintext hooks fail to resolve, friTap falls back to
-`cipher_crypt` (always exported) and emits plaintext with a synthetic
+`cipher_crypt` (when exported) and emits plaintext with a synthetic
 loopback 5-tuple — Wireshark's SSH dissector won't dissect it but tshark's
 hex view still shows the cleartext.
 

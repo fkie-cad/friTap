@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "next_cursor": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "notice": {
+      "type": "string"
+    },
+    "rows": {
+      "items": {
+        "properties": {
+          "category": {
+            "type": "string"
+          },
+          "count": {
+            "type": "integer"
+          },
+          "ref": {
+            "type": "string"
+          },
+          "severity": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "untrusted": {
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "schema": {
+      "const": "fritap.findings/1"
+    },
+    "source": {
+      "properties": {
+        "file": {
+          "type": "string"
+        },
+        "flows_selected": {
+          "type": "integer"
+        },
+        "flows_total": {
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "summary": {
+      "properties": {
+        "by_category": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "type": "object"
+        },
+        "by_severity": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "type": "object"
+        },
+        "total": {
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "total": {
+      "type": "integer"
+    }
+  },
+  "title": "list_findings result",
+  "type": "object"
+}

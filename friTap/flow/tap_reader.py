@@ -13,9 +13,14 @@ from __future__ import annotations
 import logging
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Iterator, Optional
 
-from friTap.binary_bounds import BoundsError, read_bounded
+from friTap.binary_bounds import (
+    BoundsError,
+    check_length,
+    read_bounded,
+    remaining_bytes,
+)
 from friTap.flow.tap_format import (
     _FOOTER_STRUCT,
     _HEADER_STRUCT,
@@ -25,6 +30,7 @@ from friTap.flow.tap_format import (
     FOOTER_MAGIC,
     REC_FINDING,
     REC_FLOW,
+    REC_KEYLOG,
     REC_META,
     FlowSummary,
     TapHeader,
@@ -34,6 +40,7 @@ from friTap.flow.tap_format import (
     decode_flow_index,
     decode_flow_summary,
     decode_header,
+    decode_keylog,
     decode_meta,
     decode_record_envelope,
     find_sync_marker,
@@ -50,6 +57,7 @@ logger = logging.getLogger(__name__)
 #: retained chunk bytes at 64 MiB, so a FLOW record (chunks + bodies + JSON
 #: metadata) stays far below this. A record claiming more is treated as corrupt.
 MAX_RECORD_PAYLOAD = 1 << 30  # 1 GiB
+_KEYLOG_ONLY = frozenset({REC_KEYLOG})
 
 
 class TapReader:
@@ -172,6 +180,18 @@ class TapReader:
         summaries.sort(key=lambda s: s.started)
         return summaries
 
+    def iter_flows(self) -> Iterator[tuple[int, FlowSummary, "Flow"]]:
+        """Yield ``(ordinal, summary, flow)`` for every decodable flow, in summary order.
+
+        ``ordinal`` is the 1-based position in :meth:`read_flow_summaries`
+        (the ``f<N>`` flow-ref numbering), counted even for flows that cannot
+        be decoded (those are skipped).
+        """
+        for ordinal, summary in enumerate(self.read_flow_summaries(), start=1):
+            flow = self.read_flow(summary.flow_id)
+            if flow is not None:
+                yield ordinal, summary, flow
+
     def read_flow(self, flow_id: str) -> Optional["Flow"]:
         """Read a full Flow object by flow_id (on-demand, with chunks/bodies).
 
@@ -246,6 +266,33 @@ class TapReader:
         """
         self._ensure_open()
         return self._ensure_findings_index().get(flow_id, [])
+
+    def iter_keylogs(self) -> Iterator[tuple[str, float]]:
+        """Yield ``(key_data, timestamp)`` for every intact REC_KEYLOG record.
+
+        Key material: callers must gate this behind an explicit secrets opt-in.
+        Records are read in file order under the I/O lock (one linear pass)
+        before the first item is yielded; CRC-mismatched or undecodable
+        records are skipped.
+        """
+        self._ensure_open()
+        with self._io_lock:
+            records = [
+                payload
+                for _offset, _rec_type, payload, stored_crc in self._iter_records(
+                    self._data_start, rec_types=_KEYLOG_ONLY)
+                if verify_payload_crc(payload, stored_crc)
+            ]
+        for payload in records:
+            try:
+                key_data, timestamp = decode_keylog(payload)
+            except (ValueError, AttributeError, RecursionError):  # bad/deep JSON, not an object
+                logger.debug("Skipping undecodable KEYLOG record")
+                continue
+            if not isinstance(key_data, str):  # untrusted file: callers expect text
+                logger.debug("Skipping KEYLOG record whose key_data is not a string")
+                continue
+            yield key_data, timestamp if isinstance(timestamp, (int, float)) else 0.0
 
     def has_findings(self) -> bool:
         """True if the file contains any persisted findings."""
@@ -458,8 +505,12 @@ class TapReader:
 
         self._findings_index = index
 
-    def _iter_records(self, start_offset: int):
+    def _iter_records(self, start_offset: int, rec_types: Optional[frozenset] = None):
         """Yield ``(offset, rec_type, payload, stored_crc)`` for every record.
+
+        With *rec_types*, only records of those types are yielded and the
+        payloads of all others are seeked past without being read (same
+        bounds/truncation checks, so the scan ends at the same point).
 
         Single shared sequential record iterator used by both
         ``_build_index_linear_scan`` and ``_build_findings_index`` (fallback
@@ -490,7 +541,11 @@ class TapReader:
             if payload_len == 0:
                 continue
 
+            wanted = rec_types is None or rec_type in rec_types
             try:
+                if not wanted:
+                    self._skip_payload(payload_len)
+                    continue
                 payload = self._read_payload(payload_len)
             except BoundsError as exc:
                 # Truncated payload at EOF, or a length no record can have.
@@ -570,6 +625,21 @@ class TapReader:
         """
         assert self._file is not None
         return read_bounded(self._file, payload_len, "tap record payload", MAX_RECORD_PAYLOAD)
+
+    def _skip_payload(self, payload_len: int) -> None:
+        """Advance past a *payload_len*-byte payload without reading it.
+
+        Applies the same bounds checks as :meth:`_read_payload` (raising
+        :class:`~friTap.binary_bounds.BoundsError`); when the file size is
+        unknown it falls back to a bounded read so truncation is still detected.
+        """
+        assert self._file is not None
+        remaining = remaining_bytes(self._file)
+        if remaining is None:
+            self._read_payload(payload_len)
+            return
+        check_length(payload_len, "tap record payload", MAX_RECORD_PAYLOAD, remaining)
+        self._file.seek(payload_len, 1)
 
     def _try_read_meta(self) -> Optional[TapMeta]:
         """Try to read a META record at the current position."""

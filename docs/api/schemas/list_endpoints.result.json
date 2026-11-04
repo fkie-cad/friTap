@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "next_cursor": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "notice": {
+      "type": "string"
+    },
+    "rows": {
+      "items": {
+        "properties": {
+          "body_kind": {
+            "type": "string"
+          },
+          "bytes": {
+            "type": "integer"
+          },
+          "count": {
+            "type": "integer"
+          },
+          "protocol": {
+            "type": "string"
+          },
+          "ref": {
+            "type": "string"
+          },
+          "status": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object"
+          },
+          "untrusted": {
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "schema": {
+      "const": "fritap.endpoints/1"
+    },
+    "source": {
+      "properties": {
+        "file": {
+          "type": "string"
+        },
+        "flows_selected": {
+          "type": "integer"
+        },
+        "flows_total": {
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "total": {
+      "type": "integer"
+    }
+  },
+  "title": "list_endpoints result",
+  "type": "object"
+}

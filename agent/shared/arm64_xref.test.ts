@@ -91,7 +91,7 @@ import {
     findAnchorString, findStringLoadSites, firstCallTargetForward,
     adrpTarget, blTarget, inModule,
     findStringLoadSitesAsync, findAnchorStringsAsync, findOpeningAdrp,
-    scanRangesChunked, patternByteLength, pointerScanPattern, LOAD_SITE_WINDOW,
+    scanRangesChunked, patternByteLength, pointerScanPattern, LOAD_SITE_WINDOW, withoutLeadingWildcards,
     adrTarget, adrScanWindows, ADR_REACH_BYTES,
 } from "./arm64_xref.js";
 
@@ -299,6 +299,65 @@ test("scanRangesChunked reports a straddling match exactly once", async () => {
     await scanRangesChunked([{ base: P(0x40), size: 0x20 }],
         [{ pattern: "5f 52 41", onMatch: (a) => hits.push((a as any).addr - BASE) }], 0x7, async () => { });
     assert.deepEqual(hits, [0x46]); // "_RA" of CLIENT_RANDOM, split by the 0x47 edge
+});
+
+test("withoutLeadingWildcards drops leading masked / ?? bytes (Frida <= 17.15 rejects them)", () => {
+    assert.deepEqual(withoutLeadingWildcards("00 20 03 91 : 00 fc ff ff"), { pattern: "20 03 91 : fc ff ff", skipped: 1 });
+    assert.deepEqual(withoutLeadingWildcards("?? ?? 41 42"), { pattern: "41 42", skipped: 2 });
+    assert.deepEqual(withoutLeadingWildcards("43 4c 49"), { pattern: "43 4c 49", skipped: 0 });
+    assert.deepEqual(withoutLeadingWildcards("00 00 : 00 00"), { pattern: "00 00 : 00 00", skipped: 0 }, "all wildcards: unchanged");
+});
+
+test("scanRangesChunked: a leading-wildcard pattern reports where the FULL pattern starts, once", async () => {
+    // Behave like Frida 17.15: a pattern whose first byte is a wildcard is invalid.
+    const realScan = G.Memory.scanSync;
+    G.Memory.scanSync = (base: any, size: number, pattern: string) => {
+        if (withoutLeadingWildcards(pattern).skipped > 0) throw new Error("invalid match pattern");
+        return realScan(base, size, pattern);
+    };
+    try {
+        // "?? 52 41" matches "_RA" (0x46) of CLIENT_RANDOM; split by a chunk edge at 0x47 / 0x48.
+        for (const chunk of [0x7, 0x8, 0x20]) {
+            const hits: number[] = [];
+            await scanRangesChunked([{ base: P(0x40), size: 0x20 }],
+                [{ pattern: "00 52 41 : 00 ff ff", onMatch: (a) => hits.push((a as any).addr - BASE) }], chunk, async () => { });
+            assert.deepEqual(hits, [0x46], `chunk 0x${chunk.toString(16)}`);
+        }
+    } finally {
+        G.Memory.scanSync = realScan;
+    }
+});
+
+test("findStringLoadSitesAsync on a Frida that rejects leading wildcards finds the same sites", async () => {
+    // Every ADD/LDR-imm word pattern starts with a register-only (fully masked) byte.
+    const expected = (await findStringLoadSitesAsync(fakeModule, [P(STR_OFF), P(EXP_OFF)], 0x10, async () => { }))
+        .map(addrs);
+    assert.deepEqual(expected, [[0x100], [0x120, 0x130]]);
+    const realScan = G.Memory.scanSync;
+    let rejected = 0;
+    G.Memory.scanSync = (base: any, size: number, pattern: string) => {
+        const tokens = pattern.split(":");
+        const firstMask = tokens[1]?.trim().split(/\s+/)[0];
+        if (tokens[0].trim().startsWith("??") || firstMask === "00") { rejected++; throw new Error("invalid match pattern"); }
+        return realScan(base, size, pattern);
+    };
+    try {
+        for (const chunk of [0x10, 0x2000]) {
+            const sites = await findStringLoadSitesAsync(fakeModule, [P(STR_OFF), P(EXP_OFF)], chunk, async () => { });
+            assert.deepEqual(sites.map(addrs), expected, `chunk 0x${chunk.toString(16)}`);
+        }
+    } finally {
+        G.Memory.scanSync = realScan;
+    }
+    assert.equal(rejected, 0, "no leading-wildcard pattern reaches Memory.scanSync");
+});
+
+test("scanRangesChunked: a leading-wildcard match that would start before the range is dropped", async () => {
+    const hits: number[] = [];
+    // The range starts at "RA" (0x47): "?? 52 41" would begin at 0x46, outside the range.
+    await scanRangesChunked([{ base: P(0x47), size: 0x10 }],
+        [{ pattern: "?? 52 41", onMatch: (a) => hits.push((a as any).addr - BASE) }], 0x10, async () => { });
+    assert.deepEqual(hits, []);
 });
 
 test("patternByteLength ignores the mask half", () => {

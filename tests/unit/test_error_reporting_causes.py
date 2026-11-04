@@ -17,7 +17,11 @@ import frida
 import pytest
 
 import friTap.friTap as fritap_cli
-from friTap.backends import BackendError, BackendInvalidArgumentError, BackendNotRunningError
+from friTap.backends import (
+    BackendError,
+    BackendInvalidArgumentError,
+    BackendNotRunningError,
+)
 from friTap.backends.frida_backend import _wrap_frida_errors
 from friTap.events import EventBus
 from friTap.exit_codes import EXIT_RUNTIME_ERROR

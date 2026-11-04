@@ -104,19 +104,54 @@ FULL_ENTRY="agent/fritap_agent_full.ts";        FULL_OUT="friTap/fritap_agent_fu
 WINE_OUT="friTap/fritap_agent_wine.js"
 WINE_TSCONFIG="tsconfig.wine.json"
 
-# Build the slim Wine bundle. frida-compile reads ./tsconfig.json, so swap it
-# for the Wine tsconfig around this one build and restore it no matter what.
+# Build the slim Wine bundle without ever touching the tracked tsconfig.json.
+# frida-compile 19.x takes ./tsconfig.json from its cwd (projectRoot) and rejects
+# entrypoints whose realpath lies outside it, so the build runs in a private
+# staging dir: a snapshot copy of agent/, a node_modules symlink, and
+# tsconfig.wine.json staged as tsconfig.json with its `extends` pointed at the
+# repo's tsconfig.json (absolute path). The stage mirrors the repo layout, so the
+# bundle is byte-identical to building in place.
 build_wine() {
     if [ ! -f "$WINE_TSCONFIG" ]; then
         echo "[compile_agent.sh] $WINE_TSCONFIG not found; skipping slim Wine bundle" >&2
         return 0
     fi
-    local backup; backup="$(mktemp)"
-    cp tsconfig.json "$backup"
-    # shellcheck disable=SC2064
-    trap "cp '$backup' tsconfig.json; rm -f '$backup'" RETURN
-    cp "$WINE_TSCONFIG" tsconfig.json
-    build_one "$INTERCEPT_ENTRY" "$WINE_OUT" "slim Wine agent"
+    local repo; repo="$(pwd -P)"
+    local stage; stage="$(mktemp -d "${TMPDIR:-/tmp}/fritap_wine_build.XXXXXX")"
+    (
+        trap 'rm -rf "$stage"' EXIT
+        cp -R agent "$stage/agent"
+        ln -s "$repo/node_modules" "$stage/node_modules"
+        stage_wine_tsconfig "$repo/$WINE_TSCONFIG" "$stage/tsconfig.json" "$repo/tsconfig.json"
+        cd "$stage"
+        FRIDA_COMPILE="$(resolve_tool_path "$repo" "$FRIDA_COMPILE")"
+        build_one "$INTERCEPT_ENTRY" "$repo/$WINE_OUT" "slim Wine agent"
+    )
+}
+
+# Copy the Wine tsconfig overlay to $2, re-pointing its relative
+# `"extends": "./tsconfig.json"` at the absolute base config $3.
+stage_wine_tsconfig() {
+    node -e '
+        const fs = require("fs");
+        const [src, dst, base] = process.argv.slice(1);
+        const text = fs.readFileSync(src, "utf8");
+        const staged = text.replace(/"extends"\s*:\s*"\.\/tsconfig\.json"/,
+                                    `"extends": ${JSON.stringify(base)}`);
+        if (staged === text) {
+            console.error(`[compile_agent.sh] ${src} must extend "./tsconfig.json"`);
+            process.exit(1);
+        }
+        fs.writeFileSync(dst, staged);
+    ' "$1" "$2" "$3"
+}
+
+# Absolute path for a repo-relative tool path (PATH lookups pass through).
+resolve_tool_path() {
+    case "$2" in
+        ./*) printf '%s/%s\n' "$1" "${2#./}" ;;
+        *)   printf '%s\n' "$2" ;;
+    esac
 }
 
 # Explicit ENTRY/OUT override => a single custom build, historical behavior

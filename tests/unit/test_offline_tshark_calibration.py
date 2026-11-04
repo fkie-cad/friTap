@@ -254,6 +254,21 @@ def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()[:16]
 
 
+# DatalogEvent fields added after the fingerprints were recorded. The legacy
+# passes never produced them, so a fingerprint only covers one when it carries
+# a non-default value (a real behaviour change); left at its default it must
+# not perturb the recorded "fields" digest (the ground truth is frozen).
+_FIELDS_ADDED_AFTER_RECORDING = frozenset({"quic_payload", "library"})
+
+
+def _is_unrecorded_default(event, name: str, value) -> bool:
+    """True for a post-recording DatalogEvent field still at its default."""
+    if name not in _FIELDS_ADDED_AFTER_RECORDING:
+        return False
+    field = next(f for f in dataclasses.fields(event) if f.name == name)
+    return value == field.default
+
+
 def _event_fingerprint(event) -> dict:
     """A compact, JSON-safe identity of one emitted event.
 
@@ -268,7 +283,8 @@ def _event_fingerprint(event) -> dict:
     data = values.pop("data")
     rest = {k: v for k, v in values.items()
             if k not in ("src_addr", "src_port", "dst_addr", "dst_port",
-                         "direction", "timestamp")}
+                         "direction", "timestamp")
+            and not _is_unrecorded_default(event, k, v)}
     return {
         "type": kind,
         "conn": f"{values['src_addr']}:{values['src_port']}>"

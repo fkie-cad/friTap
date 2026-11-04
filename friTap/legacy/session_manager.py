@@ -19,10 +19,28 @@ import time
 from typing import TYPE_CHECKING
 
 from ..backends.base import BackendName
+from ..pcap_utility import PCAP_FORMAT_PCAPNG
 from ..spawn_target import resolve_spawn_target
 
 if TYPE_CHECKING:
     from .ssl_logger_core import SSL_Logger
+
+
+def full_capture_decryption_hint(pcap_file_name, pcap_container, keylog_name):
+    """How the user decrypts the finished full capture, per output container.
+
+    A pcapng output embeds the captured TLS keys in a Decryption Secrets Block,
+    so Wireshark decrypts it as-is; a classic pcap holds only ciphertext and
+    needs the keylog file. ``pcap_container`` is the resolved container.
+    """
+    if pcap_container == PCAP_FORMAT_PCAPNG:
+        return (f"the full capture {pcap_file_name} keeps TLS traffic encrypted but embeds "
+                "the captured keys (pcapng DSB), so Wireshark decrypts it directly.")
+    if keylog_name:
+        return (f"the full capture {pcap_file_name} contains only encrypted TLS traffic; "
+                f"to decrypt it in Wireshark, load the keylog file {keylog_name}.")
+    return (f"the full capture {pcap_file_name} contains only encrypted TLS traffic and no "
+            "keylog file was written; use -k <keylog> or a .pcapng output to keep the keys.")
 
 
 class SessionManager:
@@ -81,16 +99,18 @@ class SessionManager:
                 self._log_spawned_process_vanished(pid, final=False)
 
     def _register_child_handler(self, logger) -> None:
-        """Listen for gated children: those --enable_child_gating asked for and,
-        in spawn mode, the exec'd image of the target (see follow_exec_of)."""
-        if logger.enable_child_gating:
+        """Listen for gated children: those --enable_child_gating asked for and
+        the exec'd images of every instrumented process (see follow_exec_of).
+        Without child events only an explicit --enable_child_gating fails."""
+        if not logger.gates_children:
+            return
+        try:
             logger._backend.on_child_added(logger.device, logger.on_child_added)
-        elif logger.spawn:
-            try:
-                logger._backend.on_child_added(logger.device, logger.on_child_added)
-            except NotImplementedError:
-                self._logger.debug("%s backend has no child events; exec() will "
-                                   "not be followed", logger._backend.name)
+        except NotImplementedError:
+            if logger.enable_child_gating:
+                raise
+            self._logger.debug("%s backend has no child events; exec() will "
+                               "not be followed", logger._backend.name)
 
     def _log_spawned_process_vanished(self, pid, final: bool) -> None:
         cause = (
@@ -230,12 +250,7 @@ class SessionManager:
         # classifies such a death as a startup failure (exit 1).
         logger._backend.on_detached(logger.process, logger.on_detach)
 
-        if logger.spawn:
-            # Also with --enable_child_gating off: gating is how an exec() of
-            # the target (e.g. a launcher script) is caught and followed.
-            logger.follow_exec_of(logger.process)
-        elif logger.enable_child_gating:
-            logger._backend.enable_child_gating(logger.process)
+        logger.follow_exec_of(logger.process)
 
         if logger._config.backend != BackendName.FRIDA and logger._agent_script_path is not None:
             # Non-Frida backend: load backend-specific hook script
@@ -364,11 +379,13 @@ class SessionManager:
         # written to <output>" line comes from the finalize step, which turns
         # it into the requested output file (and removes the temp copy).
         self._logger.debug(f"full {capture_type} capture staged at {temp_path}")
+        pcap_obj = self._l.pcap_obj
         keylog_file = getattr(self._l, "keylog_file", None)
-        if keylog_file is None:
-            self._logger.info("remember that the full capture won't contain any decrypted TLS traffic.")
-        else:
-            self._logger.info(f"remember that the full capture won't contain any decrypted TLS traffic. In order to decrypt it use the logged keys from {keylog_file.name}")
+        self._logger.info(full_capture_decryption_hint(
+            pcap_obj.pcap_file_name,
+            pcap_obj.pcap_container,
+            getattr(keylog_file, "name", None),
+        ))
 
     def install_signal_handler(self):
         """Route Ctrl+C (SIGINT) and SIGTERM to the graceful teardown."""

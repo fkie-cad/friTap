@@ -1,5 +1,6 @@
 import { readAddresses, resolveOffsets, dumpMemory, decodeSockaddr, readSockaddrFamily } from "../../../shared/shared_functions.js";
 import { pointerSize, sendKeylog, sendDatalog } from "../../../shared/shared_structures.js";
+import { attachPlaintextWriteHook } from "../../../shared/write_hooks.js";
 import { log, devlog, devlog_error } from "../../../util/log.js";
 import { enable_default_fd, pcap_enabled, keylog_enabled } from "../../../fritap_agent.js";
 import { Java } from "../../../shared/javalib.js";
@@ -1555,32 +1556,26 @@ typedef union PRNetAddr PRNetAddr;
         var current_module_name = this.module_name;
         var lib_addesses = this.addresses;
 
-        Interceptor.attach(this.addresses[this.moduleName]["PR_Write"],
-            {
-                onEnter: function (args: any) {
-                    this.fd = ptr(args[0]);
-                    this.buf = args[1]
-                    this.len = args[2]
-                },
-                onLeave: function (retval: any) {
-                    if (retval.toInt32() <= 0 ){//|| NSS.getDescType(this.fd) == PRDescType.PR_DESC_FILE) {
-                        return
-                    }
-
-                    // PRNetAddr is up to 28 bytes (IPv6 variant); 32 covers it safely.
-                    var addr = Memory.alloc(32);
-
-                    NSS.getsockname(this.fd, addr);
-
-                    // PRNetAddr family@0 (bsdSockaddr=false); macOS AF_INET6 30 -> 10.
-                    var family = readSockaddrFamily(addr, false);
-                    if (family == 2 || family == 10 || family == 100) {
-                        var message = NSS.getPortsAndAddressesFromNSS(this.fd as NativePointer, false, lib_addesses[current_module_name], enable_default_fd)
-                        message["ssl_session_id"] = NSS.getSslSessionIdFromFD(this.fd)
-                        message["function"] = "NSS_write"
-                        sendDatalog(message, this.buf.readByteArray((parseInt(this.len))))
-                    }else {
-                        /*
+        // PR_Write(fd, buf, amount) -> bytes written, -1 on error (PR_WOULD_BLOCK_ERROR on a
+        // non-blocking socket, retried by the app); a non-blocking write can be partial.
+        // attachPlaintextWriteHook emits only what this call wrote, never `amount` (PRInt32:
+        // read unsigned as an upper bound only, the return value signed — see the helper).
+        // Former onLeave gate (kept from HEAD): if (retval.toInt32() <= 0 ){//|| NSS.getDescType(this.fd) == PRDescType.PR_DESC_FILE) {
+        attachPlaintextWriteHook(this.addresses[this.moduleName]["PR_Write"], (args) => {
+            var fd = args[0]
+            // PRNetAddr is up to 28 bytes (IPv6 variant); 32 covers it safely.
+            var addr = Memory.alloc(32);
+            NSS.getsockname(fd, addr);
+            // PRNetAddr family@0 (bsdSockaddr=false); macOS AF_INET6 30 -> 10. Anything
+            // else (PIPE / file descriptors) is not wire traffic: no record.
+            var family = readSockaddrFamily(addr, false);
+            if (family != 2 && family != 10 && family != 100) return null
+            var message = NSS.getPortsAndAddressesFromNSS(fd, false, lib_addesses[current_module_name], enable_default_fd)
+            message["ssl_session_id"] = NSS.getSslSessionIdFromFD(fd)
+            message["function"] = "NSS_write"
+            return message
+            // Non-socket fds were once logged as follows (disabled):
+            /*
                         log("The results of NSS and its PR_Write is likely not the information transmitted over the wire. Better do a full capture and just log the TLS keys")
                         var message = NSS.getPortsAndAddressesFromNSS(this.fd as NativePointer, true, lib_addesses[current_module_name], enable_default_fd)
                         message["ssl_session_id"] = NSS.getSslSessionIdFromFD(this.fd)
@@ -1591,11 +1586,7 @@ typedef union PRNetAddr PRNetAddr;
                         var temp = this.buf.readByteArray((new Uint32Array([retval]))[0])
                         devlog(JSON.stringify(temp))
                         send(message, temp)*/
-                    }
-
-                }
-            })
-
+        })
     }
 
     /***** install callbacks for key logging ******/

@@ -52,3 +52,15 @@ test("keylog enabled: installer runs and the self-test runs exactly once", () =>
     assert.deepEqual(installed, ["libcrypto.so", "libssl.so"]);
     assert.deepEqual(selfTestLines(), ["[rc4] RC4 self-test OK"]);
 });
+
+// The executor's return value is the loader contract (ModuleHookingType): `false` = no RC4
+// hook installed, so the library is neither announced nor reported as library_detected —
+// before, rc4 showed up as an "idle" protocol on libssl without -k although nothing was hooked.
+test("executor reports whether hooks were installed: false without -k, on no symbol, on error", () => {
+    setKeylogEnabled(false);
+    assert.equal(hooks.makeRc4Executor("test", () => true)("libcrypto.so", false), false);
+    setKeylogEnabled(true);
+    assert.equal(hooks.makeRc4Executor("test", () => true)("libcrypto.so", false), true);
+    assert.equal(hooks.makeRc4Executor("test", () => false)("libssl.so", false), false, "no RC4_set_key export");
+    assert.equal(hooks.makeRc4Executor("test", () => { throw new Error("boom"); })("libssl.so", false), false);
+});

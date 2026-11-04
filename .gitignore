@@ -27,6 +27,10 @@ demo/
 # Project-tracked files that the broad *.md / *.yml rules above would
 # otherwise hide. Keep this list in sync with files that must ship.
 !RELEASING.md
+# Agent-facing docs and generated API schemas (docs/api/agent.md).
+!AGENTS.md
+!llms.txt
+!docs/api/schemas/*.json
 !compat.yml
 !CONTRIBUTING.md
 !.github/PULL_REQUEST_TEMPLATE.md

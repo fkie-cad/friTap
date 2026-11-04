@@ -1,5 +1,7 @@
 import { readAddresses, getPortsAndAddresses, resolveOffsets } from "../../../shared/shared_functions.js";
 import { sendKeylog, sendDatalog } from "../../../shared/shared_structures.js";
+import { attachPlaintextWriteHook } from "../../../shared/write_hooks.js";
+import { BufferedSendTracker } from "../../../shared/write_length.js";
 import { log, devlog_error } from "../../../util/log.js";
 import { enable_default_fd, pcap_enabled, keylog_enabled } from "../../../fritap_agent.js";
 import { resolveWithPipelineAsync } from "../../../shared/pipeline_utils.js";
@@ -11,6 +13,8 @@ export class GnuTLS {
     addresses: { [libraryName: string]: { [functionName: string]: NativePointer } };
     module_name: string;
     
+    /** gnutls_record_send records buffered by a would-block call (see install_plaintext_write_hook). */
+    static pendingSends = new BufferedSendTracker();
     static gnutls_transport_get_int : any;
     static gnutls_session_get_id: any;
     static gnutls_session_get_random: any;
@@ -153,17 +157,17 @@ export class GnuTLS {
         if (!pcap_enabled) return;
         var current_module_name = this.module_name;
         var lib_addesses = this.addresses;
-        Interceptor.attach(this.addresses[this.moduleName]["gnutls_record_send"],
-    {
-        onEnter: function (args: any) {
+        // gnutls_record_send(session, data, size) -> bytes sent (at most one record), or a
+        // negative error. On GNUTLS_E_AGAIN/E_INTERRUPTED the record is already buffered and
+        // the app retries with the same arguments or with NULL/0: GnuTLS.pendingSends
+        // attributes that record's plaintext to the retry that flushes it, exactly once.
+        attachPlaintextWriteHook(this.addresses[this.moduleName]["gnutls_record_send"], (args) => {
             var message = getPortsAndAddresses(GnuTLS.gnutls_transport_get_int(args[0]) as number, false, lib_addesses[current_module_name], enable_default_fd)
+            if (message === null) return null
             message["ssl_session_id"] = GnuTLS.getSslSessionId(args[0])
             message["function"] = "SSL_write"
-            sendDatalog(message, args[1].readByteArray(parseInt(args[2])))
-        },
-        onLeave: function (retval: any) {
-        }
-    })
+            return message
+        }, GnuTLS.pendingSends)
 
     }
     

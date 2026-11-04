@@ -131,6 +131,12 @@ def _find_message_start(buf: bytes, sigs: tuple[bytes, ...], start: int) -> int:
                 next_pos[sig] = buf.find(sig, candidate + 1)
 
 
+def _cap_resync_buffer(buf: bytearray) -> None:
+    """Keep only the newest MAX_RESYNC_BUFFER bytes of a resync buffer."""
+    if len(buf) > MAX_RESYNC_BUFFER:
+        del buf[:len(buf) - MAX_RESYNC_BUFFER]
+
+
 def _send_fake_response(conn: h11.Connection) -> None:
     """Send a minimal fake response so SERVER connection can receive next request."""
     conn.send(h11.Response(
@@ -440,6 +446,11 @@ class Http1Parser(BaseParser):
         if buf is None:
             return data
         buf += data
+        if b"\n" not in data:
+            # Buffered candidates all failed; one can only validate once a
+            # CRLF ends in the new bytes, so without a LF skip the rescan.
+            _cap_resync_buffer(buf)
+            return None
         # Earlier bytes were already scanned; only candidates whose
         # validation window was cut off by the old buffer end can change.
         return self._resync_scan(direction, max(0, len(buf) - len(data) - _RESCAN_OVERLAP))
@@ -452,8 +463,7 @@ class Http1Parser(BaseParser):
         if offset >= 0:
             del self._resync_bufs[direction]
             return bytes(buf[offset:])
-        if len(buf) > MAX_RESYNC_BUFFER:
-            del buf[:len(buf) - MAX_RESYNC_BUFFER]
+        _cap_resync_buffer(buf)
         return None
 
     def _detect_101_upgrade(

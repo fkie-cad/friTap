@@ -30,6 +30,9 @@ import { nss_hpke_execute_windows } from "../ohttp/platforms/windows/nss_hpke_wi
 import { quiche_execute } from "../quic/platforms/windows/quiche_windows.js";
 import { google_quiche_execute } from "../quic/platforms/windows/google_quiche_windows.js";
 import { neqo_execute } from "../quic/platforms/windows/neqo_windows.js";
+import { gotls_execute } from "../legacy/tls/platforms/windows/gotls_windows.js";
+import { gotls_execute_modern } from "../tls/platforms/windows/gotls_windows.js";
+import { isGoModule } from "../shared/go_binary_detection.js";
 import { CHROMIUM_BORINGSSL_MODULES, chromium_boringssl_hook, hookElectronStyleExecutables } from "../shared/chromium_boringssl.js";
 
 
@@ -75,6 +78,10 @@ export function load_windows_hooking_agent() {
         ...CHROMIUM_BORINGSSL_MODULES.map((pattern) => (
             { platform: plattform_name, pattern, hookFn: chromium_boringssl_hook(false), library: "BoringSSL (Chromium)", libraryType: "boringssl" as const, protocol: "tls" as const }
         )),
+        // Go crypto/tls: linked into the Go image itself — usually the .exe, under any name —
+        // so it is found by content (Go's build-info blob at the start of .data,
+        // shared/go_binary_detection.ts), not by name; c-shared Go DLLs likewise.
+        { platform: plattform_name, pattern: /.*/, contentFilter: isGoModule, hookFn: (use_modern ? gotls_execute_modern : gotls_execute), library: "Go TLS", libraryType: "gotls", protocol: "tls" },
         { platform: plattform_name, pattern: /matrixSSL\.dll/, hookFn: (use_modern ? matrixSSL_execute_modern : matrixSSL_execute), library: "MatrixSSL", libraryType: "matrixssl", protocol: "tls" },
         // OHTTP (NSS HPKE) — gated under the TLS family for `--protocol tls`
         { platform: plattform_name, pattern: /^(nspr|NSPR)[0-9]*\.dll/, hookFn: nss_hpke_execute_windows, library: "NSS HPKE (OHTTP)", protocol: "tls", libraryType: "nss_hpke" },

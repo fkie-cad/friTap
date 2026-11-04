@@ -1,5 +1,5 @@
 📦
-1121878 /agent/fritap_agent.js
+1240066 /agent/fritap_agent.js
 ✄
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -29,6 +29,87 @@ var init_node_globals = __esm({
   }
 });
 
+// agent/shared/record_protocol.ts
+function activeRecordProtocol() {
+  return active;
+}
+function recordProtocolOf(row) {
+  return row.recordProtocol ?? row.protocol;
+}
+function runWithRecordProtocol(protocol, fn) {
+  const previous = active;
+  active = protocol;
+  try {
+    return fn();
+  } finally {
+    active = previous;
+  }
+}
+function bindRecordProtocol(fn, protocol = active) {
+  if (protocol === void 0)
+    return fn;
+  return function(...args) {
+    return runWithRecordProtocol(protocol, () => fn.apply(this, args));
+  };
+}
+function bindListenerCallbacks(callbacks, protocol) {
+  if (typeof callbacks === "function")
+    return bindRecordProtocol(callbacks, protocol);
+  if (callbacks === null || typeof callbacks !== "object")
+    return callbacks;
+  const { onEnter, onLeave } = callbacks;
+  if (typeof onEnter !== "function" && typeof onLeave !== "function")
+    return callbacks;
+  const bound = Object.create(callbacks);
+  if (typeof onEnter === "function")
+    bound.onEnter = bindRecordProtocol(onEnter, protocol);
+  if (typeof onLeave === "function")
+    bound.onLeave = bindRecordProtocol(onLeave, protocol);
+  return bound;
+}
+function bindingInterceptor(original, protocol) {
+  const facade = {};
+  for (const key of Reflect.ownKeys(original)) {
+    if (key === "attach")
+      continue;
+    Object.defineProperty(facade, key, {
+      enumerable: true,
+      get() {
+        const value = original[key];
+        return typeof value === "function" ? value.bind(original) : value;
+      }
+    });
+  }
+  facade.attach = (...args) => {
+    args[1] = bindListenerCallbacks(args[1], protocol);
+    return original.attach(...args);
+  };
+  return facade;
+}
+function runHookExecutor(protocol, fn, scope = globalThis) {
+  if (protocol === DEFAULT_RECORD_PROTOCOL || !scope.Interceptor) {
+    return runWithRecordProtocol(protocol, fn);
+  }
+  const original = scope.Interceptor;
+  scope.Interceptor = bindingInterceptor(original, protocol);
+  try {
+    return runWithRecordProtocol(protocol, fn);
+  } finally {
+    scope.Interceptor = original;
+  }
+}
+function executeHookRow(match, moduleName, isBaseHook) {
+  return runHookExecutor(recordProtocolOf(match), () => match.hookFn(moduleName, isBaseHook));
+}
+var DEFAULT_RECORD_PROTOCOL, active;
+var init_record_protocol = __esm({
+  "agent/shared/record_protocol.ts"() {
+    "use strict";
+    init_node_globals();
+    DEFAULT_RECORD_PROTOCOL = "tls";
+  }
+});
+
 // agent/shared/shared_structures.ts
 var shared_structures_exports = {};
 __export(shared_structures_exports, {
@@ -42,11 +123,14 @@ __export(shared_structures_exports, {
   PLATFORM_WINE: () => PLATFORM_WINE,
   _isShuttingDown: () => _isShuttingDown,
   config_extensions: () => config_extensions,
+  hookExecutorInstalled: () => hookExecutorInstalled,
+  isPendingHookOutcome: () => isPendingHookOutcome,
   keylog_enabled: () => keylog_enabled,
   offsets: () => offsets,
   ohttp_enabled: () => ohttp_enabled,
   pcap_enabled: () => pcap_enabled,
   pointerSize: () => pointerSize,
+  resolveProtocolTag: () => resolveProtocolTag,
   selected_protocol: () => selected_protocol,
   selected_protocols: () => selected_protocols,
   sendConnectionLifecycle: () => sendConnectionLifecycle,
@@ -83,14 +167,27 @@ function setOhttpEnabled(value) {
 function setConfigExtensions(value) {
   config_extensions = value ?? {};
 }
+function hookExecutorInstalled(outcome) {
+  return outcome !== false;
+}
+function isPendingHookOutcome(outcome) {
+  return outcome !== null && typeof outcome === "object" && typeof outcome.then === "function";
+}
 function setSelectedProtocol(protocol) {
   const names = (typeof protocol === "string" ? protocol.split(",") : [...protocol]).map((s) => (s ?? "").trim()).filter(Boolean);
   const set = new Set(names.length ? names : ["tls"]);
   selected_protocols = set;
   selected_protocol = [...set][0] || "tls";
 }
+function resolveProtocolTag(selected, declared) {
+  if (!META_PROTOCOL_SELECTIONS.has(selected))
+    return selected;
+  if (declared && !META_PROTOCOL_SELECTIONS.has(declared))
+    return declared;
+  return "tls";
+}
 function sendWithProtocol(message, data) {
-  message["protocol"] = selected_protocol;
+  message["protocol"] = resolveProtocolTag(selected_protocol, activeRecordProtocol());
   if (data !== void 0 && data !== null) {
     send(message, data);
   } else {
@@ -135,7 +232,7 @@ function sendQuicKeylog(keylogLine) {
     sendKeylog("QUIC_" + label + rest);
   }
 }
-function sendQuicDatalog(message, data, streamId, scid, dcid, transport = "udp", http3Headers) {
+function sendQuicDatalog(message, data, streamId, scid, dcid, transport = "udp", http3Headers, payload) {
   message["stream_id"] = streamId;
   if (scid)
     message["quic_scid"] = scid;
@@ -144,13 +241,16 @@ function sendQuicDatalog(message, data, streamId, scid, dcid, transport = "udp",
   message["transport"] = transport;
   if (http3Headers && http3Headers.length > 0)
     message["http3_headers"] = http3Headers;
+  if (payload)
+    message["quic_payload"] = payload;
   sendDatalog(message, data);
 }
-var offsets, pcap_enabled, keylog_enabled, _isShuttingDown, ohttp_enabled, config_extensions, PLATFORM_LINUX, PLATFORM_DARWIN, PLATFORM_WINDOWS, PLATFORM_WINE, unwantedFDs, AF_INET, AF_INET6, AF_UNIX, pointerSize, AddressFamilyMapping, selected_protocol, selected_protocols;
+var offsets, pcap_enabled, keylog_enabled, _isShuttingDown, ohttp_enabled, config_extensions, PLATFORM_LINUX, PLATFORM_DARWIN, PLATFORM_WINDOWS, PLATFORM_WINE, unwantedFDs, AF_INET, AF_INET6, AF_UNIX, pointerSize, AddressFamilyMapping, selected_protocol, selected_protocols, META_PROTOCOL_SELECTIONS;
 var init_shared_structures = __esm({
   "agent/shared/shared_structures.ts"() {
     "use strict";
     init_node_globals();
+    init_record_protocol();
     offsets = "{OFFSETS}";
     pcap_enabled = false;
     keylog_enabled = true;
@@ -179,6 +279,7 @@ var init_shared_structures = __esm({
     };
     selected_protocol = "tls";
     selected_protocols = /* @__PURE__ */ new Set(["tls"]);
+    META_PROTOCOL_SELECTIONS = /* @__PURE__ */ new Set(["auto", "all"]);
   }
 });
 
@@ -628,9 +729,9 @@ var HookRegistry = class {
   /**
    * Check whether a matched hook should be skipped.
    *
-   * Four independent gates, evaluated as a FALL-THROUGH chain: the non-TLS
+   * Five independent gates, evaluated as a FALL-THROUGH chain: the non-TLS
    * denylist, `excludePattern` (name), `excludePathFilter` (path, negative),
-   * and `pathFilter` (path, positive). Every gate that applies is evaluated.
+   * `pathFilter` (path, positive) and `contentFilter` (module content). Every gate that applies is evaluated.
    * Do NOT reintroduce an early `return false` for a gate that passes — an
    * earlier version ended the `pathFilter` branch with `return excluded`,
    * which silently made any gate below it dead code for hooks carrying both.
@@ -664,6 +765,14 @@ var HookRegistry = class {
       }
       if (!pathMatches(modulePath, hook.pathFilter)) {
         devlogExclusionOnce(`registry: skipping ${moduleName} for "${hook.library}" \u2014 pathFilter ${hook.pathFilter} not found in path ${modulePath}`);
+        return true;
+      }
+    }
+    if (hook.contentFilter) {
+      try {
+        if (!hook.contentFilter(moduleName, modulePath))
+          return true;
+      } catch (e) {
         return true;
       }
     }
@@ -812,6 +921,7 @@ function nameKey(nameOrPath) {
 }
 
 // agent/shared/library_scanner.ts
+init_record_protocol();
 var hookedModules = /* @__PURE__ */ new Map();
 var unloadObserverAttached = false;
 function forgetUnloadedModule(module) {
@@ -866,8 +976,18 @@ function installTagFor(match, protocol = "tls") {
 function isSupplementaryHookInstalled(match, moduleName, protocol = "tls") {
   return !!match.supplementary && isModuleHooked(moduleName, installTagFor(match, protocol));
 }
+function hookRowTag(match) {
+  return `row:${match.protocol}:${match.libraryType ?? ""}:${match.library}:${match.pattern}`;
+}
+function isHookRowInstalled(match, moduleName) {
+  return isModuleHooked(moduleName, hookRowTag(match));
+}
+function isRowHandled(match, moduleName, protocol = "tls") {
+  return isSupplementaryHookInstalled(match, moduleName, protocol) || isHookRowInstalled(match, moduleName);
+}
 function recordHookInstalled(match, moduleName, protocol = "tls") {
   markModuleHooked(moduleName, installTagFor(match, protocol));
+  markModuleHooked(moduleName, hookRowTag(match));
 }
 function announceSiblingCoverage(moduleName, sibling, reason, protocol = "tls") {
   log(`${moduleName}: BoringSSL appears to live in sibling '${sibling}'; skipping redundant scan`);
@@ -906,11 +1026,13 @@ function processScanResults(scanData, platform, is_base_hook, protocol) {
       continue;
     }
     const typeMatch = hookRegistry.findByLibraryType(platform, entry.library_type, protocol);
-    if (typeMatch) {
+    if (typeMatch && isRowHandled(typeMatch, entry.name, protocolTag)) {
+      devlog(`[Scanner] ${entry.name}: ${typeMatch.library} already installed, skipping`);
+    } else if (typeMatch) {
       log(`[Scanner] ${entry.name} identified as ${entry.library_type} by tlsLibHunter \u2192 hooking as ${typeMatch.library}`);
       try {
         Process.getModuleByName(entry.name).ensureInitialized();
-        typeMatch.hookFn(entry.name, is_base_hook);
+        executeHookRow(typeMatch, entry.name, is_base_hook);
         recordHookInstalled(typeMatch, entry.name, protocolTag);
       } catch (error) {
         devlog(`[Scanner] Error hooking ${entry.name}: ${error}`);
@@ -920,6 +1042,9 @@ function processScanResults(scanData, platform, is_base_hook, protocol) {
     }
   }
 }
+
+// agent/shared/shared_functions.ts
+init_record_protocol();
 
 // agent/shared/deep_symbol_resolution.ts
 init_node_globals();
@@ -1228,21 +1353,18 @@ function ssl_library_loader(platform, hookRegistry2, moduleNames, platformOs, is
       announceSiblingCoverage(drop.moduleName, drop.siblingName, drop.reason, protocolTag);
     }
     for (let match of matches) {
-      if (isSupplementaryHookInstalled(match, module_name, protocolTag)) {
+      if (isRowHandled(match, module_name, protocolTag)) {
         devlog(`${module_name}: ${match.library} already installed, skipping`);
         continue;
       }
       try {
-        log(`${module_name} found & will be hooked on ${platformOs}!`);
         try {
           Process.getModuleByName(module_name).ensureInitialized();
         } catch (error) {
           wait_for_library_loaded(module_name);
         }
         hookBreadcrumb(`install-tls-hooks: ${module_name}`);
-        match.hookFn(module_name, is_base_hook);
-        recordHookInstalled(match, module_name, protocolTag);
-        send({ contentType: "library_detected", library: module_name, path: modulePath || "", protocol: protocolTag });
+        installHookRow(match, module_name, is_base_hook, protocolTag, modulePath, `found & will be hooked on ${platformOs}`);
       } catch (error) {
         if (checkNumberOfExports(module_name) > 3) {
           devlog_error(`error: skipping module ${module_name}`);
@@ -1251,6 +1373,25 @@ function ssl_library_loader(platform, hookRegistry2, moduleNames, platformOs, is
       }
     }
   }
+}
+function installHookRow(match, moduleName, is_base_hook, protocolTag, modulePath, announcement) {
+  const protocol = resolveProtocolTag(protocolTag, recordProtocolOf(match));
+  const outcome = executeHookRow(match, moduleName, is_base_hook);
+  recordHookInstalled(match, moduleName, protocolTag);
+  const report = (settled) => reportHookRow(match, moduleName, protocol, modulePath, announcement, settled);
+  if (isPendingHookOutcome(outcome)) {
+    outcome.then(report, (e) => devlog(`${moduleName}: ${match.library} install failed: ${e}`));
+    return;
+  }
+  report(outcome);
+}
+function reportHookRow(match, moduleName, protocol, modulePath, announcement, outcome) {
+  if (!hookExecutorInstalled(outcome)) {
+    devlog(`${moduleName}: ${match.library} installed no ${protocol} hooks; not reported`);
+    return;
+  }
+  log(`${moduleName} ${announcement} (${protocol})!`);
+  send({ contentType: "library_detected", library: moduleName, path: modulePath || "", protocol });
 }
 function installPairipSafeWatcher(platform, hookRegistry2, getFreshModuleNames, protocol, isTarget, firstDelayMs, pollIntervalMs) {
   let scanScheduled = false;
@@ -1404,15 +1545,12 @@ function hookDynamicLoader(config, hookRegistry2, moduleNames, is_base_hook, pro
             announceSiblingCoverage(drop.moduleName, drop.siblingName, drop.reason, protocolTag);
           }
           for (let match of matches) {
-            if (isSupplementaryHookInstalled(match, moduleName, protocolTag)) {
+            if (isRowHandled(match, moduleName, protocolTag)) {
               devlog(`${moduleName}: ${match.library} already installed, skipping (dynamic loader)`);
               continue;
             }
-            log(`${moduleName} was loaded & will be hooked on ${config.platformLabel}!`);
             try {
-              match.hookFn(moduleName, is_base_hook);
-              recordHookInstalled(match, moduleName, protocolTag);
-              send({ contentType: "library_detected", library: moduleName, path: modulePath || "", protocol: protocolTag });
+              installHookRow(match, moduleName, is_base_hook, protocolTag, modulePath, `was loaded & will be hooked on ${config.platformLabel}`);
             } catch (error_msg) {
               devlog(`${config.platformLabel} dynamic loader error: ${error_msg}`);
             }
@@ -1487,6 +1625,9 @@ function checkNumberOfExports(moduleName) {
     devlog(`Error checking exports for module "${moduleName}": ${error}`);
     return -1;
   }
+}
+function hasMoreThanFiveExports(moduleName) {
+  return checkNumberOfExports(moduleName) > 5;
 }
 function readAddresses(moduleName, library_method_mapping) {
   const resolver = new ApiResolver("module");
@@ -2991,9 +3132,12 @@ function readClientRandomHex(s3Ptr) {
 init_node_globals();
 var LruMap = class {
   _max;
+  _onEvict;
   _map = /* @__PURE__ */ new Map();
-  constructor(_max) {
+  /** `onEvict` is told about every entry dropped for capacity (not delete()/overwrite). */
+  constructor(_max, _onEvict) {
     this._max = _max;
+    this._onEvict = _onEvict;
   }
   get(key) {
     const val = this._map.get(key);
@@ -3007,8 +3151,11 @@ var LruMap = class {
     this._map.delete(key);
     if (this._map.size >= this._max) {
       const oldest = this._map.keys().next().value;
-      if (oldest !== void 0)
+      if (oldest !== void 0) {
+        const evicted = this._map.get(oldest);
         this._map.delete(oldest);
+        this._onEvict?.(oldest, evicted);
+      }
     }
     this._map.set(key, value);
   }
@@ -3182,6 +3329,61 @@ function bytesWrittenFromOutParam(requested, succeeded, written) {
     return requested;
   return Math.min(requested, written.readU32());
 }
+var GNUTLS_E_AGAIN = -28;
+var GNUTLS_E_INTERRUPTED = -52;
+var GNUTLS_SEND_RETRY_CODES = [GNUTLS_E_AGAIN, GNUTLS_E_INTERRUPTED];
+var MAX_PENDING_SEND_BYTES = 64 * 1024;
+var MAX_PENDING_SEND_SESSIONS = 64;
+var BufferedSendTracker = class {
+  retryCodes;
+  maxPendingBytes;
+  pending;
+  constructor(retryCodes = GNUTLS_SEND_RETRY_CODES, maxSessions = MAX_PENDING_SEND_SESSIONS, maxPendingBytes = MAX_PENDING_SEND_BYTES) {
+    this.retryCodes = retryCodes;
+    this.maxPendingBytes = maxPendingBytes;
+    this.pending = new LruMap(maxSessions);
+  }
+  /**
+   * onLeave of send(session, buf, requested) -> retval: the plaintext this call actually
+   * sent, or null (would-block, failure, nothing readable). Must run for EVERY call.
+   */
+  settle(session, buf, requested, retval) {
+    if (retval > 0)
+      return this.flush(session, buf, requested, retval);
+    const pending = this.pending.get(session);
+    if (this.retryCodes.indexOf(retval) < 0) {
+      this.pending.delete(session);
+    } else if (!pending) {
+      const copy = readWritten(buf, Math.min(requested, this.maxPendingBytes));
+      if (copy)
+        this.pending.set(session, copy);
+    }
+    return null;
+  }
+  /** A successful send: the buffered record it flushed, else its own written bytes. */
+  flush(session, buf, requested, retval) {
+    const pending = this.pending.size > 0 ? this.pending.get(session) : void 0;
+    if (!pending)
+      return readWritten(buf, bytesWrittenFromRetval(requested, retval));
+    this.pending.delete(session);
+    return retval >= pending.byteLength ? pending : pending.slice(0, retval);
+  }
+  /** Sessions with a buffered (not yet flushed) record. */
+  get size() {
+    return this.pending.size;
+  }
+};
+function writtenPayload(buf, requested, retval, session, buffered) {
+  if (buffered)
+    return buffered.settle(String(session), buf, requested, retval);
+  return readWritten(buf, bytesWrittenFromRetval(requested, retval));
+}
+var UNKNOWN_WRITE_LENGTH = Number.POSITIVE_INFINITY;
+function readWritten(buf, count) {
+  if (!(count > 0) || !buf || buf.isNull())
+    return null;
+  return buf.readByteArray(count);
+}
 
 // agent/core/executors/read_write.ts
 function sslFdOrDeferred(sslCtx, def, resolvedFns) {
@@ -3262,6 +3464,7 @@ function installWriteHook(def, addresses, moduleName, resolvedFns, enableDefault
   if (!hookAddr || hookAddr.isNull())
     return;
   const lengthArgIndex = hook.args.bytesTransferred === "arg" ? hook.args.lengthArgIndex : void 0;
+  const buffered = hook.bufferedRetryCodes && lengthArgIndex !== void 0 ? new BufferedSendTracker(hook.bufferedRetryCodes) : void 0;
   Interceptor.attach(hookAddr, {
     onEnter: function(args) {
       hookBreadcrumb(breadcrumb);
@@ -3270,6 +3473,8 @@ function installWriteHook(def, addresses, moduleName, resolvedFns, enableDefault
       this.buf = args[hook.args.bufferArgIndex];
       if (lengthArgIndex !== void 0)
         this.len = parseInt(args[lengthArgIndex]);
+      if (buffered)
+        this.sslCtx = sslCtx;
       const fd = sslFdOrDeferred(sslCtx, def, resolvedFns);
       if (fd === null) {
         this.deferredSsl = sslCtx;
@@ -3283,15 +3488,16 @@ function installWriteHook(def, addresses, moduleName, resolvedFns, enableDefault
     onLeave: function(retval) {
       const recovered = this.deferredSsl ? recoveredFd(this.deferredSsl) : -1;
       const returned = retval.toInt32();
-      const count = lengthArgIndex !== void 0 ? bytesWrittenFromRetval(this.len, returned) : Math.max(returned, 0);
-      if (count <= 0)
+      const requested = lengthArgIndex !== void 0 ? this.len : UNKNOWN_WRITE_LENGTH;
+      const payload = writtenPayload(this.buf, requested, returned, this.sslCtx, buffered);
+      if (payload === null)
         return;
       if (this.deferredSsl) {
         this.message = buildMessage(this.deferredSsl, recovered);
       }
       if (!this.message)
         return;
-      sendDatalog(this.message, this.buf.readByteArray(count));
+      sendDatalog(this.message, payload);
     }
   });
 }
@@ -3842,6 +4048,12 @@ function decodeBLImm(insn) {
     imm26 -= 67108864;
   return imm26 * 4;
 }
+function blTargetOffset(pc, insn) {
+  return isBL(insn) ? pc + decodeBLImm(insn) : null;
+}
+function movzW(insn, reg) {
+  return maskEq(insn, 4292870175, 1384120320 | reg) ? insn >>> 5 & 65535 : null;
+}
 var IMM12_OPERAND_MASK = 4294966272;
 function addImm64WordForImm12(imm12) {
   return (2432696320 | (imm12 & 4095) << 10) >>> 0;
@@ -3866,6 +4078,92 @@ function addImm64ScanPattern(imm12) {
 }
 function ldrU64ScanPattern(imm12) {
   return maskedWordScanPattern(ldrU64WordForImm12(imm12), IMM12_OPERAND_MASK);
+}
+
+// agent/shared/go_attach.ts
+init_node_globals();
+var MAX_STACK_CHECK_INSTRUCTIONS = 6;
+var STACK_GUARD_LOAD_WORD = 4181724048;
+function isGoArm64StackGuardLoad(insn) {
+  return insn >>> 0 === STACK_GUARD_LOAD_WORD;
+}
+var GO_HOOK_STACK_HEADROOM = 16 * 1024;
+var SUB_X17_SP_IMM_MASK = 4286579711;
+var SUB_X17_SP_IMM_BITS = 3506439153;
+function decodeSubX17SpImm(insn) {
+  const word = insn >>> 0;
+  if ((word & SUB_X17_SP_IMM_MASK) >>> 0 !== SUB_X17_SP_IMM_BITS)
+    return null;
+  const imm12 = word >>> 10 & 4095;
+  return word >>> 22 & 1 ? imm12 * 4096 : imm12;
+}
+function widenGoArm64StackCheck(insn, headroom = GO_HOOK_STACK_HEADROOM) {
+  const frame = decodeSubX17SpImm(insn);
+  if (frame === null)
+    return null;
+  const pages = Math.ceil((frame + headroom) / 4096);
+  if (pages > 4095)
+    return null;
+  return (SUB_X17_SP_IMM_BITS | 1 << 22 | pages << 10) >>> 0;
+}
+var widenedStackChecks = /* @__PURE__ */ new Set();
+function ensureGoArm64StackHeadroom(fn) {
+  const key = fn.toString();
+  if (widenedStackChecks.has(key))
+    return true;
+  const site = fn.add(4);
+  const widened = widenGoArm64StackCheck(site.readU32());
+  if (widened === null)
+    return false;
+  Memory.patchCode(site, 4, (code) => code.writeU32(widened));
+  widenedStackChecks.add(key);
+  devlog(`[go] ${fn}: stack check widened by ${GO_HOOK_STACK_HEADROOM} bytes for the hook`);
+  return true;
+}
+function isStackCheckInstruction(instruction) {
+  const { mnemonic, opStr } = instruction;
+  if (mnemonic === "cmp")
+    return true;
+  return ["sub", "subs", "mov", "movz", "movk", "add"].includes(mnemonic) && /^x1[67],/.test(opStr);
+}
+function goArm64StackCheckEnd(fn) {
+  if (!opensWithGoStackGuardLoad(fn))
+    return null;
+  let cursor = fn.add(4);
+  for (let i = 1; i < MAX_STACK_CHECK_INSTRUCTIONS; i++) {
+    let instruction;
+    try {
+      instruction = Instruction.parse(cursor);
+    } catch (e) {
+      return null;
+    }
+    if (instruction.mnemonic.startsWith("b."))
+      return instruction.next;
+    if (!isStackCheckInstruction(instruction))
+      return null;
+    cursor = instruction.next;
+  }
+  return null;
+}
+function opensWithGoStackGuardLoad(fn) {
+  try {
+    return isGoArm64StackGuardLoad(fn.readU32());
+  } catch (e) {
+    return false;
+  }
+}
+function attachGoFunctionEntry(address, callbacks, arch = Process.arch) {
+  const afterCheck = arch === "arm64" ? goArm64StackCheckEnd(address) : null;
+  if (afterCheck === null)
+    return Interceptor.attach(address, callbacks);
+  try {
+    if (!ensureGoArm64StackHeadroom(address))
+      devlog(`[go] ${address}: small-frame stack check; no extra headroom for the hook`);
+  } catch (e) {
+    devlog(`[go] ${address}: could not widen the stack check (${e}); hooking without extra headroom`);
+  }
+  devlog(`[go] ${address}: hooking after its stack check at ${afterCheck}`);
+  return Interceptor.attach(afterCheck, callbacks);
 }
 
 // agent/tls/shared/cronet_patterns.ts
@@ -3929,7 +4227,7 @@ function isLikelyArm64Prologue(address) {
   }
   if (insn === 0 || insn === 4294967295)
     return false;
-  return isFunctionPrologueWord(insn);
+  return isFunctionPrologueWord(insn) || isGoArm64StackGuardLoad(insn);
 }
 function acceptPrologueMatch(address, patternName, moduleName) {
   const where = moduleName ? ` on ${moduleName}` : "";
@@ -4147,7 +4445,7 @@ var PatternBasedHooking = class {
           devlog_info(`Pattern found at (${pattern_name}) address: ${address}`);
         }
         log(`[*] ${moduleName ?? "<unknown>"}: keylog hooks installed via pattern (${pattern_name} @ ${address})`);
-        Interceptor.attach(address, {
+        attachGoFunctionEntry(address, {
           onEnter: function(args) {
             onMatchCallback.call(this, args);
           }
@@ -4261,7 +4559,7 @@ var PatternBasedHooking = class {
               devlog_info(`Pattern found at (${pattern_name}) address: ${address} on ${moduleName}`);
               log(`[*] ${moduleName ?? "<unknown>"}: keylog hooks installed via pattern (${pattern_name}, readable-ranges @ ${address})`);
               try {
-                Interceptor.attach(address, {
+                attachGoFunctionEntry(address, {
                   onEnter: function(args) {
                     onMatchCallback.call(this, args);
                   }
@@ -5019,6 +5317,20 @@ function yieldToEventLoop() {
 function patternByteLength(pattern) {
   return pattern.split(":")[0].trim().split(/\s+/).filter((t) => t.length > 0).length;
 }
+function withoutLeadingWildcards(pattern) {
+  const [needleHalf, maskHalf] = pattern.split(":");
+  const tokens = (half) => half.trim().split(/\s+/).filter((t) => t.length > 0);
+  const needle = tokens(needleHalf);
+  const mask = maskHalf === void 0 ? null : tokens(maskHalf);
+  const isWildcard = (i) => needle[i] === "??" || mask !== null && /^0+$/.test(mask[i] ?? "");
+  let skipped = 0;
+  while (skipped < needle.length && isWildcard(skipped))
+    skipped++;
+  if (skipped === 0 || skipped === needle.length)
+    return { pattern, skipped: 0 };
+  const rest = needle.slice(skipped).join(" ");
+  return { pattern: mask === null ? rest : `${rest} : ${mask.slice(skipped).join(" ")}`, skipped };
+}
 function compilePattern(pattern) {
   try {
     if (typeof MatchPattern !== "undefined")
@@ -5030,7 +5342,8 @@ function compilePattern(pattern) {
 async function scanRangesChunked(ranges, jobs, chunkBytes = XREF_SCAN_CHUNK_BYTES, yieldFn = yieldToEventLoop) {
   if (jobs.length === 0)
     return;
-  const compiled = jobs.map((j) => compilePattern(j.pattern));
+  const shapes = jobs.map((j) => withoutLeadingWildcards(j.pattern));
+  const compiled = shapes.map((shape) => compilePattern(shape.pattern));
   const overlap = Math.max(...jobs.map((j) => patternByteLength(j.pattern))) - 1;
   for (const range of ranges) {
     for (let off = 0; off < range.size; off += chunkBytes) {
@@ -5046,9 +5359,13 @@ async function scanRangesChunked(ranges, jobs, chunkBytes = XREF_SCAN_CHUNK_BYTE
         } catch (_e) {
           continue;
         }
+        const skipped = shapes[i].skipped;
         for (const hit of hits) {
-          if (hit.address.compare(chunkEnd) < 0)
-            jobs[i].onMatch(hit.address);
+          const start = skipped === 0 ? hit.address : hit.address.sub(skipped);
+          if (skipped > 0 && start.compare(chunkStart) < 0)
+            continue;
+          if (start.compare(chunkEnd) < 0)
+            jobs[i].onMatch(start);
         }
       }
       await yieldFn();
@@ -5121,7 +5438,7 @@ async function findPointerSlots(mod, targets2, chunkBytes, yieldFn) {
   await scanRangesChunked(dataRanges(mod), toJobs(jobs), chunkBytes, yieldFn);
   return slots;
 }
-async function findStringLoadSitesAsync(mod, targets2, chunkBytes = XREF_SCAN_CHUNK_BYTES, yieldFn = yieldToEventLoop) {
+async function findStringLoadSitesAsync(mod, targets2, chunkBytes = XREF_SCAN_CHUNK_BYTES, yieldFn = yieldToEventLoop, maxSites = MAX_LOAD_SITES) {
   const sites = targets2.map(() => []);
   const slots = await findPointerSlots(mod, targets2, chunkBytes, yieldFn);
   const jobs = /* @__PURE__ */ new Map();
@@ -5155,7 +5472,7 @@ async function findStringLoadSitesAsync(mod, targets2, chunkBytes = XREF_SCAN_CH
     await scanRangesChunked([range], codeJobs, chunkBytes, yieldFn);
   }
   await findAdrSites(mod, targets2, sites, chunkBytes, yieldFn);
-  return sites.map((list) => dedupeSorted(list).slice(0, MAX_LOAD_SITES));
+  return sites.map((list) => dedupeSorted(list).slice(0, maxSites));
 }
 var ADR_REACH_BYTES = 1024 * 1024;
 var ADR_WINDOW_SLACK = 8;
@@ -5180,13 +5497,13 @@ function mergeRanges(list) {
   }
   return out;
 }
-function adrScanWindows(codeRanges, targets2) {
+function adrScanWindows(codeRanges2, targets2) {
   const reach = ptr(ADR_REACH_BYTES);
   const windows = [];
   for (const t of targets2) {
     const lo = t.compare(reach) >= 0 ? t.sub(reach) : ptr(0);
     const hi = t.add(ADR_REACH_BYTES + ADR_WINDOW_SLACK);
-    for (const r of codeRanges) {
+    for (const r of codeRanges2) {
       const w = clipRange(r, lo, hi);
       if (w !== null)
         windows.push(w);
@@ -5247,6 +5564,32 @@ async function findAnchorStringsAsync(mod, asciis, chunkBytes = XREF_SCAN_CHUNK_
     await scanRangesChunked(ranges, toJobs(jobs), chunkBytes, yieldFn);
   }
   return found;
+}
+function literalStart(inside, maxBack = 512) {
+  let p = inside;
+  for (let i = 0; i < maxBack; i++) {
+    try {
+      if (p.sub(1).readU8() === 0)
+        return p;
+    } catch (_e) {
+      return p;
+    }
+    p = p.sub(1);
+  }
+  return p;
+}
+async function anchorSiteFunctions(mod, functions, anchors) {
+  const hits = await findAnchorStringsAsync(mod, anchors.map((a) => a.text + "\0"));
+  const found = anchors.map((a, i) => ({ a, hit: hits[i] })).filter((x) => x.hit !== null);
+  const targets2 = found.map(({ a, hit }) => a.literalSuffix ? literalStart(hit) : hit);
+  const maxSites = Math.max(MAX_LOAD_SITES, ...anchors.map((a) => a.maxSites ?? MAX_LOAD_SITES));
+  const loads = targets2.length > 0 ? await findStringLoadSitesAsync(mod, targets2, XREF_SCAN_CHUNK_BYTES, yieldToEventLoop, maxSites) : [];
+  const sitesByAnchor = /* @__PURE__ */ new Map();
+  found.forEach(({ a }, k) => sitesByAnchor.set(a, loads[k].slice(0, a.maxSites ?? MAX_LOAD_SITES).map((at) => ({ at, fn: functions.bounds(at) }))));
+  return anchors.map((a) => sitesByAnchor.get(a) ?? []);
+}
+function moduleOffsetLabel(mod, p, missing = "?") {
+  return p === null ? missing : "+0x" + p.sub(mod.base).toString(16);
 }
 function firstCallTargetForward(from, limit, modStart, modEnd) {
   let cursor = from.add(4);
@@ -6373,7 +6716,9 @@ function installBoringSSLKeylogChain(def, addresses, moduleName, resolvedFns, en
 }
 
 // agent/core/loader.ts
+init_record_protocol();
 async function executeFromDefinition(def, moduleName, socketLibrary, isBaseHook, enableDefaultFd) {
+  const recordProtocol = activeRecordProtocol();
   const mapping = {};
   mapping[`*${moduleName}*`] = def.functions.librarySymbols;
   mapping[`*${socketLibrary}*`] = def.functions.socketSymbols;
@@ -6401,6 +6746,15 @@ async function executeFromDefinition(def, moduleName, socketLibrary, isBaseHook,
     ...def.nativeFunctions.map((spec) => spec.symbol)
   ];
   await resolveWithPipelineAsync(addresses, moduleName, def.offsetKey, pipelineSymbols);
+  const install = () => installResolvedDefinition(def, addresses, moduleName, isBaseHook, enableDefaultFd);
+  if (recordProtocol === void 0)
+    return install();
+  return runHookExecutor(recordProtocol, install);
+}
+function delegatesToExtraHooks(def) {
+  return !def.readHook && !def.writeHook && def.keylog.kind === "none";
+}
+function installResolvedDefinition(def, addresses, moduleName, isBaseHook, enableDefaultFd) {
   const resolvedFns = {};
   for (const spec of def.nativeFunctions) {
     let addr;
@@ -6443,9 +6797,10 @@ async function executeFromDefinition(def, moduleName, socketLibrary, isBaseHook,
       devlog(`[loader] primary keylog install threw on ${moduleName}: ${e}`);
     }
   }
+  let extraInstalled = false;
   if (def.extraHooks) {
     for (const extra of def.extraHooks) {
-      extra.install(addresses, moduleName, resolvedFns, enableDefaultFd);
+      extraInstalled = extra.install(addresses, moduleName, resolvedFns, enableDefaultFd) !== false || extraInstalled;
     }
   }
   if (isBaseHook) {
@@ -6458,6 +6813,7 @@ async function executeFromDefinition(def, moduleName, socketLibrary, isBaseHook,
       devlog(`[loader] base-hook address store error: ${e}`);
     }
   }
+  return extraInstalled || !delegatesToExtraHooks(def);
 }
 
 // agent/tls/definitions/gnutls.ts
@@ -6478,7 +6834,7 @@ init_node_globals();
 // agent/shared/generated_constants.ts
 init_node_globals();
 var DUMMY_SESSION_ID_BASE = "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF7633";
-var AGENT_ABI_VERSION = 2;
+var AGENT_ABI_VERSION = 3;
 
 // agent/tls/definitions/shared_constants.ts
 var STANDARD_SOCKET_SYMBOLS = ["getpeername", "getsockname", "ntohs", "ntohl"];
@@ -6629,7 +6985,9 @@ function createGnuTlsDefinition() {
     writeHook: {
       symbol: "gnutls_record_send",
       args: { sslCtxArgIndex: 0, bufferArgIndex: 1, lengthArgIndex: 2, bytesTransferred: "arg" },
-      functionLabel: "gnutls_record_send"
+      functionLabel: "gnutls_record_send",
+      // E_AGAIN/E_INTERRUPTED: the record is buffered; the retry may pass NULL/0.
+      bufferedRetryCodes: GNUTLS_SEND_RETRY_CODES
     },
     keylog: {
       kind: "callback_on_init",
@@ -6787,6 +7145,51 @@ init_node_globals();
 // agent/tls/libs/nss.ts
 init_node_globals();
 init_shared_structures();
+
+// agent/shared/write_hooks.ts
+init_node_globals();
+init_shared_structures();
+var CTX_ARG = 0;
+var BUF_ARG = 1;
+var LEN_ARG = 2;
+function captureArgs(args) {
+  return [args[CTX_ARG], args[BUF_ARG], args[LEN_ARG]];
+}
+function attachPlaintextWriteHook(address, buildMessage, buffered) {
+  return Interceptor.attach(address, {
+    onEnter(args) {
+      this.call = captureArgs(args);
+    },
+    onLeave(retval) {
+      const [ctx, buf, len] = this.call;
+      const payload = writtenPayload(buf, len.toUInt32(), retval.toInt32(), ctx, buffered);
+      if (payload !== null)
+        emitRecord(this.call, buildMessage, payload);
+    }
+  });
+}
+function attachPlaintextReadHook(address, buildMessage) {
+  return Interceptor.attach(address, {
+    onEnter(args) {
+      this.call = captureArgs(args);
+    },
+    onLeave(retval) {
+      const count = retval.toInt32();
+      if (count <= 0)
+        return;
+      emitRecord(this.call, buildMessage, this.call[BUF_ARG].readByteArray(count));
+    }
+  });
+}
+function emitRecord(call, buildMessage, payload) {
+  if (payload === null)
+    return;
+  const message = buildMessage(call);
+  if (message)
+    sendDatalog(message, payload);
+}
+
+// agent/tls/libs/nss.ts
 var { readU32, readU64, readPointer, writeU32, writeU64, writePointer } = NativePointer.prototype;
 var SECStatus;
 (function(SECStatus3) {
@@ -7898,30 +8301,20 @@ var NSS = class _NSS {
       return;
     var current_module_name = this.module_name;
     var lib_addesses = this.addresses;
-    Interceptor.attach(this.addresses[this.moduleName]["PR_Write"], {
-      onEnter: function(args) {
-        this.fd = ptr(args[0]);
-        this.buf = args[1];
-        this.len = args[2];
-      },
-      onLeave: function(retval) {
-        if (retval.toInt32() <= 0) {
-          return;
-        }
-        var addr = Memory.alloc(32);
-        _NSS.getsockname(this.fd, addr);
-        var family = readSockaddrFamily(addr, false);
-        if (family == 2 || family == 10 || family == 100) {
-          if (_NSS.isLoopbackSockaddr(addr, family)) {
-            return;
-          }
-          var message = _NSS.getPortsAndAddressesFromNSS(this.fd, false, lib_addesses[current_module_name], enable_default_fd);
-          message["ssl_session_id"] = _NSS.getSslSessionIdFromFD(this.fd);
-          message["function"] = "NSS_write";
-          message["client_random"] = _NSS.extractClientRandom(this.fd);
-          sendDatalog(message, this.buf.readByteArray(parseInt(this.len)));
-        }
-      }
+    attachPlaintextWriteHook(this.addresses[this.moduleName]["PR_Write"], (args) => {
+      var fd = args[0];
+      var addr = Memory.alloc(32);
+      _NSS.getsockname(fd, addr);
+      var family = readSockaddrFamily(addr, false);
+      if (family != 2 && family != 10 && family != 100)
+        return null;
+      if (_NSS.isLoopbackSockaddr(addr, family))
+        return null;
+      var message = _NSS.getPortsAndAddressesFromNSS(fd, false, lib_addesses[current_module_name], enable_default_fd);
+      message["ssl_session_id"] = _NSS.getSslSessionIdFromFD(fd);
+      message["function"] = "NSS_write";
+      message["client_random"] = _NSS.extractClientRandom(fd);
+      return message;
     });
   }
   /***** install callbacks for key logging ******/
@@ -8868,7 +9261,7 @@ function checkNumberOfExports2(moduleName) {
     return -1;
   }
 }
-function hasMoreThanFiveExports(moduleName) {
+function hasMoreThanFiveExports2(moduleName) {
   return checkNumberOfExports2(moduleName) > 5;
 }
 
@@ -9088,6 +9481,9 @@ var SslPlaintextHooks = class {
 };
 
 // agent/legacy/tls/libs/ssl_method_mapping.ts
+init_node_globals();
+
+// agent/tls/shared/ssl_method_mapping.ts
 init_node_globals();
 var CORE_SSL_METHODS = ["SSL_read", "SSL_write", "SSL_get_fd", "SSL_get_session", "SSL_SESSION_get_id", "SSL_new", "SSL_CTX_set_keylog_callback"];
 var SOCKET_METHODS = ["getpeername", "getsockname", "ntohs", "ntohl"];
@@ -9977,9 +10373,11 @@ var Cronet = class _Cronet {
     }
     return -1;
   }
-  // Attach the symbol-resolved SSL_read/SSL_write plaintext hook. Read and write
-  // share everything except the buffer-length source: SSL_read learns the byte
-  // count from retval (onLeave), SSL_write from the length arg (onEnter).
+  // Attach the symbol-resolved SSL_read/SSL_write plaintext hook. Both emit from onLeave
+  // (building the record metadata only then) with the byte count the call returned:
+  // SSL_read the bytes it decrypted into buf, SSL_write the bytes it wrote (fewer with
+  // SSL_MODE_ENABLE_PARTIAL_WRITE; <= 0 on error / WANT_WRITE, retried with the same
+  // buffer) — never the requested length, which duplicates plaintext.
   installPlaintextHook(symbol, isRead) {
     if (!pcap_enabled)
       return;
@@ -9989,38 +10387,26 @@ var Cronet = class _Cronet {
       this.noticePlaintext(action, reason);
       return;
     }
-    const lib_addresses = this.addresses;
-    const instance = this;
-    const current_module_name = this.module_name;
-    Interceptor.attach(this.addresses[this.module_name][symbol], {
-      onEnter: function(args) {
-        this.fd = instance.resolveFd(args[0]);
-        if (this.fd < 0 && !enable_default_fd)
-          return;
-        const message = getPortsAndAddresses(this.fd, isRead, lib_addresses[current_module_name], enable_default_fd);
-        if (message === null)
-          return;
-        message["ssl_session_id"] = openSslSessionIdDecoder(args[0], instance.sessionFns);
-        message["client_random"] = instance.get_client_random_from_ssl_struct(args[0]);
-        message["function"] = symbol;
-        if (isRead) {
-          this.message = message;
-          this.buf = args[1];
-        } else {
-          sendDatalog(message, args[1].readByteArray(args[2].toInt32()));
-        }
-      },
-      onLeave: function(retval) {
-        if (!isRead)
-          return;
-        retval |= 0;
-        if (retval <= 0 || this.fd < 0 && !enable_default_fd)
-          return;
-        if (this.message) {
-          sendDatalog(this.message, this.buf.readByteArray(retval));
-        }
-      }
-    });
+    const address = this.addresses[this.module_name][symbol];
+    const buildMessage = (args) => this.buildPlaintextMessage(args[0], symbol, isRead);
+    if (isRead)
+      attachPlaintextReadHook(address, buildMessage);
+    else
+      attachPlaintextWriteHook(address, buildMessage);
+  }
+  // Peer/session metadata of one SSL_read/SSL_write record, or null when the SSL has no
+  // fd and --enable_default_fd is off (the record cannot be attributed).
+  buildPlaintextMessage(ssl, symbol, isRead) {
+    const fd = this.resolveFd(ssl);
+    if (fd < 0 && !enable_default_fd)
+      return null;
+    const message = getPortsAndAddresses(fd, isRead, this.addresses[this.module_name], enable_default_fd);
+    if (message === null)
+      return null;
+    message["ssl_session_id"] = openSslSessionIdDecoder(ssl, this.sessionFns);
+    message["client_random"] = this.get_client_random_from_ssl_struct(ssl);
+    message["function"] = symbol;
+    return message;
   }
   install_plaintext_read_hook() {
     this.installPlaintextHook("SSL_read", true);
@@ -10231,6 +10617,8 @@ var GnuTLS = class _GnuTLS {
   library_method_mapping = {};
   addresses;
   module_name;
+  /** gnutls_record_send records buffered by a would-block call (see install_plaintext_write_hook). */
+  static pendingSends = new BufferedSendTracker();
   static gnutls_transport_get_int;
   static gnutls_session_get_id;
   static gnutls_session_get_random;
@@ -10348,16 +10736,14 @@ var GnuTLS = class _GnuTLS {
       return;
     var current_module_name = this.module_name;
     var lib_addesses = this.addresses;
-    Interceptor.attach(this.addresses[this.moduleName]["gnutls_record_send"], {
-      onEnter: function(args) {
-        var message = getPortsAndAddresses(_GnuTLS.gnutls_transport_get_int(args[0]), false, lib_addesses[current_module_name], enable_default_fd);
-        message["ssl_session_id"] = _GnuTLS.getSslSessionId(args[0]);
-        message["function"] = "SSL_write";
-        sendDatalog(message, args[1].readByteArray(parseInt(args[2])));
-      },
-      onLeave: function(retval) {
-      }
-    });
+    attachPlaintextWriteHook(this.addresses[this.moduleName]["gnutls_record_send"], (args) => {
+      var message = getPortsAndAddresses(_GnuTLS.gnutls_transport_get_int(args[0]), false, lib_addesses[current_module_name], enable_default_fd);
+      if (message === null)
+        return null;
+      message["ssl_session_id"] = _GnuTLS.getSslSessionId(args[0]);
+      message["function"] = "SSL_write";
+      return message;
+    }, _GnuTLS.pendingSends);
   }
   install_tls_keys_callback_hook() {
     if (!keylog_enabled)
@@ -10498,15 +10884,13 @@ var WolfSSL = class _WolfSSL {
       return;
     var current_module_name = this.module_name;
     var lib_addesses = this.addresses;
-    Interceptor.attach(this.addresses[this.moduleName]["wolfSSL_write"], {
-      onEnter: function(args) {
-        var message = getPortsAndAddresses(_WolfSSL.wolfSSL_get_fd(args[0]), false, lib_addesses[current_module_name], enable_default_fd);
-        message["ssl_session_id"] = _WolfSSL.getSslSessionId(args[0]);
-        message["function"] = "wolfSSL_write";
-        sendDatalog(message, args[1].readByteArray(parseInt(args[2])));
-      },
-      onLeave: function(retval) {
-      }
+    attachPlaintextWriteHook(this.addresses[this.moduleName]["wolfSSL_write"], (args) => {
+      var message = getPortsAndAddresses(_WolfSSL.wolfSSL_get_fd(args[0]), false, lib_addesses[current_module_name], enable_default_fd);
+      if (message === null)
+        return null;
+      message["ssl_session_id"] = _WolfSSL.getSslSessionId(args[0]);
+      message["function"] = "wolfSSL_write";
+      return message;
     });
   }
 };
@@ -11635,27 +12019,17 @@ var NSS2 = class _NSS {
       return;
     var current_module_name = this.module_name;
     var lib_addesses = this.addresses;
-    Interceptor.attach(this.addresses[this.moduleName]["PR_Write"], {
-      onEnter: function(args) {
-        this.fd = ptr(args[0]);
-        this.buf = args[1];
-        this.len = args[2];
-      },
-      onLeave: function(retval) {
-        if (retval.toInt32() <= 0) {
-          return;
-        }
-        var addr = Memory.alloc(32);
-        _NSS.getsockname(this.fd, addr);
-        var family = readSockaddrFamily(addr, false);
-        if (family == 2 || family == 10 || family == 100) {
-          var message = _NSS.getPortsAndAddressesFromNSS(this.fd, false, lib_addesses[current_module_name], enable_default_fd);
-          message["ssl_session_id"] = _NSS.getSslSessionIdFromFD(this.fd);
-          message["function"] = "NSS_write";
-          sendDatalog(message, this.buf.readByteArray(parseInt(this.len)));
-        } else {
-        }
-      }
+    attachPlaintextWriteHook(this.addresses[this.moduleName]["PR_Write"], (args) => {
+      var fd = args[0];
+      var addr = Memory.alloc(32);
+      _NSS.getsockname(fd, addr);
+      var family = readSockaddrFamily(addr, false);
+      if (family != 2 && family != 10 && family != 100)
+        return null;
+      var message = _NSS.getPortsAndAddressesFromNSS(fd, false, lib_addesses[current_module_name], enable_default_fd);
+      message["ssl_session_id"] = _NSS.getSslSessionIdFromFD(fd);
+      message["function"] = "NSS_write";
+      return message;
     });
   }
   /***** install callbacks for key logging ******/
@@ -12262,22 +12636,18 @@ var Cronet2 = class {
     var lib_addesses = this.addresses;
     var instance = this;
     var current_module_name = this.module_name;
-    Interceptor.attach(this.addresses[this.moduleName]["SSL_write"], {
-      onEnter: function(args) {
-        this.fd = instance.SSL_get_fd(args[0]);
-        if (this.fd < 0 && enable_default_fd == false) {
-          return;
-        }
-        var message = getPortsAndAddresses(this.fd, false, lib_addesses[current_module_name], enable_default_fd);
-        if (message === null) {
-          return;
-        }
-        message["ssl_session_id"] = instance.getSslSessionId(args[0]);
-        message["function"] = "SSL_write";
-        sendDatalog(message, args[1].readByteArray(args[2].toInt32()));
-      },
-      onLeave: function(retval) {
+    attachPlaintextWriteHook(this.addresses[this.moduleName]["SSL_write"], (args) => {
+      var fd = instance.SSL_get_fd(args[0]);
+      if (fd < 0 && enable_default_fd == false) {
+        return null;
       }
+      var message = getPortsAndAddresses(fd, false, lib_addesses[current_module_name], enable_default_fd);
+      if (message === null) {
+        return null;
+      }
+      message["ssl_session_id"] = instance.getSslSessionId(args[0]);
+      message["function"] = "SSL_write";
+      return message;
     });
   }
   install_key_extraction_pattern_hook() {
@@ -12515,7 +12885,7 @@ var PatternBasedHooking2 = class {
           devlog_info(`Pattern found at (${pattern_name}) address: ${address}`);
         }
         log(`[*] ${moduleName ?? "<unknown>"}: keylog hooks installed via pattern (${pattern_name} @ ${address})`);
-        Interceptor.attach(address, {
+        attachGoFunctionEntry(address, {
           onEnter: function(args) {
             onMatchCallback.call(this, args);
           }
@@ -12619,7 +12989,7 @@ var PatternBasedHooking2 = class {
             devlog_info(`Pattern found at (${pattern_name}) address: ${address} on ${moduleName}`);
             log(`[*] ${moduleName ?? "<unknown>"}: keylog hooks installed via pattern (${pattern_name}, readable-ranges @ ${address})`);
             try {
-              Interceptor.attach(address, {
+              attachGoFunctionEntry(address, {
                 onEnter: function(args) {
                   onMatchCallback.call(this, args);
                 }
@@ -13891,6 +14261,110 @@ function mono_btls_execute_modern(moduleName, is_base_hook) {
 
 // agent/shared/pairip_safe_libs.ts
 init_node_globals();
+var PAIRIP_SAFE_LIBS = [
+  // --- Symbol-exporting BoringSSL / Conscrypt (turnkey) ---
+  {
+    pattern: /.*libssl\.so/,
+    library: "OpenSSL/BoringSSL",
+    libraryType: "openssl",
+    protocol: "tls",
+    executor: "boringssl",
+    resolution: "symbol"
+  },
+  {
+    // Statically-linked BoringSSL whose SSL_* surface lives in .symtab;
+    // httpengine_execute* opts the module into deep symbol resolution.
+    pattern: /.*libhttpengine\.so/,
+    library: "httpengine (BoringSSL)",
+    libraryType: "boringssl",
+    protocol: "tls",
+    executor: "httpengine",
+    resolution: "symbol"
+  },
+  {
+    // Blizzard commerce SDK — curl + BoringSSL; exports SSL_CTX_set_keylog_callback.
+    // This carries com.blizzard.arc's real TLS (the actual key-capture win).
+    pattern: /.*libcommerce_http_client\.so/,
+    library: "Blizzard commerce (BoringSSL)",
+    libraryType: "boringssl",
+    protocol: "tls",
+    executor: "httpengine",
+    resolution: "symbol"
+  },
+  {
+    pattern: /libjavacrypto\.so/,
+    library: "Conscrypt (libjavacrypto)",
+    libraryType: "boringssl",
+    protocol: "tls",
+    executor: "boringssl",
+    resolution: "symbol"
+  },
+  {
+    pattern: /libconscrypt_gmscore_jni\.so/,
+    library: "Conscrypt",
+    libraryType: "boringssl",
+    protocol: "tls",
+    executor: "conscrypt",
+    resolution: "symbol"
+  },
+  {
+    pattern: /libconscrypt_jni\.so/,
+    library: "Conscrypt",
+    libraryType: "boringssl",
+    protocol: "tls",
+    executor: "conscrypt",
+    resolution: "symbol"
+  },
+  // --- Hidden-symbol / statically-linked (offset-based) ---
+  {
+    // Android System WebView (Chromium): statically-linked BoringSSL, fully
+    // stripped — no .dynsym/.symtab SSL_* and Chromium installs no keylog
+    // callback, so neither the callback tier nor enumerateSymbols can reach
+    // it, and --pairip-safe forbids the Memory.scan tier. We OFFSET-hook
+    // bssl::ssl_log_secret (called unconditionally during the handshake) and
+    // read (ssl, label, secret) from its ARGS in onEnter — independent of
+    // whether a keylog callback is set. This captures the Battle.net login
+    // WebView TLS (UniWebView -> System WebView). libraryType "boringssl"
+    // routes through installBoringSSLKeylogChain; the offset is consumed by
+    // resolveSslLogSecretSymbol's lookupViaOffset strategy. Supply via
+    //   --offsets '{"libwebviewchromium.so":{"ssl_log_secret":{"address":"0x...","absolute":false}}}'
+    // (WebView 149.0.7827.91 arm64: ssl_log_secret @ 0x5adbb60). The module
+    // loads lazily when the login page renders; the spawn watcher catches it.
+    pattern: /.*libwebviewchromium\.so/,
+    library: "Android WebView (Chromium BoringSSL)",
+    libraryType: "boringssl",
+    protocol: "tls",
+    executor: "boringssl",
+    resolution: "offset",
+    offsetKey: "libwebviewchromium.so"
+  },
+  {
+    // Unity engine: statically-linked MbedTLS 3.x (UnityTLS), export-keys
+    // compiled out + no exported symbols. Key extraction OFFSET-hooks
+    // ssl_compute_master and scrapes the master secret (TLS1.2 CLIENT_RANDOM).
+    // Supply the function offset via --offsets keyed "libunity.so".
+    pattern: /.*libunity\.so/,
+    library: "Unity (MbedTLS/UnityTLS)",
+    libraryType: "mbedtls",
+    protocol: "tls",
+    executor: "unity_mbedtls",
+    resolution: "offset",
+    offsetKey: "libunity.so"
+  }
+];
+function matchPairipSafeLib(moduleName) {
+  return PAIRIP_SAFE_LIBS.find((l) => l.pattern.test(moduleName));
+}
+function buildPairipSafeRegistrations(platform, executors) {
+  return PAIRIP_SAFE_LIBS.map((l) => ({
+    platform,
+    pattern: l.pattern,
+    hookFn: executors[l.executor],
+    library: l.library,
+    libraryType: l.libraryType,
+    protocol: l.protocol
+  }));
+}
 
 // agent/tls/platforms/android/unity_mbedtls_android.ts
 init_node_globals();
@@ -14011,112 +14485,6 @@ function unity_mbedtls_execute(moduleName, is_base_hook) {
 }
 var unity_mbedtls_execute_modern = unity_mbedtls_execute;
 
-// agent/shared/pairip_safe_libs.ts
-var PAIRIP_SAFE_LIBS = [
-  // --- Symbol-exporting BoringSSL / Conscrypt (turnkey) ---
-  {
-    pattern: /.*libssl\.so/,
-    library: "OpenSSL/BoringSSL",
-    libraryType: "openssl",
-    protocol: "tls",
-    hookFn: (m) => m ? boring_execute_modern : boring_execute,
-    resolution: "symbol"
-  },
-  {
-    // Statically-linked BoringSSL whose SSL_* surface lives in .symtab;
-    // httpengine_execute* opts the module into deep symbol resolution.
-    pattern: /.*libhttpengine\.so/,
-    library: "httpengine (BoringSSL)",
-    libraryType: "boringssl",
-    protocol: "tls",
-    hookFn: (m) => m ? httpengine_execute_modern : httpengine_execute,
-    resolution: "symbol"
-  },
-  {
-    // Blizzard commerce SDK — curl + BoringSSL; exports SSL_CTX_set_keylog_callback.
-    // This carries com.blizzard.arc's real TLS (the actual key-capture win).
-    pattern: /.*libcommerce_http_client\.so/,
-    library: "Blizzard commerce (BoringSSL)",
-    libraryType: "boringssl",
-    protocol: "tls",
-    hookFn: (m) => m ? httpengine_execute_modern : httpengine_execute,
-    resolution: "symbol"
-  },
-  {
-    pattern: /libjavacrypto\.so/,
-    library: "Conscrypt (libjavacrypto)",
-    libraryType: "boringssl",
-    protocol: "tls",
-    hookFn: (m) => m ? boring_execute_modern : boring_execute,
-    resolution: "symbol"
-  },
-  {
-    pattern: /libconscrypt_gmscore_jni\.so/,
-    library: "Conscrypt",
-    libraryType: "boringssl",
-    protocol: "tls",
-    hookFn: (m) => m ? conscrypt_execute_modern : conscrypt_native_execute,
-    resolution: "symbol"
-  },
-  {
-    pattern: /libconscrypt_jni\.so/,
-    library: "Conscrypt",
-    libraryType: "boringssl",
-    protocol: "tls",
-    hookFn: (m) => m ? conscrypt_execute_modern : conscrypt_native_execute,
-    resolution: "symbol"
-  },
-  // --- Hidden-symbol / statically-linked (offset-based) ---
-  {
-    // Android System WebView (Chromium): statically-linked BoringSSL, fully
-    // stripped — no .dynsym/.symtab SSL_* and Chromium installs no keylog
-    // callback, so neither the callback tier nor enumerateSymbols can reach
-    // it, and --pairip-safe forbids the Memory.scan tier. We OFFSET-hook
-    // bssl::ssl_log_secret (called unconditionally during the handshake) and
-    // read (ssl, label, secret) from its ARGS in onEnter — independent of
-    // whether a keylog callback is set. This captures the Battle.net login
-    // WebView TLS (UniWebView -> System WebView). libraryType "boringssl"
-    // routes through installBoringSSLKeylogChain; the offset is consumed by
-    // resolveSslLogSecretSymbol's lookupViaOffset strategy. Supply via
-    //   --offsets '{"libwebviewchromium.so":{"ssl_log_secret":{"address":"0x...","absolute":false}}}'
-    // (WebView 149.0.7827.91 arm64: ssl_log_secret @ 0x5adbb60). The module
-    // loads lazily when the login page renders; the spawn watcher catches it.
-    pattern: /.*libwebviewchromium\.so/,
-    library: "Android WebView (Chromium BoringSSL)",
-    libraryType: "boringssl",
-    protocol: "tls",
-    hookFn: (m) => m ? boring_execute_modern : boring_execute,
-    resolution: "offset",
-    offsetKey: "libwebviewchromium.so"
-  },
-  {
-    // Unity engine: statically-linked MbedTLS 3.x (UnityTLS), export-keys
-    // compiled out + no exported symbols. Key extraction OFFSET-hooks
-    // ssl_compute_master and scrapes the master secret (TLS1.2 CLIENT_RANDOM).
-    // Supply the function offset via --offsets keyed "libunity.so".
-    pattern: /.*libunity\.so/,
-    library: "Unity (MbedTLS/UnityTLS)",
-    libraryType: "mbedtls",
-    protocol: "tls",
-    hookFn: (m) => m ? unity_mbedtls_execute_modern : unity_mbedtls_execute,
-    resolution: "offset",
-    offsetKey: "libunity.so"
-  }
-];
-function matchPairipSafeLib(moduleName) {
-  return PAIRIP_SAFE_LIBS.find((l) => l.pattern.test(moduleName));
-}
-function buildPairipSafeRegistrations(platform, use_modern2) {
-  return PAIRIP_SAFE_LIBS.map((l) => ({
-    platform,
-    pattern: l.pattern,
-    hookFn: l.hookFn(use_modern2),
-    library: l.library,
-    libraryType: l.libraryType,
-    protocol: l.protocol
-  }));
-}
-
 // agent/tls/platforms/android/pattern_android.ts
 init_node_globals();
 
@@ -14129,7 +14497,7 @@ init_node_globals();
 // agent/legacy/tls/libs/rustls.ts
 init_node_globals();
 init_shared_structures();
-var RusTLS = class {
+var RusTLS = class _RusTLS {
   moduleName;
   socket_library;
   passed_library_method_mapping;
@@ -14173,11 +14541,11 @@ var RusTLS = class {
         }
         try {
           this.library_method_mapping[`*${moduleName}*`] = [
-            "*rustls_connection_write_tls*",
-            "*rustls_connection_read_tls*",
-            "*rustls_client_config_builder_new*",
-            "*rustls_client_config_builder_new_custom*",
-            "*rustls_client_config_builder_set_key_log*"
+            "rustls_connection_write_tls",
+            "rustls_connection_read_tls",
+            "rustls_client_config_builder_new",
+            "rustls_client_config_builder_new_custom",
+            "rustls_client_config_builder_set_key_log"
           ];
         } catch (e) {
         }
@@ -14278,12 +14646,12 @@ var RusTLS = class {
    */
   dumpKeysFromPRF(client_random_ptr, key) {
     const KEY_LENGTH = 32;
-    const MASTER_SECRET_LEN = 48;
+    const MASTER_SECRET_LEN2 = 48;
     const labelStr = "CLIENT_RANDOM";
     let client_random = "";
     let secret_key = "";
     if (!key.isNull()) {
-      const keyData = key.readByteArray(MASTER_SECRET_LEN);
+      const keyData = key.readByteArray(MASTER_SECRET_LEN2);
       if (keyData) {
         secret_key = toHexString(keyData);
       }
@@ -14347,10 +14715,347 @@ var RusTLS = class {
     if (!keylog_enabled)
       return;
   }
+  /**
+   * Symbolized rustls-ffi: inject RusTLS.keyLogCB into every client config builder and
+   * shadow any callback the application installs itself. Shared by the Linux and Android
+   * legacy hookers. Returns whether at least one hook was attached.
+   *  - rustls_client_config_builder_new() returns the builder;
+   *  - rustls_client_config_builder_new_custom() returns a rustls_result and writes the
+   *    builder through its out-parameter (see legacyRustlsBuilderOutArg).
+   */
+  install_tls_keys_callback_hook() {
+    const lib = this.addresses[this.module_name] || {};
+    const setKeyLogAddr = lib["rustls_client_config_builder_set_key_log"];
+    if (!isUsableAddress(setKeyLogAddr)) {
+      devlog("[rustls] set_key_log unresolved; cannot install builder hooks");
+      return false;
+    }
+    _RusTLS.rustls_client_config_set_key_log = new NativeFunction(setKeyLogAddr, "uint32", ["pointer", "pointer", "pointer"]);
+    attachBuilderNewHook(lib["rustls_client_config_builder_new"]);
+    attachBuilderNewCustomHook(lib["rustls_client_config_builder_new_custom"]);
+    attachUserKeylogShadow(setKeyLogAddr);
+    log(`[*] ${this.module_name}: keylog hooks installed via rustls_client_config_builder_set_key_log`);
+    return true;
+  }
 };
+function isLegacyRustlsOk(status) {
+  return status === 7e3 || status === 0;
+}
+function legacyRustlsBuilderOutArg(args) {
+  const fourth = args[3];
+  return fourth.compare(ptr("0x10000")) < 0 ? args[4] : fourth;
+}
+function isUsableAddress(address) {
+  return address !== void 0 && address !== null && !address.isNull();
+}
+function injectKeyLogCallback(builder) {
+  if (builder.isNull())
+    return;
+  RusTLS.rustls_client_config_set_key_log(builder, RusTLS.keyLogCB, ptr("0"));
+  devlog("Attached keyLogCB to rustls_client_config_set_key_log");
+}
+function attachBuilderNewHook(address) {
+  if (!isUsableAddress(address))
+    return;
+  Interceptor.attach(address, {
+    onLeave(retval) {
+      injectKeyLogCallback(retval);
+    }
+  });
+}
+function attachBuilderNewCustomHook(address) {
+  if (!isUsableAddress(address))
+    return;
+  Interceptor.attach(address, {
+    onEnter(args) {
+      this.builderOut = legacyRustlsBuilderOutArg(args);
+    },
+    onLeave(retval) {
+      if (!isLegacyRustlsOk(retval.toInt32()) || this.builderOut.isNull())
+        return;
+      try {
+        injectKeyLogCallback(this.builderOut.readPointer());
+      } catch (e) {
+        devlog("[rustls new_custom] " + e);
+      }
+    }
+  });
+}
+function logUserKeylogCallback(args) {
+  const labelPtr = args[0];
+  const labelLen = args[1].toInt32();
+  const clientRandom = args[2];
+  const clientRandomLen = args[3].toInt32();
+  const secret = args[4];
+  const secretLen = args[5].toInt32();
+  if (clientRandom.isNull() || clientRandomLen != 32) {
+    devlog("Invalid client_random: " + clientRandom + " or client_random_length: " + clientRandomLen);
+    return;
+  }
+  if (secret.isNull() || secretLen <= 0 || secretLen > 48) {
+    devlog("Invalid secret or secret_length");
+    return;
+  }
+  const labelStr = labelPtr.readUtf8String(labelLen);
+  const clientRandomHex = toHexString(clientRandom.readByteArray(clientRandomLen));
+  const secretHex = toHexString(secret.readByteArray(secretLen));
+  sendKeylog(`${labelStr} ${clientRandomHex} ${secretHex}`);
+}
+var shadowedUserCallbacks = /* @__PURE__ */ new Set();
+function attachUserKeylogShadow(setKeyLogAddr) {
+  Interceptor.attach(setKeyLogAddr, {
+    onEnter(args) {
+      this.userCallbackAddress = args[1];
+      devlog("User set CB to: " + this.userCallbackAddress);
+    },
+    onLeave(retval) {
+      if (!isLegacyRustlsOk(retval.toInt32()))
+        return;
+      const userCallback = this.userCallbackAddress;
+      if (userCallback.isNull() || userCallback.equals(RusTLS.keyLogCB))
+        return;
+      if (shadowedUserCallbacks.has(userCallback.toString()))
+        return;
+      shadowedUserCallbacks.add(userCallback.toString());
+      try {
+        Interceptor.attach(userCallback, {
+          onEnter(args) {
+            devlog("Hooking user-defined callback for Rustls");
+            try {
+              logUserKeylogCallback(args);
+            } catch (e) {
+              devlog("[rustls user-cb shadow] " + e);
+            }
+          }
+        });
+      } catch (e) {
+        devlog("[rustls user-cb attach] " + e);
+      }
+    }
+  });
+}
+
+// agent/tls/shared/rustls_static_patterns.ts
+init_node_globals();
+init_shared_structures();
+var TLS13_LAYOUT_ARGS_0_3_9 = {
+  hook: "tls13_derive_logged_secret",
+  out: { arg: 0 },
+  secretKind: { arg: 3 },
+  clientRandom: { arg: 9 }
+};
+var VALIDATED_ON = "rustls 0.22.4, 0.23.10, 0.23.46 (ring + aws-lc-rs), rustc 1.99, stripped and unstripped release";
+var VALIDATED_ON_OLDER_RUSTC = "rustls 0.23.46 (ring), rustc 1.85, stripped and unstripped release";
+var RUSTLS_STATIC_PATTERNS = [
+  {
+    // sub sp,sp,#N; stp x29,x30 / x28..x19 saves; add x29,sp,#N; sub w8,w3,#1 (kind-1
+    // indexes the label tables); adrp/add x9; and xK,x8,#0xff; adrp/add x8;
+    // ldrsw x10,[x9,xK,lsl#2]; ldrb w28,[x8,xK]; ldr x8,[x2,#40] (HkdfExpander vtable).
+    // K (x26 / x27) and the load destinations vary between otherwise identical builds.
+    id: "rustls_0.23_derive_logged_secret_arm64",
+    arch: "arm64",
+    validatedOn: VALIDATED_ON,
+    pattern: "FF ?? ?? D1 FD 7B ?? A9 FC 6F ?? A9 FA 67 ?? A9 F8 5F ?? A9 F6 57 ?? A9 F4 4F ?? A9 FD ?? ?? 91 68 04 00 51 ?9 ?? ?? ?0 29 ?? ?? 91 ?? 1D 40 92 ?8 ?? ?? ?0 08 ?? ?? 91 ?? 79 B? B8 ?? 69 7? 38 48 14 40 F9",
+    layout: TLS13_LAYOUT_ARGS_0_3_9
+  },
+  {
+    // Body: ldp q1,q2,[x5] (randoms); movi v3.2d,#0 (master_secret = [0; 48]);
+    // mov x19,x8 (indirect result); ldr wN,[x4] (ems_seed discriminant); then
+    // mov/stp q1,q2 or add. The saves before it differ (x28+fp / fp only / x29,x30,x23).
+    id: "rustls_0.23_from_key_exchange_arm64",
+    arch: "arm64",
+    validatedOn: `${VALIDATED_ON}; ${VALIDATED_ON_OLDER_RUSTC}`,
+    pattern: "A1 08 40 AD 03 E4 00 6F F3 03 08 AA 8? 00 40 B9",
+    entryBacktrack: 8,
+    layout: { hook: "tls12_from_key_exchange", out: { reg: "x8" } }
+  },
+  {
+    // push rbp,r15..r12,rbx; sub rsp,N; mov r12,r9; mov [rsp+N],r8; mov rbp,rdx;
+    // mov [rsp+N],rsi; mov rbx,rdi (out); dec cl (kind-1); movzx r14d,cl
+    id: "rustls_0.23_derive_logged_secret_x64",
+    arch: "x64",
+    validatedOn: VALIDATED_ON,
+    pattern: "55 41 57 41 56 41 55 41 54 53 48 81 EC ?? ?? 00 00 4D 89 CC 4C 89 44 24 ?? 48 89 D5 48 89 74 24 ?? 48 89 FB FE C9 44 0F B6 F1",
+    layout: TLS13_LAYOUT_ARGS_0_3_9
+  },
+  {
+    // push rbp,r15..r12,rbx; sub rsp,N; mov rax,r8; mov r11,rcx; mov r14,rdx;
+    // mov r15,rsi; mov rbx,rdi (out); mov rcx,[rsp+N] (suite); mov rdx,[rsp+N]
+    // (randoms); xorps xmm0,xmm0 (master_secret = [0; 48])
+    id: "rustls_0.23_from_key_exchange_x64",
+    arch: "x64",
+    validatedOn: VALIDATED_ON,
+    pattern: "55 41 57 41 56 41 55 41 54 53 48 81 EC ?? ?? 00 00 4C 89 C0 49 89 CB 49 89 D6 49 89 F7 48 89 FB 48 8B 8C 24 ?? ?? 00 00 48 8B 94 24 ?? ?? 00 00 0F 57 C0",
+    layout: { hook: "tls12_from_key_exchange", out: { arg: 0 } }
+  },
+  // Older rustc (1.85-era LLVM) codegen of the same two functions; same argument layout.
+  // The existing Android librustls built-in patterns are this generation.
+  {
+    // no frame-pointer setup; mov wK,w3 (kind); adrp/add; and x9,xK,#0xff; adrp/add;
+    // ldr x28,[x8,x9,lsl#3] (label table); ldr x8,[x2,#40]
+    id: "rustls_0.23_derive_logged_secret_arm64_rustc185",
+    arch: "arm64",
+    validatedOn: VALIDATED_ON_OLDER_RUSTC,
+    pattern: "FF ?? ?? D1 FD 7B ?? A9 FC 6F ?? A9 FA 67 ?? A9 F8 5F ?? A9 F6 57 ?? A9 F4 4F ?? A9 ?? 03 03 2A ?8 ?? ?? ?0 08 ?? ?? 91 ?9 1? 40 92 ?? ?? ?? ?0 ?? ?? ?? 91 ?? 79 69 F8 48 14 40 F9",
+    layout: TLS13_LAYOUT_ARGS_0_3_9
+  },
+  {
+    // ...; mov r13,r9; mov [rsp+N],r8; mov [rsp+N],rcx; mov r14,rdx; mov r12,rsi;
+    // mov rbx,rdi (out); movzx eax,cl (kind); shl eax,3
+    id: "rustls_0.23_derive_logged_secret_x64_rustc185",
+    arch: "x64",
+    validatedOn: VALIDATED_ON_OLDER_RUSTC,
+    pattern: "55 41 57 41 56 41 55 41 54 53 48 81 EC ?? ?? 00 00 4D 89 CD 4C 89 44 24 ?? 48 89 4C 24 ?? 49 89 D6 49 89 F4 48 89 FB 0F B6 C1 C1 E0 03",
+    layout: TLS13_LAYOUT_ARGS_0_3_9
+  },
+  {
+    // as the x64 entry above, with r15/r12 for rdx/rsi and rdi for the suite load
+    id: "rustls_0.23_from_key_exchange_x64_rustc185",
+    arch: "x64",
+    validatedOn: VALIDATED_ON_OLDER_RUSTC,
+    pattern: "55 41 57 41 56 41 55 41 54 53 48 81 EC ?? ?? 00 00 4C 89 C0 49 89 CB 49 89 D7 49 89 F4 48 89 FB 48 8B BC 24 ?? ?? 00 00 48 8B 94 24 ?? ?? 00 00",
+    layout: { hook: "tls12_from_key_exchange", out: { arg: 0 } }
+  }
+];
+var TLS13_SECRET_LABELS = {
+  1: "CLIENT_EARLY_TRAFFIC_SECRET",
+  2: "CLIENT_HANDSHAKE_TRAFFIC_SECRET",
+  3: "SERVER_HANDSHAKE_TRAFFIC_SECRET",
+  4: "CLIENT_TRAFFIC_SECRET_0",
+  5: "SERVER_TRAFFIC_SECRET_0",
+  6: "EXPORTER_SECRET"
+};
+var OKM_BLOCK_CAPACITY = 64;
+var CLIENT_RANDOM_LEN = 32;
+var MASTER_SECRET_LEN = 48;
+function readEntryValue(value, args, context) {
+  return "arg" in value ? args[value.arg] : context[value.reg];
+}
+function tls13KeylogLine(secretKind, clientRandom, okm) {
+  const label = TLS13_SECRET_LABELS[secretKind];
+  if (!label || !clientRandom || !okm)
+    return null;
+  return `${label} ${toHexString(clientRandom)} ${toHexString(okm)}`;
+}
+function tls12KeylogLineAt(out) {
+  if (out.isNull() || out.readPointer().isNull())
+    return null;
+  const clientRandom = out.add(8).readByteArray(CLIENT_RANDOM_LEN);
+  const masterSecret = out.add(72).readByteArray(MASTER_SECRET_LEN);
+  if (!clientRandom || !masterSecret)
+    return null;
+  return `CLIENT_RANDOM ${toHexString(clientRandom)} ${toHexString(masterSecret)}`;
+}
+function tls13KeylogLineAt(out, secretKind, clientRandomPtr) {
+  if (out.isNull() || clientRandomPtr.isNull())
+    return null;
+  const used = out.add(OKM_BLOCK_CAPACITY).readU64().toNumber();
+  if (used === 0 || used > OKM_BLOCK_CAPACITY)
+    return null;
+  return tls13KeylogLine(secretKind, clientRandomPtr.readByteArray(CLIENT_RANDOM_LEN), out.readByteArray(used));
+}
+function emit2(line, what) {
+  if (line === null) {
+    devlog(`[rustls static] ${what}: nothing to log`);
+    return;
+  }
+  sendKeylog(line);
+}
+function attachTls13(address, layout) {
+  Interceptor.attach(address, {
+    onEnter(args) {
+      this.out = readEntryValue(layout.out, args, this.context);
+      this.secretKind = readEntryValue(layout.secretKind, args, this.context).toUInt32() & 255;
+      this.clientRandom = readEntryValue(layout.clientRandom, args, this.context);
+    },
+    onLeave() {
+      try {
+        emit2(tls13KeylogLineAt(this.out, this.secretKind, this.clientRandom), "derive_logged_secret");
+      } catch (e) {
+        devlog_error(`[rustls static] derive_logged_secret: ${e}`);
+      }
+    }
+  });
+}
+function attachTls12(address, layout) {
+  Interceptor.attach(address, {
+    onEnter(args) {
+      this.out = readEntryValue(layout.out, args, this.context);
+    },
+    onLeave() {
+      try {
+        emit2(tls12KeylogLineAt(this.out), "from_key_exchange");
+      } catch (e) {
+        devlog_error(`[rustls static] from_key_exchange: ${e}`);
+      }
+    }
+  });
+}
+function scanExecutable(module, pattern) {
+  const hits = [];
+  for (const range of module.enumerateRanges("r-x")) {
+    try {
+      for (const match of Memory.scanSync(range.base, range.size, pattern))
+        hits.push(match.address);
+    } catch (e) {
+      devlog_error(`[rustls static] scan of ${range.base} failed: ${e}`);
+    }
+  }
+  return hits;
+}
+function isArm64SubSpImmediate(word) {
+  return (word & 4286579711) >>> 0 === 3506439167;
+}
+function arm64EntryBefore(match, maxInstructions) {
+  for (let i = 1; i <= maxInstructions; i++) {
+    const candidate = match.sub(4 * i);
+    if (isArm64SubSpImmediate(candidate.readU32()))
+      return candidate;
+  }
+  return null;
+}
+function hookAddressFor(entry, match) {
+  return entry.entryBacktrack ? arm64EntryBefore(match, entry.entryBacktrack) : match;
+}
+function installRustlsStaticPatternHooks(module, patterns2 = RUSTLS_STATIC_PATTERNS) {
+  const result = { tls13: false, tls12: false };
+  if (!module)
+    return result;
+  const arch = normalizeArchKey(Process.arch);
+  for (const entry of patterns2.filter((p) => p.arch === arch)) {
+    const isTls13 = entry.layout.hook === "tls13_derive_logged_secret";
+    if (isTls13 ? result.tls13 : result.tls12)
+      continue;
+    const hits = scanExecutable(module, entry.pattern);
+    if (hits.length !== 1) {
+      devlog(`[rustls static] ${entry.id}: ${hits.length} matches in ${module.name}; not hooking`);
+      continue;
+    }
+    let target = null;
+    try {
+      target = hookAddressFor(entry, hits[0]);
+      if (target === null) {
+        devlog(`[rustls static] ${entry.id}: no function entry before ${hits[0]}; not hooking`);
+        continue;
+      }
+      if (entry.layout.hook === "tls13_derive_logged_secret")
+        attachTls13(target, entry.layout);
+      else
+        attachTls12(target, entry.layout);
+    } catch (e) {
+      devlog_error(`[rustls static] attach ${entry.id} @ ${target ?? hits[0]}: ${e}`);
+      continue;
+    }
+    if (isTls13)
+      result.tls13 = true;
+    else
+      result.tls12 = true;
+    log(`[*] ${module.name}: keylog hooks installed via pattern (${entry.id} @ ${target})`);
+  }
+  return result;
+}
 
 // agent/legacy/tls/platforms/android/rustls_android.ts
-init_shared_structures();
 var Rustls_Android = class extends RusTLS {
   moduleName;
   socket_library;
@@ -14438,8 +15143,12 @@ var Rustls_Android = class extends RusTLS {
     const hooker = new PatternBasedHooking2(rusTLSModule);
     const isEx = this.module_name.includes("_ex");
     const isX64 = Process.arch === "x64";
-    this.install_key_extraction_hook_tls13(hooker, isEx, isX64);
-    if (!isPatternReplaced() || !hasUsablePatternsFor(patterns, this.module_name, isEx ? "librustls_ex.so" : "librustls.so", "Dump-Keys")) {
+    const jsonModuleName = isEx ? "librustls_ex.so" : "librustls.so";
+    const usesJsonPatterns = isPatternReplaced() && hasUsablePatternsFor(patterns, this.module_name, jsonModuleName, "Dump-Keys");
+    const shared = usesJsonPatterns ? { tls13: false, tls12: false } : installRustlsStaticPatternHooks(rusTLSModule);
+    if (!shared.tls13)
+      this.install_key_extraction_hook_tls13(hooker, isEx, isX64);
+    if (!shared.tls12 && !usesJsonPatterns) {
       this.install_key_extraction_hook_tls12(hooker, isEx, isX64);
     }
   }
@@ -14546,73 +15255,16 @@ var Rustls_Android = class extends RusTLS {
     this.install_plaintext_write_hook();
     this.install_tls_keys_callback_hook();
   }
-  // Extract the configBuilder from call to rustls_client_config_builder_new / _custom and set keyLogCB
+  // Extract the configBuilder from call to rustls_client_config_builder_new / _custom and set keyLogCB.
+  // Shared, fixed implementation in the legacy RusTLS base class (new_custom writes the
+  // builder through its out-parameter; its return value is a rustls_result status).
   install_tls_keys_callback_hook() {
-    RusTLS.rustls_client_config_set_key_log = new NativeFunction(this.addresses[this.moduleName]["rustls_client_config_builder_set_key_log"], "uint32", ["pointer", "pointer", "pointer"]);
-    Interceptor.attach(this.addresses[this.moduleName]["rustls_client_config_builder_new"], {
-      onLeave: function(retval) {
-        if (retval.isNull()) {
-          devlog("Error: retval is null");
-          return;
-        }
-        RusTLS.rustls_client_config_set_key_log(retval, RusTLS.keyLogCB, ptr("0"));
-        devlog("Attached keyLogCB to rustls_client_config_set_key_log");
-      }
-    });
-    Interceptor.attach(this.addresses[this.moduleName]["rustls_client_config_builder_new_custom"], {
-      onLeave: function(retval) {
-        if (retval.isNull()) {
-          devlog("Error: retval is null");
-          return;
-        }
-        RusTLS.rustls_client_config_set_key_log(retval, RusTLS.keyLogCB, ptr("0"));
-        devlog("Attached keyLogCB to rustls_client_config_set_key_log");
-      }
-    });
-    Interceptor.attach(this.addresses[this.moduleName]["rustls_client_config_builder_set_key_log"], {
-      onEnter: function(args) {
-        var userCallbackAddress = args[1];
-        devlog("User set CB to: " + userCallbackAddress);
-        this.userCallbackAddress = userCallbackAddress;
-      },
-      onLeave: function(retval) {
-        if (retval != 7e3) {
-          return;
-        } else {
-          Interceptor.attach(this.userCallbackAddress, {
-            onEnter(args) {
-              devlog("Hooking user-defined callback for Rustls");
-              var labelPtr = args[0];
-              var label_len = args[1].toInt32();
-              var client_random = args[2];
-              var client_random_len = args[3].toInt32();
-              var secret = args[4];
-              var secret_len = args[5].toInt32();
-              if (client_random.isNull() || client_random_len != 32) {
-                devlog("Invalid client_random: " + client_random + " or client_random_lenght: " + client_random_len);
-                return;
-              }
-              if (secret.isNull() || secret_len <= 0 || secret_len > 48) {
-                devlog("Invalid secret or secret_length");
-                return;
-              }
-              var clientRandomStr = client_random.readByteArray(client_random_len);
-              var secretStr = secret.readByteArray(secret_len);
-              var labelStr = labelPtr.readUtf8String(label_len);
-              var clientRandomHex = toHexString(clientRandomStr);
-              var secretHex = toHexString(secretStr);
-              sendKeylog(`${labelStr} ${clientRandomHex} ${secretHex}`);
-              return 1;
-            }
-          });
-        }
-      }
-    });
+    return super.install_tls_keys_callback_hook();
   }
 };
 function rustls_execute(moduleName, is_base_hook) {
   var rusTLS = new Rustls_Android(moduleName, socket_library, is_base_hook);
-  if (hasMoreThanFiveExports(moduleName)) {
+  if (hasMoreThanFiveExports2(moduleName)) {
     devlog("Trying to hook RusTLS using symbols...");
     rusTLS.execute_hooks();
   } else {
@@ -14755,7 +15407,7 @@ function rustlsFdDecoder(_conn, _fns) {
 function rustlsSessionIdDecoder(_conn, _fns) {
   return "";
 }
-function attachUserKeylogShadow(addr) {
+function attachUserKeylogShadow2(addr) {
   Interceptor.attach(addr, {
     onEnter: function(args) {
       this.userCallback = args[1];
@@ -14796,6 +15448,61 @@ function attachUserKeylogShadow(addr) {
     }
   });
 }
+function isRustlsOk(status) {
+  return status === 7e3 || status === 0;
+}
+function rustlsBuilderOutArg(args) {
+  const fourth = args[3];
+  return fourth.compare(ptr("0x10000")) < 0 ? args[4] : fourth;
+}
+function installRustlsFfiKeylogHooks(lib, setKeyLogFn, modName) {
+  if (!setKeyLogFn) {
+    devlog("[rustls] set_key_log unresolved; cannot install builder hook");
+    return false;
+  }
+  const injectInto = (builder) => {
+    if (builder.isNull())
+      return;
+    setKeyLogFn(builder, getRustlsKeylogCb(), ptr("0"));
+  };
+  let installed = false;
+  const builderNewAddr = lib["rustls_client_config_builder_new"];
+  if (builderNewAddr && !builderNewAddr.isNull()) {
+    Interceptor.attach(builderNewAddr, {
+      onLeave(retval) {
+        injectInto(retval);
+      }
+    });
+    installed = true;
+  }
+  const customNewAddr = lib["rustls_client_config_builder_new_custom"];
+  if (customNewAddr && !customNewAddr.isNull()) {
+    Interceptor.attach(customNewAddr, {
+      onEnter(args) {
+        this.builderOut = rustlsBuilderOutArg(args);
+      },
+      onLeave(retval) {
+        if (!isRustlsOk(retval.toInt32()) || this.builderOut.isNull())
+          return;
+        try {
+          injectInto(this.builderOut.readPointer());
+        } catch (e) {
+          devlog_error(`[rustls new_custom] ${e}`);
+        }
+      }
+    });
+    installed = true;
+  }
+  const setKeyLogAddr = lib["rustls_client_config_builder_set_key_log"];
+  if (setKeyLogAddr && !setKeyLogAddr.isNull()) {
+    attachUserKeylogShadow2(setKeyLogAddr);
+    installed = true;
+  }
+  if (installed) {
+    log(`[*] ${modName}: keylog hooks installed via rustls_client_config_builder_set_key_log`);
+  }
+  return installed;
+}
 function createRustlsDefinition() {
   return {
     libraryId: "rustls",
@@ -14825,58 +15532,399 @@ function createRustlsDefinition() {
     // would emit garbage. Legacy also marks these "TBD".
     keylog: {
       kind: "custom",
-      install: (addresses, modName, resolvedFns, _enableDefaultFd) => {
-        const lib = addresses[modName] || {};
-        const setKeyLogFn = resolvedFns["rustls_client_config_builder_set_key_log"];
-        if (!setKeyLogFn) {
-          devlog("[rustls] set_key_log unresolved; cannot install builder hook");
-          return false;
-        }
-        let installed = false;
-        const builderNewAddr = lib["rustls_client_config_builder_new"];
-        if (builderNewAddr && !builderNewAddr.isNull()) {
-          Interceptor.attach(builderNewAddr, {
-            onLeave(retval) {
-              if (retval.isNull())
-                return;
-              setKeyLogFn(retval, getRustlsKeylogCb(), ptr("0"));
-            }
-          });
-          installed = true;
-        }
-        const customNewAddr = lib["rustls_client_config_builder_new_custom"];
-        if (customNewAddr && !customNewAddr.isNull()) {
-          Interceptor.attach(customNewAddr, {
-            onLeave(retval) {
-              if (retval.isNull())
-                return;
-              setKeyLogFn(retval, getRustlsKeylogCb(), ptr("0"));
-            }
-          });
-          installed = true;
-        }
-        const setKeyLogAddr = lib["rustls_client_config_builder_set_key_log"];
-        if (setKeyLogAddr && !setKeyLogAddr.isNull()) {
-          attachUserKeylogShadow(setKeyLogAddr);
-          installed = true;
-        }
-        if (installed) {
-          log(`[*] ${modName}: keylog hooks installed via rustls_client_config_builder_set_key_log`);
-        }
-        return installed;
-      }
+      install: (addresses, modName, resolvedFns, _enableDefaultFd) => installRustlsFfiKeylogHooks(addresses[modName] || {}, resolvedFns["rustls_client_config_builder_set_key_log"], modName)
     },
     libraryType: "rustls"
   };
 }
 
-// agent/tls/platforms/android/rustls_android.ts
-function rustls_execute_modern(moduleName, is_base_hook) {
-  if (hasMoreThanFiveExports(moduleName)) {
-    executeFromDefinition(createRustlsDefinition(), moduleName, socket_library, is_base_hook, enable_default_fd);
-  } else {
-    rustls_execute(moduleName, is_base_hook);
+// agent/tls/libs/rustls.ts
+init_node_globals();
+init_shared_structures();
+var RusTLS2 = class {
+  moduleName;
+  socket_library;
+  passed_library_method_mapping;
+  // global variables
+  library_method_mapping = {};
+  addresses;
+  module_name;
+  is_base_hook;
+  static rustls_client_config_builder_new;
+  static rustls_client_config_builder_new_custom;
+  static rustls_client_config_set_key_log;
+  // Callbackfuntion for logging keying material
+  static keyLogCB = new NativeCallback(function(label, client_random, client_random_len, secret, secret_size) {
+    devlog("invoking keyLogCB from rustls");
+    var labelStr;
+    if (label[1].toNumber() == 0) {
+      labelStr = "CLIENT_RANDOM ";
+    } else {
+      labelStr = label[0].readUtf8String(label[1].toNumber());
+    }
+    var clientRandomStr = client_random.readByteArray(client_random_len.toNumber());
+    var secretStr = secret.readByteArray(secret_size.toNumber());
+    var clientRandomHex = toHexString(clientRandomStr);
+    var secretHex = toHexString(secretStr);
+    sendKeylog(`${labelStr} ${clientRandomHex} ${secretHex}`);
+    return 1;
+  }, "void", [["pointer", "size_t"], "pointer", "size_t", "pointer", "size_t"]);
+  constructor(moduleName, socket_library6, is_base_hook, passed_library_method_mapping) {
+    this.moduleName = moduleName;
+    this.socket_library = socket_library6;
+    this.passed_library_method_mapping = passed_library_method_mapping;
+    this.module_name = moduleName;
+    this.is_base_hook = is_base_hook;
+    if (typeof passed_library_method_mapping !== "undefined") {
+      this.library_method_mapping = passed_library_method_mapping;
+    } else {
+      if (checkNumberOfExports(moduleName) > 2) {
+        try {
+          this.library_method_mapping[`*${moduleName}*`] = ["*derive_logged_secret*", "*for_secret*"];
+        } catch (e) {
+        }
+        try {
+          this.library_method_mapping[`*${moduleName}*`] = [
+            "rustls_connection_write_tls",
+            "rustls_connection_read_tls",
+            "rustls_client_config_builder_new",
+            "rustls_client_config_builder_new_custom",
+            "rustls_client_config_builder_set_key_log"
+          ];
+        } catch (e) {
+        }
+      }
+      this.library_method_mapping[`*${socket_library6}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"];
+    }
+    this.addresses = readAddresses(moduleName, this.library_method_mapping);
+    this.module_name = moduleName;
+    resolveOffsets(this.addresses, this.moduleName, socket_library6, "rustls");
   }
+  /*
+  In Rustls the labels are mapped as enums
+  cf. https://github.com/rustls/rustls/blob/5860d10317528e4f162db6e26c74f81575c51403/rustls/src/tls13/key_schedule.rs#L31
+  */
+  enumMapping = {
+    0: "RESUMPTION_PSK_BINDER_KEY",
+    // ResumptionPskBinderKey
+    1: "CLIENT_EARLY_TRAFFIC_SECRET",
+    // ClientEarlyTrafficSecret
+    2: "CLIENT_HANDSHAKE_TRAFFIC_SECRET",
+    // ClientHandshakeTrafficSecret
+    3: "SERVER_HANDSHAKE_TRAFFIC_SECRET",
+    // ServerHandshakeTrafficSecret
+    4: "CLIENT_TRAFFIC_SECRET_0",
+    // ClientApplicationTrafficSecret
+    5: "SERVER_TRAFFIC_SECRET_0",
+    // ServerApplicationTrafficSecret
+    6: "EXPORTER_SECRET",
+    // ExporterMasterSecret
+    7: "RESUMPTION_MASTER_SECRET",
+    // ResumptionMasterSecret
+    8: "DERIVED"
+    // Derived
+  };
+  getEnumString(enumValue) {
+    return this.enumMapping[enumValue] || null;
+  }
+  // Checks if the pointer's C-string starts with "key expansion" - only used for TLS 1.2 traffic
+  isArgKeyExp(ptr2) {
+    let labelStr = "";
+    try {
+      if (!ptr2.isNull()) {
+        const label = ptr2.readCString();
+        labelStr = label;
+        if (labelStr === null) {
+          return false;
+        } else {
+          return labelStr.startsWith("key expansion");
+        }
+      }
+    } catch (error) {
+      devlog("[!] Error reading pointer in isArgKeyExp (RusTLS):" + error.message);
+      return false;
+    }
+    return false;
+  }
+  /**
+   * Hooking hkdf_expand_label() to get secrets from TLS 1.3 traffic.
+   * This is used for the Android Hooks only
+   */
+  /*
+   Hooking hkdf_expand_label to get secrets from TLS 1.3 traffic.
+   This is used for the Android Hooks.
+  */
+  dumpKeysFromDeriveSecrets(client_random_ptr, key, key_len, label_enum) {
+    let KEY_LENGTH = 32;
+    if (key_len > 16) {
+      KEY_LENGTH = key_len;
+    }
+    let labelStr = "";
+    let client_random = "";
+    let secret_key = "";
+    const RANDOM_KEY_LENGTH = 32;
+    labelStr = this.getEnumString(label_enum) || "";
+    if (client_random_ptr != null) {
+      const randomData = client_random_ptr.readByteArray(RANDOM_KEY_LENGTH);
+      if (randomData) {
+        client_random = toHexString(randomData);
+      }
+    } else {
+      client_random = "<identify using PCAP> ";
+    }
+    if (!key.isNull()) {
+      const keyData = key.readByteArray(KEY_LENGTH);
+      if (keyData) {
+        secret_key = toHexString(keyData);
+      }
+    } else {
+      devlog("[Error] Argument 'key' is NULL");
+    }
+    sendKeylog(labelStr + " " + client_random + " " + secret_key);
+    return true;
+  }
+  /**
+   *  Hooking from_key_exchange() to get secrets from TLS 1.2 traffic
+   *  https://github.com/rustls/rustls/blob/293f05e9d1011132a749b8b6e0435f701421fd01/rustls/src/tls12/mod.rs#L102
+   *  This hook is used for both, Linux and Android.
+   */
+  dumpKeysFromPRF(client_random_ptr, key) {
+    const KEY_LENGTH = 32;
+    const MASTER_SECRET_LEN2 = 48;
+    const labelStr = "CLIENT_RANDOM";
+    let client_random = "";
+    let secret_key = "";
+    if (!key.isNull()) {
+      const keyData = key.readByteArray(MASTER_SECRET_LEN2);
+      if (keyData) {
+        secret_key = toHexString(keyData);
+      }
+    } else {
+      devlog("[!] Argument 'key' is NULL");
+    }
+    if (!client_random_ptr.isNull()) {
+      const keyData = client_random_ptr.readByteArray(KEY_LENGTH);
+      if (keyData) {
+        client_random = toHexString(keyData);
+      }
+    } else {
+      devlog("[!] Argument 'client_random_ptr' is NULL");
+    }
+    sendKeylog(labelStr + " " + client_random + " " + secret_key);
+    return true;
+  }
+  /**
+   * On Linux the BoringSecretHunter Identifies a different function (derive_logged_secrets()).
+   * https://github.com/rustls/rustls/blob/bdb303696dea02ecc6b5de3907880e181899d717/rustls/src/tls13/key_schedule.rs#L676
+   * The following extracts the secrets for TLS 1.3.
+   */
+  dumpKeysFromDeriveLogged(client_random_ptr, key, label_enum) {
+    let KEY_LENGTH = key.add(64).readU32();
+    let labelStr = "";
+    let client_random = "";
+    let secret_key = "";
+    const RANDOM_KEY_LENGTH = 32;
+    devlog("Called dumpKeysFromDeriveLogged()");
+    labelStr = this.getEnumString(label_enum) || "";
+    if (client_random_ptr != null) {
+      const randomData = client_random_ptr.readByteArray(RANDOM_KEY_LENGTH);
+      if (randomData) {
+        client_random = toHexString(randomData);
+      }
+    } else {
+      client_random = "<identify using PCAP> ";
+    }
+    if (!key.isNull()) {
+      const keyData = key.readByteArray(KEY_LENGTH);
+      if (keyData) {
+        secret_key = toHexString(keyData);
+      }
+    } else {
+      devlog("[Error] Argument 'key' is NULL");
+    }
+    sendKeylog(labelStr + " " + client_random + " " + secret_key);
+    return true;
+  }
+  hook_tls_12_key_generation_function() {
+  }
+  install_plaintext_read_hook() {
+    if (!pcap_enabled)
+      return;
+  }
+  install_plaintext_write_hook() {
+    if (!pcap_enabled)
+      return;
+  }
+  install_key_extraction_hook() {
+  }
+  /** Symbolized rustls-ffi: inject/shadow the keylog callback (keys only, so gated on -k). */
+  install_tls_keys_callback_hook() {
+    if (!keylog_enabled)
+      return false;
+    const lib = this.addresses[this.module_name] || {};
+    const setKeyLogAddr = lib["rustls_client_config_builder_set_key_log"];
+    const setKeyLogFn = setKeyLogAddr && !setKeyLogAddr.isNull() ? new NativeFunction(setKeyLogAddr, "uint32", ["pointer", "pointer", "pointer"]) : void 0;
+    return installRustlsFfiKeylogHooks(lib, setKeyLogFn, this.module_name);
+  }
+  /** Symbolized rustls-ffi (modern class-based path). */
+  execute_hooks() {
+    this.install_plaintext_read_hook();
+    this.install_plaintext_write_hook();
+    this.install_tls_keys_callback_hook();
+  }
+  /** Stripped build: byte-pattern key extraction (keys only, so gated on -k). */
+  execute_pattern_hooks() {
+    if (!keylog_enabled)
+      return;
+    this.install_key_extraction_hook();
+  }
+};
+function rustls_execute_class_based(rustls, moduleName, isBaseHook, symbolized) {
+  if (symbolized) {
+    devlog("Trying to hook RusTLS using symbols...");
+    rustls.execute_hooks();
+  } else {
+    devlog("Trying to hook RusTLS using patterns...");
+    rustls.execute_pattern_hooks();
+  }
+  if (isBaseHook) {
+    const initAddresses = rustls.addresses[moduleName];
+    if (initAddresses && Object.keys(initAddresses).length > 0) {
+      globalThis.init_addresses[moduleName] = initAddresses;
+    }
+  }
+}
+function dispatchRustlsModern(moduleName, steps) {
+  const runClassBased = () => {
+    try {
+      steps.runClassBased();
+    } catch (e) {
+      devlog_error(`[rustls] class-based executor failed on ${moduleName}: ${e}`);
+    }
+  };
+  if (!steps.symbolized) {
+    runClassBased();
+    return;
+  }
+  const fallBack = (e) => {
+    devlog(`[rustls] modern definition failed on ${moduleName} (${e}); using the class-based RusTLS executor`);
+    runClassBased();
+  };
+  try {
+    steps.runDefinition().catch(fallBack);
+  } catch (e) {
+    fallBack(e);
+  }
+}
+
+// agent/tls/platforms/android/rustls_android.ts
+var TLS13_X64 = {
+  primary: "55 41 57 41 56 41 55 41 54 53 48 81 EC C8 00 00 00 4D 89 CD 4C 89 44 24 10 48 89 4C 24 18 49 89 D6 49 89 F4 48 89 FB 0F B6 C1 C1 E0 03 48 8D",
+  fallback: "55 41 57 41 56 41 55 41 54 53 48 81 EC C8 00 00 00 4D 89 CD 4C 89 44 24 10 48 89 4C"
+};
+var TLS13_X86 = {
+  primary: "55 53 57 56 83 EC 4C E8 00 00 00 00 5B 81 C3 A9 CB 13 00 8B 44 24 60 8B 40 34",
+  fallback: "55 53 57 56 83 EC 4C E8 00 00 00 00 5B 81 C3 A9 CB 13 00 8B 44 24 60"
+};
+var TLS13_ARM = {
+  primary: "2D E9 F0 43 89 B0 04 46 40 6B D0 F8 2C 01 00 28 49 D0",
+  fallback: "2D E9 F0 41 86 B0 04 46 40 6B D0 F8 30 01 00 28 53 D0"
+};
+var RUSTLS_ANDROID_TLS13_PATTERNS = {
+  "x64": TLS13_X64,
+  "x86": TLS13_X86,
+  "arm64": {
+    primary: "FF 83 04 D1 FD 7B 0C A9 FC 6F 0D A9 FA 67 0E A9 F8 5F 0F A9 F6 57 10 A9 F4 4F 11 A9 F6 03 03 2A ?8 0? 00 ?0 08 ?1 ?? 91 C9 1E 40",
+    fallback: "FF 83 04 D1 FD 7B 0C A9 FC 6F 0D A9 FA 67 0E A9 F8 5F 0F A9 F6 57 10 A9 F4 4F 11 A9 F6 03 03 2A ?8 0? 00 ?0 08"
+  },
+  "arm": TLS13_ARM
+};
+var RUSTLS_ANDROID_EX_TLS13_PATTERNS = {
+  "x64": TLS13_X64,
+  "x86": TLS13_X86,
+  "arm64": {
+    primary: "FF 83 04 D1 FD 7B 0C A9 FC 6F 0D A9 FA 67 0E A9 F8 5F 0F A9 F6 57 10 A9 F4 4F 11 A9 F6 03 03 2A 88 0C 00 F0 08 E1 3B 91 C9 1E 40",
+    fallback: "FF 83 04 D1 FD 7B 0C A9 FC 6F 0D A9 FA 67 0E A9 F8 5F 0F A9 F6 57 10 A9 F4 4F 11 A9 F6 03 03 2A 88 0C 00 F0 08 E1"
+  },
+  "arm": TLS13_ARM
+};
+var RUSTLS_ANDROID_TLS12_PATTERNS = {
+  "x64": {
+    primary: "55 41 57 41 56 41 55 41 54 53 48 81 ec 48 01 00 00 4c 89 c0 49 89 cb 49 89 d6 49 89 f7 48 89 fb 48 8b 8c 24 88 01 00 00 48 8b 94 24 80 01 00",
+    fallback: "55 41 57 41 56 41 55 41 54 53 48 81 ec 48 01 00 00 4c 89 c0 49 89 cb 49 89 d6 49 89 f7 48 89 fb 48 8b 8c 24 88 01 00 00 48 8b"
+  },
+  "arm64": {
+    primary: "FF 03 07 D1 FD 7B 19 A9 F6 57 1A A9 F4 4F 1B A9 A1 08 40 AD 03 E4 00 6F F3 03 08 AA 88 00 40 B9 EB 03 03 AA E9 03 02 AA F4 03 01 AA F5 03 00 AA E1 0B 01 AD A0 04 41 AD F6 43 02 91 E3 8F 03 AD E6 0F 00 F9 E0 03 84 3C E1 8F 02 AD",
+    fallback: "FF 03 07 D1 FD 7B 19 A9 F6 57 1A A9 F4 4F 1B A9 A1 08 40 AD 03 E4 00 6F F3 03 08 AA 88 00 40 B9 EB 03 03 AA E9 03 02 AA F4 03 01 AA F5 03 00 AA E1 0B 01 AD A0 04 41 AD F6 43 02 91 E3"
+  },
+  "arm": {
+    primary: "2D E9 F0 4F D1 B0 0A AD 8A 46 05 F1 44 07 81 46 30 21 1C 46 38 46 93 46 FB F0 A8 F9 5C 9E 28 1D 40 22 31 46 FB F0 2D FA 5B 99 DD F8 74 81 CD",
+    fallback: "2D E9 F0 4F D1 B0 0A AD 8A 46 05 F1 44 07 81 46 30 21 1C 46 38 46 93 46 FB F0 A8 F9 5C 9E 28 1D 40 22 31 46 FB F0 2D FA 5B 99"
+  }
+};
+var Rustls_Android_Modern = class extends RusTLS2 {
+  get isEx() {
+    return this.module_name.includes("_ex");
+  }
+  get jsonModuleName() {
+    return this.isEx ? "librustls_ex.so" : "librustls.so";
+  }
+  hasJsonPatterns() {
+    return isPatternReplaced() && hasUsablePatternsFor(patterns, this.module_name, this.jsonModuleName, "Dump-Keys");
+  }
+  install_key_extraction_hook() {
+    const module = Process.findModuleByName(this.module_name);
+    const hooker = new PatternBasedHooking(module);
+    const usesJsonPatterns = this.hasJsonPatterns();
+    const shared = usesJsonPatterns ? { tls13: false, tls12: false } : installRustlsStaticPatternHooks(module);
+    if (!shared.tls13)
+      this.install_tls13_pattern_hook(hooker);
+    if (!shared.tls12 && !usesJsonPatterns)
+      this.install_tls12_pattern_hook(hooker);
+  }
+  hookByPattern(hooker, builtIn, callback, maxArgs) {
+    if (this.hasJsonPatterns()) {
+      hooker.hook_DumpKeys(this.module_name, this.jsonModuleName, patterns, callback, true, maxArgs);
+    } else {
+      hooker.hookModuleByPatternOnReturn(get_CPU_specific_pattern(builtIn), callback, maxArgs);
+    }
+  }
+  install_tls12_pattern_hook(hooker) {
+    const isX64 = Process.arch === "x64";
+    this.hookByPattern(hooker, RUSTLS_ANDROID_TLS12_PATTERNS, (args, retval) => {
+      if (!retval || retval.isNull())
+        return;
+      if (Process.arch === "arm64") {
+        this.dumpKeysFromPRF(args[5], args[5].add(136));
+      } else {
+        this.dumpKeysFromPRF(args[6], retval.add(72));
+      }
+    }, isX64 ? 7 : 8);
+  }
+  install_tls13_pattern_hook(hooker) {
+    const isEx = this.isEx;
+    const dump = (args) => this.dumpKeysFromDeriveSecrets(args[9], args[0], args[5].toInt32(), args[3].toInt32());
+    const builtIn = isEx ? RUSTLS_ANDROID_EX_TLS13_PATTERNS : RUSTLS_ANDROID_TLS13_PATTERNS;
+    this.hookByPattern(hooker, builtIn, (args, retval) => {
+      if (!retval)
+        return;
+      if (isEx) {
+        if (!retval.isNull())
+          dump(args);
+      } else if (retval.isNull() || Process.arch === "x64" || Process.arch === "arm64") {
+        dump(args);
+      }
+    }, Process.arch === "x64" ? 7 : 9);
+  }
+};
+function rustls_execute_modern(moduleName, is_base_hook) {
+  const symbolized = hasMoreThanFiveExports(moduleName);
+  devlog(`[rustls] modern executor on ${moduleName} (symbolized=${symbolized})`);
+  dispatchRustlsModern(moduleName, {
+    symbolized,
+    runDefinition: () => executeFromDefinition(createRustlsDefinition(), moduleName, socket_library, is_base_hook, enable_default_fd),
+    runClassBased: () => rustls_execute_class_based(new Rustls_Android_Modern(moduleName, socket_library, is_base_hook), moduleName, is_base_hook, symbolized)
+  });
 }
 
 // agent/tls/platforms/android/gotls_android.ts
@@ -14884,17 +15932,20 @@ init_node_globals();
 
 // agent/tls/definitions/gotls.ts
 init_node_globals();
-init_shared_structures();
 
 // agent/tls/shared/go_symbol_resolver.ts
 init_node_globals();
 var GO_SYMBOL_WRITE_KEYLOG = "crypto/tls.(*Config).writeKeyLog";
 var GO_SYMBOL_CONN_READ = "crypto/tls.(*Conn).Read";
 var GO_SYMBOL_CONN_WRITE = "crypto/tls.(*Conn).Write";
+var GO_SYMBOL_WRITE_RECORD_LOCKED = "crypto/tls.(*Conn).writeRecordLocked";
+var GO_SYMBOL_MEMMOVE = "runtime.memmove";
 var CANONICAL_SYMBOLS = [
   GO_SYMBOL_WRITE_KEYLOG,
   GO_SYMBOL_CONN_READ,
-  GO_SYMBOL_CONN_WRITE
+  GO_SYMBOL_CONN_WRITE,
+  GO_SYMBOL_WRITE_RECORD_LOCKED,
+  GO_SYMBOL_MEMMOVE
 ];
 function getGoSymbolVariants(symbol) {
   const variants = /* @__PURE__ */ new Set();
@@ -15011,60 +16062,278 @@ function resolveGoSymbols(moduleName) {
   return out;
 }
 
+// agent/tls/shared/go_keylog_hook.ts
+init_node_globals();
+init_shared_structures();
+
 // agent/tls/decoders/gotls_registers.ts
 init_node_globals();
+
+// agent/shared/go_abi.ts
+init_node_globals();
+var GO_INT_ARG_REGISTERS = {
+  x64: ["rax", "rbx", "rcx", "rdi", "rsi", "r8", "r9", "r10", "r11"],
+  arm64: ["x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15"]
+};
+var GO_STACK_ABI = {
+  ia32: { word: 4, entry: 4 },
+  arm: { word: 4, entry: 4 }
+};
+function isGoStackAbi(arch = Process.arch) {
+  return arch in GO_STACK_ABI;
+}
+function goIntArg(context, index, arch = Process.arch) {
+  const registers = GO_INT_ARG_REGISTERS[arch];
+  if (!registers || index < 0 || index >= registers.length)
+    return null;
+  return context[registers[index]] ?? null;
+}
+function goStackArg(context, index, arch = Process.arch) {
+  const layout = GO_STACK_ABI[arch];
+  if (!layout || index < 0)
+    return null;
+  const sp = context.sp;
+  if (!sp)
+    return null;
+  return sp.add(layout.entry + index * layout.word).readPointer();
+}
+function goArg(context, index, arch = Process.arch) {
+  return isGoStackAbi(arch) ? goStackArg(context, index, arch) : goIntArg(context, index, arch);
+}
+var GO_TLS_RECORD_TYPE_APPLICATION_DATA = 23;
+function goWriteRecordArgs(context, arch = Process.arch) {
+  const typ = goArg(context, 1, arch);
+  const data = goArg(context, 2, arch);
+  const length = goArg(context, 3, arch);
+  if (!typ || !data || !length)
+    return null;
+  return { recordType: typ.toUInt32() & 255, data, length: length.toInt32() };
+}
+function goKeyLogArgs(context, arch = Process.arch) {
+  const slots = [1, 2, 3, 4, 6, 7].map((i) => goArg(context, i, arch));
+  if (slots.some((s) => !s))
+    return null;
+  const [label, labelLength, clientRandom, clientRandomLength, secret, secretLength] = slots;
+  return {
+    label,
+    labelLength: labelLength.toInt32(),
+    clientRandom,
+    clientRandomLength: clientRandomLength.toInt32(),
+    secret,
+    secretLength: secretLength.toInt32()
+  };
+}
+function goMemmoveArgs(context, arch = Process.arch) {
+  const to = goIntArg(context, 0, arch);
+  const from = goIntArg(context, 1, arch);
+  const length = goIntArg(context, 2, arch);
+  if (!to || !from || !length)
+    return null;
+  return { to, from, length: length.toInt32() };
+}
+
+// agent/tls/decoders/gotls_registers.ts
 function isPlausibleLen(len) {
   return len > 0 && len < 1024;
 }
-function readPartsX64(ctx) {
-  return {
-    labelPtr: ctx.rbx,
-    labelLen: ctx.rcx.toInt32(),
-    crPtr: ctx.rdi,
-    crLen: ctx.rsi.toInt32(),
-    secretPtr: ctx.r9,
-    secretLen: ctx.r10.toInt32()
-  };
-}
-function readPartsArm64(ctx) {
-  return {
-    labelPtr: ctx.x1,
-    labelLen: ctx.x2.toInt32(),
-    crPtr: ctx.x3,
-    crLen: ctx.x4.toInt32(),
-    secretPtr: ctx.x5,
-    secretLen: ctx.x6.toInt32()
-  };
-}
 function partsAreValid(p) {
-  if (p.labelPtr.isNull() || !isPlausibleLen(p.labelLen))
+  if (p.label.isNull() || !isPlausibleLen(p.labelLength))
     return false;
-  if (p.crPtr.isNull() || !isPlausibleLen(p.crLen))
+  if (p.clientRandom.isNull() || !isPlausibleLen(p.clientRandomLength))
     return false;
-  if (p.secretPtr.isNull() || !isPlausibleLen(p.secretLen))
+  if (p.secret.isNull() || !isPlausibleLen(p.secretLength))
     return false;
   return true;
 }
-function extractKeylogFromRegisters(ctx) {
-  let parts;
-  if (Process.arch === "x64") {
-    parts = readPartsX64(ctx);
-  } else if (Process.arch === "arm64") {
-    parts = readPartsArm64(ctx);
-  } else {
-    return null;
-  }
-  if (!partsAreValid(parts))
+function extractKeylogFromRegisters(ctx, arch = Process.arch) {
+  const parts = goKeyLogArgs(ctx, arch);
+  if (parts === null || !partsAreValid(parts))
     return null;
   try {
-    const labelStr = parts.labelPtr.readUtf8String(parts.labelLen);
+    const labelStr = parts.label.readUtf8String(parts.labelLength);
     if (!labelStr)
       return null;
-    const crHex = toHexString(parts.crPtr.readByteArray(parts.crLen));
-    const secretHex = toHexString(parts.secretPtr.readByteArray(parts.secretLen));
+    const crHex = toHexString(parts.clientRandom.readByteArray(parts.clientRandomLength));
+    const secretHex = toHexString(parts.secret.readByteArray(parts.secretLength));
     return `${labelStr} ${crHex} ${secretHex}`;
   } catch (e) {
     return null;
+  }
+}
+
+// agent/tls/shared/go_keylog_hook.ts
+function goKeyLogOnEnter(_args) {
+  try {
+    const line = extractKeylogFromRegisters(this.context);
+    if (line === null) {
+      devlog_error(`[GoTLS] writeKeyLog: no plausible key material in the Go arguments (${Process.arch})`);
+      return false;
+    }
+    sendKeylog(line);
+    return true;
+  } catch (e) {
+    devlog_error(`[GoTLS] writeKeyLog hook: ${e}`);
+    return false;
+  }
+}
+function installGoKeyLogHook(address) {
+  return attachGoFunctionEntry(address, { onEnter: goKeyLogOnEnter });
+}
+var GO_WRITE_KEYLOG_PATTERNS = {
+  // Go writeKeyLog entry (stack guard: lea r12,[rsp-N]; cmp r12,[r14+0x10]; jbe), then the
+  // spills of RBX/RDI/R9 (label, clientRandom, secret) and the KeyLogWriter nil check.
+  // Validated on stripped linux builds: primary Go 1.21-1.26 (push rbp frame), fallback 1.18/1.20.
+  "x64": {
+    primary: "4C 8D 64 24 ?? 4D 3B 66 10 0F 86 ?? ?? 00 00 55 48 89 E5 48 81 EC ?? ?? 00 00 48 89 9C 24 ?? ?? 00 00 48 89 BC 24 ?? ?? 00 00 4C 89 8C 24 ?? ?? 00 00 48 83 B8 ?? ?? 00 00 00",
+    fallback: "4C 8D 64 24 ?? 4D 3B 66 10 0F 86 ?? ?? 00 00 48 81 EC ?? ?? 00 00 48 89 AC 24 ?? ?? 00 00 48 8D AC 24 ?? ?? 00 00 48 89 9C 24 ?? ?? 00 00 48 89 BC 24 ?? ?? 00 00 4C 89 8C 24 ?? ?? 00 00 48 83 B8 ?? ?? 00 00 00"
+  },
+  // Go writeKeyLog entry (stack guard ldr x16,[x28,#0x10] ... b.ls), the spills of
+  // x1/x3/x6 (label, clientRandom, secret), then ldr x9,[x0,#KeyLogWriter]; cbz x9.
+  // Frame size/offsets wildcarded. Validated on stripped linux builds of Go 1.18-1.26.
+  "arm64": {
+    primary: "90 0B 40 F9 F1 ?3 ?? D1 3F 02 10 EB ?9 ?? ?? 54 FE ?F ?? F8 FD 83 1F F8 FD 23 00 D1 E1 ?? ?? F9 E3 ?? ?? F9 E6 ?? ?? F9 09 ?? 4? F9 ?9 ?? ?? B4",
+    fallback: ""
+  }
+};
+function goPatternHookingAllowed() {
+  if (!isAndroid() || experimental)
+    return true;
+  devlog("[!] Pattern-based hooking for GoTLS may cause instability or crashes. To proceed anyway, rerun friTap with the --experimental flag.");
+  return false;
+}
+function installGoKeylogByPattern(moduleName, archPatterns, options = {}) {
+  if (!goPatternHookingAllowed())
+    return null;
+  const soName = options.soName ?? moduleName;
+  const module = options.module !== void 0 ? options.module : Process.findModuleByName(soName);
+  if (module === null)
+    return null;
+  const hooker = (options.newHooker ?? ((m) => new PatternBasedHooking(m)))(module);
+  if (isPatternReplaced() && hasUsablePatternsFor(patterns, moduleName, soName, "Dump-Keys")) {
+    devlog("Hooking GoTLS functions by patterns from JSON file");
+    hooker.hook_DumpKeys(moduleName, soName, patterns, goKeyLogOnEnter);
+  } else {
+    hooker.hookModuleByPattern(get_CPU_specific_pattern(archPatterns), goKeyLogOnEnter);
+  }
+  return hooker;
+}
+
+// agent/tls/shared/go_plaintext.ts
+init_node_globals();
+init_shared_structures();
+var MAX_READ_SCAN_BYTES = 4096;
+var CALL_MNEMONICS = /* @__PURE__ */ new Set(["bl", "call"]);
+var JUMP_MNEMONICS = /* @__PURE__ */ new Set(["b", "jmp"]);
+function directTarget(instruction) {
+  const operand = instruction.opStr.trim().replace(/^#/, "");
+  return /^0x[0-9a-f]+$/i.test(operand) ? ptr(operand) : null;
+}
+function findGoCallSite(fn, callee, maxBytes = MAX_READ_SCAN_BYTES) {
+  const end = fn.add(maxBytes);
+  const sites = [];
+  let cursor = fn;
+  while (cursor.compare(end) < 0) {
+    let instruction;
+    try {
+      instruction = Instruction.parse(cursor);
+    } catch (e) {
+      break;
+    }
+    const target = directTarget(instruction);
+    if (target !== null && CALL_MNEMONICS.has(instruction.mnemonic) && target.equals(callee))
+      sites.push(cursor);
+    if (target !== null && JUMP_MNEMONICS.has(instruction.mnemonic) && target.equals(fn))
+      break;
+    cursor = instruction.next;
+  }
+  return sites.length === 1 ? sites[0] : null;
+}
+function goPlaintextSupported(arch = Process.arch) {
+  return !isGoStackAbi(arch);
+}
+var modulesWarnedNoPlaintext = /* @__PURE__ */ new Set();
+function warnGoPlaintextUnsupported(moduleName, arch = Process.arch) {
+  if (modulesWarnedNoPlaintext.has(moduleName))
+    return;
+  modulesWarnedNoPlaintext.add(moduleName);
+  log(`[!] ${moduleName}: Go TLS plaintext is not captured on 32-bit Go (${arch}); keys only`);
+}
+function installGoWriteRecordHook(address, buildMessage) {
+  if (!goPlaintextSupported())
+    return;
+  attachGoFunctionEntry(address, {
+    onEnter() {
+      const record = goWriteRecordArgs(this.context);
+      if (record === null || record.recordType !== GO_TLS_RECORD_TYPE_APPLICATION_DATA)
+        return;
+      if (record.length <= 0)
+        return;
+      const message = buildMessage(false);
+      if (message !== null)
+        sendDatalog(message, record.data.readByteArray(record.length));
+    }
+  });
+}
+function installGoConnReadHook(connRead, memmove, buildMessage) {
+  if (!goPlaintextSupported())
+    return false;
+  const site = findGoCallSite(connRead, memmove);
+  if (site === null) {
+    devlog(`[gotls] (*Conn).Read @ ${connRead}: no unique runtime.memmove call; read hook skipped`);
+    return false;
+  }
+  Interceptor.attach(site, {
+    onEnter() {
+      const copy = goMemmoveArgs(this.context);
+      if (copy === null || copy.length <= 0)
+        return;
+      const message = buildMessage(true);
+      if (message !== null)
+        sendDatalog(message, copy.from.readByteArray(copy.length));
+    }
+  });
+  devlog(`[gotls] (*Conn).Read plaintext probe at ${site} (+${site.sub(connRead)})`);
+  return true;
+}
+var GO_READ_LABEL = "Go_Conn_Read";
+var GO_WRITE_LABEL = "Go_Conn_Write";
+function goDefaultFdMessageBuilder(enableDefaultFd) {
+  return (isRead) => {
+    if (!enableDefaultFd)
+      return null;
+    const message = getPortsAndAddresses(-1, isRead, {}, enableDefaultFd);
+    if (message === null)
+      return null;
+    message["ssl_session_id"] = "";
+    message["function"] = isRead ? GO_READ_LABEL : GO_WRITE_LABEL;
+    return message;
+  };
+}
+function installGoPlaintextHooks(moduleName, symbols, enableDefaultFd) {
+  if (!goPlaintextSupported()) {
+    warnGoPlaintextUnsupported(moduleName);
+    return;
+  }
+  const buildMessage = goDefaultFdMessageBuilder(enableDefaultFd);
+  const usable = (p) => !!p && !p.isNull();
+  try {
+    const writeRecord = symbols[GO_SYMBOL_WRITE_RECORD_LOCKED];
+    if (usable(writeRecord))
+      installGoWriteRecordHook(writeRecord, buildMessage);
+    else
+      devlog(`[gotls] ${GO_SYMBOL_WRITE_RECORD_LOCKED} unresolved in ${moduleName}; no write plaintext`);
+  } catch (e) {
+    devlog_error(`[gotls] write hook failed on ${moduleName}: ${e}`);
+  }
+  try {
+    const connRead = symbols[GO_SYMBOL_CONN_READ];
+    const memmove = symbols[GO_SYMBOL_MEMMOVE];
+    if (usable(connRead) && usable(memmove))
+      installGoConnReadHook(connRead, memmove, buildMessage);
+    else
+      devlog(`[gotls] ${GO_SYMBOL_CONN_READ}/${GO_SYMBOL_MEMMOVE} unresolved in ${moduleName}; no read plaintext`);
+  } catch (e) {
+    devlog_error(`[gotls] read hook failed on ${moduleName}: ${e}`);
   }
 }
 
@@ -15078,22 +16347,11 @@ function goSessionIdDecoder(_ctx, _fns) {
 function installGoKeylogHook(addresses, moduleName) {
   const addr = addresses[moduleName]?.[GO_SYMBOL_WRITE_KEYLOG];
   if (!addr || addr.isNull()) {
-    devlog(`[gotls] ${GO_SYMBOL_WRITE_KEYLOG} unresolved in ${moduleName}; skipping keylog hook`);
-    return false;
+    devlog(`[gotls] ${GO_SYMBOL_WRITE_KEYLOG} unresolved in ${moduleName}; trying the byte patterns (stripped binary)`);
+    return installGoKeylogByPattern(moduleName, GO_WRITE_KEYLOG_PATTERNS) !== null;
   }
   try {
-    Interceptor.attach(addr, {
-      onEnter: function(_args) {
-        try {
-          devlog(`invoking writeKeyLog from Go crypto/tls (${moduleName})`);
-          const line = extractKeylogFromRegisters(this.context);
-          if (line !== null)
-            sendKeylog(line);
-        } catch (e) {
-          devlog_error(`[gotls keylog] ${e}`);
-        }
-      }
-    });
+    installGoKeyLogHook(addr);
     log(`[*] ${moduleName}: keylog hooks installed via Go writeKeyLog`);
     return true;
   } catch (e) {
@@ -15103,6 +16361,11 @@ function installGoKeylogHook(addresses, moduleName) {
 }
 function goCustomAddressExtractor(_ctx, isRead, _fns, enableDefaultFd) {
   return getPortsAndAddresses(-1, isRead, {}, enableDefaultFd);
+}
+function installGoPlaintextHooksFromDefinition(addresses, moduleName, _resolvedFns, enableDefaultFd) {
+  if (!pcap_enabled)
+    return;
+  installGoPlaintextHooks(moduleName, addresses[moduleName] || {}, enableDefaultFd);
 }
 function createGoTlsDefinition() {
   return {
@@ -15121,38 +16384,19 @@ function createGoTlsDefinition() {
     fdDecoder: goFdDecoder,
     sessionIdDecoder: goSessionIdDecoder,
     clientRandomDecoder: noOpClientRandomDecoder,
-    readHook: {
-      symbol: GO_SYMBOL_CONN_READ,
-      args: {
-        sslCtxArgIndex: 0,
-        bufferArgIndex: 1,
-        bytesTransferred: "retval"
-      },
-      functionLabel: "Go_Conn_Read"
-    },
-    writeHook: {
-      symbol: GO_SYMBOL_CONN_WRITE,
-      args: {
-        sslCtxArgIndex: 0,
-        bufferArgIndex: 1,
-        lengthArgIndex: 2,
-        bytesTransferred: "arg"
-      },
-      functionLabel: "Go_Conn_Write"
-    },
+    // No readHook/writeHook: the generic executors attach onLeave and read C
+    // args[] — both wrong for Go. See installGoPlaintextHooksFromDefinition (extraHooks).
     keylog: {
       kind: "custom",
       install: (addresses, modName, _resolvedFns, _enableDefaultFd) => installGoKeylogHook(addresses, modName)
     },
+    extraHooks: [{ install: installGoPlaintextHooksFromDefinition }],
     customAddressExtractor: goCustomAddressExtractor,
     libraryType: "gotls"
   };
 }
 
-// agent/legacy/tls/platforms/android/gotls_android.ts
-init_node_globals();
-
-// agent/legacy/tls/libs/gotls.ts
+// agent/tls/libs/gotls.ts
 init_node_globals();
 init_shared_structures();
 var symbol_writeKeyLog = "crypto/tls.(*Config).writeKeyLog";
@@ -15190,6 +16434,7 @@ var GoTLS = class {
     } else {
       this.library_method_mapping[`*${socket_library6}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"];
     }
+    this.library_method_mapping[`*${moduleName}*`] ??= [];
     let found_writeKeyLog = false;
     if (isSymbolAvailable(moduleName, symbol_writeKeyLog)) {
       this.library_method_mapping[`*${moduleName}*`].push(symbol_writeKeyLog);
@@ -15254,24 +16499,19 @@ var GoTLS = class {
   }
   resolve_symbol_with_fallback(symbol) {
     try {
-      let address = Module.getGlobalExportByName(symbol);
+      let address = Module.findGlobalExportByName(symbol);
       if (address)
         return address;
-      try {
-        address = Process.getModuleByName(this.module_name).getExportByName(symbol);
-        if (address)
-          return address;
-      } catch (e) {
-      }
+      const module = Process.findModuleByName(this.module_name);
+      address = module?.findExportByName(symbol) ?? null;
+      if (address)
+        return address;
       const symbolVariants = this.getGoSymbolVariants(symbol);
       for (const variant of symbolVariants) {
-        try {
-          address = Process.getModuleByName(this.module_name).getExportByName(variant);
-          if (address) {
-            devlog(`[GoTLS] Found symbol ${symbol} as ${variant}`);
-            return address;
-          }
-        } catch (e) {
+        address = module?.findExportByName(variant) ?? null;
+        if (address) {
+          devlog(`[GoTLS] Found symbol ${symbol} as ${variant}`);
+          return address;
         }
       }
       try {
@@ -15293,7 +16533,360 @@ var GoTLS = class {
       }
       const symbolBase = symbol.split(".").pop() || symbol;
       for (const exp of exports) {
-        if (exp.name.toLowerCase().includes(symbolBase.toLowerCase())) {
+        if (exp.name.endsWith(`.${symbolBase}`) || exp.name.endsWith(`_${symbolBase}`)) {
+          devlog(`[GoTLS] Found symbol ${symbol} via fuzzy match: ${exp.name}`);
+          return exp.address;
+        }
+      }
+    } catch (err) {
+      devlog(`[GoTLS] Symbol resolution failed for ${symbol}: ${err}`);
+    }
+    devlog(`[GoTLS] Could not resolve symbol: ${symbol}`);
+    return null;
+  }
+  /**
+   *
+   * Hooking writeKeyLog function to extract TLS keys.
+   * Details at source code from https://github.com/golang/go/blob/54c9d776302d53ab1907645cb67fa4a948e1500c/src/crypto/tls/common.go#L1540C10-L1540C16
+   *
+   * @param labelPtr
+   * @param sslStructPtr
+   * @param keyPtr
+   */
+  dumpKeys(labelPtr, labelLen, clientRandomPtr, clientRandomLength, keyPtr, keyLength) {
+    const MAX_KEY_LENGTH = 64;
+    let labelStr = "";
+    let client_random = "";
+    let secret_key = "";
+    if (!labelPtr.isNull()) {
+      labelStr = labelPtr.readCString() ?? "";
+    } else {
+      devlog_error("[GoTLS Error] Argument 'labelPtr' is NULL");
+    }
+    if (!clientRandomPtr.isNull()) {
+      if (clientRandomLength === 0) {
+        clientRandomLength = 32;
+      }
+      const client_random_buffer = clientRandomPtr.readByteArray(clientRandomLength);
+      client_random = get_hex_string_from_byte_array(new Uint8Array(client_random_buffer));
+    } else {
+      devlog_error("[GoTLS Error] Argument 'sslStructPtr' is NULL");
+    }
+    if (!keyPtr.isNull()) {
+      let KEY_LENGTH = keyLength;
+      if (KEY_LENGTH <= 0) {
+        let calculatedKeyLength = 0;
+        while (calculatedKeyLength < MAX_KEY_LENGTH) {
+          const byte = keyPtr.add(calculatedKeyLength).readU8();
+          if (byte === 0) {
+            if (calculatedKeyLength < 20) {
+              calculatedKeyLength++;
+              continue;
+            }
+            break;
+          }
+          calculatedKeyLength++;
+        }
+        if (calculatedKeyLength > 24 && calculatedKeyLength <= 40) {
+          KEY_LENGTH = 32;
+        } else if (calculatedKeyLength >= 46 && calculatedKeyLength <= 49) {
+          KEY_LENGTH = 48;
+        } else {
+          KEY_LENGTH = 32;
+        }
+      }
+      const keyData = keyPtr.readByteArray(KEY_LENGTH);
+      const hexKey = get_hex_string_from_byte_array(keyData);
+      secret_key = hexKey;
+    } else {
+      devlog_error("[GoTLS Error] Argument 'key' is NULL");
+    }
+    sendKeylog(labelStr + " " + client_random + " " + secret_key);
+  }
+  /** The name a module is loaded under when `module_name` is a path ("/x/y/libgojni.so"). */
+  getSoName(modulePath) {
+    const m = modulePath.match(/([^\/\\]+\.so)$/);
+    return m ? m[1] : modulePath;
+  }
+  /**
+   * Keylog hook on crypto/tls.(*Config).writeKeyLog: by symbol when resolved, else (stripped
+   * binary) by the per-arch writeKeyLog entry patterns (go_keylog_hook.ts; the Android
+   * --experimental gate lives there). Nothing is hooked unless keys were requested (-k).
+   * Returns a GoTlsLogger (symbol path), the scanning hooker (pattern path) or undefined.
+   */
+  install_key_extraction_hook(archPatterns = GO_WRITE_KEYLOG_PATTERNS) {
+    if (!keylog_enabled)
+      return void 0;
+    let soName = this.module_name;
+    let goTLSModule = Process.findModuleByName(soName);
+    if (goTLSModule === null) {
+      soName = this.getSoName(this.module_name);
+      goTLSModule = Process.findModuleByName(soName);
+      if (goTLSModule === null) {
+        devlog("[-] GoTLS Error: Unable to find module: " + this.module_name);
+        return void 0;
+      }
+    }
+    const writeKeyLog = this.addresses[this.module_name]?.[symbol_writeKeyLog];
+    if (writeKeyLog === void 0 || writeKeyLog === null) {
+      return installGoKeylogByPattern(this.module_name, archPatterns, { soName, module: goTLSModule });
+    }
+    devlog("[GoTLS] writeKeyLog symbol available");
+    return new GoTlsLogger(goTLSModule, true, this.install_tls_keys_callback_hook());
+  }
+  /**
+   * Last resort when the writeKeyLog pattern scan found nothing: the cgo-linked C BoringSSL
+   * bssl::ssl_log_secret (C ABI), via the shared BoringSSL symbol hook. No Go function is
+   * named "ssl_log". `hooker` is what install_key_extraction_hook returned.
+   */
+  execute_symbol_based_hooking(hooker) {
+    if (!keylog_enabled)
+      return;
+    if (hooker === void 0 || hooker === null) {
+      devlog("[-] Error: Hooker is undefined.");
+      return;
+    }
+    if (!hooker.no_hooking_success)
+      return;
+    installBoringSSLSymbolHook(this.module_name, makeBoringSslDumpKeys(this.module_name));
+  }
+  // Enhanced debug function to list all exports and runtime functions for troubleshooting
+  debug_list_exports() {
+    try {
+      const exports = Process.getModuleByName(this.module_name).enumerateExports();
+      const goExports = exports.filter((exp) => exp.name.includes("crypto") || exp.name.includes("tls") || exp.name.includes("Config") || exp.name.includes("Conn") || exp.name.includes("writeKeyLog") || exp.name.includes("Read") || exp.name.includes("Write"));
+      devlog(`[GoTLS] Found ${goExports.length} potential Go TLS exports in ${this.module_name}:`);
+      for (const exp of goExports.slice(0, 20)) {
+        devlog(`[GoTLS]   ${exp.name} @ ${exp.address}`);
+      }
+      if (goExports.length > 20) {
+        devlog(`[GoTLS]   ... and ${goExports.length - 20} more`);
+      }
+    } catch (err) {
+      devlog(`[GoTLS] Failed to list exports: ${err}`);
+    }
+  }
+  install_tls_keys_callback_hook() {
+    if (!keylog_enabled)
+      return false;
+    installGoKeyLogHook(this.addresses[this.module_name][symbol_writeKeyLog]);
+    return false;
+  }
+  // Enhanced runtime parser hook installation currently not used - needs further testing
+  install_runtime_parser_hooks() {
+    try {
+      const tlsFunctions = this.runtime_parser.getTLSFunctions();
+      devlog(`[GoTLS] Runtime parser found ${tlsFunctions.length} TLS functions to attempt hooking`);
+      if (tlsFunctions.length === 0) {
+        devlog(`[GoTLS] No TLS functions found by runtime parser, trying broader search...`);
+        const targetFunctions = [
+          "crypto_tls.(*Config).writeKeyLog",
+          "crypto_tls.(*Conn).Read",
+          "crypto_tls.(*Conn).Write",
+          "crypto_tls.(*Conn).writeRecordLocked",
+          "writeKeyLog",
+          "Read",
+          "Write",
+          "writeRecordLocked"
+        ];
+        for (const target of targetFunctions) {
+          const found = this.runtime_parser.findFunction(target);
+          if (found) {
+            devlog(`[GoTLS] Found specific target function: ${found.name}`);
+            tlsFunctions.push(found);
+          }
+        }
+      }
+    } catch (err) {
+      devlog_error(`[GoTLS] Failed to install runtime parser hooks: ${err}`);
+    }
+  }
+};
+function gotls_execute_class_based(moduleName, socketLibrary, isBaseHook, archPatterns = GO_WRITE_KEYLOG_PATTERNS) {
+  const gotls = new GoTLS(moduleName, socketLibrary, isBaseHook);
+  try {
+    const hooker = gotls.install_key_extraction_hook(archPatterns);
+    setTimeout(() => {
+      try {
+        gotls.execute_symbol_based_hooking(hooker);
+      } catch (e) {
+        devlog("[-] Error in gotls.execute_symbol_based_hooking: " + e);
+      }
+    }, 1500);
+  } catch (e) {
+    devlog(`gotls_execute_class_based error: ${e}`);
+  }
+  if (isBaseHook) {
+    const initAddresses = gotls.addresses[moduleName];
+    if (initAddresses && Object.keys(initAddresses).length > 0) {
+      globalThis.init_addresses[moduleName] = initAddresses;
+    }
+  }
+  return gotls;
+}
+
+// agent/tls/platforms/android/gotls_android.ts
+var GO_ANDROID_KEYLOG_PATTERNS = {
+  ...GO_WRITE_KEYLOG_PATTERNS,
+  "x86": { primary: "55 53 57 56 83 EC 4C E8 00 00 00 00 5B 81 C3 A9 CB 13 00 8B 44 24 60", fallback: "" },
+  "arm": {
+    primary: "08 10 9A E5 01 00 5D E1 63 00 00 9A 5C E0 2D E5 60 20 9D E5 AC 30 92 E5",
+    fallback: "2D E9 F0 41 86 B0 04 46 40 6B D0 F8 30 01 00 28 53 D0"
+  }
+};
+function gotls_execute_modern(moduleName, is_base_hook) {
+  const fallBack = (e) => {
+    devlog(`[gotls] modern definition failed on ${moduleName} (${e}); using the class-based GoTLS executor`);
+    gotls_execute_class_based(moduleName, socket_library, is_base_hook, GO_ANDROID_KEYLOG_PATTERNS);
+  };
+  try {
+    executeFromDefinition(createGoTlsDefinition(), moduleName, socket_library, is_base_hook, enable_default_fd).catch(fallBack);
+  } catch (e) {
+    fallBack(e);
+  }
+}
+
+// agent/legacy/tls/platforms/android/gotls_android.ts
+init_node_globals();
+
+// agent/legacy/tls/libs/gotls.ts
+init_node_globals();
+init_shared_structures();
+var symbol_writeKeyLog2 = "crypto/tls.(*Config).writeKeyLog";
+var symbol_tlsRead2 = "crypto/tls.(*Conn).Read";
+var symbol_tlsWrite2 = "crypto/tls.(*Conn).Write";
+var GoTlsLogger2 = class {
+  found_writeKeyLog;
+  module;
+  no_hooking_success;
+  constructor(module, found_writeKeyLog, no_hooking_success) {
+    this.found_writeKeyLog = found_writeKeyLog;
+    this.module = module;
+    this.no_hooking_success = no_hooking_success;
+  }
+};
+var GoTLS2 = class {
+  moduleName;
+  socket_library;
+  passed_library_method_mapping;
+  module_name;
+  library_method_mapping = {};
+  addresses = {};
+  is_base_hook;
+  go_version = null;
+  hooked_functions = /* @__PURE__ */ new Set();
+  runtime_parser;
+  constructor(moduleName, socket_library6, is_base_hook, passed_library_method_mapping) {
+    this.moduleName = moduleName;
+    this.socket_library = socket_library6;
+    this.passed_library_method_mapping = passed_library_method_mapping;
+    this.module_name = moduleName;
+    this.is_base_hook = is_base_hook;
+    if (typeof passed_library_method_mapping !== "undefined") {
+      this.library_method_mapping = passed_library_method_mapping;
+    } else {
+      this.library_method_mapping[`*${socket_library6}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"];
+    }
+    this.library_method_mapping[`*${moduleName}*`] ??= [];
+    let found_writeKeyLog = false;
+    if (isSymbolAvailable(moduleName, symbol_writeKeyLog2)) {
+      this.library_method_mapping[`*${moduleName}*`].push(symbol_writeKeyLog2);
+      found_writeKeyLog = true;
+    } else {
+      devlog("[GoTLS] unable to find symbol: " + symbol_writeKeyLog2 + " in module: " + moduleName);
+    }
+    if (isSymbolAvailable(moduleName, symbol_tlsRead2)) {
+      this.library_method_mapping[`*${moduleName}*`].push(symbol_tlsRead2);
+    } else {
+      devlog("[GoTLS] unable to find symbol: " + symbol_tlsRead2 + " in module: " + moduleName);
+    }
+    if (isSymbolAvailable(moduleName, symbol_tlsWrite2)) {
+      this.library_method_mapping[`*${moduleName}*`].push(symbol_tlsWrite2);
+    } else {
+      devlog("[GoTLS] unable to find symbol: " + symbol_tlsWrite2 + " in module: " + moduleName);
+    }
+    this.addresses = readAddresses(moduleName, this.library_method_mapping);
+    if (found_writeKeyLog === false) {
+      let writeKeyLog_Address = this.resolve_symbol_with_fallback(symbol_writeKeyLog2);
+      if (writeKeyLog_Address !== null) {
+        this.library_method_mapping[`*${moduleName}*`].push(symbol_writeKeyLog2);
+        this.addresses[moduleName][symbol_writeKeyLog2] = writeKeyLog_Address;
+        devlog("[GoTLS] found writeKeyLog symbol: " + symbol_writeKeyLog2 + " at address: " + writeKeyLog_Address);
+      } else {
+        devlog("[GoTLS] unable to find writeKeyLog symbol even with alternative symbol resolutions: " + symbol_writeKeyLog2 + " in module: " + moduleName);
+      }
+    }
+  }
+  detect_go_version() {
+    try {
+      const buildInfoSymbol = "runtime.buildVersion";
+      const address = this.resolve_symbol_with_fallback(buildInfoSymbol);
+      if (address) {
+        const versionStr = address.readCString();
+        if (versionStr) {
+          const match = versionStr.match(/go(\d+)\.(\d+)(?:\.(\d+))?/);
+          if (match) {
+            return {
+              major: parseInt(match[1]),
+              minor: parseInt(match[2]),
+              patch: parseInt(match[3] || "0")
+            };
+          }
+        }
+      }
+    } catch (err) {
+      devlog(`[GoTLS] Failed to detect Go version: ${err}`);
+    }
+    return null;
+  }
+  // Convert Go symbol name to possible mangled variants
+  getGoSymbolVariants(symbol) {
+    const variants = [symbol];
+    const mangled1 = symbol.replace(/\//g, "_").replace(/\(\*([^)]+)\)/g, "_ptr_$1").replace(/\./g, ".");
+    variants.push(mangled1);
+    const mangled2 = symbol.replace(/\//g, "_").replace(/\(\*([^)]+)\)/g, "_ptr_$1").replace(/\./g, "_");
+    variants.push(mangled2);
+    const mangled3 = symbol.replace(/crypto\_tls/g, "crypto_tls").replace(/\(\*Conn\)/g, "_ptr_Conn").replace(/\(\*Config\)/g, "_ptr_Config").replace(/\./g, "_");
+    variants.push(mangled3);
+    return [...new Set(variants)];
+  }
+  resolve_symbol_with_fallback(symbol) {
+    try {
+      let address = Module.findGlobalExportByName(symbol);
+      if (address)
+        return address;
+      const module = Process.findModuleByName(this.module_name);
+      address = module?.findExportByName(symbol) ?? null;
+      if (address)
+        return address;
+      const symbolVariants = this.getGoSymbolVariants(symbol);
+      for (const variant of symbolVariants) {
+        address = module?.findExportByName(variant) ?? null;
+        if (address) {
+          devlog(`[GoTLS] Found symbol ${symbol} as ${variant}`);
+          return address;
+        }
+      }
+      try {
+        const debugAddr = DebugSymbol.fromName(symbol).address;
+        if (!debugAddr.isNull()) {
+          devlog(`[GoTLS] Found symbol ${symbol} via DebugSymbol`);
+          return debugAddr;
+        }
+      } catch (e) {
+      }
+      const exports = Process.getModuleByName(this.module_name).enumerateExports();
+      for (const variant of symbolVariants) {
+        for (const exp of exports) {
+          if (exp.name === variant || exp.name.includes(variant)) {
+            devlog(`[GoTLS] Found symbol ${symbol} via pattern match: ${exp.name}`);
+            return exp.address;
+          }
+        }
+      }
+      const symbolBase = symbol.split(".").pop() || symbol;
+      for (const exp of exports) {
+        if (exp.name.endsWith(`.${symbolBase}`) || exp.name.endsWith(`_${symbolBase}`)) {
           devlog(`[GoTLS] Found symbol ${symbol} via fuzzy match: ${exp.name}`);
           return exp.address;
         }
@@ -15386,129 +16979,8 @@ var GoTLS = class {
   install_tls_keys_callback_hook() {
     if (!keylog_enabled)
       return false;
-    Interceptor.attach(this.addresses[this.module_name][symbol_writeKeyLog], {
-      onEnter: function(args) {
-        try {
-          let labelStr, client_random, secret_key;
-          if (Process.arch === "x64") {
-            const ctx = this.context;
-            const labelLen = ctx.rcx.toInt32();
-            const randomLen = ctx.rsi.toInt32();
-            const secretLen = ctx.r10.toInt32();
-            if (labelLen > 0 && labelLen < 1024 && !ctx.rbx.isNull()) {
-              labelStr = ctx.rbx.readUtf8String(labelLen);
-            } else {
-              throw new Error(`Invalid label parameters: ptr=${ctx.rbx}, len=${labelLen}`);
-            }
-            if (randomLen > 0 && randomLen < 1024 && !ctx.rdi.isNull()) {
-              client_random = get_hex_string_from_byte_array(ctx.rdi.readByteArray(randomLen));
-            } else {
-              throw new Error(`Invalid client_random parameters: ptr=${ctx.rdi}, len=${randomLen}`);
-            }
-            if (secretLen > 0 && secretLen < 1024 && !ctx.r9.isNull()) {
-              secret_key = get_hex_string_from_byte_array(ctx.r9.readByteArray(secretLen));
-            } else {
-              throw new Error(`Invalid secret parameters: ptr=${ctx.r9}, len=${secretLen}`);
-            }
-          } else if (Process.arch === "arm64") {
-            const ctx = this.context;
-            const labelLen = ctx.x2.toInt32();
-            const randomLen = ctx.x4.toInt32();
-            const secretLen = ctx.x6.toInt32();
-            if (labelLen > 0 && labelLen < 1024 && !ctx.x1.isNull()) {
-              labelStr = ctx.x1.readUtf8String(labelLen);
-            } else {
-              throw new Error(`Invalid label parameters: ptr=${ctx.x1}, len=${labelLen}`);
-            }
-            if (randomLen > 0 && randomLen < 1024 && !ctx.x3.isNull()) {
-              client_random = get_hex_string_from_byte_array(ctx.x3.readByteArray(randomLen));
-            } else {
-              throw new Error(`Invalid client_random parameters: ptr=${ctx.x3}, len=${randomLen}`);
-            }
-            if (secretLen > 0 && secretLen < 1024 && !ctx.x5.isNull()) {
-              secret_key = get_hex_string_from_byte_array(ctx.x5.readByteArray(secretLen));
-            } else {
-              throw new Error(`Invalid secret parameters: ptr=${ctx.x5}, len=${secretLen}`);
-            }
-          } else {
-            devlog_error(`[GoTLS] Architecture ${Process.arch} not supported for register-based key extraction`);
-            devlog_error(`[GoTLS] Supported architectures: x64, arm64`);
-            devlog_error(`[GoTLS] Consider using function argument-based hooking for this platform`);
-            return false;
-          }
-          sendKeylog(`${labelStr} ${client_random} ${secret_key}`);
-          devlog(`[GoTLS] Key extracted on ${Process.arch}: ${labelStr} ${client_random.substring(0, 16)}...`);
-          return true;
-        } catch (e) {
-          devlog_error(`Error in writeKeyLog hook: ${e}`);
-          return false;
-        }
-      }
-    });
+    installGoKeyLogHook(this.addresses[this.module_name][symbol_writeKeyLog2]);
     return false;
-  }
-  install_plaintext_write_hook() {
-    if (!pcap_enabled)
-      return;
-    const symbol = "crypto_tls.(*Conn).writeRecordLocked";
-    try {
-      const address = this.resolve_symbol_with_fallback(symbol);
-      if (!address) {
-        devlog(`[GoTLS] ${symbol} not found, skipping write hook`);
-        return;
-      }
-      Interceptor.attach(address, {
-        onEnter(args) {
-          const recordType = args[2].toInt32();
-          if (recordType !== 23)
-            return;
-          const dataPtr = args[3];
-          const len = args[4].toInt32();
-          if (len > 0) {
-            const buf = dataPtr.readByteArray(len);
-            devlog(`[GoTLS] write plaintext (${len} bytes): ${buf ? buf.toString() : "[unreadable]"}`);
-            sendDatalog({
-              function: "SSL_write"
-            }, buf);
-          }
-        }
-      });
-      this.hooked_functions.add(symbol);
-      log(`[GoTLS] Successfully hooked ${symbol}`);
-    } catch (err) {
-      devlog(`[GoTLS] Failed to hook writeRecordLocked: ${err}`);
-    }
-  }
-  install_plaintext_read_hook() {
-    if (!pcap_enabled)
-      return;
-    const symbol = "crypto_tls.(*Conn).Read";
-    try {
-      const address = this.resolve_symbol_with_fallback(symbol);
-      if (!address) {
-        devlog(`[GoTLS] ${symbol} not found, skipping read hook`);
-        return;
-      }
-      Interceptor.attach(address, {
-        onEnter(args) {
-          this.x0 = args[0];
-        },
-        onLeave(retval) {
-          const len = retval.toInt32();
-          if (len <= 0)
-            return;
-          const buf = this.x0.readByteArray(len);
-          devlog(`[GoTLS] read plaintext (${len} bytes): ${buf ? buf.toString() : "[unreadable]"}`);
-          sendDatalog({
-            function: "SSL_read"
-          }, buf);
-        }
-      });
-      this.hooked_functions.add(symbol);
-      log(`[GoTLS] Successfully hooked ${symbol}`);
-    } catch (err) {
-      devlog(`[GoTLS] Failed to hook Read: ${err}`);
-    }
   }
   // Enhanced runtime parser hook installation currently not used - needs further testing
   install_runtime_parser_hooks() {
@@ -15541,8 +17013,77 @@ var GoTLS = class {
   }
 };
 
+// agent/legacy/tls/libs/gotls_native.ts
+init_node_globals();
+var SYMBOL_FALLBACK_DELAY_MS = 1500;
+function legacyGoPlaintext(moduleName) {
+  if (!pcap_enabled)
+    return;
+  try {
+    installGoPlaintextHooks(moduleName, resolveGoSymbols(moduleName), enable_default_fd);
+  } catch (e) {
+    devlog_error(`[GoTLS] plaintext hooks on ${moduleName} failed: ${e}`);
+  }
+}
+var GoTLS_Native = class extends GoTLS2 {
+  archPatterns;
+  constructor(moduleName, socket_library6, is_base_hook, archPatterns = GO_WRITE_KEYLOG_PATTERNS) {
+    super(moduleName, socket_library6, is_base_hook);
+    this.archPatterns = archPatterns;
+  }
+  /**
+   * writeKeyLog by symbol when resolved, else (stripped binary) by the per-arch entry patterns.
+   * Returns a GoTlsLogger (symbol path), the scanning hooker (pattern path) or undefined.
+   */
+  install_key_extraction_hook() {
+    if (!keylog_enabled)
+      return void 0;
+    const goModule = Process.findModuleByName(this.module_name);
+    if (goModule === null) {
+      devlog("[-] GoTLS Error: Unable to find module: " + this.module_name);
+      return void 0;
+    }
+    const writeKeyLog = this.addresses[this.module_name]?.[symbol_writeKeyLog2];
+    if (writeKeyLog === void 0 || writeKeyLog === null) {
+      return installGoKeylogByPattern(this.module_name, this.archPatterns, { module: goModule });
+    }
+    devlog("[GoTLS] writeKeyLog symbol available");
+    return new GoTlsLogger2(goModule, true, this.install_tls_keys_callback_hook());
+  }
+  /** Last resort when the pattern scan found nothing: cgo-linked C BoringSSL (C ABI). */
+  execute_symbol_based_hooking(hooker) {
+    if (!keylog_enabled || hooker === void 0 || hooker === null)
+      return;
+    if (!hooker.no_hooking_success)
+      return;
+    installBoringSSLSymbolHook(this.module_name, makeBoringSslDumpKeys(this.module_name));
+  }
+};
+function gotls_execute_native(moduleName, socketLibrary, isBaseHook, archPatterns = GO_WRITE_KEYLOG_PATTERNS) {
+  const gotls = new GoTLS_Native(moduleName, socketLibrary, isBaseHook, archPatterns);
+  try {
+    const hooker = gotls.install_key_extraction_hook();
+    setTimeout(() => {
+      try {
+        gotls.execute_symbol_based_hooking(hooker);
+      } catch (e) {
+        devlog("[-] Error in gotls.execute_symbol_based_hooking: " + e);
+      }
+    }, SYMBOL_FALLBACK_DELAY_MS);
+  } catch (e) {
+    devlog(`gotls_execute_native error: ${e}`);
+  }
+  legacyGoPlaintext(moduleName);
+  if (isBaseHook) {
+    const initAddresses = gotls.addresses[moduleName];
+    if (initAddresses && Object.keys(initAddresses).length > 0) {
+      globalThis.init_addresses[moduleName] = initAddresses;
+    }
+  }
+}
+
 // agent/legacy/tls/platforms/android/gotls_android.ts
-var GoTLS_Android = class extends GoTLS {
+var GoTLS_Android = class extends GoTLS2 {
   moduleName;
   socket_library;
   default_pattern;
@@ -15551,23 +17092,13 @@ var GoTLS_Android = class extends GoTLS {
     this.moduleName = moduleName;
     this.socket_library = socket_library6;
     this.default_pattern = {
-      "x64": {
-        primary: "55 41 57 41 56 41 54 53 48 83 EC 30 48 8B 47 68 48 83 B8 20 02 00 00 00 0F 84",
-        // x64 pattern
-        fallback: ""
-        // TODO: additional x64 patterns needed
-      },
+      ...GO_WRITE_KEYLOG_PATTERNS,
+      // x64 + arm64 (go_keylog_hook.ts)
       "x86": {
         primary: "55 53 57 56 83 EC 4C E8 00 00 00 00 5B 81 C3 A9 CB 13 00 8B 44 24 60",
         // x86 pattern
         fallback: ""
         // TODO: additional x86 patterns needed
-      },
-      "arm64": {
-        primary: "90 0B 40 F9 F1 43 00 D1 3F 02 10 EB E9 10 00 54 FE 0F 17 F8 FD 83 1F F8 FD 23 00 D1 E1 53 00 F9 E3 5B 00 F9 E6 67 00 F9 09 94 40 F9 49 0F 00 B4",
-        // ARM64 primary pattern
-        fallback: GENERIC_BORINGSSL_ARM64_FALLBACK
-        // ARM64 fallback pattern
       },
       "arm": {
         primary: "08 10 9A E5 01 00 5D E1 63 00 00 9A 5C E0 2D E5 60 20 9D E5 AC 30 92 E5",
@@ -15582,6 +17113,8 @@ var GoTLS_Android = class extends GoTLS {
     return m ? m[1] : modulePath;
   }
   install_key_extraction_hook() {
+    if (!keylog_enabled)
+      return;
     var instance = this;
     let goTLSModule = Process.findModuleByName(this.module_name);
     let soName = this.module_name;
@@ -15593,71 +17126,31 @@ var GoTLS_Android = class extends GoTLS {
         return;
       }
     }
-    if (this.addresses[this.module_name][symbol_writeKeyLog] === void 0 || this.addresses[this.module_name][symbol_writeKeyLog] === null) {
-      if (experimental === false) {
-        devlog("[!] Pattern-based hooking for GoTLS may cause instability or crashes. To proceed anyway, rerun friTap with the --experimental flag.");
-        return;
-      }
-      const hooker = new PatternBasedHooking2(goTLSModule);
-      if (isPatternReplaced() && hasUsablePatternsFor(patterns, this.module_name, soName, "Dump-Keys")) {
-        devlog("Hooking GoTLS functions by patterns from JSON file");
-        hooker.hook_DumpKeys(this.module_name, soName, patterns, (args) => {
-          devlog("Installed writeKeyLog() hooks using byte patterns.");
-          const labelPtr = args[2];
-          const labelLen = args[3].toInt32();
-          const crPtr = args[4];
-          const crLen = args[5].toInt32();
-          const secretPtr = args[7];
-          const secretLen = args[8].toInt32();
-          this.dumpKeys(labelPtr, labelLen, crPtr, crLen, secretPtr, secretLen);
-        });
-      } else {
-        hooker.hookModuleByPattern(get_CPU_specific_pattern2(this.default_pattern), (args) => {
-          devlog("Installed writeKeyLog() hooks using byte patterns.");
-          const labelPtr = args[2];
-          const labelLen = args[3].toInt32();
-          const crPtr = args[4];
-          const crLen = args[5].toInt32();
-          const secretPtr = args[7];
-          const secretLen = args[8].toInt32();
-          this.dumpKeys(labelPtr, labelLen, crPtr, crLen, secretPtr, secretLen);
-        });
-      }
+    if (this.addresses[this.module_name][symbol_writeKeyLog2] === void 0 || this.addresses[this.module_name][symbol_writeKeyLog2] === null) {
+      const hooker = installGoKeylogByPattern(this.module_name, this.default_pattern, { soName, module: goTLSModule, newHooker: (m) => new PatternBasedHooking2(m) });
       return hooker;
     } else {
       devlog("[GoTLS] writeKeyLog symbol available");
       var result = instance.install_tls_keys_callback_hook();
-      let hooker = new GoTlsLogger(goTLSModule, true, result);
+      let hooker = new GoTlsLogger2(goTLSModule, true, result);
       return hooker;
     }
   }
-  // instead of relying on pattern we check if the target module has a symbol of writeKeyLog()
+  /**
+   * Last resort when the writeKeyLog pattern scan found nothing. No Go function is named
+   * "ssl_log": the only such symbols are C BoringSSL's (bssl::ssl_log_secret, linked into the
+   * module via cgo), so this hooks that C function through the shared BoringSSL symbol hook —
+   * C ABI (ssl, label, secret, len) and client_random from the SSL struct. (It used to take
+   * the first symbol containing "ssl_log" and read Go-style args[2..8] off a C call.)
+   */
   execute_symbol_based_hooking(hooker) {
     if (hooker === void 0 || hooker === null) {
       devlog("[-] Error: Hooker is undefined.");
       return;
     }
-    let dumpKeysFunc = this.dumpKeys.bind(this);
-    if (hooker.no_hooking_success) {
-      let symbols = Process.getModuleByName(this.module_name).enumerateSymbols().filter((exports) => exports.name.toLowerCase().includes("ssl_log"));
-      if (symbols.length > 0) {
-        devlog("Installed writeKeyLog() hooks using sybmols.");
-        try {
-          Interceptor.attach(symbols[0].address, {
-            onEnter: function(args) {
-              const labelPtr = args[2];
-              const labelLen = args[3].toInt32();
-              const crPtr = args[4];
-              const crLen = args[5].toInt32();
-              const secretPtr = args[7];
-              const secretLen = args[8].toInt32();
-              dumpKeysFunc(labelPtr, labelLen, crPtr, crLen, secretPtr, secretLen);
-            }
-          });
-        } catch (e) {
-        }
-      }
-    }
+    if (!hooker.no_hooking_success)
+      return;
+    installBoringSSLSymbolHook(this.module_name, makeBoringSslDumpKeys(this.module_name));
   }
   execute_hooks() {
     let hooker_instance = this.install_key_extraction_hook();
@@ -15678,6 +17171,7 @@ function gotls_execute(moduleName, is_base_hook) {
   } catch (error_msg) {
     devlog(`gotls_execute error: ${error_msg}`);
   }
+  legacyGoPlaintext(moduleName);
   if (is_base_hook) {
     try {
       const init_addresses = gotls.addresses[moduleName];
@@ -15687,15 +17181,6 @@ function gotls_execute(moduleName, is_base_hook) {
     } catch (error_msg) {
       devlog(`gotls_execute base-hook error: ${error_msg}`);
     }
-  }
-}
-
-// agent/tls/platforms/android/gotls_android.ts
-function gotls_execute_modern(moduleName, is_base_hook) {
-  try {
-    executeFromDefinition(createGoTlsDefinition(), moduleName, socket_library, is_base_hook, enable_default_fd);
-  } catch (e) {
-    gotls_execute(moduleName, is_base_hook);
   }
 }
 
@@ -15779,6 +17264,598 @@ function metartc_execute(moduleName, is_base_hook) {
 // agent/ipsec/platforms/linux/ipsec_linux.ts
 init_node_globals();
 init_shared_structures();
+
+// agent/shared/module_exports.ts
+init_node_globals();
+var exportTables = /* @__PURE__ */ new Map();
+function exportTableOf(module) {
+  const key = `${module.path}@${module.base}`;
+  let table = exportTables.get(key);
+  if (table === void 0) {
+    table = /* @__PURE__ */ new Map();
+    try {
+      for (const exp of module.enumerateExports())
+        table.set(exp.name, exp.address);
+    } catch (_) {
+    }
+    exportTables.set(key, table);
+  }
+  return table;
+}
+function findModuleExport2(moduleName, symbol) {
+  const module = Process.findModuleByName?.(moduleName);
+  if (module && typeof module.findExportByName === "function") {
+    return module.findExportByName(symbol) ?? (typeof module.enumerateExports === "function" ? exportTableOf(module).get(symbol) ?? null : null);
+  }
+  const legacyFind = Module.findExportByName;
+  return typeof legacyFind === "function" ? legacyFind(moduleName, symbol) ?? null : null;
+}
+
+// agent/ipsec/libs/strongswan_keys.ts
+init_node_globals();
+init_shared_structures();
+
+// agent/shared/string_anchor_functions.ts
+init_node_globals();
+
+// agent/shared/eh_frame.ts
+init_node_globals();
+var PT_LOAD = 1;
+var PT_GNU_EH_FRAME = 1685382480;
+var DW_EH_PE_udata4 = 3;
+var DW_EH_PE_datarel_sdata4 = 59;
+function searchSortedStarts(count, startAt, addr) {
+  let lo = 0, hi = count - 1, found = -1;
+  while (lo <= hi) {
+    const mid = lo + hi >>> 1;
+    if (startAt(mid) <= addr) {
+      found = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return found;
+}
+var EhFrameFunctionTable = class _EhFrameFunctionTable {
+  hdr;
+  count;
+  constructor(hdr, count) {
+    this.hdr = hdr;
+    this.count = count;
+  }
+  static fromModule(mod) {
+    try {
+      const hdr = ehFrameHdrOf(mod.base);
+      if (hdr === null)
+        return null;
+      const [version, countEnc, tableEnc] = [hdr.readU8(), hdr.add(2).readU8(), hdr.add(3).readU8()];
+      if (version !== 1 || countEnc !== DW_EH_PE_udata4 || tableEnc !== DW_EH_PE_datarel_sdata4)
+        return null;
+      const count = hdr.add(8).readU32();
+      return count > 0 ? new _EhFrameFunctionTable(hdr, count) : null;
+    } catch (_e) {
+      return null;
+    }
+  }
+  entryStart(i) {
+    return this.hdr.add(12 + i * 8).readS32();
+  }
+  /** Bounds of the function containing `addr`, or null when no FDE covers it. */
+  bounds(addr) {
+    try {
+      const rel = addr.sub(this.hdr).toInt32();
+      const i = searchSortedStarts(this.count, (k) => this.entryStart(k), rel);
+      if (i < 0)
+        return null;
+      const start = this.hdr.add(this.entryStart(i));
+      const end = this.fdeEnd(i, start);
+      if (end !== null && addr.compare(end) >= 0)
+        return null;
+      return { start, end };
+    } catch (_e) {
+      return null;
+    }
+  }
+  /** FDE: u32 length, s32 CIE pointer, pc_begin (pcrel sdata4), pc_range. */
+  fdeEnd(i, start) {
+    const fde = this.hdr.add(this.hdr.add(12 + i * 8 + 4).readS32());
+    const pcBeginField = fde.add(8);
+    if (fde.readU32() === 4294967295 || !pcBeginField.add(pcBeginField.readS32()).equals(start))
+      return null;
+    return start.add(fde.add(12).readU32());
+  }
+};
+function ehFrameHdrOf(base) {
+  if (base.readU32() !== 1179403647)
+    return null;
+  const phoff = base.add(32).readU64().toNumber();
+  const phentsize = base.add(54).readU16();
+  const phnum = base.add(56).readU16();
+  let ehVaddr = -1, minLoad = Number.MAX_SAFE_INTEGER;
+  for (let i = 0; i < phnum; i++) {
+    const ph = base.add(phoff + i * phentsize);
+    const type = ph.readU32();
+    const vaddr = ph.add(16).readU64().toNumber();
+    if (type === PT_LOAD)
+      minLoad = Math.min(minLoad, vaddr);
+    if (type === PT_GNU_EH_FRAME)
+      ehVaddr = vaddr;
+  }
+  if (ehVaddr < 0 || minLoad === Number.MAX_SAFE_INTEGER)
+    return null;
+  return base.add(ehVaddr - (minLoad - minLoad % 4096));
+}
+var tablesByModule = /* @__PURE__ */ new Map();
+function ehFrameTableFor(mod) {
+  const key = `${mod.name}@${mod.base}+${mod.size}`;
+  if (!tablesByModule.has(key))
+    tablesByModule.set(key, EhFrameFunctionTable.fromModule(mod));
+  return tablesByModule.get(key);
+}
+
+// agent/shared/string_anchor_functions.ts
+var DEFAULT_MAX_ANCHOR_SITES = 64;
+var MAX_LITERAL_OCCURRENCES = 16;
+var LEA_RIP_OVERLAP = 6;
+var NO_FUNCTIONS = { functions: [], unboundedSites: [] };
+function dataRanges2(mod) {
+  return mod.enumerateRanges("r--").filter((r) => !r.protection.includes("x"));
+}
+function codeRanges(mod) {
+  return mod.enumerateRanges("r-x");
+}
+async function findLiteralOccurrences(mod, texts, chunkBytes, yieldFn) {
+  const found = texts.map(() => []);
+  for (const ranges of [dataRanges2(mod), codeRanges(mod)]) {
+    const missing = texts.map((_t, i) => i).filter((i) => found[i].length === 0);
+    if (missing.length === 0)
+      break;
+    const jobs = missing.map((i) => ({
+      pattern: toHexPattern(texts[i] + "\0"),
+      onMatch: (a) => {
+        if (found[i].length < MAX_LITERAL_OCCURRENCES)
+          found[i].push(a);
+      }
+    }));
+    await scanRangesChunked(ranges, jobs, chunkBytes, yieldFn);
+  }
+  return found;
+}
+function anchorTargets(spec, occurrences) {
+  const targets2 = spec.literalSuffix ? occurrences.map((hit) => literalStart(hit)) : occurrences;
+  const unique = /* @__PURE__ */ new Map();
+  for (const t of targets2)
+    unique.set(t.toString(), t);
+  return [...unique.values()];
+}
+async function findRipLeaSitesAsync(mod, targetSets, chunkBytes, yieldFn) {
+  const owner = /* @__PURE__ */ new Map();
+  targetSets.forEach((set, i) => set.forEach((t) => {
+    const a = Number(t.toString());
+    owner.set(a, [...owner.get(a) ?? [], i]);
+  }));
+  const sites = targetSets.map(() => []);
+  if (owner.size === 0)
+    return sites;
+  const targets2 = new Set(owner.keys());
+  for (const range of codeRanges(mod)) {
+    for (let off = 0; off < range.size; off += chunkBytes) {
+      if (_isShuttingDownNow())
+        throw new XrefScanAborted();
+      const at = range.base.add(off);
+      const own = Math.min(chunkBytes, range.size - off);
+      let code = null;
+      try {
+        const bytes = at.readByteArray(Math.min(own + LEA_RIP_OVERLAP, range.size - off));
+        code = bytes ? new Uint8Array(bytes) : null;
+      } catch (_e) {
+        code = null;
+      }
+      if (code !== null) {
+        for (const ref of findRipLeaRefs(code, Number(at.toString()), targets2, own)) {
+          for (const i of owner.get(ref.target) ?? [])
+            sites[i].push(at.add(ref.site - Number(at.toString())));
+        }
+      }
+      await yieldFn();
+    }
+  }
+  return sites;
+}
+async function loadSitesFor(mod, targetSets, maxSites, chunkBytes, yieldFn) {
+  if (Process.arch === "x64")
+    return findRipLeaSitesAsync(mod, targetSets, chunkBytes, yieldFn);
+  if (Process.arch !== "arm64")
+    return targetSets.map(() => []);
+  const flat = targetSets.flat();
+  if (flat.length === 0)
+    return targetSets.map(() => []);
+  const perTarget = await findStringLoadSitesAsync(mod, flat, chunkBytes, yieldFn, maxSites);
+  let k = 0;
+  return targetSets.map((set) => set.flatMap(() => perTarget[k++]));
+}
+function groupSitesByFunction(sites, functions) {
+  const byStart = /* @__PURE__ */ new Map();
+  const unboundedSites = [];
+  const sorted = [...sites].sort((a, b) => a.compare(b)).filter((p, k, all) => k === 0 || !p.equals(all[k - 1]));
+  for (const site of sorted) {
+    const fn = functions.bounds(site);
+    if (fn === null) {
+      unboundedSites.push(site);
+      continue;
+    }
+    const key = fn.start.toString();
+    const entry = byStart.get(key) ?? { start: fn.start, end: fn.end, sites: [] };
+    entry.sites.push(site);
+    byStart.set(key, entry);
+  }
+  const list = [...byStart.values()].sort((a, b) => a.start.compare(b.start));
+  return { functions: list, unboundedSites };
+}
+async function locateFunctionsByAnchors(mod, specs, options = {}) {
+  const functions = options.functions !== void 0 ? options.functions : ehFrameTableFor(mod);
+  if (!functions || specs.length === 0)
+    return specs.map(() => NO_FUNCTIONS);
+  const chunkBytes = options.chunkBytes ?? XREF_SCAN_CHUNK_BYTES;
+  const yieldFn = options.yieldFn ?? yieldToEventLoop;
+  const occurrences = await findLiteralOccurrences(mod, specs.map((s) => s.text), chunkBytes, yieldFn);
+  const targetSets = specs.map((s, i) => anchorTargets(s, occurrences[i]));
+  const maxSites = Math.max(DEFAULT_MAX_ANCHOR_SITES, ...specs.map((s) => s.maxSites ?? 0));
+  const sites = await loadSitesFor(mod, targetSets, maxSites, chunkBytes, yieldFn);
+  return specs.map((s, i) => groupSitesByFunction(sites[i].slice(0, s.maxSites ?? DEFAULT_MAX_ANCHOR_SITES), functions));
+}
+function agreedFunction(perAnchor, excluded = []) {
+  let agreed = null;
+  for (const result of perAnchor) {
+    if (result.functions.length === 0 && result.unboundedSites.length === 0)
+      continue;
+    if (result.functions.length !== 1 || result.unboundedSites.length > 0)
+      return null;
+    const fn = result.functions[0];
+    if (agreed !== null && !agreed.start.equals(fn.start))
+      return null;
+    agreed = agreed ?? fn;
+  }
+  if (agreed === null)
+    return null;
+  const home = agreed.start;
+  return excluded.some((other) => other.functions.some((f) => f.start.equals(home))) ? null : agreed;
+}
+
+// agent/ipsec/libs/strongswan_keys.ts
+var IKE_FUNC_ANCHORS = [
+  { text: "SKEYSEED %B" },
+  { text: "Sk_ei secret %B" },
+  { text: "Sk_er secret %B" },
+  { text: "Sk_ai secret %B" },
+  { text: "Sk_ar secret %B" }
+];
+var ESP_FUNC_ANCHORS = [
+  { text: "adding SAD entry with SPI %.8x and reqid {%u}%s" },
+  { text: "unable to add SAD entry with SPI %.8x%s (%N)" },
+  { text: "allocated SPI not found anymore, try to add SAD entry" }
+];
+var IKE_KEY_LITERALS = [
+  ["Sk_ei secret %B", "sk_ei"],
+  ["Sk_er secret %B", "sk_er"],
+  ["Sk_ai secret %B", "sk_ai"],
+  ["Sk_ar secret %B", "sk_ar"],
+  ["Sk_d secret %B", "sk_d"],
+  ["Sk_pi secret %B", "sk_pi"],
+  ["Sk_pr secret %B", "sk_pr"]
+];
+var TRANSFORM_TYPE = { ENCRYPTION: 1, PRF: 2, INTEGRITY: 3 };
+var PROTO_ESP = 50;
+var PROPOSAL_GET_ALGORITHM_SLOT = 2;
+var OFF_IKE_SPI_I = 96;
+var OFF_IKE_SPI_R = 104;
+var OFF_SAID_SPI = 16;
+var OFF_SAID_PROTO = 20;
+var OFF_ADDSA_ENC_ALG = 40;
+var OFF_ADDSA_ENC_KEY = 48;
+var OFF_ADDSA_INT_ALG = 64;
+var OFF_ADDSA_INT_KEY = 72;
+var CHUNK_LEN_OFF = Process.pointerSize;
+function readChunkHex(ptr2) {
+  try {
+    if (ptr2.isNull())
+      return null;
+    const dataPtr = ptr2.readPointer();
+    const len = ptr2.add(CHUNK_LEN_OFF).readULong().valueOf();
+    if (dataPtr.isNull() || len <= 0 || len > 1024)
+      return null;
+    const bytes = dataPtr.readByteArray(len);
+    return bytes ? toHexString(bytes) : null;
+  } catch (e) {
+    devlog(`[strongSwan] readChunkHex failed: ${e}`);
+    return null;
+  }
+}
+function buildIkeMessage(ctx) {
+  if (!ctx.spi_i || !ctx.spi_r || !ctx.keys["sk_ei"] || !ctx.keys["sk_er"]) {
+    return null;
+  }
+  return {
+    contentType: "ipsec_ike_keys",
+    ike_version: 2,
+    spi_i: ctx.spi_i,
+    spi_r: ctx.spi_r,
+    enc_alg: ctx.enc_alg,
+    enc_key_len_bits: ctx.enc_key_len_bits,
+    int_alg: ctx.int_alg,
+    keys: ctx.keys
+  };
+}
+function buildEspMessage(p) {
+  if (p.proto !== PROTO_ESP || !p.spi || !p.enc_key)
+    return null;
+  return {
+    contentType: "ipsec_esp_keys",
+    spi: p.spi,
+    src: "*",
+    dst: "*",
+    family: p.family,
+    enc_alg: p.enc_alg,
+    int_alg: p.int_alg,
+    enc_key: p.enc_key,
+    int_key: p.int_key
+  };
+}
+var keyLiteralLabel = /* @__PURE__ */ new Map();
+var ikeByThread = /* @__PURE__ */ new Map();
+var installedOnModule = /* @__PURE__ */ new Set();
+function alreadyDone(moduleName, tag) {
+  const key = `${tag}:${moduleName}`;
+  if (installedOnModule.has(key))
+    return true;
+  installedOnModule.add(key);
+  return false;
+}
+var SCAN_OPTS = { chunkBytes: XREF_SCAN_CHUNK_BYTES, yieldFn: yieldToEventLoop };
+function readIkeSpis(id) {
+  const spiHex = (off) => {
+    try {
+      const b = id.add(off).readByteArray(8);
+      return b ? toHexString(b) : "";
+    } catch (_e) {
+      return "";
+    }
+  };
+  return { spi_i: spiHex(OFF_IKE_SPI_I), spi_r: spiHex(OFF_IKE_SPI_R) };
+}
+function readProposalAlg(proposal, type) {
+  try {
+    if (proposal.isNull())
+      return null;
+    const fnPtr = proposal.add(PROPOSAL_GET_ALGORITHM_SLOT * Process.pointerSize).readPointer();
+    if (fnPtr.isNull())
+      return null;
+    const getAlgorithm = new NativeFunction(fnPtr, "bool", ["pointer", "int", "pointer", "pointer"]);
+    const algOut = Memory.alloc(2);
+    const sizeOut = Memory.alloc(2);
+    algOut.writeU16(0);
+    sizeOut.writeU16(0);
+    const ok = getAlgorithm(proposal, type, algOut, sizeOut);
+    if (!ok)
+      return null;
+    return { alg: algOut.readU16(), keyBits: sizeOut.readU16() };
+  } catch (e) {
+    devlog(`[strongSwan] readProposalAlg(${type}) failed: ${e}`);
+    return null;
+  }
+}
+async function installCharonHooks(mod) {
+  const texts = IKE_KEY_LITERALS.map(([text]) => text);
+  const occ = await findLiteralOccurrences(mod, texts, SCAN_OPTS.chunkBytes, SCAN_OPTS.yieldFn);
+  let resolved = 0;
+  occ.forEach((addrs, i) => {
+    if (addrs.length > 0) {
+      for (const a of addrs)
+        keyLiteralLabel.set(a.toString(), IKE_KEY_LITERALS[i][1]);
+      resolved++;
+    }
+  });
+  devlog(`[strongSwan] ${mod.name}: resolved ${resolved}/${texts.length} IKE key-dump literals`);
+  const perAnchor = await locateFunctionsByAnchors(mod, IKE_FUNC_ANCHORS, SCAN_OPTS);
+  const fn = agreedFunction(perAnchor);
+  if (fn === null) {
+    const diag = IKE_FUNC_ANCHORS.map((a, i) => {
+      const r = perAnchor[i];
+      const fns = r.functions.map((f) => "+0x" + f.start.sub(mod.base).toString(16)).join("|") || "-";
+      return `"${a.text}"=>fns[${r.functions.length}]{${fns}} unbound=${r.unboundedSites.length}`;
+    }).join("  ");
+    log(`[-] ${mod.name}: could not locate derive_ike_keys (anchors did not agree; likely a reduced DEBUG_LEVEL build \u2014 IKE key capture unavailable)`);
+    log(`[-] ${mod.name}: derive_ike_keys anchor diagnostic: ${diag}`);
+    return false;
+  }
+  hookDeriveIkeKeys(mod, fn.start);
+  log(`[*] ${mod.name}: hooked derive_ike_keys @ +0x${fn.start.sub(mod.base).toString(16)}`);
+  const ok = hookCharonBusLog(mod);
+  log(`[*] ${mod.name}: charon bus logger hook ${ok ? "installed" : "unavailable"} for IKE key capture`);
+  return true;
+}
+var hookedDispatchers = /* @__PURE__ */ new Set();
+var OFF_DAEMON_BUS = 88;
+var OFF_BUS_LOG_METHOD = 48;
+function hookCharonBusLog(mod) {
+  const charonVar = findModuleExport2(mod.name, "charon");
+  if (charonVar === null || charonVar.isNull()) {
+    devlog(`[strongSwan] ${mod.name}: no exported 'charon' daemon symbol`);
+    return false;
+  }
+  let busLog;
+  try {
+    const daemon = charonVar.readPointer();
+    if (daemon.isNull())
+      return false;
+    const bus = daemon.add(OFF_DAEMON_BUS).readPointer();
+    if (bus.isNull())
+      return false;
+    busLog = bus.add(OFF_BUS_LOG_METHOD).readPointer();
+    if (busLog.isNull())
+      return false;
+  } catch (e) {
+    devlog(`[strongSwan] ${mod.name}: resolving charon->bus->log failed: ${e}`);
+    return false;
+  }
+  if (hookedDispatchers.has(busLog.toString()))
+    return true;
+  try {
+    Interceptor.attach(busLog, {
+      onEnter(args) {
+        try {
+          if (keyLiteralLabel.size === 0)
+            return;
+          const ctx = ikeByThread.get(this.threadId);
+          if (!ctx)
+            return;
+          const label = keyLiteralLabel.get(args[3].toString());
+          if (!label)
+            return;
+          const hex2 = readChunkHex(args[4]);
+          if (hex2)
+            ctx.keys[label] = hex2;
+        } catch (_e) {
+        }
+      }
+    });
+    hookedDispatchers.add(busLog.toString());
+    devlog(`[strongSwan] hooked charon->bus->log @ ${busLog}`);
+    return true;
+  } catch (e) {
+    devlog(`[strongSwan] could not hook charon->bus->log @ ${busLog}: ${e}`);
+    return false;
+  }
+}
+function hookDeriveIkeKeys(mod, fnAddr) {
+  Interceptor.attach(fnAddr, {
+    onEnter(args) {
+      try {
+        const proposal = args[1];
+        const id = Process.arch === "x64" ? args[5] : args[7];
+        const spis = readIkeSpis(id);
+        const enc = readProposalAlg(proposal, TRANSFORM_TYPE.ENCRYPTION);
+        const integ = readProposalAlg(proposal, TRANSFORM_TYPE.INTEGRITY);
+        ikeByThread.set(this.threadId, {
+          spi_i: spis.spi_i,
+          spi_r: spis.spi_r,
+          enc_alg: enc?.alg ?? 0,
+          enc_key_len_bits: enc?.keyBits ?? 0,
+          int_alg: integ?.alg ?? 0,
+          keys: {}
+        });
+      } catch (e) {
+        log(`[strongSwan] derive_ike_keys onEnter error: ${e}`);
+      }
+    },
+    onLeave() {
+      const ctx = ikeByThread.get(this.threadId);
+      ikeByThread.delete(this.threadId);
+      if (!ctx)
+        return;
+      const msg = buildIkeMessage(ctx);
+      if (msg) {
+        sendKeyMaterial(msg);
+        log(`[*] IKE_SA keys extracted (SPIi=${ctx.spi_i} SPIr=${ctx.spi_r}, ${Object.keys(ctx.keys).length} keys)`);
+      } else {
+        devlog(`[strongSwan] derive_ike_keys returned but key set incomplete (have: ${Object.keys(ctx.keys).join(",")})`);
+      }
+    }
+  });
+}
+async function installKernelNetlinkHooks(mod) {
+  const perAnchor = await locateFunctionsByAnchors(mod, ESP_FUNC_ANCHORS, SCAN_OPTS);
+  const fn = agreedFunction(perAnchor);
+  if (fn === null) {
+    log(`[-] ${mod.name}: could not locate add_sa (ESP key extraction unavailable)`);
+    return false;
+  }
+  Interceptor.attach(fn.start, {
+    onEnter(args) {
+      try {
+        const id = args[1];
+        const data = args[2];
+        if (id.isNull() || data.isNull())
+          return;
+        const proto = id.add(OFF_SAID_PROTO).readU8();
+        const spiBytes = id.add(OFF_SAID_SPI).readByteArray(4);
+        const spi = spiBytes ? toHexString(spiBytes) : "";
+        const enc_alg = data.add(OFF_ADDSA_ENC_ALG).readU16();
+        const int_alg = data.add(OFF_ADDSA_INT_ALG).readU16();
+        const enc_key = readChunkHex(data.add(OFF_ADDSA_ENC_KEY)) ?? "";
+        const int_key = readChunkHex(data.add(OFF_ADDSA_INT_KEY)) ?? "";
+        const msg = buildEspMessage({
+          spi,
+          proto,
+          family: "IPv4",
+          enc_alg,
+          int_alg,
+          enc_key,
+          int_key
+        });
+        if (msg) {
+          sendKeyMaterial(msg);
+          log(`[*] ESP SA keys extracted (SPI=${spi}, enc_alg=${enc_alg}, int_alg=${int_alg})`);
+        }
+      } catch (e) {
+        devlog(`[strongSwan] add_sa onEnter error: ${e}`);
+      }
+    }
+  });
+  log(`[*] ${mod.name}: hooked add_sa @ +0x${fn.start.sub(mod.base).toString(16)} for ESP key capture`);
+  return true;
+}
+function matchesStrongswanModule(moduleName) {
+  return /kernel-netlink\.so/.test(moduleName) || /libcharon\.so/.test(moduleName) || /libstrongswan\.so/.test(moduleName);
+}
+function scheduleStrongswanKeyHooks(moduleName) {
+  let present = false;
+  try {
+    present = Process.findModuleByName(moduleName) !== null;
+  } catch (_e) {
+    present = false;
+  }
+  if (!present || !matchesStrongswanModule(moduleName))
+    return false;
+  installStrongswanKeyHooks(moduleName).catch((e) => devlog(`[strongSwan] async key-hook install failed for ${moduleName}: ${e}`));
+  return true;
+}
+async function installStrongswanKeyHooks(moduleName) {
+  let mod;
+  try {
+    mod = Process.findModuleByName(moduleName) ?? Process.getModuleByName(moduleName);
+  } catch (_e) {
+    mod = null;
+  }
+  if (mod === null) {
+    devlog(`[strongSwan] module not found: ${moduleName}`);
+    return false;
+  }
+  try {
+    if (/kernel-netlink\.so/.test(moduleName)) {
+      if (alreadyDone(moduleName, "esp"))
+        return true;
+      return await installKernelNetlinkHooks(mod);
+    }
+    if (/libcharon\.so/.test(moduleName)) {
+      if (alreadyDone(moduleName, "ike"))
+        return true;
+      return await installCharonHooks(mod);
+    }
+    if (/libstrongswan\.so/.test(moduleName)) {
+      if (alreadyDone(moduleName, "dbg"))
+        return true;
+      return true;
+    }
+  } catch (e) {
+    devlog(`[strongSwan] installStrongswanKeyHooks(${moduleName}) threw: ${e}`);
+    return false;
+  }
+  return false;
+}
+
+// agent/ipsec/platforms/linux/ipsec_linux.ts
 function readKeyMaterial(ptr2, label) {
   try {
     if (ptr2.isNull())
@@ -15800,13 +17877,8 @@ function readKeyMaterial(ptr2, label) {
 }
 function ipsec_execute(moduleName, is_base_hook) {
   devlog(`[IPSec] Installing IPSec hooks for: ${moduleName}`);
-  log(`[*] IPSec library found: ${moduleName}`);
-  sendWithProtocol({
-    contentType: "library_detected",
-    library: moduleName,
-    message: `IPSec library detected: ${moduleName}`
-  });
-  const deriveChildSaKeys = Module.findExportByName(moduleName, "ikev2_derive_child_sa_keys");
+  const anchorScheduled = scheduleStrongswanKeyHooks(moduleName);
+  const deriveChildSaKeys = findModuleExport2(moduleName, "ikev2_derive_child_sa_keys");
   if (deriveChildSaKeys) {
     Interceptor.attach(deriveChildSaKeys, {
       onEnter: function(args) {
@@ -15842,7 +17914,7 @@ function ipsec_execute(moduleName, is_base_hook) {
   } else {
     devlog(`[IPSec] ikev2_derive_child_sa_keys not found in ${moduleName}`);
   }
-  const deriveIkeKeys = Module.findExportByName(moduleName, "derive_ike_keys");
+  const deriveIkeKeys = findModuleExport2(moduleName, "derive_ike_keys");
   if (deriveIkeKeys) {
     Interceptor.attach(deriveIkeKeys, {
       onEnter: function(args) {
@@ -15878,6 +17950,7 @@ function ipsec_execute(moduleName, is_base_hook) {
   } else {
     devlog(`[IPSec] derive_ike_keys not found in ${moduleName}`);
   }
+  return anchorScheduled || Boolean(deriveChildSaKeys || deriveIkeKeys);
 }
 
 // agent/ipsec/platforms/android/strongswan_android.ts
@@ -17220,6 +19293,405 @@ function nss_execute_modern2(moduleName, is_base_hook) {
   executeFromDefinition(createNssMacosDefinition(), moduleName, socket_library3, is_base_hook, enable_default_fd);
 }
 
+// agent/legacy/tls/platforms/macos/gnutls_macos.ts
+init_node_globals();
+
+// agent/legacy/tls/platforms/linux/gnutls_linux.ts
+init_node_globals();
+
+// agent/tls/libs/gnutls.ts
+init_node_globals();
+init_shared_structures();
+var GnuTLS2 = class _GnuTLS {
+  moduleName;
+  socket_library;
+  passed_library_method_mapping;
+  // global variables
+  library_method_mapping = {};
+  addresses;
+  module_name;
+  /** gnutls_record_send records buffered by a would-block call (see install_plaintext_write_hook). */
+  static pendingSends = new BufferedSendTracker();
+  static gnutls_transport_get_int;
+  static gnutls_session_get_id;
+  static gnutls_session_get_random;
+  static gnutls_session_set_keylog_function;
+  constructor(moduleName, socket_library6, passed_library_method_mapping) {
+    this.moduleName = moduleName;
+    this.socket_library = socket_library6;
+    this.passed_library_method_mapping = passed_library_method_mapping;
+    if (typeof passed_library_method_mapping !== "undefined") {
+      this.library_method_mapping = passed_library_method_mapping;
+    } else {
+      this.library_method_mapping[`*${moduleName}*`] = ["gnutls_record_recv", "gnutls_record_send", "gnutls_session_set_keylog_function", "gnutls_transport_get_int", "gnutls_session_get_id", "gnutls_init", "gnutls_handshake", "gnutls_session_get_keylog_function", "gnutls_session_get_random"];
+      this.library_method_mapping[`*${socket_library6}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"];
+    }
+    this.addresses = readAddresses(moduleName, this.library_method_mapping);
+    this.module_name = moduleName;
+    resolveOffsets(this.addresses, this.moduleName, socket_library6, "gnutls");
+    resolveWithPipelineAsync(this.addresses, this.moduleName, "gnutls", [
+      "gnutls_record_recv",
+      "gnutls_record_send",
+      "gnutls_session_set_keylog_function",
+      "gnutls_transport_get_int",
+      "gnutls_session_get_id",
+      "gnutls_init",
+      "gnutls_handshake",
+      "gnutls_session_get_random"
+    ]).catch(() => {
+    });
+    _GnuTLS.gnutls_transport_get_int = new NativeFunction(this.addresses[this.moduleName]["gnutls_transport_get_int"], "int", ["pointer"]);
+    _GnuTLS.gnutls_session_get_id = new NativeFunction(this.addresses[this.moduleName]["gnutls_session_get_id"], "int", ["pointer", "pointer", "pointer"]);
+    _GnuTLS.gnutls_session_set_keylog_function = new NativeFunction(this.addresses[this.moduleName]["gnutls_session_set_keylog_function"], "void", ["pointer", "pointer"]);
+    _GnuTLS.gnutls_session_get_random = new NativeFunction(this.addresses[this.moduleName]["gnutls_session_get_random"], "pointer", ["pointer", "pointer", "pointer"]);
+  }
+  // Dynamic pattern-discovery bookkeeping. First time our keylog_callback
+  // fires, an Interceptor.attach on the callback's own address (see
+  // attachDynamicDiscovery below) uses the caller's returnAddress to locate
+  // `_gnutls_call_keylog_func` — no hardcoded byte pattern per gnutls build.
+  //
+  // The address is logged and emitted as a `--patterns` JSON override for
+  // reuse (persist across runs, share between machines running the same
+  // libgnutls). We deliberately do NOT install a second Interceptor at the
+  // discovered address: gnutls always dispatches through our injected
+  // callback for every session it created via gnutls_init, so a direct
+  // hook there would double-emit every key. The pattern remains valuable
+  // for `wine_keylog_pattern_hook.ts` (offline reuse / attach-after-init
+  // scenarios that skipped the gnutls_init hook).
+  static _gnutls_call_keylog_func_addr = null;
+  static _pattern_hook_installed = false;
+  static _discovery_listener = null;
+  // Scratch buffers reused across every keylog_callback firing. Allocated
+  // once at class load (gnutls_session_get_random writes an in/out
+  // gnutls_datum_t: { pointer, uint }). Keeping them static avoids two
+  // Memory.alloc calls per emitted TLS secret.
+  static _cr_datum = Memory.alloc(Process.pointerSize + 4);
+  static _sr_datum = Memory.alloc(Process.pointerSize + 4);
+  // NativeCallback for gnutls_session_set_keylog_function.
+  // Receives (session, label, gnutls_datum_t* secret) — gnutls_datum_t is
+  // { pointer data, uint size }. NativeCallbacks don't get a usable
+  // this.context; attachDynamicDiscovery() wraps this address in an
+  // Interceptor to get real InvocationContext for backtrace.
+  static keylog_callback = new NativeCallback(function(session, label, secret) {
+    const secret_len = secret.add(Process.pointerSize).readUInt();
+    const secretBytes = secret.readPointer().readByteArray(secret_len);
+    const secret_str = secretBytes ? toHexString(secretBytes).toUpperCase() : "";
+    try {
+      _GnuTLS.gnutls_session_get_random(session, _GnuTLS._cr_datum, _GnuTLS._sr_datum);
+    } catch (e) {
+      devlog_error(`[gnutls] session_get_random failed: ${e}`);
+    }
+    const crBytes = _GnuTLS._cr_datum.readPointer().readByteArray(32);
+    const client_random_str = crBytes ? toHexString(crBytes).toUpperCase() : "";
+    sendKeylog(label.readCString() + " " + client_random_str + " " + secret_str);
+    return 0;
+  }, "int", ["pointer", "pointer", "pointer"]);
+  /**
+   * Walk backward from a return address INSIDE `_gnutls_call_keylog_func`
+   * to that function's entry, using architecture-specific prologue
+   * heuristics. Returns null if no plausible prologue is found within a
+   * 512-byte / 128-instruction window.
+   *
+   * AArch64 uses the shared prologue predicate `isFunctionPrologueWord`
+   * from `agent/shared/arm64.ts` — the canonical superset of every
+   * hand-rolled AArch64 prologue matcher across the codebase.
+   */
+  static _findGnutlsFuncStart(retAddr) {
+    const arch = Process.arch;
+    if (arch === "x64" || arch === "ia32")
+      return _GnuTLS._findX86FuncStart(retAddr);
+    if (arch === "arm64")
+      return _GnuTLS._findArm64FuncStart(retAddr);
+    if (arch === "arm")
+      return _GnuTLS._findArmFuncStart(retAddr);
+    devlog(`[gnutls dyn] no prologue heuristic for arch=${arch}`);
+    return null;
+  }
+  /**
+   * Match `endbr64` (Intel CET, 0xF3 0F 1E FA) at addr. Returns true on
+   * clean read + match. Used to prefer the CET landing pad over a later
+   * `push rbp ; mov rsp, rbp` when both appear back-to-back (Ubuntu Noble
+   * libgnutls).
+   */
+  static _isEndbr64(addr) {
+    try {
+      return addr.readU8() === 243 && addr.add(1).readU8() === 15 && addr.add(2).readU8() === 30 && addr.add(3).readU8() === 250;
+    } catch (_e) {
+      return false;
+    }
+  }
+  /**
+   * x86-64 / x86 prologue detection. Byte-granular backward walk because
+   * x86 is variable-length. Handles `endbr64` and the standard
+   * `push rbp ; mov rsp, rbp` (0x55 48 89 E5); if the frame-pointer save
+   * is preceded by `endbr64`, backs up 4 bytes so the captured pattern
+   * matches the on-disk binary byte-for-byte.
+   */
+  static _findX86FuncStart(retAddr) {
+    for (let off = 0; off <= 512; off++) {
+      const probe2 = retAddr.sub(off);
+      if (_GnuTLS._isEndbr64(probe2))
+        return probe2;
+      let b0, b1, b2, b3;
+      try {
+        b0 = probe2.readU8();
+        b1 = probe2.add(1).readU8();
+        b2 = probe2.add(2).readU8();
+        b3 = probe2.add(3).readU8();
+      } catch (_e) {
+        return null;
+      }
+      if (b0 === 85 && b1 === 72 && b2 === 137 && b3 === 229) {
+        const p2 = probe2.sub(4);
+        return _GnuTLS._isEndbr64(p2) ? p2 : probe2;
+      }
+    }
+    return null;
+  }
+  /**
+   * AArch64 prologue detection. 4-byte-aligned backward walk over 128
+   * instructions; delegates to `isFunctionPrologueWord()` in
+   * `agent/shared/arm64.ts`, which is the canonical union of every
+   * prologue encoding used in this codebase (paciasp/pacibsp, bti c|j|jc,
+   * STP x29,x30 with signed offset, STP-pre-index broad form for any
+   * callee-saved pair, SUB sp,sp,#imm).
+   *
+   * ARMv8.3+ pointer-auth codes on the return address are stripped via
+   * Frida's `NativePointer.strip()`. On a runtime without .strip(), a
+   * defensive 48-bit VA mask is applied.
+   */
+  static _findArm64FuncStart(retAddrRaw) {
+    let retAddr;
+    try {
+      retAddr = retAddrRaw.strip ? retAddrRaw.strip() : retAddrRaw;
+    } catch (_e) {
+      try {
+        retAddr = retAddrRaw.and(ptr("0x0000FFFFFFFFFFFF"));
+      } catch (_e2) {
+        retAddr = retAddrRaw;
+      }
+    }
+    retAddr = retAddr.and(ptr("0xFFFFFFFFFFFFFFFC"));
+    for (let step = 0; step <= 128; step++) {
+      const probe2 = retAddr.sub(step * 4);
+      let insn;
+      try {
+        insn = probe2.readU32();
+      } catch (_e) {
+        return null;
+      }
+      if (isFunctionPrologueWord(insn))
+        return probe2;
+    }
+    return null;
+  }
+  /**
+   * AArch32 (ARM/Thumb) prologue detection — best-effort.
+   * Matches `push {..., lr}` in ARM state (opcode E92D...) and
+   * `push.w {..., lr}` in Thumb-2, both checking the lr register-list bit.
+   */
+  static _findArmFuncStart(retAddr) {
+    for (let step = 0; step <= 256; step++) {
+      const probe2 = retAddr.sub(step * 2);
+      let b0, b1, b2, b3;
+      try {
+        b0 = probe2.readU8();
+        b1 = probe2.add(1).readU8();
+        b2 = probe2.add(2).readU8();
+        b3 = probe2.add(3).readU8();
+      } catch (_e) {
+        return null;
+      }
+      if (b2 === 45 && b3 === 233 && (b1 & 64) !== 0)
+        return probe2;
+      if (b0 === 45 && b1 === 233 && (b3 & 64) !== 0)
+        return probe2;
+    }
+    return null;
+  }
+  /**
+   * Install a one-shot Interceptor.attach on the keylog_callback address
+   * to run dynamic pattern discovery on the first firing.
+   *
+   * A bare `NativeCallback` body has no usable `this.context`. Wrapping
+   * the callback address with `Interceptor.attach` gives us a real
+   * InvocationContext with valid `returnAddress` — that address points
+   * INSIDE `_gnutls_call_keylog_func` right after the indirect call to
+   * our callback. Walk backward from there with arch-specific prologue
+   * heuristics to find the function entry, then detach the wrapper so
+   * subsequent callback firings pay zero extra overhead.
+   */
+  static attachDynamicDiscovery() {
+    if (_GnuTLS._pattern_hook_installed)
+      return;
+    _GnuTLS._pattern_hook_installed = true;
+    try {
+      _GnuTLS._discovery_listener = Interceptor.attach(_GnuTLS.keylog_callback, {
+        onEnter() {
+          if (_GnuTLS._gnutls_call_keylog_func_addr !== null)
+            return;
+          const retAddr = this.returnAddress;
+          if (!retAddr)
+            return;
+          try {
+            const funcStart = _GnuTLS._findGnutlsFuncStart(retAddr);
+            _GnuTLS._recordDiscovery(funcStart ?? retAddr, funcStart != null, retAddr);
+            if (_GnuTLS._discovery_listener) {
+              try {
+                _GnuTLS._discovery_listener.detach();
+              } catch (_e) {
+              }
+              _GnuTLS._discovery_listener = null;
+            }
+          } catch (e) {
+            devlog(`[gnutls dyn] discovery onEnter threw: ${e}`);
+          }
+        }
+      });
+    } catch (e) {
+      devlog(`[gnutls dyn] attach(keylog_callback) failed: ${e}`);
+    }
+  }
+  /**
+   * Emit the discovered address, byte pattern and a copy-paste-ready
+   * `--patterns` JSON override. Kept out of the hot Interceptor onEnter
+   * so the callback code path stays simple.
+   */
+  static _recordDiscovery(funcStart, prologueFound, retAddr) {
+    _GnuTLS._gnutls_call_keylog_func_addr = funcStart;
+    if (!prologueFound) {
+      devlog(`[gnutls dyn] returnAddress=${retAddr} \u2014 no prologue in scan window; recording raw address anyway`);
+      return;
+    }
+    const sample = funcStart.readByteArray(32);
+    const hex2 = sample ? toSpacedHexUpper(sample) : "";
+    const archKey = normalizeArchKey(Process.arch);
+    const sigId = archKey === "x64" ? "gnutls_keylog_sysv" : archKey === "arm64" ? "gnutls_keylog_aarch64" : `gnutls_keylog_${archKey}`;
+    log(`[gnutls dyn] resolved _gnutls_call_keylog_func @ ${funcStart}`);
+    log(`[gnutls dyn] version-specific pattern (32 bytes): ${hex2}`);
+    log(`[gnutls dyn] --patterns override:  { "modules": { "gnutls": { "wine": { "${archKey}": { "${sigId}": { "primary": "${hex2}" } } } } } }`);
+    devlog(`[gnutls dyn] callback returnAddress inside func = ${retAddr}, distance from prologue = ${retAddr.sub(funcStart).toString()}`);
+  }
+  /**
+     * Get the session_id of SSL object and return it as a hex string.
+     * @param {!NativePointer} ssl A pointer to an SSL object.
+     * @return {dict} A string representing the session_id of the SSL object's
+     *     SSL_SESSION. For example,
+     *     "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76336".
+     */
+  static getSslSessionId(session) {
+    var len_pointer = Memory.alloc(4);
+    var err = _GnuTLS.gnutls_session_get_id(session, NULL, len_pointer);
+    if (err != 0) {
+      if (enable_default_fd) {
+        log("using dummy SessionID: 59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76337");
+        return "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76337";
+      }
+      return "";
+    }
+    var len = len_pointer.readU32();
+    var p = Memory.alloc(len);
+    err = _GnuTLS.gnutls_session_get_id(session, p, len_pointer);
+    if (err != 0) {
+      if (enable_default_fd) {
+        log("using dummy SessionID: 59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76337");
+        return "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76337";
+      }
+      return "";
+    }
+    var session_id = "";
+    for (var i = 0; i < len; i++) {
+      session_id += ("0" + p.add(i).readU8().toString(16).toUpperCase()).substr(-2);
+    }
+    return session_id;
+  }
+  install_plaintext_read_hook() {
+    if (!pcap_enabled)
+      return;
+    var current_module_name = this.module_name;
+    var lib_addesses = this.addresses;
+    Interceptor.attach(this.addresses[this.moduleName]["gnutls_record_recv"], {
+      onEnter: function(args) {
+        var message = getPortsAndAddresses(_GnuTLS.gnutls_transport_get_int(args[0]), true, lib_addesses[current_module_name], enable_default_fd);
+        message["ssl_session_id"] = _GnuTLS.getSslSessionId(args[0]);
+        message["function"] = "SSL_read";
+        this.message = message;
+        this.buf = args[1];
+      },
+      onLeave: function(retval) {
+        retval |= 0;
+        if (retval <= 0) {
+          return;
+        }
+        sendDatalog(this.message, this.buf.readByteArray(retval));
+      }
+    });
+  }
+  install_plaintext_write_hook() {
+    if (!pcap_enabled)
+      return;
+    var current_module_name = this.module_name;
+    var lib_addesses = this.addresses;
+    attachPlaintextWriteHook(this.addresses[this.moduleName]["gnutls_record_send"], (args) => {
+      var message = getPortsAndAddresses(_GnuTLS.gnutls_transport_get_int(args[0]), false, lib_addesses[current_module_name], enable_default_fd);
+      if (message === null)
+        return null;
+      message["ssl_session_id"] = _GnuTLS.getSslSessionId(args[0]);
+      message["function"] = "SSL_write";
+      return message;
+    }, _GnuTLS.pendingSends);
+  }
+  install_tls_keys_callback_hook() {
+  }
+};
+
+// agent/legacy/tls/platforms/linux/gnutls_linux.ts
+var GnuTLS_Linux = class extends GnuTLS2 {
+  moduleName;
+  socket_library;
+  constructor(moduleName, socket_library6, is_base_hook) {
+    super(moduleName, socket_library6);
+    this.moduleName = moduleName;
+    this.socket_library = socket_library6;
+  }
+  execute_hooks() {
+    this.install_plaintext_read_hook();
+    this.install_plaintext_write_hook();
+    this.install_tls_keys_callback_hook();
+  }
+  install_tls_keys_callback_hook() {
+    const addrs = this.addresses[this.module_name];
+    devlog(`[gnutls] hooks: init @ ${addrs["gnutls_init"]}, set_keylog @ ${addrs["gnutls_session_set_keylog_function"]}, handshake @ ${addrs["gnutls_handshake"]}`);
+    GnuTLS2.attachDynamicDiscovery();
+    Interceptor.attach(addrs["gnutls_init"], {
+      onEnter(args) {
+        this.session = args[0];
+      },
+      onLeave(_retval) {
+        try {
+          GnuTLS2.gnutls_session_set_keylog_function(this.session.readPointer(), GnuTLS2.keylog_callback);
+        } catch (e) {
+          devlog(`[gnutls] set_keylog_function on new session failed: ${e}`);
+        }
+      }
+    });
+  }
+};
+function gnutls_execute2(moduleName, is_base_hook) {
+  executeSSLLibrary(GnuTLS_Linux, moduleName, socket_library2, is_base_hook);
+}
+
+// agent/legacy/tls/platforms/macos/gnutls_macos.ts
+function gnutls_execute3(moduleName, is_base_hook) {
+  executeSSLLibrary(GnuTLS_Linux, moduleName, socket_library3, is_base_hook);
+}
+
+// agent/tls/platforms/macos/gnutls_macos.ts
+init_node_globals();
+function gnutls_execute_modern2(moduleName, is_base_hook) {
+  executeFromDefinition(createGnuTlsDefinition(), moduleName, socket_library3, is_base_hook, enable_default_fd);
+}
+
 // agent/ssh/platforms/linux/ssh_linux.ts
 init_node_globals();
 init_shared_structures();
@@ -17227,61 +19699,363 @@ init_shared_structures();
 // agent/ssh/platforms/linux/ssh_packet_hooks.ts
 init_node_globals();
 init_shared_structures();
-var ptrSize = Process.pointerSize;
-var MAX_SSH_PACKET = 65535;
-var MIN_SSH_PACKET = 6;
-function looksLikeSshPacketSshbuf(sshbufPtr, state2) {
-  if (!state2.sshbufPtrFn || !state2.sshbufLenFn)
-    return false;
+
+// agent/ssh/shared/sshbuf_view.ts
+init_node_globals();
+var SSHBUF_SIZE_MAX = 134217728;
+var SSHBUF_REFS_MAX = 1048576;
+var KEX_COOKIE_LEN = 16;
+var MAX_NAME_LIST_LEN = 4096;
+function readSize(p) {
+  return Process.pointerSize === 8 ? Number(p.readU64()) : p.readU32();
+}
+function readSshbuf(buf) {
   try {
-    if (sshbufPtr.isNull())
-      return false;
-    const len = Number(state2.sshbufLenFn(sshbufPtr));
-    if (len < MIN_SSH_PACKET || len > MAX_SSH_PACKET)
-      return false;
-    const data = state2.sshbufPtrFn(sshbufPtr);
-    if (data.isNull())
-      return false;
-    const packetLength = data.readU8() << 24 | data.add(1).readU8() << 16 | data.add(2).readU8() << 8 | data.add(3).readU8();
-    if (packetLength + 4 !== len)
-      return false;
-    const padLen = data.add(4).readU8();
-    if (padLen < 4 || padLen > 255)
-      return false;
+    if (!buf || buf.isNull())
+      return null;
+    const ps = Process.pointerSize;
+    const d = buf.readPointer();
+    const cd = buf.add(ps).readPointer();
+    const off = readSize(buf.add(2 * ps));
+    const size = readSize(buf.add(3 * ps));
+    const maxSize = readSize(buf.add(4 * ps));
+    const alloc = readSize(buf.add(5 * ps));
+    const readonly = buf.add(6 * ps).readS32();
+    if (cd.isNull())
+      return null;
+    if (!readonly && !d.equals(cd))
+      return null;
+    if (!plausibleRefcount(buf.add(6 * ps + 4)))
+      return null;
+    if (maxSize > SSHBUF_SIZE_MAX || alloc > maxSize || size > alloc || off > size)
+      return null;
+    return { data: cd.add(off), len: size - off, base: cd, off };
+  } catch {
+    return null;
+  }
+}
+function plausibleRefcount(at) {
+  const sane = (v) => v >= 1 && v <= SSHBUF_REFS_MAX;
+  if (sane(at.readU32()))
     return true;
+  const dontFree = at.readS32();
+  return (dontFree === 0 || dontFree === 1) && sane(at.add(4).readU32());
+}
+function readPointerAt(base, offset) {
+  try {
+    if (base.isNull())
+      return null;
+    const p = base.add(offset).readPointer();
+    return p.isNull() ? null : p;
+  } catch {
+    return null;
+  }
+}
+function readShortCString(p, max) {
+  try {
+    if (!p || p.isNull())
+      return null;
+    let out = "";
+    for (let i = 0; i < max; i++) {
+      const c = p.add(i).readU8();
+      if (c === 0)
+        return out;
+      out += String.fromCharCode(c);
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+function readU32BE(p) {
+  return (p.readU8() << 24 | p.add(1).readU8() << 16 | p.add(2).readU8() << 8 | p.add(3).readU8()) >>> 0;
+}
+function isKexinitBody(view) {
+  try {
+    if (!view || view.len < KEX_COOKIE_LEN + 4 + 1)
+      return false;
+    const listLen = readU32BE(view.data.add(KEX_COOKIE_LEN));
+    if (listLen < 1 || listLen > MAX_NAME_LIST_LEN || listLen > view.len - KEX_COOKIE_LEN - 4)
+      return false;
+    const names = view.data.add(KEX_COOKIE_LEN + 4).readByteArray(Math.min(listLen, 64));
+    if (!names)
+      return false;
+    return /^[a-z0-9@.,+_=-]+$/i.test(String.fromCharCode(...new Uint8Array(names)));
   } catch {
     return false;
   }
 }
-function probeBufferOffset(sshPtr, state2, label) {
+function kexinitCookie(buf, toHex) {
+  const view = readSshbuf(buf);
+  if (!isKexinitBody(view))
+    return null;
+  try {
+    const bytes = view.data.readByteArray(KEX_COOKIE_LEN);
+    return bytes ? toHex(bytes) : null;
+  } catch {
+    return null;
+  }
+}
+function sharedSecretBytes(view) {
+  try {
+    if (!view || view.len <= 0)
+      return null;
+    if (view.len > 4 && readU32BE(view.data) === view.len - 4) {
+      return view.data.add(4).readByteArray(view.len - 4);
+    }
+    return view.data.readByteArray(view.len);
+  } catch {
+    return null;
+  }
+}
+var CONNECTION_FD_OFFSET = { in: 0, out: 4 };
+var MAX_PLAUSIBLE_FD = 1 << 20;
+function readConnectionFd(ssh, direction) {
+  try {
+    const state2 = readPointerAt(ssh, 0);
+    if (state2 === null)
+      return -1;
+    const fd = state2.add(CONNECTION_FD_OFFSET[direction]).readS32();
+    return fd >= 0 && fd < MAX_PLAUSIBLE_FD ? fd : -1;
+  } catch {
+    return -1;
+  }
+}
+var SSH_PROBE_BYTES = 128;
+var KEX_PROBE_BYTES = 512;
+function probeKexLayout(ssh) {
+  const ps = Process.pointerSize;
+  for (let kexInSsh = 0; kexInSsh < SSH_PROBE_BYTES; kexInSsh += ps) {
+    const kex = readPointerAt(ssh, kexInSsh);
+    if (!kex)
+      continue;
+    for (let myInKex = 0; myInKex < KEX_PROBE_BYTES; myInKex += ps) {
+      const my = readPointerAt(kex, myInKex);
+      if (!my || !isKexinitBody(readSshbuf(my)))
+        continue;
+      if (readSshbuf(readPointerAt(kex, myInKex + ps)) === null)
+        continue;
+      return { kexInSsh, myInKex };
+    }
+  }
+  return null;
+}
+function frameSshMessage(message) {
+  const PAD = 4;
+  const out = new Uint8Array(4 + 1 + message.length + PAD);
+  const packetLength = 1 + message.length + PAD;
+  out[0] = packetLength >>> 24 & 255;
+  out[1] = packetLength >>> 16 & 255;
+  out[2] = packetLength >>> 8 & 255;
+  out[3] = packetLength & 255;
+  out[4] = PAD;
+  out.set(message, 5);
+  return out.buffer;
+}
+
+// agent/ssh/shared/openssh_functions.ts
+init_node_globals();
+init_record_protocol();
+var OPENSSH_FUNCTION_ANCHORS = {
+  kex_derive_keys: { anchors: ["kex_derive_keys", "already have session ID at kex", "no session ID in rekex"] },
+  kex_send_kexinit: { anchors: ["kex_send_kexinit", "SSH2_MSG_KEXINIT sent"] },
+  kex_input_kexinit: { anchors: ["kex_input_kexinit", "SSH2_MSG_KEXINIT received"] },
+  ssh_set_newkeys: { anchors: ["ssh_set_newkeys", "rekey %s after %llu blocks"] },
+  ssh_packet_read_poll2: {
+    anchors: [
+      "ssh_packet_read_poll2",
+      "receive packet: type %u",
+      "incoming seqnr wraps around",
+      "resetting read seqnr %u"
+    ],
+    notIn: ["ssh_packet_read_poll_seqnr", "Received SSH2_MSG_IGNORE"]
+  },
+  ssh_packet_read_poll_seqnr: { anchors: ["ssh_packet_read_poll_seqnr", "Received SSH2_MSG_IGNORE"] },
+  ssh_packet_send2_wrapped: {
+    anchors: [
+      "ssh_packet_send2_wrapped",
+      "send packet: type %u",
+      "outgoing seqnr wraps around",
+      "resetting send seqnr %u"
+    ],
+    notIn: ["ssh_packet_send2", "enqueue packet: %u", "dequeue packet: %u"]
+  },
+  // openbsd-compat closefrom(): the stock binaries carry their own copy (not libc's).
+  closefrom: { anchors: ["/proc/%ld/fd"] }
+};
+var OPENSSH_MARKER = "kex_derive_keys";
+function planAnchors(names, table = OPENSSH_FUNCTION_ANCHORS) {
+  const specs = [];
+  const indexOf = (text) => {
+    const known = specs.findIndex((s) => s.text === text);
+    return known >= 0 ? known : specs.push({ text }) - 1;
+  };
+  const slots = names.map((name) => ({
+    name,
+    anchors: table[name].anchors.map(indexOf),
+    notIn: (table[name].notIn ?? []).map(indexOf)
+  }));
+  return { specs, slots };
+}
+function pickFunctions(plan, results) {
+  const picked = /* @__PURE__ */ new Map();
+  for (const slot of plan.slots) {
+    const fn = agreedFunction(slot.anchors.map((i) => results[i]), slot.notIn.map((i) => results[i]));
+    if (fn !== null)
+      picked.set(slot.name, fn.start);
+  }
+  const starts = [...picked.values()].map(String);
+  for (const [name, start] of [...picked]) {
+    if (starts.filter((s) => s === start.toString()).length > 1)
+      picked.delete(name);
+  }
+  return picked;
+}
+var ALL_FUNCTIONS = Object.keys(OPENSSH_FUNCTION_ANCHORS);
+var anchored = /* @__PURE__ */ new Map();
+function moduleOf(moduleName) {
+  try {
+    return Process.findModuleByName?.(moduleName) ?? null;
+  } catch (_e) {
+    return null;
+  }
+}
+function keyOf(mod) {
+  return `${mod.name}@${mod.base}`;
+}
+function openSshFunction(moduleName, name) {
+  const exported = findModuleExport2(moduleName, name);
+  if (exported !== null)
+    return exported;
+  const mod = moduleOf(moduleName);
+  return mod ? anchored.get(keyOf(mod))?.get(name) ?? null : null;
+}
+function locatedByAnchors(moduleName) {
+  const mod = moduleOf(moduleName);
+  return mod !== null && (anchored.get(keyOf(mod))?.size ?? 0) > 0;
+}
+function needsAnchorResolution(moduleName) {
+  try {
+    if (Process.platform !== "linux")
+      return false;
+    const mod = moduleOf(moduleName);
+    if (mod === null || anchored.has(keyOf(mod)))
+      return false;
+    if (ALL_FUNCTIONS.every((name) => findModuleExport2(moduleName, name) !== null))
+      return false;
+    return findAnchorString(mod, OPENSSH_MARKER + "\0") !== null;
+  } catch (_e) {
+    return false;
+  }
+}
+var noYield = () => Promise.resolve();
+async function resolveOpenSshFunctions(moduleName) {
+  const mod = moduleOf(moduleName);
+  if (mod === null || anchored.has(keyOf(mod)))
+    return;
+  const missing = ALL_FUNCTIONS.filter((name) => findModuleExport2(moduleName, name) === null);
+  const plan = planAnchors(missing);
+  let found = /* @__PURE__ */ new Map();
+  try {
+    found = pickFunctions(plan, await locateFunctionsByAnchors(mod, plan.specs, { yieldFn: noYield }));
+  } catch (e) {
+    devlog(`[SSH] anchor locator failed in ${moduleName}: ${e}`);
+  }
+  anchored.set(keyOf(mod), found);
+  const where = [...found].map(([n, p]) => `${n}@+0x${p.sub(mod.base).toString(16)}`);
+  const lost = missing.filter((n) => !found.has(n));
+  devlog(`[SSH] ${moduleName}: located by string anchors: ${where.join(", ") || "none"}` + (lost.length > 0 ? `; not located: ${lost.join(", ")}` : ""));
+}
+function withOpenSshFunctions(moduleName, install) {
+  if (!needsAnchorResolution(moduleName))
+    return install();
+  const protocol = activeRecordProtocol();
+  return resolveOpenSshFunctions(moduleName).then(() => protocol === void 0 ? install() : runHookExecutor(protocol, install));
+}
+
+// agent/ssh/platforms/linux/ssh_packet_hooks.ts
+var ptrSize = Process.pointerSize;
+var MAX_SSH_PACKET = 65535;
+var MIN_SSH_PACKET = 6;
+var SEND_HEADER_LEN = 5;
+var RECV_CONSUMED_LEN = 6;
+function isPendingOutgoingPacket(view) {
+  try {
+    if (!view || view.len < MIN_SSH_PACKET || view.len > MAX_SSH_PACKET)
+      return false;
+    for (let i = 0; i < SEND_HEADER_LEN; i++)
+      if (view.data.add(i).readU8() !== 0)
+        return false;
+    return view.data.add(SEND_HEADER_LEN).readU8() !== 0;
+  } catch {
+    return false;
+  }
+}
+function isDecodedIncomingPacket(view, type) {
+  try {
+    if (!view || view.off !== RECV_CONSUMED_LEN || view.len > MAX_SSH_PACKET)
+      return false;
+    if (view.base.add(RECV_CONSUMED_LEN - 1).readU8() !== type)
+      return false;
+    return view.base.add(4).readU8() >= 4;
+  } catch {
+    return false;
+  }
+}
+function messageBytes(view, label, type) {
+  if (label === "outgoing_packet") {
+    const body = view.data.add(SEND_HEADER_LEN).readByteArray(view.len - SEND_HEADER_LEN);
+    return body ? new Uint8Array(body) : null;
+  }
+  const payload = view.len > 0 ? view.data.readByteArray(view.len) : new ArrayBuffer(0);
+  if (!payload)
+    return null;
+  const message = new Uint8Array(1 + view.len);
+  message[0] = type;
+  message.set(new Uint8Array(payload), 1);
+  return message;
+}
+function probeBufferOffset(sshPtr, state2, label, type) {
   const cached = label === "outgoing_packet" ? state2.outgoingPacketOffset : state2.incomingPacketOffset;
   if (cached !== null)
     return cached;
-  try {
-    const sessionState = sshPtr.readPointer();
-    if (sessionState.isNull())
-      return null;
-    for (let off = 0; off < 1024; off += ptrSize) {
-      let cand;
-      try {
-        cand = sessionState.add(off).readPointer();
-      } catch {
-        continue;
-      }
-      if (looksLikeSshPacketSshbuf(cand, state2)) {
-        if (label === "outgoing_packet") {
-          state2.outgoingPacketOffset = off;
-        } else {
-          state2.incomingPacketOffset = off;
-        }
-        devlog(`[SSH] probed ${label} sshbuf offset in state: ${off}`);
-        return off;
-      }
+  const sessionState = readPointerAt(sshPtr, 0);
+  if (sessionState === null)
+    return null;
+  for (let off = 0; off < 1024; off += ptrSize) {
+    const view = readSshbuf(readPointerAt(sessionState, off));
+    const matches = label === "outgoing_packet" ? isPendingOutgoingPacket(view) : isDecodedIncomingPacket(view, type);
+    if (!matches)
+      continue;
+    if (label === "outgoing_packet") {
+      state2.outgoingPacketOffset = off;
+    } else {
+      state2.incomingPacketOffset = off;
     }
-  } catch (e) {
-    devlog(`[SSH] probeBufferOffset(${label}) error: ${e}`);
+    devlog(`[SSH] probed ${label} sshbuf offset in state: ${off}`);
+    return off;
   }
   return null;
+}
+function capturePacket(sshPtr, state2, label, type) {
+  try {
+    const off = probeBufferOffset(sshPtr, state2, label, type);
+    if (off === null)
+      return null;
+    const sessionState = readPointerAt(sshPtr, 0);
+    if (sessionState === null)
+      return null;
+    const view = readSshbuf(readPointerAt(sessionState, off));
+    if (view === null)
+      return null;
+    if (label === "outgoing_packet" && !isPendingOutgoingPacket(view))
+      return null;
+    const message = messageBytes(view, label, type);
+    return message ? frameSshMessage(message) : null;
+  } catch (e) {
+    devlog(`[SSH] capturePacket(${label}) error: ${e}`);
+    return null;
+  }
 }
 function makeBaseMessage(fd, isRead, socketHelpers, fnLabel) {
   try {
@@ -17297,7 +20071,7 @@ function makeBaseMessage(fd, isRead, socketHelpers, fnLabel) {
   }
 }
 function installSendHook(moduleName, state2) {
-  const addr = Module.findExportByName(moduleName, "ssh_packet_send2_wrapped");
+  const addr = openSshFunction(moduleName, "ssh_packet_send2_wrapped");
   if (!addr)
     return false;
   Interceptor.attach(addr, {
@@ -17311,22 +20085,7 @@ function installSendHook(moduleName, state2) {
         const fd = state2.connOutFn(sshPtr);
         if (fd < 0 && !enable_default_fd)
           return;
-        const off = probeBufferOffset(sshPtr, state2, "outgoing_packet");
-        if (off === null)
-          return;
-        if (!state2.sshbufPtrFn || !state2.sshbufLenFn)
-          return;
-        const sessionState = sshPtr.readPointer();
-        const outgoingBuf = sessionState.add(off).readPointer();
-        if (outgoingBuf.isNull())
-          return;
-        const len = Number(state2.sshbufLenFn(outgoingBuf));
-        if (len < MIN_SSH_PACKET || len > MAX_SSH_PACKET)
-          return;
-        const data = state2.sshbufPtrFn(outgoingBuf);
-        if (data.isNull())
-          return;
-        const bytes = data.readByteArray(len);
+        const bytes = capturePacket(sshPtr, state2, "outgoing_packet", 0);
         if (!bytes)
           return;
         const msg = makeBaseMessage(fd, false, state2.socketHelpers, "ssh_packet_send2");
@@ -17341,13 +20100,16 @@ function installSendHook(moduleName, state2) {
   log(`[SSH] Hooked ssh_packet_send2_wrapped in ${moduleName}`);
   return true;
 }
+var RECV_HOOK_FUNCTIONS = ["ssh_packet_read_poll2", "ssh_packet_read_poll_seqnr"];
 function installRecvHook(moduleName, state2) {
-  const addr = Module.findExportByName(moduleName, "ssh_packet_read_poll2");
-  if (!addr)
+  const hookFunction = RECV_HOOK_FUNCTIONS.find((name) => openSshFunction(moduleName, name) !== null);
+  if (hookFunction === void 0)
     return false;
+  const addr = openSshFunction(moduleName, hookFunction);
   Interceptor.attach(addr, {
     onEnter(args) {
       this.sshPtr = args[0];
+      this.typep = args[1];
     },
     onLeave(retval) {
       try {
@@ -17361,22 +20123,13 @@ function installRecvHook(moduleName, state2) {
         const fd = state2.connInFn(sshPtr);
         if (fd < 0 && !enable_default_fd)
           return;
-        const off = probeBufferOffset(sshPtr, state2, "incoming_packet");
-        if (off === null)
+        const typep = this.typep;
+        if (!typep || typep.isNull())
           return;
-        if (!state2.sshbufPtrFn || !state2.sshbufLenFn)
+        const type = typep.readU8();
+        if (type === 0)
           return;
-        const sessionState = sshPtr.readPointer();
-        const incomingBuf = sessionState.add(off).readPointer();
-        if (incomingBuf.isNull())
-          return;
-        const len = Number(state2.sshbufLenFn(incomingBuf));
-        if (len < MIN_SSH_PACKET || len > MAX_SSH_PACKET)
-          return;
-        const data = state2.sshbufPtrFn(incomingBuf);
-        if (data.isNull())
-          return;
-        const bytes = data.readByteArray(len);
+        const bytes = capturePacket(sshPtr, state2, "incoming_packet", type);
         if (!bytes)
           return;
         const msg = makeBaseMessage(fd, true, state2.socketHelpers, "ssh_packet_read_poll2");
@@ -17384,15 +20137,15 @@ function installRecvHook(moduleName, state2) {
           return;
         sendDatalog(msg, bytes);
       } catch (e) {
-        devlog_error(`[SSH] ssh_packet_read_poll2 onLeave error: ${e}`);
+        devlog_error(`[SSH] ${hookFunction} onLeave error: ${e}`);
       }
     }
   });
-  log(`[SSH] Hooked ssh_packet_read_poll2 in ${moduleName}`);
+  log(`[SSH] Hooked ${hookFunction} in ${moduleName}`);
   return true;
 }
 function installCipherCryptFallback(moduleName, state2) {
-  const addr = Module.findExportByName(moduleName, "cipher_crypt");
+  const addr = findModuleExport2(moduleName, "cipher_crypt");
   if (!addr)
     return false;
   Interceptor.attach(addr, {
@@ -17443,16 +20196,22 @@ function installCipherCryptFallback(moduleName, state2) {
   log(`[SSH] Hooked cipher_crypt fallback in ${moduleName} (synthetic 5-tuple).`);
   return true;
 }
-var installedModules = /* @__PURE__ */ new Set();
+function connectionFdReader(moduleName, direction) {
+  const accessor = findModuleExport2(moduleName, `ssh_packet_get_connection_${direction}`);
+  if (accessor === null)
+    return (ssh) => readConnectionFd(ssh, direction);
+  const fn = new NativeFunction(accessor, "int", ["pointer"]);
+  return (ssh) => fn(ssh);
+}
+var installedModules = /* @__PURE__ */ new Map();
 function installSshPacketHooks(moduleName, methodAddresses) {
   if (!pcap_enabled)
-    return;
+    return false;
   if (installedModules.has(moduleName))
-    return;
-  installedModules.add(moduleName);
+    return installedModules.get(moduleName) === true;
+  installedModules.set(moduleName, false);
   const state2 = {
-    sshbufPtrFn: null,
-    sshbufLenFn: null,
+    haveSshbuf: false,
     connInFn: null,
     connOutFn: null,
     outgoingPacketOffset: null,
@@ -17460,24 +20219,19 @@ function installSshPacketHooks(moduleName, methodAddresses) {
     socketHelpers: methodAddresses[moduleName] || {}
   };
   try {
-    const ptrAddr = Module.findExportByName(moduleName, "sshbuf_ptr");
-    const lenAddr = Module.findExportByName(moduleName, "sshbuf_len");
-    if (ptrAddr && lenAddr) {
-      state2.sshbufPtrFn = new NativeFunction(ptrAddr, "pointer", ["pointer"]);
-      state2.sshbufLenFn = new NativeFunction(lenAddr, "size_t", ["pointer"]);
+    const ptrAddr = findModuleExport2(moduleName, "sshbuf_ptr");
+    const lenAddr = findModuleExport2(moduleName, "sshbuf_len");
+    if (ptrAddr && lenAddr || locatedByAnchors(moduleName)) {
+      state2.haveSshbuf = true;
     } else {
-      devlog(`[SSH] sshbuf accessors not exported in ${moduleName}; plaintext probe disabled.`);
+      devlog(`[SSH] ${moduleName} is not a recognised OpenSSH build; plaintext probe disabled.`);
     }
-    const inAddr = Module.findExportByName(moduleName, "ssh_packet_get_connection_in");
-    const outAddr = Module.findExportByName(moduleName, "ssh_packet_get_connection_out");
-    if (inAddr)
-      state2.connInFn = new NativeFunction(inAddr, "int", ["pointer"]);
-    if (outAddr)
-      state2.connOutFn = new NativeFunction(outAddr, "int", ["pointer"]);
+    state2.connInFn = connectionFdReader(moduleName, "in");
+    state2.connOutFn = connectionFdReader(moduleName, "out");
   } catch (e) {
     devlog_error(`[SSH] accessor resolution failed in ${moduleName}: ${e}`);
   }
-  const haveAccessors = state2.sshbufPtrFn !== null && state2.sshbufLenFn !== null && state2.connInFn !== null && state2.connOutFn !== null;
+  const haveAccessors = state2.haveSshbuf && state2.connInFn !== null && state2.connOutFn !== null;
   let primaryInstalled = false;
   if (haveAccessors) {
     primaryInstalled = installSendHook(moduleName, state2) || primaryInstalled;
@@ -17485,7 +20239,88 @@ function installSshPacketHooks(moduleName, methodAddresses) {
   }
   if (!primaryInstalled) {
     devlog(`[SSH] primary plaintext hooks unavailable in ${moduleName} (accessors=${haveAccessors}); trying cipher_crypt fallback.`);
-    installCipherCryptFallback(moduleName, state2);
+    primaryInstalled = installCipherCryptFallback(moduleName, state2);
+  }
+  installedModules.set(moduleName, primaryInstalled);
+  return primaryInstalled;
+}
+
+// agent/ssh/shared/closefrom_guard.ts
+init_node_globals();
+var F_GETFD = 1;
+var SNAPSHOT_MAX_FD = 1024;
+function planClosefrom(lowfd, preserved) {
+  const kept = [...preserved].filter((fd) => fd >= lowfd);
+  if (kept.length === 0)
+    return { closeEach: [], originalFrom: lowfd };
+  const highest = Math.max(...kept);
+  const closeEach = [];
+  for (let fd = Math.max(lowfd, 0); fd < highest; fd++) {
+    if (!preserved.has(fd))
+      closeEach.push(fd);
+  }
+  return { closeEach, originalFrom: highest + 1 };
+}
+var guardedTargets = /* @__PURE__ */ new Set();
+function closefromTargetsToGuard(candidates, guarded) {
+  const seen = new Set(guarded);
+  const targets2 = [];
+  for (const t of candidates) {
+    if (t === null || seen.has(t.toString()))
+      continue;
+    seen.add(t.toString());
+    targets2.push(t);
+  }
+  return targets2;
+}
+function libcFunction(name, ret, args) {
+  const addr = Module.findGlobalExportByName(name);
+  return addr ? new NativeFunction(addr, ret, args) : null;
+}
+function snapshotOpenFds(fcntl) {
+  const open = /* @__PURE__ */ new Set();
+  for (let fd = 3; fd < SNAPSHOT_MAX_FD; fd++) {
+    if (fcntl(fd, F_GETFD) !== -1)
+      open.add(fd);
+  }
+  return open;
+}
+function guard(target, preserved, ownerPid, getpid, close) {
+  const original = new NativeFunction(target, "void", ["int"]);
+  Interceptor.replace(target, new NativeCallback((lowfd) => {
+    if (getpid() !== ownerPid) {
+      original(lowfd);
+      return;
+    }
+    const plan = planClosefrom(lowfd, preserved);
+    for (const fd of plan.closeEach)
+      close(fd);
+    original(plan.originalFrom);
+  }, "void", ["int"]));
+}
+function guardAgentFdsAgainstClosefrom(moduleName) {
+  if (Process.platform !== "linux")
+    return false;
+  try {
+    const fcntl = libcFunction("fcntl", "int", ["int", "int"]);
+    const close = libcFunction("close", "int", ["int"]);
+    const getpid = libcFunction("getpid", "int", []);
+    if (!fcntl || !close || !getpid)
+      return false;
+    const targets2 = closefromTargetsToGuard([openSshFunction(moduleName, "closefrom"), Module.findGlobalExportByName("closefrom")], guardedTargets);
+    if (targets2.length === 0)
+      return guardedTargets.size > 0;
+    const preserved = snapshotOpenFds(fcntl);
+    const ownerPid = getpid();
+    for (const target of targets2) {
+      guard(target, preserved, ownerPid, getpid, close);
+      guardedTargets.add(target.toString());
+    }
+    devlog(`[SSH] closefrom() guarded at ${targets2.join(", ")}; preserving fds ${[...preserved].join(",")}`);
+    return true;
+  } catch (e) {
+    devlog(`[SSH] closefrom guard failed: ${e}`);
+    return false;
   }
 }
 
@@ -17551,106 +20386,28 @@ function consumeCookies(sshPtr) {
   return entry;
 }
 var ptrSize2 = Process.pointerSize;
-var kexOffsetInState = null;
-var myOffsetInKex = null;
-var sshbuf_ptr_fn = null;
-var sshbuf_len_fn = null;
-function ensureSshbufAccessors(moduleName) {
-  if (sshbuf_ptr_fn && sshbuf_len_fn)
-    return true;
-  try {
-    const ptrAddr = Module.findExportByName(moduleName, "sshbuf_ptr");
-    const lenAddr = Module.findExportByName(moduleName, "sshbuf_len");
-    if (!ptrAddr || !lenAddr)
-      return false;
-    sshbuf_ptr_fn = new NativeFunction(ptrAddr, "pointer", ["pointer"]);
-    sshbuf_len_fn = new NativeFunction(lenAddr, "size_t", ["pointer"]);
-    return true;
-  } catch (e) {
-    devlog(`[SSH] sshbuf accessor resolution failed: ${e}`);
-    return false;
-  }
+var kexLayout = null;
+function hasSshbufExports(moduleName) {
+  return findModuleExport2(moduleName, "sshbuf_ptr") !== null && findModuleExport2(moduleName, "sshbuf_len") !== null;
 }
-function looksLikeSshbufWithKexinitPayload(maybeSshbuf) {
-  if (!sshbuf_ptr_fn || !sshbuf_len_fn)
-    return false;
-  try {
-    if (maybeSshbuf.isNull())
-      return false;
-    const len = Number(sshbuf_len_fn(maybeSshbuf));
-    if (len < 17 || len > 8192)
-      return false;
-    const data = sshbuf_ptr_fn(maybeSshbuf);
-    if (data.isNull())
-      return false;
-    const firstByte = data.readU8();
-    return firstByte === 20;
-  } catch {
-    return false;
-  }
+function isOpenSshBuild(moduleName) {
+  return hasSshbufExports(moduleName) || locatedByAnchors(moduleName);
 }
-function probeKexAndCookieOffsets(sshPtr) {
-  if (kexOffsetInState !== null && myOffsetInKex !== null) {
-    return true;
+function kexOf(sshPtr) {
+  if (kexLayout === null) {
+    kexLayout = probeKexLayout(sshPtr);
+    if (kexLayout === null)
+      return null;
+    devlog(`[SSH] probed offsets: ssh->kex=${kexLayout.kexInSsh}, kex->my=${kexLayout.myInKex}, kex->peer=${kexLayout.myInKex + ptrSize2}`);
   }
-  try {
-    const state2 = sshPtr.readPointer();
-    if (state2.isNull())
-      return false;
-    for (let kexOff = 0; kexOff < 512; kexOff += ptrSize2) {
-      let kexCandidate;
-      try {
-        kexCandidate = state2.add(kexOff).readPointer();
-      } catch {
-        continue;
-      }
-      if (kexCandidate.isNull())
-        continue;
-      for (let myOff = 0; myOff < 1024; myOff += ptrSize2) {
-        let myCand;
-        let peerCand;
-        try {
-          myCand = kexCandidate.add(myOff).readPointer();
-          peerCand = kexCandidate.add(myOff + ptrSize2).readPointer();
-        } catch {
-          continue;
-        }
-        const myOk = looksLikeSshbufWithKexinitPayload(myCand);
-        const peerOk = looksLikeSshbufWithKexinitPayload(peerCand);
-        if (myOk || peerOk) {
-          kexOffsetInState = kexOff;
-          myOffsetInKex = myOff;
-          devlog(`[SSH] probed offsets: state->kex=${kexOff}, kex->my=${myOff}, kex->peer=${myOff + ptrSize2} (my=${myOk ? "valid" : "unknown"}, peer=${peerOk ? "valid" : "unknown"})`);
-          return true;
-        }
-      }
-    }
-  } catch (e) {
-    devlog(`[SSH] probe error: ${e}`);
-  }
-  return false;
+  return readPointerAt(sshPtr, kexLayout.kexInSsh);
 }
-function readCookieFrom(sshbufPtr) {
-  if (!sshbuf_ptr_fn || !sshbuf_len_fn)
+function readKexinitCookie(sshPtr, side) {
+  const kex = kexOf(sshPtr);
+  if (kex === null || kexLayout === null)
     return null;
-  try {
-    if (sshbufPtr.isNull())
-      return null;
-    const len = Number(sshbuf_len_fn(sshbufPtr));
-    if (len < 17)
-      return null;
-    const data = sshbuf_ptr_fn(sshbufPtr);
-    if (data.isNull())
-      return null;
-    if (data.readU8() !== 20)
-      return null;
-    const bytes = data.add(1).readByteArray(16);
-    if (!bytes)
-      return null;
-    return toHexString(bytes);
-  } catch {
-    return null;
-  }
+  const slot = kexLayout.myInKex + (side === "peer" ? ptrSize2 : 0);
+  return kexinitCookie(readPointerAt(kex, slot), toHexString);
 }
 var newkeysOffsetInState = null;
 function plausibleSshencSlot(slotPtr) {
@@ -17660,7 +20417,7 @@ function plausibleSshencSlot(slotPtr) {
     const namePtr = slotPtr.add(SSHENC_CIPHER_NAME_OFFSET).readPointer();
     if (namePtr.isNull())
       return false;
-    const name = namePtr.readCString(31);
+    const name = readShortCString(namePtr, 32);
     if (!name || name.length === 0)
       return false;
     if (!/^[\x20-\x7e]+$/.test(name))
@@ -17669,7 +20426,7 @@ function plausibleSshencSlot(slotPtr) {
     const ivLen = slotPtr.add(SSHENC_IV_LEN_OFFSET).readU32();
     if (keyLen < 8 || keyLen > 64)
       return false;
-    if (ivLen < 8 || ivLen > 32)
+    if (ivLen > 32)
       return false;
     return true;
   } catch {
@@ -17731,7 +20488,7 @@ function scanForNewkeysAndExtract(sshPtr) {
   }
 }
 function hookCipherInit(moduleName) {
-  const addr = Module.findExportByName(moduleName, "cipher_init");
+  const addr = findModuleExport2(moduleName, "cipher_init");
   if (!addr)
     return false;
   Interceptor.attach(addr, {
@@ -17766,7 +20523,7 @@ function hookCipherInit(moduleName) {
   return true;
 }
 function hookKexSendKexinit(moduleName) {
-  const addr = Module.findExportByName(moduleName, "kex_send_kexinit");
+  const addr = openSshFunction(moduleName, "kex_send_kexinit");
   if (!addr)
     return false;
   Interceptor.attach(addr, {
@@ -17777,16 +20534,7 @@ function hookKexSendKexinit(moduleName) {
       try {
         if (!this.sshPtr || this.sshPtr.isNull())
           return;
-        if (!probeKexAndCookieOffsets(this.sshPtr))
-          return;
-        if (myOffsetInKex === null || kexOffsetInState === null)
-          return;
-        const state2 = this.sshPtr.readPointer();
-        const kex = state2.add(kexOffsetInState).readPointer();
-        if (kex.isNull())
-          return;
-        const myBuf = kex.add(myOffsetInKex).readPointer();
-        const cookieHex = readCookieFrom(myBuf);
+        const cookieHex = readKexinitCookie(this.sshPtr, "local");
         if (cookieHex)
           recordCookie(this.sshPtr, "local", cookieHex);
       } catch (e) {
@@ -17798,7 +20546,7 @@ function hookKexSendKexinit(moduleName) {
   return true;
 }
 function hookKexInputKexinit(moduleName) {
-  const addr = Module.findExportByName(moduleName, "kex_input_kexinit");
+  const addr = openSshFunction(moduleName, "kex_input_kexinit");
   if (!addr)
     return false;
   Interceptor.attach(addr, {
@@ -17809,16 +20557,7 @@ function hookKexInputKexinit(moduleName) {
       try {
         if (!this.sshPtr || this.sshPtr.isNull())
           return;
-        if (!probeKexAndCookieOffsets(this.sshPtr))
-          return;
-        if (myOffsetInKex === null || kexOffsetInState === null)
-          return;
-        const state2 = this.sshPtr.readPointer();
-        const kex = state2.add(kexOffsetInState).readPointer();
-        if (kex.isNull())
-          return;
-        const peerBuf = kex.add(myOffsetInKex + ptrSize2).readPointer();
-        const cookieHex = readCookieFrom(peerBuf);
+        const cookieHex = readKexinitCookie(this.sshPtr, "peer");
         if (cookieHex)
           recordCookie(this.sshPtr, "peer", cookieHex);
       } catch (e) {
@@ -17830,7 +20569,7 @@ function hookKexInputKexinit(moduleName) {
   return true;
 }
 function hookKexDeriveKeys(moduleName) {
-  const addr = Module.findExportByName(moduleName, "kex_derive_keys");
+  const addr = openSshFunction(moduleName, "kex_derive_keys");
   if (!addr)
     return false;
   Interceptor.attach(addr, {
@@ -17852,15 +20591,14 @@ function hookKexDeriveKeys(moduleName) {
           return;
         if (!secretBuf || secretBuf.isNull())
           return;
-        if (!sshbuf_ptr_fn || !sshbuf_len_fn)
+        const view = readSshbuf(secretBuf);
+        if (view === null || view.len <= 0 || view.len > 16384)
           return;
-        const len = Number(sshbuf_len_fn(secretBuf));
-        if (len <= 0 || len > 16384)
+        const secret = sharedSecretBytes(view);
+        if (secret === null)
           return;
-        const data = sshbuf_ptr_fn(secretBuf);
-        if (data.isNull())
-          return;
-        const sharedSecretHex = toHexString(data.readByteArray(len));
+        const len = secret.byteLength;
+        const sharedSecretHex = toHexString(secret);
         const cookies = consumeCookies(sshPtr);
         sendKeyMaterial({
           contentType: "ssh_keylog",
@@ -17880,7 +20618,7 @@ function hookKexDeriveKeys(moduleName) {
   return true;
 }
 function hookSshSetNewkeys(moduleName, fallbackToScan) {
-  const addr = Module.findExportByName(moduleName, "ssh_set_newkeys");
+  const addr = openSshFunction(moduleName, "ssh_set_newkeys");
   if (!addr)
     return false;
   Interceptor.attach(addr, {
@@ -17908,13 +20646,10 @@ function hookSshSetNewkeys(moduleName, fallbackToScan) {
   return true;
 }
 function ssh_execute(moduleName, _is_base_hook) {
+  return withOpenSshFunctions(moduleName, () => installSshHooks(moduleName));
+}
+function installSshHooks(moduleName) {
   devlog(`[SSH] Installing SSH hooks for: ${moduleName}`);
-  log(`[*] SSH library found: ${moduleName}`);
-  sendWithProtocol({
-    contentType: "library_detected",
-    library: moduleName,
-    message: `SSH library detected: ${moduleName}`
-  });
   let methodAddresses = {};
   try {
     methodAddresses = readAddresses(moduleName, {
@@ -17923,33 +20658,38 @@ function ssh_execute(moduleName, _is_base_hook) {
   } catch (e) {
     devlog(`[SSH] readAddresses for socket helpers failed: ${e}`);
   }
-  const haveSshbuf = ensureSshbufAccessors(moduleName);
+  const haveSshbuf = isOpenSshBuild(moduleName);
   if (!haveSshbuf) {
-    devlog(`[SSH] sshbuf_ptr/sshbuf_len not exported in ${moduleName}; cookie + K extraction degraded.`);
+    devlog(`[SSH] ${moduleName} is not a recognised OpenSSH build; cookie + K extraction skipped.`);
+  }
+  guardAgentFdsAgainstClosefrom(moduleName);
+  let installed = false;
+  if (haveSshbuf) {
+    installed = hookKexSendKexinit(moduleName) || installed;
+    installed = hookKexInputKexinit(moduleName) || installed;
   }
   if (haveSshbuf) {
-    hookKexSendKexinit(moduleName);
-    hookKexInputKexinit(moduleName);
-  }
-  if (haveSshbuf) {
-    hookKexDeriveKeys(moduleName);
+    installed = hookKexDeriveKeys(moduleName) || installed;
   } else {
-    devlog(`[SSH] Skipping kex_derive_keys hook (sshbuf accessors unresolved).`);
+    devlog(`[SSH] Skipping kex_derive_keys hook (not a recognised OpenSSH build).`);
   }
   const cipherInitHooked = hookCipherInit(moduleName);
   if (!cipherInitHooked) {
     devlog(`[SSH] cipher_init not resolvable in ${moduleName}; falling back to sshenc scan.`);
   }
-  hookSshSetNewkeys(
+  installed = hookSshSetNewkeys(
     moduleName,
     /* fallbackToScan */
     !cipherInitHooked
-  );
+  ) || cipherInitHooked || installed;
   try {
-    installSshPacketHooks(moduleName, methodAddresses);
+    installed = installSshPacketHooks(moduleName, methodAddresses) || installed;
   } catch (e) {
     devlog_error(`[SSH] installSshPacketHooks failed for ${moduleName}: ${e}`);
   }
+  if (!installed)
+    devlog(`[SSH] no SSH hook resolvable in ${moduleName}`);
+  return installed;
 }
 
 // agent/ssh/platforms/macos/openssh_macos.ts
@@ -18001,17 +20741,14 @@ function createOpenSshDefinition() {
     keylog: { kind: "none" },
     extraHooks: [
       {
-        // Delegate to the legacy executor. It handles cookie
-        // correlation, kex_derive_keys, cipher_init, sshenc-walk
-        // fallback, and packet plaintext extraction in one place.
+        // Delegate to the legacy executor's synchronous installer. It handles
+        // cookie correlation, kex_derive_keys, cipher_init, sshenc-walk
+        // fallback, and packet plaintext extraction in one place. A stripped
+        // build's functions were already located by openssh_execute_modern.
         // extraHooks always runs in the loader (step 7), independent of
         // keylog_enabled — so `-p`-only runs still install packet hooks.
         install: (_addresses, moduleName, _resolvedFns, _enableDefaultFd) => {
-          ssh_execute(
-            moduleName,
-            /* is_base_hook */
-            true
-          );
+          return installSshHooks(moduleName);
         }
       }
     ],
@@ -18021,7 +20758,7 @@ function createOpenSshDefinition() {
 
 // agent/ssh/platforms/linux/openssh_linux.ts
 function openssh_execute_modern(moduleName, is_base_hook) {
-  executeFromDefinition(createOpenSshDefinition(), moduleName, socket_library2, is_base_hook, enable_default_fd);
+  return Promise.resolve(withOpenSshFunctions(moduleName, () => executeFromDefinition(createOpenSshDefinition(), moduleName, socket_library2, is_base_hook, enable_default_fd)));
 }
 
 // agent/ssh/platforms/macos/libssh_macos.ts
@@ -18074,11 +20811,7 @@ function createLibsshDefinition() {
         // extraHooks always runs in the loader (step 7), independent of
         // keylog_enabled.
         install: (_addresses, moduleName, _resolvedFns, _enableDefaultFd) => {
-          ssh_execute(
-            moduleName,
-            /* is_base_hook */
-            true
-          );
+          return installSshHooks(moduleName);
         }
       }
     ],
@@ -18088,7 +20821,7 @@ function createLibsshDefinition() {
 
 // agent/ssh/platforms/linux/libssh_linux.ts
 function libssh_execute_modern(moduleName, is_base_hook) {
-  executeFromDefinition(createLibsshDefinition(), moduleName, socket_library2, is_base_hook, enable_default_fd);
+  return executeFromDefinition(createLibsshDefinition(), moduleName, socket_library2, is_base_hook, enable_default_fd);
 }
 
 // agent/ohttp/platforms/macos/nss_hpke_macos.ts
@@ -18200,16 +20933,25 @@ init_shared_structures();
 
 // agent/quic/shared/quic_connection_tracker.ts
 init_node_globals();
-function buildQuicMessage(info, connKey, functionLabel) {
-  return {
-    src_addr: info.peerAddr,
-    src_port: info.peerPort,
-    dst_addr: info.localAddr,
-    dst_port: info.localPort,
+function buildQuicMessage(info, connKey, functionLabel, direction = "read", library) {
+  const isWrite = direction === "write";
+  const message = {
+    src_addr: isWrite ? info.localAddr : info.peerAddr,
+    src_port: isWrite ? info.localPort : info.peerPort,
+    dst_addr: isWrite ? info.peerAddr : info.localAddr,
+    dst_port: isWrite ? info.peerPort : info.localPort,
     ss_family: info.ssFamily,
     ssl_session_id: connKey,
-    function: functionLabel
+    function: functionLabel,
+    direction
   };
+  if (library)
+    message.library = library;
+  return message;
+}
+var MAX_LINKED_CONNECTIONS = 4096;
+function infoHasEndpoint(info, side, e) {
+  return info.ssFamily === e.family && (side === "local" ? info.localAddr === e.addr && info.localPort === e.port : info.peerAddr === e.addr && info.peerPort === e.port);
 }
 function hashPtr(connPtr) {
   let h = 2166136261;
@@ -18218,6 +20960,13 @@ function hashPtr(connPtr) {
     h = Math.imul(h, 16777619);
   }
   return h >>> 0;
+}
+function syntheticLocal(h, family) {
+  const localPort = 49152 + h % 16384;
+  if (family === "AF_INET6") {
+    return { localAddr: "FD" + "00".repeat(11) + ("00000000" + h.toString(16).toUpperCase()).slice(-8), localPort };
+  }
+  return { localAddr: 167772161, localPort };
 }
 function formatAddr(addr, family) {
   if (family === "AF_INET6" && typeof addr === "string" && addr.length === 32) {
@@ -18267,6 +21016,8 @@ var QuicConnectionTracker = class {
   // updated regardless, so capture behavior is unchanged.
   _lastLoggedObservedKey = null;
   _lastLoggedIgnoredKey = null;
+  // Native connection pointer -> its resolved key/4-tuple (see resolveLinked).
+  _linked = new LruMap(MAX_LINKED_CONNECTIONS);
   /**
    * Register a new QUIC connection.
    * @param connPtr  Native pointer to the connection object (as hex string key)
@@ -18339,10 +21090,8 @@ var QuicConnectionTracker = class {
    */
   synthesizeInfo(connPtr) {
     const h = hashPtr(connPtr);
-    const localPort = 49152 + h % 16384;
     const peer = this._observedPeer;
     if (peer && peer.family === "AF_INET6") {
-      const localV6 = "FD" + "00".repeat(11) + ("00000000" + h.toString(16).toUpperCase()).slice(-8);
       return {
         serverName: "",
         scid: "",
@@ -18350,8 +21099,7 @@ var QuicConnectionTracker = class {
         ssFamily: "AF_INET6",
         peerAddr: peer.addr,
         peerPort: peer.port,
-        localAddr: localV6,
-        localPort
+        ...syntheticLocal(h, "AF_INET6")
       };
     }
     const peerAddr = peer && peer.family === "AF_INET" ? peer.addr : (4026531840 | h & 268435455) >>> 0;
@@ -18363,10 +21111,60 @@ var QuicConnectionTracker = class {
       ssFamily: "AF_INET",
       peerAddr,
       peerPort,
-      localAddr: 167772161,
-      // 10.0.0.1
-      localPort
+      ...syntheticLocal(h, "AF_INET")
     };
+  }
+  /**
+   * Stable 4-tuple for a connection whose addresses were read from the QUIC
+   * library's own connection object (Google QUICHE: QuicConnection's path).
+   *
+   * Every hook of one connection resolves through here with the same native
+   * connection pointer, so request and response — and all streams of the
+   * connection — share ONE key and ONE 4-tuple:
+   *   - self + peer known  -> the real 4-tuple;
+   *   - peer only (0-RTT, before the first received packet) -> real peer with
+   *     a synthetic client, upgraded in place once the self address appears
+   *     (same connKey, so the host keeps it one connection);
+   *   - neither -> the deterministic synthetic tuple of the pointer.
+   * A different peer (or a different known self) behind the same pointer is a
+   * new connection reusing freed memory: it gets a new generation and key so
+   * it never folds into the previous connection's streams.
+   */
+  resolveLinked(connPtr, self, peer) {
+    const prev = this._linked.get(connPtr);
+    const selfUsable = !!(self && peer && self.family === peer.family);
+    if (!peer)
+      return prev ?? { connKey: connPtr, info: this.synthesizeInfo(connPtr) };
+    if (prev && infoHasEndpoint(prev.info, "peer", peer)) {
+      if (!selfUsable)
+        return prev;
+      if (prev.provisionalLocal) {
+        prev.info = { ...prev.info, localAddr: self.addr, localPort: self.port };
+        prev.provisionalLocal = false;
+        return prev;
+      }
+      if (infoHasEndpoint(prev.info, "local", self))
+        return prev;
+    }
+    const generation = prev ? prev.generation + 1 : 0;
+    const connKey = generation === 0 ? connPtr : connPtr + "#" + generation;
+    const local = selfUsable ? { localAddr: self.addr, localPort: self.port } : syntheticLocal(hashPtr(connKey), peer.family);
+    const entry = {
+      connKey,
+      generation,
+      provisionalLocal: !selfUsable,
+      info: {
+        serverName: "",
+        scid: "",
+        dcid: "",
+        ssFamily: peer.family,
+        peerAddr: peer.addr,
+        peerPort: peer.port,
+        ...local
+      }
+    };
+    this._linked.set(connPtr, entry);
+    return entry;
   }
   /**
    * Number of tracked connections.
@@ -18548,9 +21346,9 @@ function createStreamRecvHook() {
           const connInfo = quicConnectionTracker.get(connKey);
           if (!connInfo)
             return;
-          const message = buildQuicMessage(connInfo, connKey, "quiche_stream_recv");
+          const message = buildQuicMessage(connInfo, connKey, "quiche_stream_recv", "read", moduleName);
           if (n > 0) {
-            sendQuicDatalog(message, this.buf.readByteArray(n), this.streamId, connInfo.scid, connInfo.dcid);
+            sendQuicDatalog(message, this.buf.readByteArray(n), this.streamId, connInfo.scid, connInfo.dcid, "udp", void 0, "stream");
           }
           if (this.finPtr && !this.finPtr.isNull()) {
             try {
@@ -18595,11 +21393,11 @@ function createStreamSendHook() {
             return;
           const bytesToCapture = n > 0 ? n : 0;
           if (bytesToCapture > 0) {
-            const message = buildQuicMessage(connInfo, connKey, "quiche_stream_send");
-            sendQuicDatalog(message, this.buf.readByteArray(bytesToCapture), this.streamId, connInfo.scid, connInfo.dcid);
+            const message = buildQuicMessage(connInfo, connKey, "quiche_stream_send", "write", moduleName);
+            sendQuicDatalog(message, this.buf.readByteArray(bytesToCapture), this.streamId, connInfo.scid, connInfo.dcid, "udp", void 0, "stream");
           }
           if (this.fin) {
-            const message = buildQuicMessage(connInfo, connKey, "quiche_stream_send");
+            const message = buildQuicMessage(connInfo, connKey, "quiche_stream_send", "write");
             sendConnectionLifecycle("stream_fin", {
               ...message,
               stream_id: this.streamId
@@ -18944,11 +21742,760 @@ var LABEL_TO_KEY = {
 };
 var KEY_TO_LABEL = Object.fromEntries(Object.entries(LABEL_TO_KEY).map(([label, key]) => [key, label]));
 
-// agent/quic/definitions/google_quiche.ts
-function resolveQuicMessage(streamPtr, label) {
-  const connPtr = quicConnectionTracker.resolveStream(streamPtr) ?? streamPtr;
-  return buildQuicMessage(quicConnectionTracker.resolveInfo(connPtr), connPtr, label);
+// agent/quic/shared/quiche_records.ts
+init_node_globals();
+init_shared_structures();
+
+// agent/quic/shared/quiche_layout.ts
+init_node_globals();
+var QUIC_SOCKET_ADDRESS_SIZE = 24;
+var ADDRESS_PAIR_SIZE = 2 * QUIC_SOCKET_ADDRESS_SIZE;
+var FAMILY_OFFSET = 16;
+var PORT_OFFSET = 20;
+var STREAM_SCAN_BYTES = 512;
+var SESSION_SCAN_BYTES = 512;
+var CONNECTION_SCAN_BYTES = 8192;
+var MAX_SUBOBJECT_DELTA = 0x100n;
+function u32le2(bytes, offset) {
+  return (bytes[offset] | bytes[offset + 1] << 8 | bytes[offset + 2] << 16 | bytes[offset + 3] << 24) >>> 0;
 }
+function decodeQuicSocketAddress(bytes, offset) {
+  if (offset < 0 || offset + QUIC_SOCKET_ADDRESS_SIZE > bytes.length)
+    return null;
+  const family = u32le2(bytes, offset + FAMILY_OFFSET);
+  const port = bytes[offset + PORT_OFFSET] | bytes[offset + PORT_OFFSET + 1] << 8;
+  if (family === 0) {
+    const addr = (bytes[offset] << 24 | bytes[offset + 1] << 16 | bytes[offset + 2] << 8 | bytes[offset + 3]) >>> 0;
+    return { family: "AF_INET", addr, port };
+  }
+  if (family === 1)
+    return { family: "AF_INET6", addr: toHexString(bytes.subarray(offset, offset + 16)).toUpperCase(), port };
+  if (family === 2)
+    return { family: "UNSPEC", addr: 0, port };
+  return null;
+}
+function isRoutableEndpoint(a) {
+  if (!a || a.port === 0)
+    return false;
+  if (a.family === "AF_INET")
+    return a.addr !== 0;
+  if (a.family === "AF_INET6")
+    return typeof a.addr === "string" && /[1-9A-F]/.test(a.addr);
+  return false;
+}
+function sameEndpoint(a, b) {
+  return a.family === b.family && a.addr === b.addr && a.port === b.port;
+}
+function decodeEndpointPair(bytes, offset) {
+  const self = decodeQuicSocketAddress(bytes, offset);
+  const peer = decodeQuicSocketAddress(bytes, offset + QUIC_SOCKET_ADDRESS_SIZE);
+  if (!isRoutableEndpoint(self) || !isRoutableEndpoint(peer))
+    return null;
+  if (self.family !== peer.family || sameEndpoint(self, peer))
+    return null;
+  return { self, peer };
+}
+function findAddressPairOffset(bytes) {
+  for (let offset = 0; offset + ADDRESS_PAIR_SIZE <= bytes.length; offset += 4) {
+    const pair = decodeEndpointPair(bytes, offset);
+    if (!pair)
+      continue;
+    for (let repeat = offset + ADDRESS_PAIR_SIZE; repeat + ADDRESS_PAIR_SIZE <= bytes.length; repeat += 4) {
+      const other = decodeEndpointPair(bytes, repeat);
+      if (other && sameEndpoint(pair.self, other.self) && sameEndpoint(pair.peer, other.peer)) {
+        return offset;
+      }
+    }
+  }
+  return null;
+}
+function containsPointer(bytes, value, pointerSize2) {
+  const wide = pointerSize2 === 8;
+  if (!wide && value > 0xffffffffn)
+    return false;
+  const lo = Number(value & 0xffffffffn);
+  const hi = Number(value >> 32n & 0xffffffffn);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  for (let offset = 0; offset + pointerSize2 <= bytes.length; offset += pointerSize2) {
+    if (view.getUint32(offset, true) !== lo)
+      continue;
+    if (!wide || view.getUint32(offset + 4, true) === hi)
+      return true;
+  }
+  return false;
+}
+function hasModuleVtable(mem, obj) {
+  const vtable = mem.readPointer(obj);
+  return vtable !== null && vtable !== 0n && mem.isModuleAddress(vtable);
+}
+function isSessionSlot(mem, stream, offset, session) {
+  if (session === 0n || session === stream)
+    return false;
+  const delegate = mem.readPointer(stream + BigInt(offset + mem.pointerSize));
+  if (delegate === null)
+    return false;
+  const delta = delegate - session;
+  return delta > 0n && delta <= MAX_SUBOBJECT_DELTA && delta % BigInt(mem.pointerSize) === 0n && hasModuleVtable(mem, session) && hasModuleVtable(mem, delegate);
+}
+function findConnectionLink(mem, session) {
+  const ps = mem.pointerSize;
+  for (let offset = ps; offset + ps <= SESSION_SCAN_BYTES; offset += ps) {
+    const connection = mem.readPointer(session + BigInt(offset));
+    if (connection === null || connection === 0n || connection === session)
+      continue;
+    if (!hasModuleVtable(mem, connection))
+      continue;
+    const bytes = mem.readBytes(connection, CONNECTION_SCAN_BYTES);
+    if (!bytes || !containsPointer(bytes, session, ps))
+      continue;
+    const connectionAddresses = findAddressPairOffset(bytes);
+    if (connectionAddresses === null)
+      continue;
+    return { sessionConnection: offset, connectionAddresses, connectionVtable: mem.readPointer(connection) };
+  }
+  return null;
+}
+function discoverQuicheLayout(mem, stream) {
+  const ps = mem.pointerSize;
+  for (let offset = 2 * ps; offset + 2 * ps <= STREAM_SCAN_BYTES; offset += ps) {
+    const session = mem.readPointer(stream + BigInt(offset));
+    if (session === null || !isSessionSlot(mem, stream, offset, session))
+      continue;
+    const link = findConnectionLink(mem, session);
+    if (link)
+      return { streamSession: offset, ...link };
+  }
+  return null;
+}
+function streamFromHookObject(mem, obj, kind) {
+  switch (kind) {
+    case "stream":
+      return obj;
+    case "decoder-visitor":
+      return mem.readPointer(obj + BigInt(mem.pointerSize));
+    case "sequencer":
+      return mem.readPointer(obj);
+  }
+}
+function readConnectionAddresses(mem, layout, connection) {
+  if (connection === null || connection === 0n)
+    return null;
+  if (mem.readPointer(connection) !== layout.connectionVtable)
+    return null;
+  const pair = mem.readBytes(connection + BigInt(layout.connectionAddresses), ADDRESS_PAIR_SIZE);
+  if (!pair || pair.length < ADDRESS_PAIR_SIZE)
+    return { self: null, peer: null };
+  return {
+    self: decodeQuicSocketAddress(pair, 0),
+    peer: decodeQuicSocketAddress(pair, QUIC_SOCKET_ADDRESS_SIZE)
+  };
+}
+function readStreamLink(mem, layout, stream) {
+  const session = mem.readPointer(stream + BigInt(layout.streamSession));
+  if (session === null || !isSessionSlot(mem, stream, layout.streamSession, session))
+    return null;
+  const connection = mem.readPointer(session + BigInt(layout.sessionConnection));
+  const addresses = readConnectionAddresses(mem, layout, connection);
+  const idBytes = mem.readBytes(stream + BigInt(layout.streamSession - mem.pointerSize), 4);
+  if (!addresses || !idBytes || idBytes.length < 4)
+    return null;
+  return { connection, streamId: u32le2(idBytes, 0), ...addresses };
+}
+function readSessionLink(mem, layout, session, streamId) {
+  const connection = mem.readPointer(session + BigInt(layout.sessionConnection));
+  const addresses = readConnectionAddresses(mem, layout, connection);
+  return addresses ? { connection, streamId, ...addresses } : null;
+}
+function discoverConnectionLayout(mem, connection) {
+  if (connection === 0n || !hasModuleVtable(mem, connection))
+    return null;
+  const bytes = mem.readBytes(connection, CONNECTION_SCAN_BYTES);
+  if (!bytes)
+    return null;
+  const connectionAddresses = findAddressPairOffset(bytes);
+  if (connectionAddresses === null)
+    return null;
+  return { connectionAddresses, connectionVtable: mem.readPointer(connection) };
+}
+function discoverSessionLayout(mem, session, known = null) {
+  if (session === 0n)
+    return null;
+  if (!known)
+    return findConnectionLink(mem, session);
+  const ps = mem.pointerSize;
+  for (let offset = ps; offset + ps <= SESSION_SCAN_BYTES; offset += ps) {
+    const connection = mem.readPointer(session + BigInt(offset));
+    if (connection === null || connection === 0n || connection === session)
+      continue;
+    if (mem.readPointer(connection) !== known.connectionVtable)
+      continue;
+    const bytes = mem.readBytes(connection, CONNECTION_SCAN_BYTES);
+    if (bytes && containsPointer(bytes, session, ps))
+      return { sessionConnection: offset, ...known };
+  }
+  return null;
+}
+function readConnectionLink(mem, layout, connection, streamId) {
+  const addresses = readConnectionAddresses(mem, layout, connection);
+  return addresses ? { connection, streamId, ...addresses } : null;
+}
+
+// agent/quic/shared/quiche_records.ts
+var MAX_LAYOUT_ATTEMPTS = 64;
+var quicheLayoutStates = /* @__PURE__ */ new Map();
+function toAddress(p) {
+  return BigInt(p.toString());
+}
+function toNativePointer(a) {
+  return ptr("0x" + a.toString(16));
+}
+function readClamped(p, address, length) {
+  if (isReadable(p, length)) {
+    const buf2 = p.readByteArray(length);
+    return buf2 ? new Uint8Array(buf2) : null;
+  }
+  const range = Process.findRangeByAddress(p);
+  if (!range || range.protection[0] !== "r")
+    return null;
+  const n = Math.min(length, Number(toAddress(range.base) + BigInt(range.size) - address));
+  if (n <= 0)
+    return null;
+  const buf = p.readByteArray(n);
+  return buf ? new Uint8Array(buf) : null;
+}
+function fridaQuicheMemory(module) {
+  const lo = toAddress(module.base);
+  const hi = lo + BigInt(module.size);
+  return {
+    pointerSize: Process.pointerSize,
+    readPointer(address) {
+      const value = safeReadPointer(toNativePointer(address));
+      return value === null ? null : toAddress(value);
+    },
+    readBytes(address, length) {
+      try {
+        return readClamped(toNativePointer(address), address, length);
+      } catch (_e) {
+        return null;
+      }
+    },
+    isModuleAddress(address) {
+      return address >= lo && address < hi;
+    }
+  };
+}
+function quicheLayoutState(moduleName) {
+  if (quicheLayoutStates.has(moduleName))
+    return quicheLayoutStates.get(moduleName);
+  let state2 = null;
+  try {
+    const module = Process.findModuleByName(moduleName);
+    if (module)
+      state2 = {
+        moduleName,
+        mem: fridaQuicheMemory(module),
+        layout: null,
+        attempts: 0,
+        triedStreams: /* @__PURE__ */ new Set(),
+        connLayout: null,
+        sessionConnection: null,
+        connAttempts: 0
+      };
+  } catch (_e) {
+    state2 = null;
+  }
+  quicheLayoutStates.set(moduleName, state2);
+  return state2;
+}
+function adoptFullLayout(state2, learned) {
+  const layout = state2.connLayout ? { ...learned, ...state2.connLayout } : learned;
+  state2.layout = layout;
+  state2.connLayout = layout;
+  state2.sessionConnection = layout.sessionConnection;
+  state2.triedStreams.clear();
+  return layout;
+}
+function learnQuicheLayout(state2, stream) {
+  const key = stream.toString(16);
+  if (state2.layout || state2.attempts >= MAX_LAYOUT_ATTEMPTS || state2.triedStreams.has(key))
+    return;
+  state2.attempts++;
+  state2.triedStreams.add(key);
+  const learned = discoverQuicheLayout(state2.mem, stream);
+  if (learned) {
+    const layout = adoptFullLayout(state2, learned);
+    log(`[*] Google QUICHE (${state2.moduleName}): resolved real QUIC connection addressing (stream+0x${layout.streamSession.toString(16)} -> session, session+0x${layout.sessionConnection.toString(16)} -> connection, connection+0x${layout.connectionAddresses.toString(16)} -> self/peer address)`);
+  } else if (state2.attempts >= MAX_LAYOUT_ATTEMPTS) {
+    log(`[!] Google QUICHE (${state2.moduleName}): could not resolve the QUIC connection layout after ${MAX_LAYOUT_ATTEMPTS} streams; flows use synthetic per-stream addresses`);
+  }
+}
+function routable(a) {
+  return isRoutableEndpoint(a) ? a : null;
+}
+function linkedRecord(state2, link, label, direction) {
+  const linked = quicConnectionTracker.resolveLinked("0x" + link.connection.toString(16), routable(link.self), routable(link.peer));
+  return {
+    message: buildQuicMessage(linked.info, linked.connKey, label, direction, state2.moduleName),
+    streamId: link.streamId
+  };
+}
+function legacyMessage(streamPtr, label, direction, library) {
+  const connPtr = quicConnectionTracker.resolveStream(streamPtr) ?? streamPtr;
+  return buildQuicMessage(quicConnectionTracker.resolveInfo(connPtr), connPtr, label, direction, library);
+}
+function resolveQuicheRecord(moduleName, obj, kind, label, direction = "read") {
+  const state2 = quicheLayoutState(moduleName);
+  let legacyKey = obj.toString();
+  if (state2) {
+    resetReadableCache();
+    const stream = streamFromHookObject(state2.mem, toAddress(obj), kind);
+    if (stream !== null && stream !== 0n) {
+      learnQuicheLayout(state2, stream);
+      const link = state2.layout ? readStreamLink(state2.mem, state2.layout, stream) : null;
+      if (link)
+        return { ...linkedRecord(state2, link, label, direction), connection: link.connection };
+      legacyKey = "0x" + stream.toString(16);
+    }
+  }
+  return { message: legacyMessage(legacyKey, label, direction, moduleName), streamId: null };
+}
+function resolveQuicheSessionRecord(moduleName, session, streamId, label, direction) {
+  const state2 = quicheLayoutState(moduleName);
+  if (state2 && state2.layout) {
+    resetReadableCache();
+    const link = readSessionLink(state2.mem, state2.layout, toAddress(session), streamId);
+    if (link)
+      return linkedRecord(state2, link, label, direction);
+  }
+  return { message: legacyMessage(session.toString(), label, direction, moduleName), streamId };
+}
+function noteConnectionLayout(state2, layout, source) {
+  if (state2.connLayout)
+    return;
+  state2.connLayout = { connectionAddresses: layout.connectionAddresses, connectionVtable: layout.connectionVtable };
+  log(`[*] Google QUICHE (${state2.moduleName}): resolved QUIC connection addressing from a ${source} (connection+0x${layout.connectionAddresses.toString(16)} -> self/peer address)`);
+}
+function sessionConnection(state2, session) {
+  if (state2.sessionConnection === null && state2.connAttempts < MAX_LAYOUT_ATTEMPTS) {
+    state2.connAttempts++;
+    const learned = discoverSessionLayout(state2.mem, session, state2.connLayout);
+    if (learned) {
+      state2.sessionConnection = learned.sessionConnection;
+      noteConnectionLayout(state2, learned, "session");
+    }
+  }
+  const offset = state2.sessionConnection;
+  return offset === null ? null : state2.mem.readPointer(session + BigInt(offset));
+}
+function resolveConnectionRecord(state2, connection, streamId, label, direction) {
+  if (!state2.connLayout && state2.connAttempts < MAX_LAYOUT_ATTEMPTS) {
+    state2.connAttempts++;
+    const learned = discoverConnectionLayout(state2.mem, connection);
+    if (learned)
+      noteConnectionLayout(state2, learned, "connection");
+  }
+  const link = state2.connLayout ? readConnectionLink(state2.mem, state2.connLayout, connection, streamId) : null;
+  return link ? linkedRecord(state2, link, label, direction) : null;
+}
+function unresolvedConnectionRecord(state2, connection, streamId, label, direction) {
+  return linkedRecord(state2, { connection, streamId, self: null, peer: null }, label, direction);
+}
+function sendQuicheBody(record, data) {
+  sendQuicDatalog(record.message, data, record.streamId ?? -1, void 0, void 0, "udp", void 0, "body");
+}
+
+// agent/quic/shared/quiche_frame_capture.ts
+init_node_globals();
+init_shared_structures();
+
+// agent/quic/shared/quic_stream_reassembler.ts
+init_node_globals();
+var MAX_PENDING_BYTES_PER_STREAM = 1 << 20;
+var MAX_PENDING_FRAGMENTS_PER_STREAM = 256;
+var MAX_UNSTARTED_PENDING_BYTES = 64 * 1024;
+var MAX_UNSTARTED_PENDING_FRAGMENTS = 64;
+var MAX_TRACKED_STREAMS = 4096;
+var MAX_PENDING_BYTES_TOTAL = 16 << 20;
+var IGNORED = -1;
+var QuicStreamReassembler = class {
+  maxPendingTotal;
+  streams;
+  pendingTotal = 0;
+  constructor(maxStreams = MAX_TRACKED_STREAMS, maxPendingTotal = MAX_PENDING_BYTES_TOTAL) {
+    this.maxPendingTotal = maxPendingTotal;
+    this.streams = new LruMap(maxStreams, (_key, state2) => {
+      this.pendingTotal -= state2.pendingBytes;
+    });
+  }
+  /** Number of streams currently tracked (tests / diagnostics). */
+  get trackedStreams() {
+    return this.streams.size;
+  }
+  /** Bytes buffered ahead of the in-order point across every stream (tests / diagnostics). */
+  get pendingBytes() {
+    return this.pendingTotal;
+  }
+  /**
+   * False when a fragment of `length` bytes at `offset` (no FIN) cannot yield
+   * new bytes: the stream is ignored or the range was already delivered
+   * (a retransmission). Lets callers skip copying the payload at all.
+   */
+  canDeliver(key, offset, length) {
+    const state2 = this.streams.get(key);
+    if (state2 === void 0)
+      return true;
+    return state2.next !== IGNORED && offset + length > state2.next;
+  }
+  /**
+   * Feed one fragment of stream `key`; returns the newly contiguous bytes
+   * (possibly several chunks when buffered fragments become deliverable).
+   */
+  push(key, offset, data, fin = false) {
+    let state2 = this.streams.get(key);
+    if (state2 === void 0) {
+      state2 = { next: 0, pending: [], pendingBytes: 0, finalSize: null, started: false };
+      this.streams.set(key, state2);
+    }
+    if (state2.next === IGNORED)
+      return [];
+    if (fin)
+      state2.finalSize = offset + data.length;
+    const out = [];
+    if (data.length > 0) {
+      if (offset > state2.next)
+        this.buffer(state2, offset, data);
+      else
+        this.deliver(state2, offset, data, out);
+      this.drain(state2, out);
+    }
+    if (state2.next !== IGNORED && state2.finalSize !== null && state2.next >= state2.finalSize) {
+      this.ignore(state2);
+    }
+    return out;
+  }
+  ignore(state2) {
+    state2.next = IGNORED;
+    this.pendingTotal -= state2.pendingBytes;
+    state2.pending = [];
+    state2.pendingBytes = 0;
+  }
+  /** Emit the part of [offset, offset+len) at or after `state.next` (offset <= next). */
+  deliver(state2, offset, data, out) {
+    const end = offset + data.length;
+    if (end <= state2.next)
+      return;
+    const fresh = data.subarray(state2.next - offset);
+    out.push({ offset: state2.next, data: fresh });
+    state2.next = end;
+    state2.started = true;
+  }
+  buffer(state2, offset, data) {
+    if (state2.pending.some((f) => f.offset === offset && f.data.length >= data.length))
+      return;
+    state2.pending.push({ offset, data });
+    state2.pendingBytes += data.length;
+    this.pendingTotal += data.length;
+    const maxBytes = state2.started ? MAX_PENDING_BYTES_PER_STREAM : MAX_UNSTARTED_PENDING_BYTES;
+    const maxFragments = state2.started ? MAX_PENDING_FRAGMENTS_PER_STREAM : MAX_UNSTARTED_PENDING_FRAGMENTS;
+    if (state2.pendingBytes > maxBytes || state2.pending.length > maxFragments || this.pendingTotal > this.maxPendingTotal) {
+      this.ignore(state2);
+    }
+  }
+  drain(state2, out) {
+    let progressed = true;
+    while (progressed && state2.next !== IGNORED && state2.pending.length > 0) {
+      progressed = false;
+      for (let i = 0; i < state2.pending.length; i++) {
+        const f = state2.pending[i];
+        if (f.offset > state2.next)
+          continue;
+        state2.pending.splice(i, 1);
+        state2.pendingBytes -= f.data.length;
+        this.pendingTotal -= f.data.length;
+        this.deliver(state2, f.offset, f.data, out);
+        progressed = true;
+        break;
+      }
+    }
+  }
+};
+
+// agent/quic/shared/quiche_connection_capture.ts
+init_node_globals();
+var MAX_TRACKED_CONNECTIONS = 1024;
+function isUniStream(streamId) {
+  return (streamId & 2) !== 0;
+}
+var QuicheConnectionCapture = class {
+  modes = new LruMap(MAX_TRACKED_CONNECTIONS);
+  /** Capture path already decided for `connection`, or undefined (does not decide). */
+  modeOf(connection) {
+    return this.modes.get(connection);
+  }
+  /** Capture path of `connection` for a STREAM-frame event (decided on first sight). */
+  onFrame(connection, streamId, offset) {
+    let mode = this.modes.get(connection);
+    if (mode === void 0) {
+      mode = isUniStream(streamId) && offset === 0 ? "frames" : "bodies";
+      this.modes.set(connection, mode);
+    }
+    return mode;
+  }
+  /** Capture path of `connection` for a de-framed body event (decided on first sight). */
+  onBody(connection) {
+    let mode = this.modes.get(connection);
+    if (mode === void 0) {
+      mode = "bodies";
+      this.modes.set(connection, mode);
+    }
+    return mode;
+  }
+};
+
+// agent/quic/shared/quiche_frame_locator.ts
+init_node_globals();
+var ON_STREAM_FRAME_ANCHORS = [
+  "Unencrypted stream data seen.",
+  "Received crypto frame on non crypto stream."
+];
+var WRITE_STREAM_DATA_ANCHORS = [
+  " does not exist when trying to write data."
+];
+var STREAM_FRAME_FIN = 1;
+var STREAM_FRAME_DATA_LENGTH = 2;
+var STREAM_FRAME_STREAM_ID = 4;
+var STREAM_FRAME_DATA_BUFFER = 8;
+var STREAM_FRAME_OFFSET = 16;
+var DATA_WRITER_BUFFER = 0;
+var DATA_WRITER_LENGTH = 16;
+var MAX_FUNCTION_BYTES = 4096;
+function agreeOnFunction(sitesPerAnchor) {
+  let agreed = null;
+  for (const sites of sitesPerAnchor) {
+    if (sites.length === 0)
+      return null;
+    for (const fn of sites) {
+      if (fn === null)
+        return null;
+      if (fn.size !== null && fn.size > MAX_FUNCTION_BYTES)
+        return null;
+      if (agreed === null)
+        agreed = fn.start;
+      else if (agreed !== fn.start)
+        return null;
+    }
+  }
+  return agreed;
+}
+function siteFunction(mod, site) {
+  const fn = site.fn;
+  if (!fn)
+    return null;
+  return { start: fn.start.sub(mod.base).toInt32(), size: fn.end ? fn.end.sub(fn.start).toInt32() : null };
+}
+async function locateQuicheFrameApi(mod) {
+  const none = { onStreamFrame: null, writeStreamData: null };
+  if (Process.arch !== "arm64")
+    return none;
+  try {
+    const table = ehFrameTableFor(mod);
+    if (!table) {
+      devlog(`[Google QUICHE] ${mod.name}: no usable .eh_frame_hdr; cannot locate STREAM-frame hooks`);
+      return none;
+    }
+    const anchors = [...ON_STREAM_FRAME_ANCHORS, ...WRITE_STREAM_DATA_ANCHORS];
+    const sites = await anchorSiteFunctions(mod, table, anchors.map((text) => ({ text })));
+    const functions = sites.map((list) => list.map((site) => siteFunction(mod, site)));
+    const pick = (group) => {
+      const off = agreeOnFunction(group);
+      return off === null ? null : mod.base.add(off);
+    };
+    const onStreamFrame = pick(functions.slice(0, ON_STREAM_FRAME_ANCHORS.length));
+    const writeStreamData = pick(functions.slice(ON_STREAM_FRAME_ANCHORS.length));
+    devlog(`[Google QUICHE] ${mod.name}: STREAM-frame anchors -> QuicConnection::OnStreamFrame ${moduleOffsetLabel(mod, onStreamFrame)}, QuicSession::WriteStreamData ${moduleOffsetLabel(mod, writeStreamData)}`);
+    return { onStreamFrame, writeStreamData };
+  } catch (e) {
+    devlog(`[Google QUICHE] ${mod.name}: STREAM-frame locator failed: ${e}`);
+    return none;
+  }
+}
+
+// agent/quic/shared/quiche_frame_capture.ts
+var FRAME_IN_LABEL = "QuicConnection_OnStreamFrame";
+var FRAME_OUT_LABEL = "QuicSession_WriteStreamData";
+var MAX_DEFERRED_CHUNKS = 256;
+var MAX_DEFERRED_SESSIONS = 32;
+var frameReassembler = new QuicStreamReassembler();
+var frameCapture = new QuicheConnectionCapture();
+var deferredEgress = new LruMap(MAX_DEFERRED_SESSIONS);
+function recordKey(record) {
+  return String(record.message["ssl_session_id"]);
+}
+function streamKey(direction, record) {
+  return `${direction}|${recordKey(record)}|${record.streamId}`;
+}
+function wantsFragment(record, direction, offset, length, fin) {
+  if (frameCapture.modeOf(recordKey(record)) === "bodies")
+    return false;
+  return fin || frameReassembler.canDeliver(streamKey(direction, record), offset, length);
+}
+function toArrayBuffer(bytes) {
+  const whole = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength;
+  return whole ? bytes.buffer : bytes.slice().buffer;
+}
+function copyBytes(at, length) {
+  if (length === 0)
+    return new Uint8Array(0);
+  if (at.isNull() || !isReadable(at, length))
+    return null;
+  const buf = at.readByteArray(length);
+  return buf ? new Uint8Array(buf) : null;
+}
+function emitFragment(record, direction, offset, bytes, fin) {
+  const chunks = frameReassembler.push(streamKey(direction, record), offset, bytes, fin);
+  if (chunks.length === 0)
+    return;
+  if (frameCapture.onFrame(recordKey(record), record.streamId, chunks[0].offset) !== "frames")
+    return;
+  for (const chunk of chunks) {
+    sendQuicDatalog(record.message, toArrayBuffer(chunk.data), record.streamId, void 0, void 0, "udp", void 0, "stream");
+  }
+}
+function connectionRecord(state2, connection, streamId, label, direction, resolvable = true) {
+  return (resolvable ? resolveConnectionRecord(state2, connection, streamId, label, direction) : null) ?? unresolvedConnectionRecord(state2, connection, streamId, label, direction);
+}
+function emitIngressFrame(state2, connection, frame) {
+  const length = frame.add(STREAM_FRAME_DATA_LENGTH).readU16();
+  const fin = (frame.add(STREAM_FRAME_FIN).readU8() & 1) === 1;
+  const streamId = frame.add(STREAM_FRAME_STREAM_ID).readU32();
+  const offset = frame.add(STREAM_FRAME_OFFSET).readU64().toNumber();
+  const record = connectionRecord(state2, toAddress(connection), streamId, FRAME_IN_LABEL, "read");
+  if (!wantsFragment(record, "read", offset, length, fin))
+    return;
+  const bytes = copyBytes(length > 0 ? frame.add(STREAM_FRAME_DATA_BUFFER).readPointer() : NULL, length);
+  if (bytes)
+    emitFragment(record, "read", offset, bytes, fin);
+}
+function emitEgressWrite(state2, session, write) {
+  const key = session.toString();
+  const connection = sessionConnection(state2, toAddress(session));
+  const resolvable = connection !== null && connection !== 0n && state2.connLayout !== null;
+  const held = deferredEgress.get(key);
+  if (resolvable && held === void 0) {
+    const record = connectionRecord(state2, connection, write.streamId, FRAME_OUT_LABEL, "write");
+    if (!wantsFragment(record, "write", write.offset, write.length, false))
+      return;
+    const bytes2 = copyBytes(write.at, write.length);
+    if (bytes2)
+      emitFragment(record, "write", write.offset, bytes2, false);
+    return;
+  }
+  const bytes = copyBytes(write.at, write.length);
+  if (!bytes)
+    return;
+  const pending = held ?? [];
+  pending.push({ streamId: write.streamId, offset: write.offset, bytes });
+  if (!resolvable && pending.length <= MAX_DEFERRED_CHUNKS) {
+    deferredEgress.set(key, pending);
+    return;
+  }
+  deferredEgress.delete(key);
+  const conn = resolvable ? connection : toAddress(session);
+  for (const f of pending) {
+    const record = connectionRecord(state2, conn, f.streamId, FRAME_OUT_LABEL, "write", resolvable);
+    emitFragment(record, "write", f.offset, f.bytes, false);
+  }
+}
+function bodyHookReports(record) {
+  return record.connection !== void 0 && frameCapture.onBody(String(record.message["ssl_session_id"])) === "bodies";
+}
+function onStreamFrameListener(state2) {
+  const crumb = `QuicConnection::OnStreamFrame (${state2.moduleName})`;
+  return {
+    onEnter(args) {
+      if (_isShuttingDownNow())
+        return;
+      hookBreadcrumb(crumb);
+      try {
+        resetReadableCache();
+        if (!isReadable(args[1], STREAM_FRAME_OFFSET + 8))
+          return;
+        emitIngressFrame(state2, args[0], args[1]);
+      } catch (e) {
+        devlog_error(`[${FRAME_IN_LABEL}] onEnter threw: ${e}`);
+      }
+    }
+  };
+}
+function writeStreamDataListener(state2) {
+  const crumb = `QuicSession::WriteStreamData (${state2.moduleName})`;
+  return {
+    onEnter(args) {
+      this.writer = null;
+      if (_isShuttingDownNow())
+        return;
+      hookBreadcrumb(crumb);
+      try {
+        resetReadableCache();
+        const writer = args[4];
+        if (!isReadable(writer, DATA_WRITER_LENGTH + 8))
+          return;
+        this.writer = writer;
+        this.session = args[0];
+        this.streamId = args[1].toUInt32();
+        this.offset = uint64(args[2].toString()).toNumber();
+        this.length = uint64(args[3].toString()).toNumber();
+        this.before = writer.add(DATA_WRITER_LENGTH).readU64().toNumber();
+      } catch (e) {
+        this.writer = null;
+        devlog_error(`[${FRAME_OUT_LABEL}] onEnter threw: ${e}`);
+      }
+    },
+    onLeave(retval) {
+      if (!this.writer || _isShuttingDownNow())
+        return;
+      try {
+        if (retval.toInt32() !== 0 || this.length === 0)
+          return;
+        const writer = this.writer;
+        const after = writer.add(DATA_WRITER_LENGTH).readU64().toNumber();
+        if (after - this.before !== this.length)
+          return;
+        resetReadableCache();
+        emitEgressWrite(state2, this.session, {
+          streamId: this.streamId,
+          offset: this.offset,
+          length: this.length,
+          at: writer.add(DATA_WRITER_BUFFER).readPointer().add(this.before)
+        });
+      } catch (e) {
+        devlog_error(`[${FRAME_OUT_LABEL}] onLeave threw: ${e}`);
+      }
+    }
+  };
+}
+async function installQuicheFrameHooks(moduleName) {
+  const mod = Process.findModuleByName(moduleName);
+  const state2 = quicheLayoutState(moduleName);
+  if (!mod || !state2)
+    return false;
+  const api = await locateQuicheFrameApi(mod);
+  if (!api.onStreamFrame || !api.writeStreamData)
+    return false;
+  const listeners = [];
+  try {
+    listeners.push(Interceptor.attach(api.onStreamFrame, onStreamFrameListener(state2)));
+    listeners.push(Interceptor.attach(api.writeStreamData, writeStreamDataListener(state2)));
+  } catch (e) {
+    listeners.forEach((l) => l.detach());
+    devlog_error(`[Google QUICHE] failed to hook the STREAM-frame boundary in ${moduleName}: ${e}`);
+    return false;
+  }
+  log(`[*] Hooked QuicConnection::OnStreamFrame + QuicSession::WriteStreamData in ${moduleName} (raw HTTP/3 streams: request/response headers via QPACK, bodies, control streams)`);
+  return true;
+}
+
+// agent/quic/definitions/google_quiche.ts
 function parseObservedPeer(sa) {
   if (sa.isNull() || !isReadable(sa, 2))
     return null;
@@ -19292,8 +22839,8 @@ function readHttpHeaderBlock(hhb, maxPairs = 256) {
       let node = safeReadPointer(listObj.add(8));
       if (node === null)
         continue;
-      let guard = 0;
-      while (!node.isNull() && !node.equals(sentinel) && guard < maxPairs) {
+      let guard2 = 0;
+      while (!node.isNull() && !node.equals(sentinel) && guard2 < maxPairs) {
         const pair = node.add(16);
         const key = readStringView(pair);
         const val = readHeaderValue(pair.add(16));
@@ -19303,7 +22850,7 @@ function readHttpHeaderBlock(hhb, maxPairs = 256) {
         if (next === null)
           break;
         node = next;
-        guard++;
+        guard2++;
       }
       if (out.length > 0)
         return out;
@@ -19312,7 +22859,7 @@ function readHttpHeaderBlock(hhb, maxPairs = 256) {
   }
   return out;
 }
-function installReadvHook(addr, label) {
+function installReadvHook(addr, label, moduleName, kind) {
   let callCount = 0;
   const MAX_DEBUG_CALLS = 5;
   Interceptor.attach(addr, {
@@ -19335,8 +22882,8 @@ function installReadvHook(addr, label) {
         const data = readIovec(this.iov, this.iovLen, bytesRead);
         if (!data)
           return;
-        const message = resolveQuicMessage(this.streamObj.toString(), label);
-        sendQuicDatalog(message, data, -1);
+        const { message, streamId } = resolveQuicheRecord(moduleName, this.streamObj, kind, label);
+        sendQuicDatalog(message, data, streamId ?? -1);
       } catch (e) {
         devlog_error(`[${label}] onLeave threw: ${e}`);
       }
@@ -19552,10 +23099,13 @@ async function resolveQuicheSymbols(moduleName) {
 }
 async function installGoogleQuicheHooks(moduleName) {
   if (!pcap_enabled)
-    return;
+    return false;
   log("[*] Google QUICHE: attempting to hook QuicSpdyStream in " + moduleName);
   installQuicSocketObserver();
-  const resolved = await resolveQuicheSymbols(moduleName);
+  const [frameHooked, resolved] = await Promise.all([
+    quic_capture_mode !== "app-api" ? installQuicheFrameHooks(moduleName) : Promise.resolve(false),
+    resolveQuicheSymbols(moduleName)
+  ]);
   const readvAddr = resolved.get("readv") || null;
   const quicStreamReadvAddr = resolved.get("quicStreamReadv") || null;
   const sequencerReadvAddr = resolved.get("sequencerReadv") || null;
@@ -19597,26 +23147,28 @@ async function installGoogleQuicheHooks(moduleName) {
     log(`[*] Google QUICHE: --quic-egress-headers-layer=${requestedLayer} (forced; other egress-headers layers will NOT be installed even if their patterns resolve)`);
   }
   const hasAnyResolvedAddress = !!(readvAddr || writeAddr || quicStreamReadvAddr || sequencerReadvAddr || onDataFramePayloadAddr || onHeadersDecodedAddr || writeHeadersAddr || chromiumWriteHeadersAddr || sessionWriteHeadersOnHeadersStreamAddr);
+  if (!hasAnyResolvedAddress && frameHooked)
+    return true;
   if (!hasAnyResolvedAddress) {
     devlog("[Google QUICHE] could not resolve any stream functions in " + moduleName);
     devlog("[Google QUICHE] note: stripped release builds require byte patterns in default_patterns.json");
     if (quic_capture_mode === "app-api") {
       log(`[*] Google QUICHE egress headers chain in ${moduleName}: active layer = NONE (no addresses resolved on this module)`);
     }
-    return;
+    return false;
   }
   log(`[*] Google QUICHE: quic_capture_mode = "${quic_capture_mode}"`);
-  if (quic_capture_mode !== "app-api") {
+  if (quic_capture_mode !== "app-api" && !frameHooked) {
     const readvTargets = [
-      [readvAddr, "QuicSpdyStream_Readv", "QuicSpdyStream::Readv"],
-      [quicStreamReadvAddr, "QuicStream_Readv", "QuicStream::Readv"],
-      [sequencerReadvAddr, "QuicStreamSequencer_Readv", "QuicStreamSequencer::Readv"]
+      [readvAddr, "QuicSpdyStream_Readv", "QuicSpdyStream::Readv", "stream"],
+      [quicStreamReadvAddr, "QuicStream_Readv", "QuicStream::Readv", "stream"],
+      [sequencerReadvAddr, "QuicStreamSequencer_Readv", "QuicStreamSequencer::Readv", "sequencer"]
     ];
-    for (const [addr, label, prettyName] of readvTargets) {
+    for (const [addr, label, prettyName, kind] of readvTargets) {
       if (!addr || addr.isNull())
         continue;
       try {
-        installReadvHook(addr, label);
+        installReadvHook(addr, label, moduleName, kind);
         log(`[*] Hooked ${prettyName} for plaintext capture`);
       } catch (e) {
         devlog_error(`[Google QUICHE] failed to hook ${prettyName}: ${e}`);
@@ -19644,8 +23196,10 @@ async function installGoogleQuicheHooks(moduleName) {
             const data = dataPtr.readByteArray(dataLen);
             if (!data)
               return;
-            const message = resolveQuicMessage(args[0].toString(), "QuicSpdyStream_OnDataFramePayload");
-            sendQuicDatalog(message, data, -1);
+            const record = resolveQuicheRecord(moduleName, args[0], "decoder-visitor", "QuicSpdyStream_OnDataFramePayload");
+            if (frameHooked && !bodyHookReports(record))
+              return;
+            sendQuicheBody(record, data);
           } catch (e) {
             devlog_error("[QuicSpdyStream_OnDataFramePayload] onEnter threw: " + e);
           }
@@ -19723,9 +23277,8 @@ async function installGoogleQuicheHooks(moduleName) {
               ohdCount++;
               devlog_debug(`[OnHeadersDecoded] call #${ohdCount} in ${moduleName}: ${headers.length} header(s)`);
             }
-            const streamId = this.streamObj.toUInt32();
-            const message = resolveQuicMessage(this.streamObj.toString(), "QuicSpdyStream_OnHeadersDecoded");
-            sendQuicDatalog(message, null, streamId, void 0, void 0, "udp", headers);
+            const { message, streamId } = resolveQuicheRecord(moduleName, this.streamObj, "stream", "QuicSpdyStream_OnHeadersDecoded");
+            sendQuicDatalog(message, null, streamId ?? this.streamObj.toUInt32(), void 0, void 0, "udp", headers);
           } catch (e) {
             devlog_error("[QuicSpdyStream_OnHeadersDecoded] onLeave threw: " + e);
           }
@@ -19759,9 +23312,8 @@ async function installGoogleQuicheHooks(moduleName) {
               whCount++;
               devlog_debug(`[WriteHeaders] call #${whCount} in ${moduleName}: ${headers.length} header(s)`);
             }
-            const streamId = streamObj.toUInt32();
-            const message = resolveQuicMessage(streamObj.toString(), "QuicSpdyStream_WriteHeaders");
-            sendQuicDatalog(message, null, streamId, void 0, void 0, "udp", headers);
+            const { message, streamId } = resolveQuicheRecord(moduleName, streamObj, "stream", "QuicSpdyStream_WriteHeaders", "write");
+            sendQuicDatalog(message, null, streamId ?? streamObj.toUInt32(), void 0, void 0, "udp", headers);
           } catch (e) {
             devlog_error("[QuicSpdyStream_WriteHeaders] onEnter threw: " + e);
           }
@@ -19801,9 +23353,8 @@ async function installGoogleQuicheHooks(moduleName) {
               cwhCount++;
               devlog_debug(`[ChromiumClientStream_WriteHeaders] call #${cwhCount} in ${moduleName}: ${headers.length} header(s)`);
             }
-            const streamId = innerStream.toUInt32();
-            const message = resolveQuicMessage(innerStream.toString(), "QuicChromiumClientStream_WriteHeaders");
-            sendQuicDatalog(message, null, streamId, void 0, void 0, "udp", headers);
+            const { message, streamId } = resolveQuicheRecord(moduleName, innerStream, "stream", "QuicChromiumClientStream_WriteHeaders", "write");
+            sendQuicDatalog(message, null, streamId ?? innerStream.toUInt32(), void 0, void 0, "udp", headers);
           } catch (e) {
             devlog_error("[QuicChromiumClientStream_WriteHeaders] onEnter threw: " + e);
           }
@@ -19839,8 +23390,8 @@ async function installGoogleQuicheHooks(moduleName) {
               swhCount++;
               devlog_debug(`[SpdySession_WriteHeadersOnHeadersStream] call #${swhCount} in ${moduleName}: ${headers.length} header(s)`);
             }
-            const message = resolveQuicMessage(sessionObj.toString(), "QuicSpdySession_WriteHeadersOnHeadersStream");
-            sendQuicDatalog(message, null, streamIdRaw, void 0, void 0, "udp", headers);
+            const { message, streamId } = resolveQuicheSessionRecord(moduleName, sessionObj, streamIdRaw, "QuicSpdySession_WriteHeadersOnHeadersStream", "write");
+            sendQuicDatalog(message, null, streamId, void 0, void 0, "udp", headers);
           } catch (e) {
             devlog_error("[QuicSpdySession_WriteHeadersOnHeadersStream] onEnter threw: " + e);
           }
@@ -19881,8 +23432,10 @@ async function installGoogleQuicheHooks(moduleName) {
         onLeave(_retval) {
           if (!this.data || this.dataLen === 0)
             return;
-          const message = resolveQuicMessage(this.streamObj.toString(), "QuicSpdyStream_WriteOrBufferBody");
-          sendQuicDatalog(message, this.data, -1);
+          const record = resolveQuicheRecord(moduleName, this.streamObj, "stream", "QuicSpdyStream_WriteOrBufferBody", "write");
+          if (frameHooked && !bodyHookReports(record))
+            return;
+          sendQuicheBody(record, this.data);
         }
       });
       log("[*] Hooked QuicSpdyStream::WriteOrBufferBody for plaintext capture");
@@ -19905,15 +23458,17 @@ async function installGoogleQuicheHooks(moduleName) {
       log(`[!] Google QUICHE: forced layer "${requestedLayer}" did not resolve in ${moduleName}; layers that WOULD have resolved if --quic-egress-headers-layer=auto: [${available.length > 0 ? available.join(", ") : "none"}]`);
     }
   }
+  return true;
 }
 
 // agent/quic/platforms/macos/google_quiche_macos.ts
 async function google_quiche_execute(moduleName, _is_base_hook) {
   log("[*] Google QUICHE detected in " + moduleName + ", installing QUIC stream hooks...");
   try {
-    await installGoogleQuicheHooks(moduleName);
+    return await installGoogleQuicheHooks(moduleName);
   } catch (e) {
     devlog("[Google QUICHE] install failed in " + moduleName + ": " + e);
+    return false;
   }
 }
 
@@ -19927,7 +23482,7 @@ function resolveNeqoSymbols(moduleName, symbolNames) {
   const resolved = /* @__PURE__ */ new Map();
   const remaining = [];
   for (const name of symbolNames) {
-    const addr = Module.findExportByName(moduleName, name);
+    const addr = findModuleExport2(moduleName, name);
     if (addr && !addr.isNull()) {
       resolved.set(name, addr);
     } else {
@@ -20099,7 +23654,7 @@ function createNeqoReadResponseHook() {
             const data = this.buf.readByteArray(bytesRead);
             const connKey = this.conn.toString();
             const connInfo = quicConnectionTracker.get(connKey) || UNKNOWN_CONNECTION;
-            const message = buildQuicMessage(connInfo, connKey, "neqo_read_response_data");
+            const message = buildQuicMessage(connInfo, connKey, "neqo_read_response_data", "read", moduleName);
             sendQuicDatalog(message, data, this.streamId, connInfo.scid, connInfo.dcid);
             if (this.finPtr && !this.finPtr.isNull()) {
               if (this.finPtr.readU8() !== 0) {
@@ -20172,7 +23727,7 @@ function createNeqoSendRequestBodyHook() {
             const data = bytesSent < this.dataLen ? this.data.slice(0, bytesSent) : this.data;
             const connKey = this.conn.toString();
             const connInfo = quicConnectionTracker.get(connKey) || UNKNOWN_CONNECTION;
-            const message = buildQuicMessage(connInfo, connKey, "neqo_send_request_body");
+            const message = buildQuicMessage(connInfo, connKey, "neqo_send_request_body", "write", moduleName);
             sendQuicDatalog(message, data, this.streamId, connInfo.scid, connInfo.dcid);
           } catch (e) {
             devlog("[neqo] send_request_body hook error: " + e);
@@ -20240,6 +23795,140 @@ function neqo_execute(moduleName, is_base_hook) {
   executeFromDefinition(createNeqoDefinition(), moduleName, socket_library3, is_base_hook, enable_default_fd);
 }
 
+// agent/legacy/tls/platforms/macos/gotls_macos.ts
+init_node_globals();
+function gotls_execute2(moduleName, is_base_hook) {
+  gotls_execute_native(moduleName, socket_library3, is_base_hook);
+}
+
+// agent/tls/platforms/macos/gotls_macos.ts
+init_node_globals();
+function gotls_execute_modern2(moduleName, is_base_hook) {
+  const fallBack = (e) => {
+    devlog(`[gotls] modern definition failed on ${moduleName} (${e}); using the class-based GoTLS executor`);
+    gotls_execute_class_based(moduleName, socket_library3, is_base_hook);
+  };
+  try {
+    executeFromDefinition(createGoTlsDefinition(), moduleName, socket_library3, is_base_hook, enable_default_fd).catch(fallBack);
+  } catch (e) {
+    fallBack(e);
+  }
+}
+
+// agent/shared/go_binary_detection.ts
+init_node_globals();
+var GO_BUILDINFO_MAGIC = [
+  255,
+  32,
+  71,
+  111,
+  32,
+  98,
+  117,
+  105,
+  108,
+  100,
+  105,
+  110,
+  102,
+  58
+];
+var GO_BUILDINFO_ALIGN = 16;
+var GO_BUILDINFO_SECTIONS = /* @__PURE__ */ new Set([".go.buildinfo", "__go_buildinfo"]);
+var PE_DATA_SEARCH_BYTES = 65536;
+var PE_HEADER_BYTES = 4096;
+function hasGoBuildInfoMagicAt(bytes, offset) {
+  if (offset < 0 || offset + GO_BUILDINFO_MAGIC.length > bytes.length)
+    return false;
+  return GO_BUILDINFO_MAGIC.every((b, i) => bytes[offset + i] === b);
+}
+function findGoBuildInfoMagic(bytes) {
+  for (let off = 0; off + GO_BUILDINFO_MAGIC.length <= bytes.length; off += GO_BUILDINFO_ALIGN) {
+    if (hasGoBuildInfoMagicAt(bytes, off))
+      return off;
+  }
+  return -1;
+}
+function parsePeSections(headers) {
+  const view = new DataView(headers.buffer, headers.byteOffset, headers.byteLength);
+  if (headers.length < 64 || view.getUint16(0, true) !== 23117)
+    return null;
+  const nt = view.getUint32(60, true);
+  if (nt + 24 > headers.length || view.getUint32(nt, true) !== 17744)
+    return null;
+  const count = view.getUint16(nt + 6, true);
+  const optionalHeaderSize = view.getUint16(nt + 20, true);
+  const table = nt + 24 + optionalHeaderSize;
+  const sections = [];
+  for (let i = 0; i < count; i++) {
+    const entry = table + i * 40;
+    if (entry + 40 > headers.length)
+      break;
+    let name = "";
+    for (let j = 0; j < 8 && headers[entry + j] !== 0; j++)
+      name += String.fromCharCode(headers[entry + j]);
+    sections.push({ name, virtualSize: view.getUint32(entry + 8, true), virtualAddress: view.getUint32(entry + 12, true) });
+  }
+  return sections;
+}
+function readBytes(address, length) {
+  const buffer = address.readByteArray(length);
+  return buffer === null ? null : new Uint8Array(buffer);
+}
+function peHasGoBuildInfo(module, headers) {
+  const data = (parsePeSections(headers) ?? []).find((s) => s.name === ".data");
+  if (!data || data.virtualSize === 0)
+    return false;
+  const length = Math.min(data.virtualSize, PE_DATA_SEARCH_BYTES);
+  const bytes = readBytes(module.base.add(data.virtualAddress), length);
+  return bytes !== null && findGoBuildInfoMagic(bytes) >= 0;
+}
+function sectionHasGoBuildInfo(module) {
+  if (typeof module.enumerateSections !== "function")
+    return false;
+  for (const section of module.enumerateSections()) {
+    if (!GO_BUILDINFO_SECTIONS.has(section.name))
+      continue;
+    const bytes = readBytes(section.address, GO_BUILDINFO_MAGIC.length);
+    if (bytes !== null && hasGoBuildInfoMagicAt(bytes, 0))
+      return true;
+  }
+  return false;
+}
+function moduleHasGoBuildInfo(module) {
+  try {
+    const headers = readBytes(module.base, Math.min(PE_HEADER_BYTES, module.size));
+    if (headers !== null && headers.length >= 2 && headers[0] === 77 && headers[1] === 90) {
+      return peHasGoBuildInfo(module, headers);
+    }
+    return sectionHasGoBuildInfo(module);
+  } catch (e) {
+    devlog(`[go-detect] ${module.name}: build-info check failed (${e}); not treated as Go`);
+    return false;
+  }
+}
+var verdicts = /* @__PURE__ */ new Map();
+function isGoModule(moduleName) {
+  let module = null;
+  try {
+    module = Process.findModuleByName(moduleName);
+  } catch (e) {
+    module = null;
+  }
+  if (module === null)
+    return false;
+  const key = `${moduleName}@${module.base}`;
+  let verdict = verdicts.get(key);
+  if (verdict === void 0) {
+    verdict = moduleHasGoBuildInfo(module);
+    verdicts.set(key, verdict);
+    if (verdict)
+      devlog(`[go-detect] ${moduleName}: Go build info found; Go TLS hooks apply`);
+  }
+  return verdict;
+}
+var GO_LINUX_NAMED_MODULE = /(\.go.so|go[0-9.]+)$/;
+
 // agent/platforms/macos.ts
 var plattform_name = PLATFORM_DARWIN;
 var socket_library3 = "libSystem.B.dylib";
@@ -20292,6 +23981,12 @@ function load_macos_hooking_agent() {
     // byte-pattern works. cronet_execute_modern kept imported for a future fix.
     { platform: plattform_name, pattern: /.*cronet.*\.dylib/, hookFn: cronet_execute2, library: "Cronet", libraryType: "boringssl", protocol: "tls" },
     { platform: plattform_name, pattern: /.*libnss[0-9]*\.dylib/, hookFn: use_modern ? nss_execute_modern2 : nss_execute2, library: "NSS", libraryType: "nss", protocol: "tls" },
+    // GnuTLS (Homebrew libgnutls.30.dylib); not libgnutlsxx, the C++ wrapper over it.
+    { platform: plattform_name, pattern: /.*libgnutls(\.[0-9]+)*\.dylib/, hookFn: use_modern ? gnutls_execute_modern2 : gnutls_execute3, library: "GnuTLS", libraryType: "gnutls", protocol: "tls" },
+    // Go crypto/tls: linked into the Go image itself — usually the main executable, under
+    // any name — so it is found by content (Go's __go_buildinfo section,
+    // shared/go_binary_detection.ts), not by name; c-shared Go .dylibs likewise.
+    { platform: plattform_name, pattern: /.*/, contentFilter: isGoModule, hookFn: use_modern ? gotls_execute_modern2 : gotls_execute2, library: "Go TLS", libraryType: "gotls", protocol: "tls" },
     // SSH binaries / libraries
     { platform: plattform_name, pattern: /.*libssh2?\.dylib/, hookFn: use_modern ? libssh_execute_modern : ssh_execute, library: "libssh", protocol: "ssh" },
     { platform: plattform_name, pattern: /^(\/.+\/)?(ssh|sshd|sshd-session|scp|sftp-server)$/, hookFn: use_modern ? openssh_execute_modern : ssh_execute, library: "OpenSSH", protocol: "ssh" },
@@ -20544,7 +24239,7 @@ function libresslAwareDispatch(libressl, other) {
 
 // agent/tls/platforms/linux/gnutls_linux.ts
 init_node_globals();
-function gnutls_execute_modern2(moduleName, is_base_hook) {
+function gnutls_execute_modern3(moduleName, is_base_hook) {
   executeFromDefinition(createGnuTlsDefinition(), moduleName, socket_library2, is_base_hook, enable_default_fd);
 }
 
@@ -20792,391 +24487,6 @@ function ssl_python_execute2(moduleName, is_base_hook) {
   executeSSLLibrary(OpenSSL_From_Python_Linux, moduleName, socket_library2, is_base_hook);
 }
 
-// agent/legacy/tls/platforms/linux/gnutls_linux.ts
-init_node_globals();
-
-// agent/tls/libs/gnutls.ts
-init_node_globals();
-init_shared_structures();
-var GnuTLS2 = class _GnuTLS {
-  moduleName;
-  socket_library;
-  passed_library_method_mapping;
-  // global variables
-  library_method_mapping = {};
-  addresses;
-  module_name;
-  static gnutls_transport_get_int;
-  static gnutls_session_get_id;
-  static gnutls_session_get_random;
-  static gnutls_session_set_keylog_function;
-  constructor(moduleName, socket_library6, passed_library_method_mapping) {
-    this.moduleName = moduleName;
-    this.socket_library = socket_library6;
-    this.passed_library_method_mapping = passed_library_method_mapping;
-    if (typeof passed_library_method_mapping !== "undefined") {
-      this.library_method_mapping = passed_library_method_mapping;
-    } else {
-      this.library_method_mapping[`*${moduleName}*`] = ["gnutls_record_recv", "gnutls_record_send", "gnutls_session_set_keylog_function", "gnutls_transport_get_int", "gnutls_session_get_id", "gnutls_init", "gnutls_handshake", "gnutls_session_get_keylog_function", "gnutls_session_get_random"];
-      this.library_method_mapping[`*${socket_library6}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"];
-    }
-    this.addresses = readAddresses(moduleName, this.library_method_mapping);
-    this.module_name = moduleName;
-    resolveOffsets(this.addresses, this.moduleName, socket_library6, "gnutls");
-    resolveWithPipelineAsync(this.addresses, this.moduleName, "gnutls", [
-      "gnutls_record_recv",
-      "gnutls_record_send",
-      "gnutls_session_set_keylog_function",
-      "gnutls_transport_get_int",
-      "gnutls_session_get_id",
-      "gnutls_init",
-      "gnutls_handshake",
-      "gnutls_session_get_random"
-    ]).catch(() => {
-    });
-    _GnuTLS.gnutls_transport_get_int = new NativeFunction(this.addresses[this.moduleName]["gnutls_transport_get_int"], "int", ["pointer"]);
-    _GnuTLS.gnutls_session_get_id = new NativeFunction(this.addresses[this.moduleName]["gnutls_session_get_id"], "int", ["pointer", "pointer", "pointer"]);
-    _GnuTLS.gnutls_session_set_keylog_function = new NativeFunction(this.addresses[this.moduleName]["gnutls_session_set_keylog_function"], "void", ["pointer", "pointer"]);
-    _GnuTLS.gnutls_session_get_random = new NativeFunction(this.addresses[this.moduleName]["gnutls_session_get_random"], "pointer", ["pointer", "pointer", "pointer"]);
-  }
-  // Dynamic pattern-discovery bookkeeping. First time our keylog_callback
-  // fires, an Interceptor.attach on the callback's own address (see
-  // attachDynamicDiscovery below) uses the caller's returnAddress to locate
-  // `_gnutls_call_keylog_func` — no hardcoded byte pattern per gnutls build.
-  //
-  // The address is logged and emitted as a `--patterns` JSON override for
-  // reuse (persist across runs, share between machines running the same
-  // libgnutls). We deliberately do NOT install a second Interceptor at the
-  // discovered address: gnutls always dispatches through our injected
-  // callback for every session it created via gnutls_init, so a direct
-  // hook there would double-emit every key. The pattern remains valuable
-  // for `wine_keylog_pattern_hook.ts` (offline reuse / attach-after-init
-  // scenarios that skipped the gnutls_init hook).
-  static _gnutls_call_keylog_func_addr = null;
-  static _pattern_hook_installed = false;
-  static _discovery_listener = null;
-  // Scratch buffers reused across every keylog_callback firing. Allocated
-  // once at class load (gnutls_session_get_random writes an in/out
-  // gnutls_datum_t: { pointer, uint }). Keeping them static avoids two
-  // Memory.alloc calls per emitted TLS secret.
-  static _cr_datum = Memory.alloc(Process.pointerSize + 4);
-  static _sr_datum = Memory.alloc(Process.pointerSize + 4);
-  // NativeCallback for gnutls_session_set_keylog_function.
-  // Receives (session, label, gnutls_datum_t* secret) — gnutls_datum_t is
-  // { pointer data, uint size }. NativeCallbacks don't get a usable
-  // this.context; attachDynamicDiscovery() wraps this address in an
-  // Interceptor to get real InvocationContext for backtrace.
-  static keylog_callback = new NativeCallback(function(session, label, secret) {
-    const secret_len = secret.add(Process.pointerSize).readUInt();
-    const secretBytes = secret.readPointer().readByteArray(secret_len);
-    const secret_str = secretBytes ? toHexString(secretBytes).toUpperCase() : "";
-    try {
-      _GnuTLS.gnutls_session_get_random(session, _GnuTLS._cr_datum, _GnuTLS._sr_datum);
-    } catch (e) {
-      devlog_error(`[gnutls] session_get_random failed: ${e}`);
-    }
-    const crBytes = _GnuTLS._cr_datum.readPointer().readByteArray(32);
-    const client_random_str = crBytes ? toHexString(crBytes).toUpperCase() : "";
-    sendKeylog(label.readCString() + " " + client_random_str + " " + secret_str);
-    return 0;
-  }, "int", ["pointer", "pointer", "pointer"]);
-  /**
-   * Walk backward from a return address INSIDE `_gnutls_call_keylog_func`
-   * to that function's entry, using architecture-specific prologue
-   * heuristics. Returns null if no plausible prologue is found within a
-   * 512-byte / 128-instruction window.
-   *
-   * AArch64 uses the shared prologue predicate `isFunctionPrologueWord`
-   * from `agent/shared/arm64.ts` — the canonical superset of every
-   * hand-rolled AArch64 prologue matcher across the codebase.
-   */
-  static _findGnutlsFuncStart(retAddr) {
-    const arch = Process.arch;
-    if (arch === "x64" || arch === "ia32")
-      return _GnuTLS._findX86FuncStart(retAddr);
-    if (arch === "arm64")
-      return _GnuTLS._findArm64FuncStart(retAddr);
-    if (arch === "arm")
-      return _GnuTLS._findArmFuncStart(retAddr);
-    devlog(`[gnutls dyn] no prologue heuristic for arch=${arch}`);
-    return null;
-  }
-  /**
-   * Match `endbr64` (Intel CET, 0xF3 0F 1E FA) at addr. Returns true on
-   * clean read + match. Used to prefer the CET landing pad over a later
-   * `push rbp ; mov rsp, rbp` when both appear back-to-back (Ubuntu Noble
-   * libgnutls).
-   */
-  static _isEndbr64(addr) {
-    try {
-      return addr.readU8() === 243 && addr.add(1).readU8() === 15 && addr.add(2).readU8() === 30 && addr.add(3).readU8() === 250;
-    } catch (_e) {
-      return false;
-    }
-  }
-  /**
-   * x86-64 / x86 prologue detection. Byte-granular backward walk because
-   * x86 is variable-length. Handles `endbr64` and the standard
-   * `push rbp ; mov rsp, rbp` (0x55 48 89 E5); if the frame-pointer save
-   * is preceded by `endbr64`, backs up 4 bytes so the captured pattern
-   * matches the on-disk binary byte-for-byte.
-   */
-  static _findX86FuncStart(retAddr) {
-    for (let off = 0; off <= 512; off++) {
-      const probe2 = retAddr.sub(off);
-      if (_GnuTLS._isEndbr64(probe2))
-        return probe2;
-      let b0, b1, b2, b3;
-      try {
-        b0 = probe2.readU8();
-        b1 = probe2.add(1).readU8();
-        b2 = probe2.add(2).readU8();
-        b3 = probe2.add(3).readU8();
-      } catch (_e) {
-        return null;
-      }
-      if (b0 === 85 && b1 === 72 && b2 === 137 && b3 === 229) {
-        const p2 = probe2.sub(4);
-        return _GnuTLS._isEndbr64(p2) ? p2 : probe2;
-      }
-    }
-    return null;
-  }
-  /**
-   * AArch64 prologue detection. 4-byte-aligned backward walk over 128
-   * instructions; delegates to `isFunctionPrologueWord()` in
-   * `agent/shared/arm64.ts`, which is the canonical union of every
-   * prologue encoding used in this codebase (paciasp/pacibsp, bti c|j|jc,
-   * STP x29,x30 with signed offset, STP-pre-index broad form for any
-   * callee-saved pair, SUB sp,sp,#imm).
-   *
-   * ARMv8.3+ pointer-auth codes on the return address are stripped via
-   * Frida's `NativePointer.strip()`. On a runtime without .strip(), a
-   * defensive 48-bit VA mask is applied.
-   */
-  static _findArm64FuncStart(retAddrRaw) {
-    let retAddr;
-    try {
-      retAddr = retAddrRaw.strip ? retAddrRaw.strip() : retAddrRaw;
-    } catch (_e) {
-      try {
-        retAddr = retAddrRaw.and(ptr("0x0000FFFFFFFFFFFF"));
-      } catch (_e2) {
-        retAddr = retAddrRaw;
-      }
-    }
-    retAddr = retAddr.and(ptr("0xFFFFFFFFFFFFFFFC"));
-    for (let step = 0; step <= 128; step++) {
-      const probe2 = retAddr.sub(step * 4);
-      let insn;
-      try {
-        insn = probe2.readU32();
-      } catch (_e) {
-        return null;
-      }
-      if (isFunctionPrologueWord(insn))
-        return probe2;
-    }
-    return null;
-  }
-  /**
-   * AArch32 (ARM/Thumb) prologue detection — best-effort.
-   * Matches `push {..., lr}` in ARM state (opcode E92D...) and
-   * `push.w {..., lr}` in Thumb-2, both checking the lr register-list bit.
-   */
-  static _findArmFuncStart(retAddr) {
-    for (let step = 0; step <= 256; step++) {
-      const probe2 = retAddr.sub(step * 2);
-      let b0, b1, b2, b3;
-      try {
-        b0 = probe2.readU8();
-        b1 = probe2.add(1).readU8();
-        b2 = probe2.add(2).readU8();
-        b3 = probe2.add(3).readU8();
-      } catch (_e) {
-        return null;
-      }
-      if (b2 === 45 && b3 === 233 && (b1 & 64) !== 0)
-        return probe2;
-      if (b0 === 45 && b1 === 233 && (b3 & 64) !== 0)
-        return probe2;
-    }
-    return null;
-  }
-  /**
-   * Install a one-shot Interceptor.attach on the keylog_callback address
-   * to run dynamic pattern discovery on the first firing.
-   *
-   * A bare `NativeCallback` body has no usable `this.context`. Wrapping
-   * the callback address with `Interceptor.attach` gives us a real
-   * InvocationContext with valid `returnAddress` — that address points
-   * INSIDE `_gnutls_call_keylog_func` right after the indirect call to
-   * our callback. Walk backward from there with arch-specific prologue
-   * heuristics to find the function entry, then detach the wrapper so
-   * subsequent callback firings pay zero extra overhead.
-   */
-  static attachDynamicDiscovery() {
-    if (_GnuTLS._pattern_hook_installed)
-      return;
-    _GnuTLS._pattern_hook_installed = true;
-    try {
-      _GnuTLS._discovery_listener = Interceptor.attach(_GnuTLS.keylog_callback, {
-        onEnter() {
-          if (_GnuTLS._gnutls_call_keylog_func_addr !== null)
-            return;
-          const retAddr = this.returnAddress;
-          if (!retAddr)
-            return;
-          try {
-            const funcStart = _GnuTLS._findGnutlsFuncStart(retAddr);
-            _GnuTLS._recordDiscovery(funcStart ?? retAddr, funcStart != null, retAddr);
-            if (_GnuTLS._discovery_listener) {
-              try {
-                _GnuTLS._discovery_listener.detach();
-              } catch (_e) {
-              }
-              _GnuTLS._discovery_listener = null;
-            }
-          } catch (e) {
-            devlog(`[gnutls dyn] discovery onEnter threw: ${e}`);
-          }
-        }
-      });
-    } catch (e) {
-      devlog(`[gnutls dyn] attach(keylog_callback) failed: ${e}`);
-    }
-  }
-  /**
-   * Emit the discovered address, byte pattern and a copy-paste-ready
-   * `--patterns` JSON override. Kept out of the hot Interceptor onEnter
-   * so the callback code path stays simple.
-   */
-  static _recordDiscovery(funcStart, prologueFound, retAddr) {
-    _GnuTLS._gnutls_call_keylog_func_addr = funcStart;
-    if (!prologueFound) {
-      devlog(`[gnutls dyn] returnAddress=${retAddr} \u2014 no prologue in scan window; recording raw address anyway`);
-      return;
-    }
-    const sample = funcStart.readByteArray(32);
-    const hex2 = sample ? toSpacedHexUpper(sample) : "";
-    const archKey = normalizeArchKey(Process.arch);
-    const sigId = archKey === "x64" ? "gnutls_keylog_sysv" : archKey === "arm64" ? "gnutls_keylog_aarch64" : `gnutls_keylog_${archKey}`;
-    log(`[gnutls dyn] resolved _gnutls_call_keylog_func @ ${funcStart}`);
-    log(`[gnutls dyn] version-specific pattern (32 bytes): ${hex2}`);
-    log(`[gnutls dyn] --patterns override:  { "modules": { "gnutls": { "wine": { "${archKey}": { "${sigId}": { "primary": "${hex2}" } } } } } }`);
-    devlog(`[gnutls dyn] callback returnAddress inside func = ${retAddr}, distance from prologue = ${retAddr.sub(funcStart).toString()}`);
-  }
-  /**
-     * Get the session_id of SSL object and return it as a hex string.
-     * @param {!NativePointer} ssl A pointer to an SSL object.
-     * @return {dict} A string representing the session_id of the SSL object's
-     *     SSL_SESSION. For example,
-     *     "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76336".
-     */
-  static getSslSessionId(session) {
-    var len_pointer = Memory.alloc(4);
-    var err = _GnuTLS.gnutls_session_get_id(session, NULL, len_pointer);
-    if (err != 0) {
-      if (enable_default_fd) {
-        log("using dummy SessionID: 59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76337");
-        return "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76337";
-      }
-      return "";
-    }
-    var len = len_pointer.readU32();
-    var p = Memory.alloc(len);
-    err = _GnuTLS.gnutls_session_get_id(session, p, len_pointer);
-    if (err != 0) {
-      if (enable_default_fd) {
-        log("using dummy SessionID: 59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76337");
-        return "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76337";
-      }
-      return "";
-    }
-    var session_id = "";
-    for (var i = 0; i < len; i++) {
-      session_id += ("0" + p.add(i).readU8().toString(16).toUpperCase()).substr(-2);
-    }
-    return session_id;
-  }
-  install_plaintext_read_hook() {
-    if (!pcap_enabled)
-      return;
-    var current_module_name = this.module_name;
-    var lib_addesses = this.addresses;
-    Interceptor.attach(this.addresses[this.moduleName]["gnutls_record_recv"], {
-      onEnter: function(args) {
-        var message = getPortsAndAddresses(_GnuTLS.gnutls_transport_get_int(args[0]), true, lib_addesses[current_module_name], enable_default_fd);
-        message["ssl_session_id"] = _GnuTLS.getSslSessionId(args[0]);
-        message["function"] = "SSL_read";
-        this.message = message;
-        this.buf = args[1];
-      },
-      onLeave: function(retval) {
-        retval |= 0;
-        if (retval <= 0) {
-          return;
-        }
-        sendDatalog(this.message, this.buf.readByteArray(retval));
-      }
-    });
-  }
-  install_plaintext_write_hook() {
-    if (!pcap_enabled)
-      return;
-    var current_module_name = this.module_name;
-    var lib_addesses = this.addresses;
-    Interceptor.attach(this.addresses[this.moduleName]["gnutls_record_send"], {
-      onEnter: function(args) {
-        var message = getPortsAndAddresses(_GnuTLS.gnutls_transport_get_int(args[0]), false, lib_addesses[current_module_name], enable_default_fd);
-        message["ssl_session_id"] = _GnuTLS.getSslSessionId(args[0]);
-        message["function"] = "SSL_write";
-        sendDatalog(message, args[1].readByteArray(parseInt(args[2])));
-      },
-      onLeave: function(retval) {
-      }
-    });
-  }
-  install_tls_keys_callback_hook() {
-  }
-};
-
-// agent/legacy/tls/platforms/linux/gnutls_linux.ts
-var GnuTLS_Linux = class extends GnuTLS2 {
-  moduleName;
-  socket_library;
-  constructor(moduleName, socket_library6, is_base_hook) {
-    super(moduleName, socket_library6);
-    this.moduleName = moduleName;
-    this.socket_library = socket_library6;
-  }
-  execute_hooks() {
-    this.install_plaintext_read_hook();
-    this.install_plaintext_write_hook();
-    this.install_tls_keys_callback_hook();
-  }
-  install_tls_keys_callback_hook() {
-    const addrs = this.addresses[this.module_name];
-    devlog(`[gnutls] hooks: init @ ${addrs["gnutls_init"]}, set_keylog @ ${addrs["gnutls_session_set_keylog_function"]}, handshake @ ${addrs["gnutls_handshake"]}`);
-    GnuTLS2.attachDynamicDiscovery();
-    Interceptor.attach(addrs["gnutls_init"], {
-      onEnter(args) {
-        this.session = args[0];
-      },
-      onLeave(_retval) {
-        try {
-          GnuTLS2.gnutls_session_set_keylog_function(this.session.readPointer(), GnuTLS2.keylog_callback);
-        } catch (e) {
-          devlog(`[gnutls] set_keylog_function on new session failed: ${e}`);
-        }
-      }
-    });
-  }
-};
-function gnutls_execute2(moduleName, is_base_hook) {
-  executeSSLLibrary(GnuTLS_Linux, moduleName, socket_library2, is_base_hook);
-}
-
 // agent/legacy/tls/platforms/linux/wolfssl_linux.ts
 init_node_globals();
 
@@ -21278,15 +24588,13 @@ var WolfSSL2 = class _WolfSSL {
       return;
     var current_module_name = this.module_name;
     var lib_addesses = this.addresses;
-    Interceptor.attach(this.addresses[this.moduleName]["wolfSSL_write"], {
-      onEnter: function(args) {
-        var message = getPortsAndAddresses(_WolfSSL.wolfSSL_get_fd(args[0]), false, lib_addesses[current_module_name], enable_default_fd);
-        message["ssl_session_id"] = _WolfSSL.getSslSessionId(args[0]);
-        message["function"] = "wolfSSL_write";
-        sendDatalog(message, args[1].readByteArray(parseInt(args[2])));
-      },
-      onLeave: function(retval) {
-      }
+    attachPlaintextWriteHook(this.addresses[this.moduleName]["wolfSSL_write"], (args) => {
+      var message = getPortsAndAddresses(_WolfSSL.wolfSSL_get_fd(args[0]), false, lib_addesses[current_module_name], enable_default_fd);
+      if (message === null)
+        return null;
+      message["ssl_session_id"] = _WolfSSL.getSslSessionId(args[0]);
+      message["function"] = "wolfSSL_write";
+      return message;
     });
   }
 };
@@ -21864,7 +25172,7 @@ function encodedLength(requested, available) {
     return 0;
   return Math.min(requested, available);
 }
-function attachReceive(address, functionName, ptbufIndex, emit2) {
+function attachReceive(address, functionName, ptbufIndex, emit3) {
   if (!address || address.isNull())
     return;
   Interceptor.attach(address, {
@@ -21876,15 +25184,15 @@ function attachReceive(address, functionName, ptbufIndex, emit2) {
     onLeave(retval) {
       const data = receivedPlaintext(retval.toInt32(), this.ptbufOut, this.ptlenOut);
       if (data !== null)
-        emit2(this.ssl, data, functionName);
+        emit3(this.ssl, data, functionName);
     }
   });
 }
-function hookMatrixSslReads(receivedData, processedData, emit2) {
-  attachReceive(receivedData, "matrixSslReceivedData", 2, emit2);
-  attachReceive(processedData, "matrixSslProcessedData", 1, emit2);
+function hookMatrixSslReads(receivedData, processedData, emit3) {
+  attachReceive(receivedData, "matrixSslReceivedData", 2, emit3);
+  attachReceive(processedData, "matrixSslProcessedData", 1, emit3);
 }
-function hookMatrixSslWrites(getWritebuf, encodeWritebuf, emit2) {
+function hookMatrixSslWrites(getWritebuf, encodeWritebuf, emit3) {
   if (!getWritebuf || getWritebuf.isNull() || !encodeWritebuf || encodeWritebuf.isNull())
     return;
   const pending = /* @__PURE__ */ new Map();
@@ -21911,7 +25219,7 @@ function hookMatrixSslWrites(getWritebuf, encodeWritebuf, emit2) {
       pending.delete(tid);
       const length = encodedLength(args[1].toUInt32(), state2.available);
       if (length > 0)
-        emit2(args[0], state2.buffer.readByteArray(length), "matrixSslEncodeWritebuf");
+        emit3(args[0], state2.buffer.readByteArray(length), "matrixSslEncodeWritebuf");
     }
   });
 }
@@ -22153,234 +25461,67 @@ function matrixSSL_execute_modern(moduleName, is_base_hook) {
 
 // agent/tls/platforms/linux/rustls_linux.ts
 init_node_globals();
-
-// agent/legacy/tls/platforms/linux/rustls_linux.ts
-init_node_globals();
-
-// agent/tls/libs/rustls.ts
-init_node_globals();
-init_shared_structures();
-var RusTLS2 = class {
-  moduleName;
-  socket_library;
-  passed_library_method_mapping;
-  // global variables
-  library_method_mapping = {};
-  addresses;
-  module_name;
-  is_base_hook;
-  static rustls_client_config_builder_new;
-  static rustls_client_config_builder_new_custom;
-  static rustls_client_config_set_key_log;
-  // Callbackfuntion for logging keying material
-  static keyLogCB = new NativeCallback(function(label, client_random, client_random_len, secret, secret_size) {
-    devlog("invoking keyLogCB from rustls");
-    var labelStr;
-    if (label[1].toNumber() == 0) {
-      labelStr = "CLIENT_RANDOM ";
-    } else {
-      labelStr = label[0].readUtf8String(label[1].toNumber());
-    }
-    var clientRandomStr = client_random.readByteArray(client_random_len.toNumber());
-    var secretStr = secret.readByteArray(secret_size.toNumber());
-    var clientRandomHex = toHexString(clientRandomStr);
-    var secretHex = toHexString(secretStr);
-    sendKeylog(`${labelStr} ${clientRandomHex} ${secretHex}`);
-    return 1;
-  }, "void", [["pointer", "size_t"], "pointer", "size_t", "pointer", "size_t"]);
-  constructor(moduleName, socket_library6, is_base_hook, passed_library_method_mapping) {
-    this.moduleName = moduleName;
-    this.socket_library = socket_library6;
-    this.passed_library_method_mapping = passed_library_method_mapping;
-    this.module_name = moduleName;
-    this.is_base_hook = is_base_hook;
-    if (typeof passed_library_method_mapping !== "undefined") {
-      this.library_method_mapping = passed_library_method_mapping;
-    } else {
-      if (checkNumberOfExports(moduleName) > 2) {
-        try {
-          this.library_method_mapping[`*${moduleName}*`] = ["*derive_logged_secret*", "*for_secret*"];
-        } catch (e) {
-        }
-        try {
-          this.library_method_mapping[`*${moduleName}*`] = [
-            "*rustls_connection_write_tls*",
-            "*rustls_connection_read_tls*",
-            "*rustls_client_config_builder_new*",
-            "*rustls_client_config_builder_new_custom*",
-            "*rustls_client_config_builder_set_key_log*"
-          ];
-        } catch (e) {
-        }
-      }
-      this.library_method_mapping[`*${socket_library6}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"];
-    }
-    this.addresses = readAddresses(moduleName, this.library_method_mapping);
-    this.module_name = moduleName;
-    resolveOffsets(this.addresses, this.moduleName, socket_library6, "rustls");
-  }
-  /*
-  In Rustls the labels are mapped as enums
-  cf. https://github.com/rustls/rustls/blob/5860d10317528e4f162db6e26c74f81575c51403/rustls/src/tls13/key_schedule.rs#L31
-  */
-  enumMapping = {
-    0: "RESUMPTION_PSK_BINDER_KEY",
-    // ResumptionPskBinderKey
-    1: "CLIENT_EARLY_TRAFFIC_SECRET",
-    // ClientEarlyTrafficSecret
-    2: "CLIENT_HANDSHAKE_TRAFFIC_SECRET",
-    // ClientHandshakeTrafficSecret
-    3: "SERVER_HANDSHAKE_TRAFFIC_SECRET",
-    // ServerHandshakeTrafficSecret
-    4: "CLIENT_TRAFFIC_SECRET_0",
-    // ClientApplicationTrafficSecret
-    5: "SERVER_TRAFFIC_SECRET_0",
-    // ServerApplicationTrafficSecret
-    6: "EXPORTER_SECRET",
-    // ExporterMasterSecret
-    7: "RESUMPTION_MASTER_SECRET",
-    // ResumptionMasterSecret
-    8: "DERIVED"
-    // Derived
-  };
-  getEnumString(enumValue) {
-    return this.enumMapping[enumValue] || null;
-  }
-  // Checks if the pointer's C-string starts with "key expansion" - only used for TLS 1.2 traffic
-  isArgKeyExp(ptr2) {
-    let labelStr = "";
-    try {
-      if (!ptr2.isNull()) {
-        const label = ptr2.readCString();
-        labelStr = label;
-        if (labelStr === null) {
-          return false;
-        } else {
-          return labelStr.startsWith("key expansion");
-        }
-      }
-    } catch (error) {
-      devlog("[!] Error reading pointer in isArgKeyExp (RusTLS):" + error.message);
-      return false;
-    }
-    return false;
-  }
-  /**
-   * Hooking hkdf_expand_label() to get secrets from TLS 1.3 traffic.
-   * This is used for the Android Hooks only
-   */
-  /*
-   Hooking hkdf_expand_label to get secrets from TLS 1.3 traffic.
-   This is used for the Android Hooks.
-  */
-  dumpKeysFromDeriveSecrets(client_random_ptr, key, key_len, label_enum) {
-    let KEY_LENGTH = 32;
-    if (key_len > 16) {
-      KEY_LENGTH = key_len;
-    }
-    let labelStr = "";
-    let client_random = "";
-    let secret_key = "";
-    const RANDOM_KEY_LENGTH = 32;
-    labelStr = this.getEnumString(label_enum) || "";
-    if (client_random_ptr != null) {
-      const randomData = client_random_ptr.readByteArray(RANDOM_KEY_LENGTH);
-      if (randomData) {
-        client_random = toHexString(randomData);
-      }
-    } else {
-      client_random = "<identify using PCAP> ";
-    }
-    if (!key.isNull()) {
-      const keyData = key.readByteArray(KEY_LENGTH);
-      if (keyData) {
-        secret_key = toHexString(keyData);
-      }
-    } else {
-      devlog("[Error] Argument 'key' is NULL");
-    }
-    sendKeylog(labelStr + " " + client_random + " " + secret_key);
-    return true;
-  }
-  /**
-   *  Hooking from_key_exchange() to get secrets from TLS 1.2 traffic
-   *  https://github.com/rustls/rustls/blob/293f05e9d1011132a749b8b6e0435f701421fd01/rustls/src/tls12/mod.rs#L102
-   *  This hook is used for both, Linux and Android.
-   */
-  dumpKeysFromPRF(client_random_ptr, key) {
-    const KEY_LENGTH = 32;
-    const MASTER_SECRET_LEN = 48;
-    const labelStr = "CLIENT_RANDOM";
-    let client_random = "";
-    let secret_key = "";
-    if (!key.isNull()) {
-      const keyData = key.readByteArray(MASTER_SECRET_LEN);
-      if (keyData) {
-        secret_key = toHexString(keyData);
-      }
-    } else {
-      devlog("[!] Argument 'key' is NULL");
-    }
-    if (!client_random_ptr.isNull()) {
-      const keyData = client_random_ptr.readByteArray(KEY_LENGTH);
-      if (keyData) {
-        client_random = toHexString(keyData);
-      }
-    } else {
-      devlog("[!] Argument 'client_random_ptr' is NULL");
-    }
-    sendKeylog(labelStr + " " + client_random + " " + secret_key);
-    return true;
-  }
-  /**
-   * On Linux the BoringSecretHunter Identifies a different function (derive_logged_secrets()).
-   * https://github.com/rustls/rustls/blob/bdb303696dea02ecc6b5de3907880e181899d717/rustls/src/tls13/key_schedule.rs#L676
-   * The following extracts the secrets for TLS 1.3.
-   */
-  dumpKeysFromDeriveLogged(client_random_ptr, key, label_enum) {
-    let KEY_LENGTH = key.add(64).readU32();
-    let labelStr = "";
-    let client_random = "";
-    let secret_key = "";
-    const RANDOM_KEY_LENGTH = 32;
-    devlog("Called dumpKeysFromDeriveLogged()");
-    labelStr = this.getEnumString(label_enum) || "";
-    if (client_random_ptr != null) {
-      const randomData = client_random_ptr.readByteArray(RANDOM_KEY_LENGTH);
-      if (randomData) {
-        client_random = toHexString(randomData);
-      }
-    } else {
-      client_random = "<identify using PCAP> ";
-    }
-    if (!key.isNull()) {
-      const keyData = key.readByteArray(KEY_LENGTH);
-      if (keyData) {
-        secret_key = toHexString(keyData);
-      }
-    } else {
-      devlog("[Error] Argument 'key' is NULL");
-    }
-    sendKeylog(labelStr + " " + client_random + " " + secret_key);
-    return true;
-  }
-  hook_tls_12_key_generation_function() {
-  }
-  install_plaintext_read_hook() {
-    if (!pcap_enabled)
-      return;
-  }
-  install_plaintext_write_hook() {
-    if (!pcap_enabled)
-      return;
-  }
-  install_key_extraction_hook() {
+var RUSTLS_LINUX_TLS13_PATTERNS = {
+  "x64": {
+    primary: "48 81 EC 18 01 00 00 4C 89 4C 24 40 48 89 7C 24 48 88 D0 48 89 7C 24 50 48 8B 94 24 28 01 00 00 48 89 54 24 58 48 8B 94 24 20 01 00 00 48 89",
+    fallback: "48 81 EC 18 01 00 00 4C 89 4C 24 40 48 89 7C 24 48 88 D0 48 89 7C 24 50 48 8B 94 24 28 01 00 00 48 89 54 24 58 48 8B 94 24 20 01"
   }
 };
+var RUSTLS_LINUX_TLS12_PATTERNS = {
+  "x64": {
+    primary: "41 57 41 56 53 48 81 ec c0 04 00 00 4c 89 8c 24 a0 00 00 00 4c 89 44 24 70 48 89 4c 24 78 48 89 bc 24 80 00 00 00 48 89 bc 24 88 00 00 00 48 8b",
+    fallback: "41 57 41 56 53 48 81 ec c0 04 00 00 4c 89 8c 24 a0 00 00 00 4c 89 44 24 70 48 89 4c 24 78 48 89 bc 24 80 00 00 00 48 89 bc 24 88"
+  }
+};
+var Rustls_Linux_Modern = class extends RusTLS2 {
+  install_key_extraction_hook() {
+    const module = Process.findModuleByName(this.module_name);
+    const hooker = new PatternBasedHooking(module);
+    const usesJsonPatterns = isPatternReplaced() && hasUsablePatternsFor(patterns, this.module_name, "rustls", "Dump-Keys");
+    const shared = usesJsonPatterns ? { tls13: false, tls12: false } : installRustlsStaticPatternHooks(module);
+    if (!shared.tls13)
+      this.install_tls13_pattern_hook(hooker);
+    if (!shared.tls12)
+      this.install_tls12_pattern_hook(hooker);
+  }
+  /** Hook by --patterns JSON when supplied for "rustls", else by the built-in table. */
+  hookByPattern(hooker, builtIn, callback, maxArgs) {
+    if (isPatternReplaced() && hasUsablePatternsFor(patterns, this.module_name, "rustls", "Dump-Keys")) {
+      hooker.hook_DumpKeys(this.module_name, "rustls", patterns, callback, true, maxArgs);
+    } else {
+      hooker.hookModuleByPatternOnReturn(get_CPU_specific_pattern(builtIn), callback, maxArgs);
+    }
+  }
+  install_tls12_pattern_hook(hooker) {
+    this.hookByPattern(hooker, RUSTLS_LINUX_TLS12_PATTERNS, (args, retval) => {
+      if (!retval || retval.isNull())
+        return;
+      this.dumpKeysFromPRF(args[6], retval.add(72));
+    }, 7);
+  }
+  install_tls13_pattern_hook(hooker) {
+    this.hookByPattern(hooker, RUSTLS_LINUX_TLS13_PATTERNS, (args, retval) => {
+      if (!retval)
+        return;
+      if (retval.isNull() || Process.arch === "x64") {
+        this.dumpKeysFromDeriveLogged(args[7], args[0], args[2].toInt32());
+      }
+    }, 9);
+  }
+};
+function rustls_execute_modern2(moduleName, is_base_hook) {
+  const symbolized = hasMoreThanFiveExports(moduleName);
+  devlog(`[rustls] modern executor on ${moduleName} (symbolized=${symbolized})`);
+  dispatchRustlsModern(moduleName, {
+    symbolized,
+    runDefinition: () => executeFromDefinition(createRustlsDefinition(), moduleName, socket_library2, is_base_hook, enable_default_fd),
+    runClassBased: () => rustls_execute_class_based(new Rustls_Linux_Modern(moduleName, socket_library2, is_base_hook), moduleName, is_base_hook, symbolized)
+  });
+}
 
 // agent/legacy/tls/platforms/linux/rustls_linux.ts
-init_shared_structures();
-var Rustls_Linux = class extends RusTLS2 {
+init_node_globals();
+var Rustls_Linux = class extends RusTLS {
   moduleName;
   socket_library;
   default_pattern;
@@ -22408,8 +25549,12 @@ var Rustls_Linux = class extends RusTLS2 {
   install_key_extraction_hook() {
     const rusTLSModule = Process.findModuleByName(this.module_name);
     const hooker = new PatternBasedHooking(rusTLSModule);
-    this.install_key_extraction_hook_tls(hooker);
-    this.install_key_extraction_hook_tls_12(hooker);
+    const usesJsonPatterns = isPatternReplaced() && hasUsablePatternsFor(patterns, this.module_name, "rustls", "Dump-Keys");
+    const shared = usesJsonPatterns ? { tls13: false, tls12: false } : installRustlsStaticPatternHooks(rusTLSModule);
+    if (!shared.tls13)
+      this.install_key_extraction_hook_tls(hooker);
+    if (!shared.tls12)
+      this.install_key_extraction_hook_tls_12(hooker);
   }
   install_key_extraction_hook_tls_12(hooker) {
     const doDumpKeysLogic = (args, retval) => {
@@ -22488,73 +25633,16 @@ var Rustls_Linux = class extends RusTLS2 {
     this.install_plaintext_write_hook();
     this.install_tls_keys_callback_hook();
   }
-  // Extract the configBuilder from call to rustls_client_config_builder_new / _custom and set keyLogCB
+  // Extract the configBuilder from call to rustls_client_config_builder_new / _custom and set keyLogCB.
+  // Shared, fixed implementation in the legacy RusTLS base class (new_custom writes the
+  // builder through its out-parameter; its return value is a rustls_result status).
   install_tls_keys_callback_hook() {
-    RusTLS2.rustls_client_config_set_key_log = new NativeFunction(this.addresses[this.moduleName]["rustls_client_config_builder_set_key_log"], "uint32", ["pointer", "pointer", "pointer"]);
-    Interceptor.attach(this.addresses[this.moduleName]["rustls_client_config_builder_new"], {
-      onLeave: function(retval) {
-        if (retval.isNull()) {
-          devlog("Error: retval is null");
-          return;
-        }
-        RusTLS2.rustls_client_config_set_key_log(retval, RusTLS2.keyLogCB, ptr("0"));
-        devlog("Attached keyLogCB to rustls_client_config_set_key_log");
-      }
-    });
-    Interceptor.attach(this.addresses[this.moduleName]["rustls_client_config_builder_new_custom"], {
-      onLeave: function(retval) {
-        if (retval.isNull()) {
-          devlog("Error: retval is null");
-          return;
-        }
-        RusTLS2.rustls_client_config_set_key_log(retval, RusTLS2.keyLogCB, ptr("0"));
-        devlog("Attached keyLogCB to rustls_client_config_set_key_log");
-      }
-    });
-    Interceptor.attach(this.addresses[this.moduleName]["rustls_client_config_builder_set_key_log"], {
-      onEnter: function(args) {
-        var userCallbackAddress = args[1];
-        devlog("User set CB to: " + userCallbackAddress);
-        this.userCallbackAddress = userCallbackAddress;
-      },
-      onLeave: function(retval) {
-        if (retval != 7e3) {
-          return;
-        } else {
-          Interceptor.attach(this.userCallbackAddress, {
-            onEnter(args) {
-              devlog("Hooking user-defined callback for Rustls");
-              var labelPtr = args[0];
-              var label_len = args[1].toInt32();
-              var client_random = args[2];
-              var client_random_len = args[3].toInt32();
-              var secret = args[4];
-              var secret_len = args[5].toInt32();
-              if (client_random.isNull() || client_random_len != 32) {
-                devlog("Invalid client_random: " + client_random + " or client_random_lenght: " + client_random_len);
-                return;
-              }
-              if (secret.isNull() || secret_len <= 0 || secret_len > 48) {
-                devlog("Invalid secret or secret_length");
-                return;
-              }
-              var clientRandomStr = client_random.readByteArray(client_random_len);
-              var secretStr = secret.readByteArray(secret_len);
-              var labelStr = labelPtr.readUtf8String(label_len);
-              var clientRandomHex = toHexString(clientRandomStr);
-              var secretHex = toHexString(secretStr);
-              sendKeylog(`${labelStr} ${clientRandomHex} ${secretHex}`);
-              return 1;
-            }
-          });
-        }
-      }
-    });
+    return super.install_tls_keys_callback_hook();
   }
 };
 function rustls_execute2(moduleName, is_base_hook) {
   var rusTLS = new Rustls_Linux(moduleName, socket_library2, is_base_hook);
-  if (hasMoreThanFiveExports(moduleName)) {
+  if (hasMoreThanFiveExports2(moduleName)) {
     devlog("Trying to hook RusTLS using symbols...");
     rusTLS.execute_hooks();
   } else {
@@ -22569,407 +25657,27 @@ function rustls_execute2(moduleName, is_base_hook) {
   }
 }
 
-// agent/tls/platforms/linux/rustls_linux.ts
-function rustls_execute_modern2(moduleName, is_base_hook) {
-  if (hasMoreThanFiveExports(moduleName)) {
-    executeFromDefinition(createRustlsDefinition(), moduleName, socket_library2, is_base_hook, enable_default_fd);
-  } else {
-    rustls_execute2(moduleName, is_base_hook);
+// agent/tls/platforms/linux/gotls_linux.ts
+init_node_globals();
+var GO_LINUX_KEYLOG_PATTERNS = {
+  ...GO_WRITE_KEYLOG_PATTERNS,
+  "x86": { primary: "55 53 57 56 83 EC 4C E8 00 00 00 00 5B 81 C3 A9 CB 13 00 8B 44 24 60", fallback: "" },
+  "arm": { primary: "2D E9 F0 41 86 B0 04 46 40 6B D0 F8 30 01 00 28 53 D0", fallback: "" }
+};
+function gotls_execute_modern3(moduleName, is_base_hook) {
+  const fallBack = (e) => {
+    devlog(`[gotls] modern definition failed on ${moduleName} (${e}); using the class-based GoTLS executor`);
+    gotls_execute_class_based(moduleName, socket_library2, is_base_hook, GO_LINUX_KEYLOG_PATTERNS);
+  };
+  try {
+    executeFromDefinition(createGoTlsDefinition(), moduleName, socket_library2, is_base_hook, enable_default_fd).catch(fallBack);
+  } catch (e) {
+    fallBack(e);
   }
 }
 
-// agent/tls/platforms/linux/gotls_linux.ts
-init_node_globals();
-
 // agent/legacy/tls/platforms/linux/gotls_linux.ts
 init_node_globals();
-
-// agent/tls/libs/gotls.ts
-init_node_globals();
-init_shared_structures();
-var symbol_writeKeyLog2 = "crypto/tls.(*Config).writeKeyLog";
-var symbol_tlsRead2 = "crypto/tls.(*Conn).Read";
-var symbol_tlsWrite2 = "crypto/tls.(*Conn).Write";
-var GoTlsLogger2 = class {
-  found_writeKeyLog;
-  module;
-  no_hooking_success;
-  constructor(module, found_writeKeyLog, no_hooking_success) {
-    this.found_writeKeyLog = found_writeKeyLog;
-    this.module = module;
-    this.no_hooking_success = no_hooking_success;
-  }
-};
-var GoTLS2 = class {
-  moduleName;
-  socket_library;
-  passed_library_method_mapping;
-  module_name;
-  library_method_mapping = {};
-  addresses = {};
-  is_base_hook;
-  go_version = null;
-  hooked_functions = /* @__PURE__ */ new Set();
-  runtime_parser;
-  constructor(moduleName, socket_library6, is_base_hook, passed_library_method_mapping) {
-    this.moduleName = moduleName;
-    this.socket_library = socket_library6;
-    this.passed_library_method_mapping = passed_library_method_mapping;
-    this.module_name = moduleName;
-    this.is_base_hook = is_base_hook;
-    if (typeof passed_library_method_mapping !== "undefined") {
-      this.library_method_mapping = passed_library_method_mapping;
-    } else {
-      this.library_method_mapping[`*${socket_library6}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"];
-    }
-    let found_writeKeyLog = false;
-    if (isSymbolAvailable(moduleName, symbol_writeKeyLog2)) {
-      this.library_method_mapping[`*${moduleName}*`].push(symbol_writeKeyLog2);
-      found_writeKeyLog = true;
-    } else {
-      devlog("[GoTLS] unable to find symbol: " + symbol_writeKeyLog2 + " in module: " + moduleName);
-    }
-    if (isSymbolAvailable(moduleName, symbol_tlsRead2)) {
-      this.library_method_mapping[`*${moduleName}*`].push(symbol_tlsRead2);
-    } else {
-      devlog("[GoTLS] unable to find symbol: " + symbol_tlsRead2 + " in module: " + moduleName);
-    }
-    if (isSymbolAvailable(moduleName, symbol_tlsWrite2)) {
-      this.library_method_mapping[`*${moduleName}*`].push(symbol_tlsWrite2);
-    } else {
-      devlog("[GoTLS] unable to find symbol: " + symbol_tlsWrite2 + " in module: " + moduleName);
-    }
-    this.addresses = readAddresses(moduleName, this.library_method_mapping);
-    if (found_writeKeyLog === false) {
-      let writeKeyLog_Address = this.resolve_symbol_with_fallback(symbol_writeKeyLog2);
-      if (writeKeyLog_Address !== null) {
-        this.library_method_mapping[`*${moduleName}*`].push(symbol_writeKeyLog2);
-        this.addresses[moduleName][symbol_writeKeyLog2] = writeKeyLog_Address;
-        devlog("[GoTLS] found writeKeyLog symbol: " + symbol_writeKeyLog2 + " at address: " + writeKeyLog_Address);
-      } else {
-        devlog("[GoTLS] unable to find writeKeyLog symbol even with alternative symbol resolutions: " + symbol_writeKeyLog2 + " in module: " + moduleName);
-      }
-    }
-  }
-  detect_go_version() {
-    try {
-      const buildInfoSymbol = "runtime.buildVersion";
-      const address = this.resolve_symbol_with_fallback(buildInfoSymbol);
-      if (address) {
-        const versionStr = address.readCString();
-        if (versionStr) {
-          const match = versionStr.match(/go(\d+)\.(\d+)(?:\.(\d+))?/);
-          if (match) {
-            return {
-              major: parseInt(match[1]),
-              minor: parseInt(match[2]),
-              patch: parseInt(match[3] || "0")
-            };
-          }
-        }
-      }
-    } catch (err) {
-      devlog(`[GoTLS] Failed to detect Go version: ${err}`);
-    }
-    return null;
-  }
-  // Convert Go symbol name to possible mangled variants
-  getGoSymbolVariants(symbol) {
-    const variants = [symbol];
-    const mangled1 = symbol.replace(/\//g, "_").replace(/\(\*([^)]+)\)/g, "_ptr_$1").replace(/\./g, ".");
-    variants.push(mangled1);
-    const mangled2 = symbol.replace(/\//g, "_").replace(/\(\*([^)]+)\)/g, "_ptr_$1").replace(/\./g, "_");
-    variants.push(mangled2);
-    const mangled3 = symbol.replace(/crypto\_tls/g, "crypto_tls").replace(/\(\*Conn\)/g, "_ptr_Conn").replace(/\(\*Config\)/g, "_ptr_Config").replace(/\./g, "_");
-    variants.push(mangled3);
-    return [...new Set(variants)];
-  }
-  resolve_symbol_with_fallback(symbol) {
-    try {
-      let address = Module.getGlobalExportByName(symbol);
-      if (address)
-        return address;
-      try {
-        address = Process.getModuleByName(this.module_name).getExportByName(symbol);
-        if (address)
-          return address;
-      } catch (e) {
-      }
-      const symbolVariants = this.getGoSymbolVariants(symbol);
-      for (const variant of symbolVariants) {
-        try {
-          address = Process.getModuleByName(this.module_name).getExportByName(variant);
-          if (address) {
-            devlog(`[GoTLS] Found symbol ${symbol} as ${variant}`);
-            return address;
-          }
-        } catch (e) {
-        }
-      }
-      try {
-        const debugAddr = DebugSymbol.fromName(symbol).address;
-        if (!debugAddr.isNull()) {
-          devlog(`[GoTLS] Found symbol ${symbol} via DebugSymbol`);
-          return debugAddr;
-        }
-      } catch (e) {
-      }
-      const exports = Process.getModuleByName(this.module_name).enumerateExports();
-      for (const variant of symbolVariants) {
-        for (const exp of exports) {
-          if (exp.name === variant || exp.name.includes(variant)) {
-            devlog(`[GoTLS] Found symbol ${symbol} via pattern match: ${exp.name}`);
-            return exp.address;
-          }
-        }
-      }
-      const symbolBase = symbol.split(".").pop() || symbol;
-      for (const exp of exports) {
-        if (exp.name.toLowerCase().includes(symbolBase.toLowerCase())) {
-          devlog(`[GoTLS] Found symbol ${symbol} via fuzzy match: ${exp.name}`);
-          return exp.address;
-        }
-      }
-    } catch (err) {
-      devlog(`[GoTLS] Symbol resolution failed for ${symbol}: ${err}`);
-    }
-    devlog(`[GoTLS] Could not resolve symbol: ${symbol}`);
-    return null;
-  }
-  /**
-   *
-   * Hooking writeKeyLog function to extract TLS keys.
-   * Details at source code from https://github.com/golang/go/blob/54c9d776302d53ab1907645cb67fa4a948e1500c/src/crypto/tls/common.go#L1540C10-L1540C16
-   *
-   * @param labelPtr
-   * @param sslStructPtr
-   * @param keyPtr
-   */
-  dumpKeys(labelPtr, labelLen, clientRandomPtr, clientRandomLength, keyPtr, keyLength) {
-    const MAX_KEY_LENGTH = 64;
-    let labelStr = "";
-    let client_random = "";
-    let secret_key = "";
-    if (!labelPtr.isNull()) {
-      labelStr = labelPtr.readCString() ?? "";
-    } else {
-      devlog_error("[GoTLS Error] Argument 'labelPtr' is NULL");
-    }
-    if (!clientRandomPtr.isNull()) {
-      if (clientRandomLength === 0) {
-        clientRandomLength = 32;
-      }
-      const client_random_buffer = clientRandomPtr.readByteArray(clientRandomLength);
-      client_random = get_hex_string_from_byte_array(new Uint8Array(client_random_buffer));
-    } else {
-      devlog_error("[GoTLS Error] Argument 'sslStructPtr' is NULL");
-    }
-    if (!keyPtr.isNull()) {
-      let KEY_LENGTH = keyLength;
-      if (KEY_LENGTH <= 0) {
-        let calculatedKeyLength = 0;
-        while (calculatedKeyLength < MAX_KEY_LENGTH) {
-          const byte = keyPtr.add(calculatedKeyLength).readU8();
-          if (byte === 0) {
-            if (calculatedKeyLength < 20) {
-              calculatedKeyLength++;
-              continue;
-            }
-            break;
-          }
-          calculatedKeyLength++;
-        }
-        if (calculatedKeyLength > 24 && calculatedKeyLength <= 40) {
-          KEY_LENGTH = 32;
-        } else if (calculatedKeyLength >= 46 && calculatedKeyLength <= 49) {
-          KEY_LENGTH = 48;
-        } else {
-          KEY_LENGTH = 32;
-        }
-      }
-      const keyData = keyPtr.readByteArray(KEY_LENGTH);
-      const hexKey = get_hex_string_from_byte_array(keyData);
-      secret_key = hexKey;
-    } else {
-      devlog_error("[GoTLS Error] Argument 'key' is NULL");
-    }
-    sendKeylog(labelStr + " " + client_random + " " + secret_key);
-  }
-  install_key_extraction_hook() {
-  }
-  // Enhanced debug function to list all exports and runtime functions for troubleshooting
-  debug_list_exports() {
-    try {
-      const exports = Process.getModuleByName(this.module_name).enumerateExports();
-      const goExports = exports.filter((exp) => exp.name.includes("crypto") || exp.name.includes("tls") || exp.name.includes("Config") || exp.name.includes("Conn") || exp.name.includes("writeKeyLog") || exp.name.includes("Read") || exp.name.includes("Write"));
-      devlog(`[GoTLS] Found ${goExports.length} potential Go TLS exports in ${this.module_name}:`);
-      for (const exp of goExports.slice(0, 20)) {
-        devlog(`[GoTLS]   ${exp.name} @ ${exp.address}`);
-      }
-      if (goExports.length > 20) {
-        devlog(`[GoTLS]   ... and ${goExports.length - 20} more`);
-      }
-    } catch (err) {
-      devlog(`[GoTLS] Failed to list exports: ${err}`);
-    }
-  }
-  install_tls_keys_callback_hook() {
-    Interceptor.attach(this.addresses[this.module_name][symbol_writeKeyLog2], {
-      onEnter: function(args) {
-        try {
-          let labelStr, client_random, secret_key;
-          if (Process.arch === "x64") {
-            const ctx = this.context;
-            const labelLen = ctx.rcx.toInt32();
-            const randomLen = ctx.rsi.toInt32();
-            const secretLen = ctx.r10.toInt32();
-            if (labelLen > 0 && labelLen < 1024 && !ctx.rbx.isNull()) {
-              labelStr = ctx.rbx.readUtf8String(labelLen);
-            } else {
-              throw new Error(`Invalid label parameters: ptr=${ctx.rbx}, len=${labelLen}`);
-            }
-            if (randomLen > 0 && randomLen < 1024 && !ctx.rdi.isNull()) {
-              client_random = get_hex_string_from_byte_array(ctx.rdi.readByteArray(randomLen));
-            } else {
-              throw new Error(`Invalid client_random parameters: ptr=${ctx.rdi}, len=${randomLen}`);
-            }
-            if (secretLen > 0 && secretLen < 1024 && !ctx.r9.isNull()) {
-              secret_key = get_hex_string_from_byte_array(ctx.r9.readByteArray(secretLen));
-            } else {
-              throw new Error(`Invalid secret parameters: ptr=${ctx.r9}, len=${secretLen}`);
-            }
-          } else if (Process.arch === "arm64") {
-            const ctx = this.context;
-            const labelLen = ctx.x2.toInt32();
-            const randomLen = ctx.x4.toInt32();
-            const secretLen = ctx.x6.toInt32();
-            if (labelLen > 0 && labelLen < 1024 && !ctx.x1.isNull()) {
-              labelStr = ctx.x1.readUtf8String(labelLen);
-            } else {
-              throw new Error(`Invalid label parameters: ptr=${ctx.x1}, len=${labelLen}`);
-            }
-            if (randomLen > 0 && randomLen < 1024 && !ctx.x3.isNull()) {
-              client_random = get_hex_string_from_byte_array(ctx.x3.readByteArray(randomLen));
-            } else {
-              throw new Error(`Invalid client_random parameters: ptr=${ctx.x3}, len=${randomLen}`);
-            }
-            if (secretLen > 0 && secretLen < 1024 && !ctx.x5.isNull()) {
-              secret_key = get_hex_string_from_byte_array(ctx.x5.readByteArray(secretLen));
-            } else {
-              throw new Error(`Invalid secret parameters: ptr=${ctx.x5}, len=${secretLen}`);
-            }
-          } else {
-            devlog_error(`[GoTLS] Architecture ${Process.arch} not supported for register-based key extraction`);
-            devlog_error(`[GoTLS] Supported architectures: x64, arm64`);
-            devlog_error(`[GoTLS] Consider using function argument-based hooking for this platform`);
-            return false;
-          }
-          sendKeylog(`${labelStr} ${client_random} ${secret_key}`);
-          devlog(`[GoTLS] Key extracted on ${Process.arch}: ${labelStr} ${client_random.substring(0, 16)}...`);
-          return true;
-        } catch (e) {
-          devlog_error(`Error in writeKeyLog hook: ${e}`);
-          return false;
-        }
-      }
-    });
-    return false;
-  }
-  install_plaintext_write_hook() {
-    if (!pcap_enabled)
-      return;
-    const symbol = "crypto_tls.(*Conn).writeRecordLocked";
-    try {
-      const address = this.resolve_symbol_with_fallback(symbol);
-      if (!address) {
-        devlog(`[GoTLS] ${symbol} not found, skipping write hook`);
-        return;
-      }
-      Interceptor.attach(address, {
-        onEnter(args) {
-          const recordType = args[2].toInt32();
-          if (recordType !== 23)
-            return;
-          const dataPtr = args[3];
-          const len = args[4].toInt32();
-          if (len > 0) {
-            const buf = dataPtr.readByteArray(len);
-            devlog(`[GoTLS] write plaintext (${len} bytes): ${buf ? buf.toString() : "[unreadable]"}`);
-            sendDatalog({
-              function: "SSL_write"
-            }, buf);
-          }
-        }
-      });
-      this.hooked_functions.add(symbol);
-      log(`[GoTLS] Successfully hooked ${symbol}`);
-    } catch (err) {
-      devlog(`[GoTLS] Failed to hook writeRecordLocked: ${err}`);
-    }
-  }
-  install_plaintext_read_hook() {
-    if (!pcap_enabled)
-      return;
-    const symbol = "crypto_tls.(*Conn).Read";
-    try {
-      const address = this.resolve_symbol_with_fallback(symbol);
-      if (!address) {
-        devlog(`[GoTLS] ${symbol} not found, skipping read hook`);
-        return;
-      }
-      Interceptor.attach(address, {
-        onEnter(args) {
-          this.x0 = args[0];
-        },
-        onLeave(retval) {
-          const len = retval.toInt32();
-          if (len <= 0)
-            return;
-          const buf = this.x0.readByteArray(len);
-          devlog(`[GoTLS] read plaintext (${len} bytes): ${buf ? buf.toString() : "[unreadable]"}`);
-          sendDatalog({
-            function: "SSL_read"
-          }, buf);
-        }
-      });
-      this.hooked_functions.add(symbol);
-      log(`[GoTLS] Successfully hooked ${symbol}`);
-    } catch (err) {
-      devlog(`[GoTLS] Failed to hook Read: ${err}`);
-    }
-  }
-  // Enhanced runtime parser hook installation currently not used - needs further testing
-  install_runtime_parser_hooks() {
-    try {
-      const tlsFunctions = this.runtime_parser.getTLSFunctions();
-      devlog(`[GoTLS] Runtime parser found ${tlsFunctions.length} TLS functions to attempt hooking`);
-      if (tlsFunctions.length === 0) {
-        devlog(`[GoTLS] No TLS functions found by runtime parser, trying broader search...`);
-        const targetFunctions = [
-          "crypto_tls.(*Config).writeKeyLog",
-          "crypto_tls.(*Conn).Read",
-          "crypto_tls.(*Conn).Write",
-          "crypto_tls.(*Conn).writeRecordLocked",
-          "writeKeyLog",
-          "Read",
-          "Write",
-          "writeRecordLocked"
-        ];
-        for (const target of targetFunctions) {
-          const found = this.runtime_parser.findFunction(target);
-          if (found) {
-            devlog(`[GoTLS] Found specific target function: ${found.name}`);
-            tlsFunctions.push(found);
-          }
-        }
-      }
-    } catch (err) {
-      devlog_error(`[GoTLS] Failed to install runtime parser hooks: ${err}`);
-    }
-  }
-};
-
-// agent/legacy/tls/platforms/linux/gotls_linux.ts
 var GoTLS_Linux = class extends GoTLS2 {
   moduleName;
   socket_library;
@@ -22979,23 +25687,13 @@ var GoTLS_Linux = class extends GoTLS2 {
     this.moduleName = moduleName;
     this.socket_library = socket_library6;
     this.default_pattern = {
-      "x64": {
-        primary: "55 41 57 41 56 41 54 53 48 83 EC 30 48 8B 47 68 48 83 B8 20 02 00 00 00 0F 84",
-        // x64 pattern
-        fallback: ""
-        // TODO: additional x64 patterns needed
-      },
+      ...GO_WRITE_KEYLOG_PATTERNS,
+      // x64 + arm64 (go_keylog_hook.ts)
       "x86": {
         primary: "55 53 57 56 83 EC 4C E8 00 00 00 00 5B 81 C3 A9 CB 13 00 8B 44 24 60",
         // x86 pattern
         fallback: ""
         // TODO: additional x86 patterns needed
-      },
-      "arm64": {
-        primary: "90 0B 40 F9 F1 43 00 D1 3F 02 10 EB E9 10 00 54 FE 0F 17 F8 FD 83 1F F8 FD 23 00 D1 E1 53 00 F9 E3 5B 00 F9 E6 67 00 F9 09 94 40 F9 49 0F 00 B4",
-        // ARM64 primary pattern
-        fallback: GENERIC_BORINGSSL_ARM64_FALLBACK
-        // ARM64 fallback pattern
       },
       "arm": {
         primary: "2D E9 F0 41 86 B0 04 46 40 6B D0 F8 30 01 00 28 53 D0",
@@ -23010,6 +25708,8 @@ var GoTLS_Linux = class extends GoTLS2 {
     return m ? m[1] : modulePath;
   }
   install_key_extraction_hook() {
+    if (!keylog_enabled)
+      return;
     var instance = this;
     let goTLSModule = Process.findModuleByName(this.module_name);
     let soName = this.module_name;
@@ -23022,31 +25722,7 @@ var GoTLS_Linux = class extends GoTLS2 {
       }
     }
     if (this.addresses[this.module_name][symbol_writeKeyLog2] === void 0 || this.addresses[this.module_name][symbol_writeKeyLog2] === null) {
-      const hooker = new PatternBasedHooking(goTLSModule);
-      if (isPatternReplaced() && hasUsablePatternsFor(patterns, this.module_name, soName, "Dump-Keys")) {
-        devlog("Hooking GoTLS functions by patterns from JSON file");
-        hooker.hook_DumpKeys(this.module_name, soName, patterns, (args) => {
-          devlog("Installed writeKeyLog() hooks using byte patterns.");
-          const labelPtr = args[2];
-          const labelLen = args[3].toInt32();
-          const crPtr = args[4];
-          const crLen = args[5].toInt32();
-          const secretPtr = args[7];
-          const secretLen = args[8].toInt32();
-          this.dumpKeys(labelPtr, labelLen, crPtr, crLen, secretPtr, secretLen);
-        });
-      } else {
-        hooker.hookModuleByPattern(get_CPU_specific_pattern(this.default_pattern), (args) => {
-          devlog("Installed writeKeyLog() hooks using byte patterns.");
-          const labelPtr = args[2];
-          const labelLen = args[3].toInt32();
-          const crPtr = args[4];
-          const crLen = args[5].toInt32();
-          const secretPtr = args[7];
-          const secretLen = args[8].toInt32();
-          this.dumpKeys(labelPtr, labelLen, crPtr, crLen, secretPtr, secretLen);
-        });
-      }
+      const hooker = installGoKeylogByPattern(this.module_name, this.default_pattern, { soName, module: goTLSModule });
       return hooker;
     } else {
       devlog("[GoTLS] writeKeyLog symbol available");
@@ -23055,40 +25731,28 @@ var GoTLS_Linux = class extends GoTLS2 {
       return hooker;
     }
   }
-  // instead of relying on pattern we check if the target module has a symbol of writeKeyLog()
+  /**
+   * Last resort when the writeKeyLog pattern scan found nothing. No Go function is named
+   * "ssl_log": the only such symbols are C BoringSSL's (bssl::ssl_log_secret, linked into the
+   * module via cgo), so this hooks that C function through the shared BoringSSL symbol hook —
+   * C ABI (ssl, label, secret, len) and client_random from the SSL struct. (It used to take
+   * the first symbol containing "ssl_log" and read Go-style args[2..8] off a C call.)
+   */
   execute_symbol_based_hooking(hooker) {
     if (hooker === void 0 || hooker === null) {
       devlog("[-] Error: Hooker is undefined.");
       return;
     }
-    let dumpKeysFunc = this.dumpKeys.bind(this);
-    if (hooker.no_hooking_success) {
-      let symbols = Process.getModuleByName(this.module_name).enumerateSymbols().filter((exports) => exports.name.toLowerCase().includes("ssl_log"));
-      if (symbols.length > 0) {
-        devlog("Installed writeKeyLog() hooks using sybmols.");
-        try {
-          Interceptor.attach(symbols[0].address, {
-            onEnter: function(args) {
-              const labelPtr = args[2];
-              const labelLen = args[3].toInt32();
-              const crPtr = args[4];
-              const crLen = args[5].toInt32();
-              const secretPtr = args[7];
-              const secretLen = args[8].toInt32();
-              dumpKeysFunc(labelPtr, labelLen, crPtr, crLen, secretPtr, secretLen);
-            }
-          });
-        } catch (e) {
-        }
-      }
-    }
+    if (!hooker.no_hooking_success)
+      return;
+    installBoringSSLSymbolHook(this.module_name, makeBoringSslDumpKeys(this.module_name));
   }
   execute_hooks() {
     let hooker_instance = this.install_key_extraction_hook();
     return hooker_instance;
   }
 };
-function gotls_execute2(moduleName, is_base_hook) {
+function gotls_execute3(moduleName, is_base_hook) {
   let gotls = new GoTLS_Linux(moduleName, socket_library2, is_base_hook);
   try {
     let hooker = gotls.execute_hooks();
@@ -23102,6 +25766,7 @@ function gotls_execute2(moduleName, is_base_hook) {
   } catch (error_msg) {
     devlog(`gotls_execute error: ${error_msg}`);
   }
+  legacyGoPlaintext(moduleName);
   if (is_base_hook) {
     try {
       const init_addresses = gotls.addresses[moduleName];
@@ -23114,14 +25779,110 @@ function gotls_execute2(moduleName, is_base_hook) {
   }
 }
 
-// agent/tls/platforms/linux/gotls_linux.ts
-function gotls_execute_modern2(moduleName, is_base_hook) {
-  try {
-    executeFromDefinition(createGoTlsDefinition(), moduleName, socket_library2, is_base_hook, enable_default_fd);
-  } catch (e) {
-    gotls_execute2(moduleName, is_base_hook);
+// agent/shared/rustls_binary_detection.ts
+init_node_globals();
+var RUSTLS_MARKER = "rustls-0.2";
+var RUSTLS_PREFIX = "rustls-";
+var RUSTLS_VERSION_SPAN = 24;
+var RUSTLS_SCAN_CHUNK_BYTES = XREF_SCAN_CHUNK_BYTES;
+var RUSTLS_SCAN_BUDGET_BYTES = 64 * 1024 * 1024;
+var MARKER_BYTES = Array.from(RUSTLS_MARKER, (c) => c.charCodeAt(0));
+function findRustlsMarker(bytes) {
+  const first = MARKER_BYTES[0];
+  const last = bytes.length - MARKER_BYTES.length;
+  for (let i = 0; i <= last; i++) {
+    if (bytes[i] !== first)
+      continue;
+    let j = 1;
+    for (; j < MARKER_BYTES.length; j++)
+      if (bytes[i + j] !== MARKER_BYTES[j])
+        break;
+    if (j === MARKER_BYTES.length)
+      return i;
   }
+  return -1;
 }
+function extractRustlsVersion(bytes, markerOffset) {
+  const start = markerOffset + RUSTLS_PREFIX.length;
+  let text = "";
+  for (let i = start; i < bytes.length && i < start + RUSTLS_VERSION_SPAN; i++) {
+    const c = bytes[i];
+    if (c >= 48 && c <= 57 || c === 46)
+      text += String.fromCharCode(c);
+    else
+      break;
+  }
+  const match = /^\d+\.\d+(?:\.\d+)?/.exec(text);
+  return match ? match[0] : void 0;
+}
+function scanBufferForRustls(bytes) {
+  const offset = findRustlsMarker(bytes);
+  if (offset < 0)
+    return { present: false };
+  return { present: true, version: extractRustlsVersion(bytes, offset) };
+}
+function scanChunkedForRustls(read, totalSize, chunkBytes = RUSTLS_SCAN_CHUNK_BYTES) {
+  const overlap = RUSTLS_VERSION_SPAN - 1;
+  const step = Math.max(1, chunkBytes);
+  for (let off = 0; off < totalSize; off += step) {
+    const length = Math.min(step + overlap, totalSize - off);
+    const chunk = read(off, length);
+    if (chunk === null)
+      continue;
+    const result = scanBufferForRustls(chunk);
+    if (result.present)
+      return result;
+  }
+  return { present: false };
+}
+function readBytes2(address, length) {
+  const buffer = address.readByteArray(length);
+  return buffer === null ? null : new Uint8Array(buffer);
+}
+function readableRanges(module) {
+  if (typeof module.enumerateRanges !== "function")
+    return [];
+  return module.enumerateRanges("r--");
+}
+function moduleEmbedsRustls(module) {
+  try {
+    let budget = RUSTLS_SCAN_BUDGET_BYTES;
+    for (const range of readableRanges(module)) {
+      if (budget <= 0)
+        break;
+      const size = Math.min(range.size, budget);
+      const result = scanChunkedForRustls((off, len) => readBytes2(range.base.add(off), len), size, RUSTLS_SCAN_CHUNK_BYTES);
+      if (result.present)
+        return result;
+      budget -= size;
+    }
+  } catch (e) {
+    devlog(`[rustls-detect] ${module.name}: content check failed (${e}); not treated as rustls`);
+  }
+  return { present: false };
+}
+var verdicts2 = /* @__PURE__ */ new Map();
+function isRustlsModule(moduleName) {
+  let module = null;
+  try {
+    module = Process.findModuleByName(moduleName);
+  } catch (e) {
+    module = null;
+  }
+  if (module === null)
+    return false;
+  const key = `${moduleName}@${module.base}`;
+  let verdict = verdicts2.get(key);
+  if (verdict === void 0) {
+    verdict = moduleEmbedsRustls(module);
+    verdicts2.set(key, verdict);
+    if (verdict.present) {
+      devlog(`[rustls-detect] ${moduleName}: rustls marker found${verdict.version ? ` (rustls ${verdict.version})` : ""}; rustls hooks apply`);
+    }
+  }
+  return verdict.present;
+}
+var RUSTLS_LINUX_NAMED_MODULE = /rustls/;
 
 // agent/ohttp/platforms/linux/nss_hpke_linux.ts
 init_node_globals();
@@ -23140,9 +25901,10 @@ init_node_globals();
 async function google_quiche_execute2(moduleName, _is_base_hook) {
   log("[*] Google QUICHE detected in " + moduleName + ", installing QUIC stream hooks...");
   try {
-    await installGoogleQuicheHooks(moduleName);
+    return await installGoogleQuicheHooks(moduleName);
   } catch (e) {
     devlog("[Google QUICHE] install failed in " + moduleName + ": " + e);
+    return false;
   }
 }
 
@@ -23215,19 +25977,34 @@ function load_linux_hooking_agent(skipLoaderHook = false) {
     // avoids double-hooking the libssl.so entry above.
     { platform: plattform_name2, pattern: /__libressl_scan_only__/, hookFn: use_modern ? libressl_execute_modern : libressl_execute2, library: "LibreSSL", libraryType: "libressl", protocol: "tls" },
     { platform: plattform_name2, pattern: /.*cronet.*\.so/, excludePattern: /_(libpki|libcrypto)\.so$/, hookFn: use_modern ? cronet_execute_modern2 : cronet_execute3, library: "Cronet", libraryType: "boringssl", protocol: "tls" },
-    { platform: plattform_name2, pattern: /.*libgnutls\.so/, hookFn: use_modern ? gnutls_execute_modern2 : gnutls_execute2, library: "GnuTLS", libraryType: "gnutls", protocol: "tls" },
+    { platform: plattform_name2, pattern: /.*libgnutls\.so/, hookFn: use_modern ? gnutls_execute_modern3 : gnutls_execute2, library: "GnuTLS", libraryType: "gnutls", protocol: "tls" },
     { platform: plattform_name2, pattern: /.*libwolfssl\.so/, hookFn: use_modern ? wolfssl_execute_modern2 : wolfssl_execute2, library: "WolfSSL", libraryType: "wolfssl", protocol: "tls" },
     { platform: plattform_name2, pattern: /.*libnspr[0-9]?\.so/, hookFn: use_modern ? nss_execute_modern3 : nss_execute3, library: "NSS", libraryType: "nss", protocol: "tls" },
     { platform: plattform_name2, pattern: /libmbedtls\.so.*/, hookFn: use_modern ? mbedTLS_execute_modern2 : mbedTLS_execute2, library: "mbedTLS", libraryType: "mbedtls", protocol: "tls" },
     { platform: plattform_name2, pattern: /libssl_s.a/, hookFn: use_modern ? matrixSSL_execute_modern : matrixSSL_execute, library: "MatrixSSL", libraryType: "matrixssl", protocol: "tls" },
     { platform: plattform_name2, pattern: /.*libs2n.so/, hookFn: use_modern ? s2ntls_execute_modern2 : s2ntls_execute2, library: "s2n-tls", libraryType: "s2ntls", protocol: "tls" },
     { platform: plattform_name2, pattern: /.*rustls.*/, hookFn: use_modern ? rustls_execute_modern2 : rustls_execute2, library: "Rustls", libraryType: "rustls", protocol: "tls" },
-    { platform: plattform_name2, pattern: /.*\.go.so$/, hookFn: use_modern ? gotls_execute_modern2 : gotls_execute2, library: "Go TLS", libraryType: "gotls", protocol: "tls" },
-    { platform: plattform_name2, pattern: /.*go[0-9.]+$/, hookFn: use_modern ? gotls_execute_modern2 : gotls_execute2, library: "Go TLS", libraryType: "gotls", protocol: "tls" },
+    // Any other image that statically links rustls (the main executable under any name,
+    // e.g. `myapp`): found by CONTENT — the "rustls-0.2" crate-path marker that panic
+    // metadata keeps in .rodata (shared/rustls_binary_detection.ts). excludePattern is the
+    // name-based row above, so a module it matches is not hooked twice (ssl_library_loader
+    // invokes every match). Same shape as the content-based Go TLS row below.
+    { platform: plattform_name2, pattern: /.*/, excludePattern: RUSTLS_LINUX_NAMED_MODULE, contentFilter: isRustlsModule, hookFn: use_modern ? rustls_execute_modern2 : rustls_execute2, library: "Rustls", libraryType: "rustls", protocol: "tls" },
+    { platform: plattform_name2, pattern: /.*\.go.so$/, hookFn: use_modern ? gotls_execute_modern3 : gotls_execute3, library: "Go TLS", libraryType: "gotls", protocol: "tls" },
+    { platform: plattform_name2, pattern: /.*go[0-9.]+$/, hookFn: use_modern ? gotls_execute_modern3 : gotls_execute3, library: "Go TLS", libraryType: "gotls", protocol: "tls" },
+    // Any other Go image (the main executable under any name, or a c-shared .so): found by
+    // content — Go's build-info blob (shared/go_binary_detection.ts). excludePattern is the
+    // union of the two name rows above, so a module matching one of them is not hooked twice
+    // (ssl_library_loader invokes every match).
+    { platform: plattform_name2, pattern: /.*/, excludePattern: GO_LINUX_NAMED_MODULE, contentFilter: isGoModule, hookFn: use_modern ? gotls_execute_modern3 : gotls_execute3, library: "Go TLS", libraryType: "gotls", protocol: "tls" },
     // IPSec libraries (detection stubs — key extraction in the future)
     { platform: plattform_name2, pattern: /.*libcharon\.so/, hookFn: use_modern ? strongswan_execute_modern : ipsec_execute, library: "strongSwan (charon)", libraryType: "ipsec_strongswan", protocol: "ipsec" },
     { platform: plattform_name2, pattern: /.*libstrongswan\.so/, hookFn: use_modern ? strongswan_execute_modern : ipsec_execute, library: "strongSwan", libraryType: "ipsec_strongswan", protocol: "ipsec" },
     { platform: plattform_name2, pattern: /.*libipsec\.so/, hookFn: use_modern ? strongswan_execute_modern : ipsec_execute, library: "strongSwan (IPSec)", libraryType: "ipsec_strongswan", protocol: "ipsec" },
+    // strongSwan kernel-netlink plugin: carries the CHILD_SA/ESP keys to the
+    // kernel via add_sa(); hooked for ESP key extraction. Its name does not
+    // match the libstrongswan.so pattern above, so it needs its own row.
+    { platform: plattform_name2, pattern: /.*kernel-netlink\.so/, hookFn: use_modern ? strongswan_execute_modern : ipsec_execute, library: "strongSwan (kernel-netlink)", libraryType: "ipsec_strongswan", protocol: "ipsec" },
     // SSH binaries / libraries
     { platform: plattform_name2, pattern: /.*libssh2?\.so/, hookFn: use_modern ? libssh_execute_modern : ssh_execute, library: "libssh", protocol: "ssh" },
     { platform: plattform_name2, pattern: /^(\/.+\/)?(ssh|sshd|sshd-session|scp|sftp-server)$/, hookFn: use_modern ? openssh_execute_modern : ssh_execute, library: "OpenSSH", protocol: "ssh" },
@@ -23288,19 +26065,20 @@ function createStrongswanDefinition() {
     // ikev2_derive_child_sa_keys hooks (see future work above),
     // not in the generic read/write executors.
     // No loader-driven keylog install: the legacy ipsec_detect_execute()
-    // executor owns library detection and IKE/ESP key extraction (keys
-    // self-gate on keylog_enabled via sendKeyMaterial). Wired via extraHooks
-    // so library detection still runs on a `-p`-only run.
+    // executor owns IKE/ESP key extraction (keys self-gate on
+    // keylog_enabled via sendKeyMaterial). Wired via extraHooks so it still
+    // runs on a `-p`-only run; its installed verdict is the row's verdict,
+    // from which the central loader sends the single library_detected.
     keylog: { kind: "none" },
     extraHooks: [
       {
         // Delegate to the legacy executor. It currently handles
-        // library detection and the partial derive_ike_keys /
+        // the partial derive_ike_keys /
         // ikev2_derive_child_sa_keys hooks that exist today.
         // extraHooks always runs in the loader (step 7), independent of
         // keylog_enabled.
         install: (_addresses, moduleName, _resolvedFns, _enableDefaultFd) => {
-          ipsec_execute(
+          return ipsec_execute(
             moduleName,
             /* is_base_hook */
             true
@@ -23314,7 +26092,7 @@ function createStrongswanDefinition() {
 
 // agent/ipsec/platforms/linux/strongswan_linux.ts
 function strongswan_execute_modern(moduleName, is_base_hook) {
-  executeFromDefinition(createStrongswanDefinition(), moduleName, socket_library2, is_base_hook, enable_default_fd);
+  return executeFromDefinition(createStrongswanDefinition(), moduleName, socket_library2, is_base_hook, enable_default_fd);
 }
 
 // agent/ssh/platforms/android/openssh_android.ts
@@ -24217,14 +26995,254 @@ init_node_globals();
 async function google_quiche_execute3(moduleName, _is_base_hook) {
   if (!pcap_enabled) {
     devlog("[*] Google QUICHE detected in " + moduleName + " but plaintext pcap disabled; skipping QUIC stream hooks.");
-    return;
+    return false;
   }
   log("[*] Google QUICHE detected in " + moduleName + ", installing QUIC stream hooks...");
   try {
-    await installGoogleQuicheHooks(moduleName);
+    return await installGoogleQuicheHooks(moduleName);
   } catch (e) {
     devlog("[Google QUICHE] install failed in " + moduleName + ": " + e);
+    return false;
   }
+}
+
+// agent/tls/platforms/android/chromium_plaintext_android.ts
+init_node_globals();
+
+// agent/tls/shared/chromium_plaintext.ts
+init_node_globals();
+
+// agent/tls/shared/boringssl_plaintext_locator.ts
+init_node_globals();
+var ERR_LIB_SSL = 16;
+var SSL_REASON = {
+  SHOULD_NOT_HAVE_BEEN_CALLED: 66,
+  // ERR_R_SHOULD_NOT_HAVE_BEEN_CALLED
+  BAD_LENGTH: 111,
+  // SSL_R_BAD_LENGTH
+  SSL_HANDSHAKE_FAILURE: 215,
+  // SSL_R_SSL_HANDSHAKE_FAILURE
+  UNINITIALIZED: 226
+  // SSL_R_UNINITIALIZED
+};
+var REASON_WINDOW_AFTER = 10;
+var REASON_WINDOW_BEFORE = 6;
+function decodeErrorReason(words, at) {
+  const lo = Math.max(0, at - REASON_WINDOW_BEFORE);
+  const hi = Math.min(words.length, at + REASON_WINDOW_AFTER + 1);
+  let isSslLib = false;
+  for (let i = lo; i < hi; i++)
+    if (movzW(words[i], 0) === ERR_LIB_SSL)
+      isSslLib = true;
+  if (!isSslLib)
+    return null;
+  for (let i = at + 1; i < hi; i++) {
+    const reason = movzW(words[i], 2);
+    if (reason !== null)
+      return reason;
+  }
+  for (let i = at - 1; i >= lo; i--) {
+    const reason = movzW(words[i], 2);
+    if (reason !== null)
+      return reason;
+  }
+  return null;
+}
+function reasonsByFunction(sites) {
+  const groups = /* @__PURE__ */ new Map();
+  for (const { func, reason } of sites) {
+    if (!groups.has(func))
+      groups.set(func, /* @__PURE__ */ new Set());
+    groups.get(func).add(reason);
+  }
+  return groups;
+}
+function only(items) {
+  return items.length === 1 ? items[0] : null;
+}
+function funcsWhere(groups, pred) {
+  return [...groups.entries()].filter(([, reasons]) => pred(reasons)).map(([func]) => func);
+}
+function pickSslWrite(groups) {
+  const R = SSL_REASON;
+  return only(funcsWhere(groups, (r) => r.has(R.SHOULD_NOT_HAVE_BEEN_CALLED) && r.has(R.UNINITIALIZED) && r.has(R.BAD_LENGTH)));
+}
+function pickSslReadImpl(groups) {
+  const R = SSL_REASON;
+  return only(funcsWhere(groups, (r) => r.size === 2 && r.has(R.UNINITIALIZED) && r.has(R.SSL_HANDSHAKE_FAILURE)));
+}
+function peekShapedFunctions(groups) {
+  return funcsWhere(groups, (r) => r.size === 1 && r.has(SSL_REASON.SHOULD_NOT_HAVE_BEEN_CALLED));
+}
+function resolveSslRead(peekShaped, readImpl, wrappersOf2) {
+  const readers = peekShaped.filter((f) => f.callees.has(readImpl));
+  if (readers.length === 1)
+    return only(wrappersOf2(readers[0].func));
+  if (readers.length === 2) {
+    const [a, b] = readers;
+    const contains = (x, y) => x.size > y.size && [...y].every((c) => x.has(c));
+    if (contains(a.callees, b.callees))
+      return a.func;
+    if (contains(b.callees, a.callees))
+      return b.func;
+  }
+  return null;
+}
+var MAX_BODY_BYTES = 4096;
+var WRAPPER_SEARCH_MARGIN = 65536;
+function readWords(at, count) {
+  try {
+    const buf = at.readByteArray(count * 4);
+    return buf ? new Uint32Array(buf) : null;
+  } catch (_e) {
+    return null;
+  }
+}
+function offsetOf(mod, p) {
+  return p.sub(mod.base).toInt32();
+}
+function calleesOf(mod, start, end) {
+  const size = Math.min(end ? end.sub(start).toInt32() : MAX_BODY_BYTES, MAX_BODY_BYTES);
+  const words = readWords(start, Math.max(0, size >> 2)) ?? new Uint32Array(0);
+  const base = offsetOf(mod, start);
+  const callees = /* @__PURE__ */ new Set();
+  words.forEach((w, i) => {
+    const t = blTargetOffset(base + i * 4, w);
+    if (t !== null)
+      callees.add(t);
+  });
+  return callees;
+}
+function wrappersOf(mod, table, peek, lo, hi) {
+  const start = Math.max(0, lo - WRAPPER_SEARCH_MARGIN);
+  const end = Math.min(hi + WRAPPER_SEARCH_MARGIN, mod.size);
+  const words = readWords(mod.base.add(start), end - start >> 2) ?? new Uint32Array(0);
+  const found = /* @__PURE__ */ new Set();
+  words.forEach((w, i) => {
+    const pc = start + i * 4;
+    if (blTargetOffset(pc, w) !== peek)
+      return;
+    const fn = table.bounds(mod.base.add(pc));
+    if (!fn)
+      return;
+    const fnOff = offsetOf(mod, fn.start);
+    const prefix = readWords(fn.start, pc - fnOff >> 2) ?? new Uint32Array(0);
+    if (prefix.length <= 16 && prefix.every((x, k) => blTargetOffset(fnOff + k * 4, x) === null))
+      found.add(fnOff);
+  });
+  return [...found];
+}
+var SSL_LIB_ANCHOR = { text: "/ssl/ssl_lib.cc", literalSuffix: true, maxSites: 512 };
+async function sslLibErrorSites(mod, table) {
+  const [loads] = await anchorSiteFunctions(mod, table, [SSL_LIB_ANCHOR]);
+  if (loads.length === 0)
+    return null;
+  const sites = [];
+  const bodies = /* @__PURE__ */ new Map();
+  for (const { at, fn } of loads) {
+    const words = readWords(at.sub(REASON_WINDOW_BEFORE * 4), REASON_WINDOW_BEFORE + REASON_WINDOW_AFTER + 1);
+    const reason = words ? decodeErrorReason(words, REASON_WINDOW_BEFORE) : null;
+    if (reason === null || !fn)
+      continue;
+    const func = offsetOf(mod, fn.start);
+    bodies.set(func, fn.end);
+    sites.push({ func, reason });
+  }
+  return { sites, bodies };
+}
+function locateSslRead(mod, table, groups, readImpl, bodies) {
+  const peekShaped = peekShapedFunctions(groups).map((func) => ({
+    func,
+    callees: calleesOf(mod, mod.base.add(func), bodies.get(func) ?? null)
+  }));
+  const funcs = [...groups.keys()];
+  const lo = Math.min(...funcs), hi = Math.max(...funcs);
+  return resolveSslRead(peekShaped, readImpl, (peek) => wrappersOf(mod, table, peek, lo, hi));
+}
+var offsetLabel = (off) => off === null ? "?" : "+0x" + off.toString(16);
+async function locateBoringSslPlaintextApi(mod) {
+  if (Process.arch !== "arm64")
+    return null;
+  const table = ehFrameTableFor(mod);
+  if (!table) {
+    devlog(`[BoringSSL plaintext] ${mod.name}: no usable .eh_frame_hdr; cannot bound functions`);
+    return null;
+  }
+  const found = await sslLibErrorSites(mod, table);
+  if (!found) {
+    devlog(`[BoringSSL plaintext] ${mod.name}: no BoringSSL ssl_lib.cc anchor string`);
+    return null;
+  }
+  const groups = reasonsByFunction(found.sites);
+  const sslWrite = pickSslWrite(groups);
+  const readImpl = pickSslReadImpl(groups);
+  const sslRead = readImpl === null ? null : locateSslRead(mod, table, groups, readImpl, found.bodies);
+  devlog(`[BoringSSL plaintext] ${mod.name}: ${found.sites.length} ssl_lib.cc error sites in ${groups.size} functions; SSL_write=${offsetLabel(sslWrite)} ssl_read_impl=${offsetLabel(readImpl)} SSL_read=${offsetLabel(sslRead)}`);
+  return {
+    sslRead: sslRead === null ? null : mod.base.add(sslRead),
+    sslWrite: sslWrite === null ? null : mod.base.add(sslWrite)
+  };
+}
+function describeLocated(mod, api) {
+  const at = (p) => moduleOffsetLabel(mod, p, "not found");
+  return `SSL_read ${at(api.sslRead)}, SSL_write ${at(api.sslWrite)}`;
+}
+
+// agent/tls/shared/chromium_plaintext.ts
+var installedModules2 = /* @__PURE__ */ new Set();
+var NO_MODIFICATIONS = { readmod: null, writemod: null };
+function plaintextHost(moduleName, socketLibrary, isBaseHook) {
+  let addresses = { [moduleName]: {} };
+  try {
+    addresses = readAddresses(moduleName, {
+      [`*${socketLibrary}*`]: ["getpeername", "getsockname", "ntohs", "ntohl"]
+    });
+  } catch (e) {
+    devlog(`[Chromium plaintext] ${moduleName}: socket helpers not resolved: ${e}`);
+  }
+  return {
+    moduleName,
+    module_name: moduleName,
+    is_base_hook: isBaseHook,
+    addresses,
+    // No fd on Chrome's SSL objects: always take the deferred (SSL-scoped) path.
+    SSL_get_fd: (_ssl) => -1,
+    SSL_get_session: null,
+    SSL_SESSION_get_id: null,
+    getSslSessionId: (_ssl) => ""
+  };
+}
+async function installChromiumPlaintextHooks(moduleName, socketLibrary, isBaseHook) {
+  if (!pcap_enabled || installedModules2.has(moduleName))
+    return false;
+  installedModules2.add(moduleName);
+  try {
+    const mod = Process.findModuleByName(moduleName);
+    if (!mod)
+      return false;
+    const api = await locateBoringSslPlaintextApi(mod);
+    if (!api || !api.sslRead && !api.sslWrite) {
+      log(`[!] ${moduleName}: BoringSSL SSL_read/SSL_write not located; TCP TLS plaintext unavailable (keys only)`);
+      return false;
+    }
+    const hooks = new SslPlaintextHooks(plaintextHost(moduleName, socketLibrary, isBaseHook), NO_MODIFICATIONS, false);
+    if (api.sslRead)
+      hooks.attachRead(api.sslRead);
+    if (api.sslWrite)
+      hooks.attachWrite(api.sslWrite);
+    log(`[*] ${moduleName}: hooked statically linked BoringSSL for TCP TLS plaintext (${describeLocated(mod, api)}; located via ssl_lib.cc error-site anchors)`);
+    return true;
+  } catch (e) {
+    devlog(`[Chromium plaintext] ${moduleName}: install failed: ${e}`);
+    return false;
+  }
+}
+
+// agent/tls/platforms/android/chromium_plaintext_android.ts
+function chromium_plaintext_execute(moduleName, is_base_hook) {
+  if (!pcap_enabled)
+    return false;
+  return installChromiumPlaintextHooks(moduleName, socket_library, is_base_hook);
 }
 
 // agent/quic/platforms/android/neqo_android.ts
@@ -24296,6 +27314,21 @@ function install_pattern_based_hooks() {
     }
   } catch (e) {
   }
+}
+var LEGACY_PAIRIP_EXECUTORS = {
+  boringssl: boring_execute,
+  httpengine: httpengine_execute,
+  conscrypt: conscrypt_native_execute,
+  unity_mbedtls: unity_mbedtls_execute
+};
+var MODERN_PAIRIP_EXECUTORS = {
+  boringssl: boring_execute_modern,
+  httpengine: httpengine_execute_modern,
+  conscrypt: conscrypt_execute_modern,
+  unity_mbedtls: unity_mbedtls_execute_modern
+};
+function pairipSafeExecutors(modern) {
+  return modern ? MODERN_PAIRIP_EXECUTORS : LEGACY_PAIRIP_EXECUTORS;
 }
 function load_android_hooking_agent() {
   const __androidHooks = [
@@ -24373,6 +27406,7 @@ function load_android_hooking_agent() {
     // IPSec libraries — strongSwan VPN is common on Android (detection stub, key extraction still needs to be done)
     { platform: plattform_name3, pattern: /.*libcharon\.so/, hookFn: use_modern ? strongswan_execute_modern : ipsec_execute, library: "strongSwan (charon)", libraryType: "ipsec_strongswan", protocol: "ipsec" },
     { platform: plattform_name3, pattern: /.*libstrongswan\.so/, hookFn: use_modern ? strongswan_execute_modern : ipsec_execute, library: "strongSwan", libraryType: "ipsec_strongswan", protocol: "ipsec" },
+    { platform: plattform_name3, pattern: /.*kernel-netlink\.so/, hookFn: use_modern ? strongswan_execute_modern : ipsec_execute, library: "strongSwan (kernel-netlink)", libraryType: "ipsec_strongswan", protocol: "ipsec" },
     // SSH binaries / libraries (Termux ships OpenSSH at $PREFIX/bin/ssh, sshd)
     { platform: plattform_name3, pattern: /.*libssh2?\.so/, hookFn: use_modern ? libssh_execute_modern : ssh_execute, library: "libssh", protocol: "ssh" },
     { platform: plattform_name3, pattern: /^(\/.+\/)?(ssh|sshd|sshd-session|scp|sftp-server)$/, hookFn: use_modern ? openssh_execute_modern : ssh_execute, library: "OpenSSH", protocol: "ssh" },
@@ -24400,13 +27434,20 @@ function load_android_hooking_agent() {
     // not a substring of "libmainlinecronet". Needs its own entry.
     { platform: plattform_name3, pattern: /^libmainlinecronet\.[\d.]+\.so$/, hookFn: google_quiche_execute3, library: "Google QUICHE (Mainline Cronet APEX)", libraryType: "google_quiche", protocol: "tls", supplementary: true },
     { platform: plattform_name3, pattern: /.*monochrome.*\.so/, hookFn: google_quiche_execute3, library: "Google QUICHE (Monochrome)", libraryType: "google_quiche", protocol: "tls", supplementary: true },
+    // TCP TLS plaintext for the Chromium monoliths, whose BoringSSL is statically linked
+    // and stripped: SSL_read/SSL_write are located via ssl_lib.cc error-site anchors
+    // (tls/shared/boringssl_plaintext_locator.ts). `supplementary`: keys still come from
+    // the Cronet rows above; these rows only add the plaintext hooks.
+    { platform: plattform_name3, pattern: /.*monochrome.*\.so/, hookFn: chromium_plaintext_execute, library: "BoringSSL plaintext (Monochrome)", protocol: "tls", supplementary: true },
+    { platform: plattform_name3, pattern: /.*libchrome\.so/, hookFn: chromium_plaintext_execute, library: "BoringSSL plaintext (Chrome)", protocol: "tls", supplementary: true },
+    { platform: plattform_name3, pattern: /.*libwebviewchromium.*\.so/, hookFn: chromium_plaintext_execute, library: "BoringSSL plaintext (WebView Chromium)", protocol: "tls", supplementary: true },
     { platform: plattform_name3, pattern: /.*libxul\.so/, hookFn: neqo_execute3, library: "Mozilla Neqo (Firefox HTTP/3)", libraryType: "neqo", protocol: "tls", supplementary: true },
     // Hooks contributed by optional, separately bundled units (empty in the
     // public build; a full build's private unit registers its rows before the
     // agent entry runs, so they are present here at registration time).
     ...collectContributedHooks()
   ];
-  const pairipSafeHooks = buildPairipSafeRegistrations(plattform_name3, use_modern);
+  const pairipSafeHooks = buildPairipSafeRegistrations(plattform_name3, pairipSafeExecutors(use_modern));
   hookRegistry.registerAll(pairip_safe ? pairipSafeHooks : quic_only ? __androidHooks.filter((e) => e.libraryType === "google_quiche") : __androidHooks);
   let hasLoaderDlopen = false;
   for (const ln of ["linker64", "linker"]) {
@@ -25694,13 +28735,13 @@ var GnuTLS_Windows = class extends GnuTLS2 {
   install_tls_keys_callback_hook() {
   }
 };
-function gnutls_execute3(moduleName, is_base_hook) {
+function gnutls_execute4(moduleName, is_base_hook) {
   executeSSLLibrary(GnuTLS_Windows, moduleName, socket_library5, is_base_hook);
 }
 
 // agent/tls/platforms/windows/gnutls_windows.ts
 init_node_globals();
-function gnutls_execute_modern3(moduleName, is_base_hook) {
+function gnutls_execute_modern4(moduleName, is_base_hook) {
   executeFromDefinition(createGnuTlsDefinition(), moduleName, socket_library5, is_base_hook, enable_default_fd);
 }
 
@@ -26215,9 +29256,10 @@ init_node_globals();
 async function google_quiche_execute4(moduleName, _is_base_hook) {
   log("[*] Google QUICHE detected in " + moduleName + ", installing QUIC stream hooks...");
   try {
-    await installGoogleQuicheHooks(moduleName);
+    return await installGoogleQuicheHooks(moduleName);
   } catch (e) {
     devlog("[Google QUICHE] install failed in " + moduleName + ": " + e);
+    return false;
   }
 }
 
@@ -26225,6 +29267,26 @@ async function google_quiche_execute4(moduleName, _is_base_hook) {
 init_node_globals();
 function neqo_execute4(moduleName, is_base_hook) {
   executeFromDefinition(createNeqoDefinition(), moduleName, socket_library5, is_base_hook, enable_default_fd);
+}
+
+// agent/legacy/tls/platforms/windows/gotls_windows.ts
+init_node_globals();
+function gotls_execute4(moduleName, is_base_hook) {
+  gotls_execute_native(moduleName, socket_library5, is_base_hook);
+}
+
+// agent/tls/platforms/windows/gotls_windows.ts
+init_node_globals();
+function gotls_execute_modern4(moduleName, is_base_hook) {
+  const fallBack = (e) => {
+    devlog(`[gotls] modern definition failed on ${moduleName} (${e}); using the class-based GoTLS executor`);
+    gotls_execute_class_based(moduleName, socket_library5, is_base_hook);
+  };
+  try {
+    executeFromDefinition(createGoTlsDefinition(), moduleName, socket_library5, is_base_hook, enable_default_fd).catch(fallBack);
+  } catch (e) {
+    fallBack(e);
+  }
 }
 
 // agent/shared/chromium_boringssl.ts
@@ -26303,7 +29365,7 @@ function load_windows_hooking_agent() {
     // statically linked curl.exe). Sentinel pattern never name-matches.
     { platform: plattform_name5, pattern: /__libressl_scan_only__/, hookFn: use_modern ? libressl_execute_modern4 : libressl_execute4, library: "LibreSSL", libraryType: "libressl", protocol: "tls" },
     { platform: plattform_name5, pattern: /^.*(wolfssl|WOLFSSL).*\.dll$/, hookFn: use_modern ? wolfssl_execute_modern3 : wolfssl_execute3, library: "WolfSSL", libraryType: "wolfssl", protocol: "tls" },
-    { platform: plattform_name5, pattern: /^.*(libgnutls|LIBGNUTLS)-[0-9]+\.dll$/, hookFn: use_modern ? gnutls_execute_modern3 : gnutls_execute3, library: "GnuTLS", libraryType: "gnutls", protocol: "tls" },
+    { platform: plattform_name5, pattern: /^.*(libgnutls|LIBGNUTLS)-[0-9]+\.dll$/, hookFn: use_modern ? gnutls_execute_modern4 : gnutls_execute4, library: "GnuTLS", libraryType: "gnutls", protocol: "tls" },
     { platform: plattform_name5, pattern: /^(nspr|NSPR)[0-9]*\.dll/, hookFn: use_modern ? nss_execute_modern4 : nss_execute4, library: "NSS", libraryType: "nss", protocol: "tls" },
     { platform: plattform_name5, pattern: /(sspicli|SSPICLI|SspiCli)\.dll$/, hookFn: use_modern ? sspi_execute_modern : sspi_execute, library: "SSPI", libraryType: "sspi", protocol: "tls" },
     { platform: plattform_name5, pattern: /mbedTLS\.dll/, hookFn: use_modern ? mbedTLS_execute_modern3 : mbedTLS_execute3, library: "mbedTLS", libraryType: "mbedtls", protocol: "tls" },
@@ -26312,6 +29374,10 @@ function load_windows_hooking_agent() {
     // Edge, Qt WebEngine). chrome.dll also matches the QUIC row below; the
     // loader invokes every match, so both install.
     ...CHROMIUM_BORINGSSL_MODULES.map((pattern) => ({ platform: plattform_name5, pattern, hookFn: chromium_boringssl_hook(false), library: "BoringSSL (Chromium)", libraryType: "boringssl", protocol: "tls" })),
+    // Go crypto/tls: linked into the Go image itself — usually the .exe, under any name —
+    // so it is found by content (Go's build-info blob at the start of .data,
+    // shared/go_binary_detection.ts), not by name; c-shared Go DLLs likewise.
+    { platform: plattform_name5, pattern: /.*/, contentFilter: isGoModule, hookFn: use_modern ? gotls_execute_modern4 : gotls_execute4, library: "Go TLS", libraryType: "gotls", protocol: "tls" },
     { platform: plattform_name5, pattern: /matrixSSL\.dll/, hookFn: use_modern ? matrixSSL_execute_modern2 : matrixSSL_execute2, library: "MatrixSSL", libraryType: "matrixssl", protocol: "tls" },
     // OHTTP (NSS HPKE) — gated under the TLS family for `--protocol tls`
     { platform: plattform_name5, pattern: /^(nspr|NSPR)[0-9]*\.dll/, hookFn: nss_hpke_execute_windows, library: "NSS HPKE (OHTTP)", protocol: "tls", libraryType: "nss_hpke" },
@@ -26379,6 +29445,7 @@ function load_windows_lsass_agent() {
 
 // agent/platforms/wine.ts
 init_node_globals();
+init_record_protocol();
 init_shared_structures();
 
 // agent/shared/wine_keylog_pattern_hook.ts
@@ -26888,11 +29955,11 @@ function arm_wine_late_install() {
 }
 function hookWineDllOnce(match, dllName, is_base_hook) {
   const protocolTag = protocolLabel(selected_protocols);
-  if (isModuleHooked(dllName, installTagFor(match, protocolTag))) {
+  if (isModuleHooked(dllName, installTagFor(match, protocolTag)) || isRowHandled(match, dllName, protocolTag)) {
     devlog(`[Wine] ${dllName}: ${match.library} already installed, skipping`);
     return;
   }
-  match.hookFn(dllName, is_base_hook);
+  executeHookRow(match, dllName, is_base_hook);
   recordHookInstalled(match, dllName, protocolTag);
 }
 function hook_Wine_Existing_DLLs(is_base_hook) {
@@ -26966,7 +30033,7 @@ function load_wine_hooking_agent(lean = false) {
     // by the pattern tier of wine_keylog_pattern_hook.ts.
     { platform: platform_name, pattern: /^(libtls|LIBTLS)-[0-9]+(_[0-9]+)?\.dll$/i, hookFn: libssl_dispatch_wine(), library: "LibreSSL (libtls)", libraryType: "libressl" },
     { platform: platform_name, pattern: /^.*(wolfssl|WOLFSSL).*\.dll$/i, hookFn: use_modern ? wolfssl_execute_modern3 : wolfssl_execute3, library: "WolfSSL", libraryType: "wolfssl" },
-    { platform: platform_name, pattern: /^.*(libgnutls|LIBGNUTLS)-[0-9]+\.dll$/i, hookFn: use_modern ? gnutls_execute_modern3 : gnutls_execute3, library: "GnuTLS", libraryType: "gnutls" },
+    { platform: platform_name, pattern: /^.*(libgnutls|LIBGNUTLS)-[0-9]+\.dll$/i, hookFn: use_modern ? gnutls_execute_modern4 : gnutls_execute4, library: "GnuTLS", libraryType: "gnutls" },
     { platform: platform_name, pattern: /^(nspr|NSPR)[0-9]*\.dll/i, hookFn: use_modern ? nss_execute_modern4 : nss_execute4, library: "NSS", libraryType: "nss" },
     { platform: platform_name, pattern: /mbedTLS\.dll/i, hookFn: use_modern ? mbedTLS_execute_modern3 : mbedTLS_execute3, library: "mbedTLS", libraryType: "mbedtls" },
     { platform: platform_name, pattern: /^.*(cronet|CRONET).*\.dll/i, hookFn: cronet_execute_wine, library: "Cronet", libraryType: "boringssl" },
@@ -27036,7 +30103,7 @@ function asciiBytes(str) {
     out[i] = str.charCodeAt(i) & 255;
   return out;
 }
-function readBytes(addr, len) {
+function readBytes3(addr, len) {
   try {
     const buf = addr.readByteArray(len);
     return buf === null ? null : new Uint8Array(buf);
@@ -27182,13 +30249,14 @@ function makeRc4Executor(label, install) {
   return function(moduleName, is_base_hook) {
     if (!keylog_enabled) {
       devlog(`[rc4] keylog disabled (-k not set); skipping ${label} RC4 key hooks on ${moduleName}.`);
-      return;
+      return false;
     }
     ensureRc4SelfTest();
     try {
-      install(moduleName);
+      return install(moduleName);
     } catch (e) {
       devlog(`[rc4] ${label} executor error on ${moduleName} (is_base_hook=${is_base_hook}): ${e && e.stack ? e.stack : e}`);
+      return false;
     }
   };
 }
@@ -27199,7 +30267,7 @@ function installOpenSslRc4Hooks(moduleName) {
       try {
         const len = args[1].toInt32();
         if (len >= RC4_MIN_KEY_LEN && len <= RC4_MAX_KEY_LEN) {
-          const key = readBytes(args[2], len);
+          const key = readBytes3(args[2], len);
           if (key !== null)
             emitRc4Key(key, "RC4_set_key", "unknown");
         }
@@ -27217,7 +30285,7 @@ function installNettleRc4Hooks(moduleName) {
         try {
           const len = args[1].toInt32();
           if (len >= RC4_MIN_KEY_LEN && len <= RC4_MAX_KEY_LEN) {
-            const key = readBytes(args[2], len);
+            const key = readBytes3(args[2], len);
             if (key !== null)
               emitRc4Key(key, fn, "unknown");
           }
@@ -27234,7 +30302,7 @@ function installMbedtlsRc4Hooks(moduleName) {
       try {
         const keylen = args[2].toInt32();
         if (keylen >= RC4_MIN_KEY_LEN && keylen <= RC4_MAX_KEY_LEN) {
-          const key = readBytes(args[1], keylen);
+          const key = readBytes3(args[1], keylen);
           if (key !== null)
             emitRc4Key(key, "mbedtls_arc4_setup", "unknown");
         }
@@ -27273,7 +30341,7 @@ function installWindowsCngRc4Hooks(moduleName) {
         const isRc4 = _rc4AlgHandles[args[0].toString()] === true;
         const cbSecret = args[5].toInt32();
         if (cbSecret >= RC4_MIN_KEY_LEN && cbSecret <= RC4_MAX_KEY_LEN) {
-          const key = readBytes(args[4], cbSecret);
+          const key = readBytes3(args[4], cbSecret);
           if (key !== null && isRc4)
             emitRc4Key(key, "BCryptGenerateSymmetricKey", "unknown");
         }
@@ -27316,7 +30384,7 @@ function tryExportCapiKey(hKey) {
     const keyLen = blob.add(8).readU32();
     if (keyLen < RC4_MIN_KEY_LEN || keyLen > RC4_MAX_KEY_LEN)
       return null;
-    return readBytes(blob.add(12), keyLen);
+    return readBytes3(blob.add(12), keyLen);
   } catch (e) {
     return null;
   }
@@ -27807,7 +30875,7 @@ function readRangeGuarded(base, size) {
     const readable = readableScanLength(sub, want);
     if (readable <= 0)
       break;
-    const chunk = readBytes(sub, readable);
+    const chunk = readBytes3(sub, readable);
     if (chunk === null)
       break;
     out.set(chunk, got);
@@ -28157,7 +31225,7 @@ function grabAppData(pMessage) {
   const bufs = parseSecBuffers(pMessage);
   for (let i = 0; i < bufs.length; i++) {
     if (bufs[i].type === SECBUFFER_DATA && bufs[i].cb > 0) {
-      const b = readBytes(bufs[i].pv, bufs[i].cb);
+      const b = readBytes3(bufs[i].pv, bufs[i].cb);
       if (b !== null)
         return b;
     }
@@ -28264,15 +31332,18 @@ function ensureRc4WindowsMemscanArmed() {
 }
 
 // agent/rc4/platforms/windows/rc4_windows.ts
-function installCngRc4PlusMemscan(moduleName) {
-  const any = installWindowsCngRc4Hooks(moduleName);
+function installProviderPlusMemscan(install, moduleName) {
+  const hooked = install(moduleName);
   ensureRc4WindowsMemscanArmed();
-  return any;
+  if (!hooked)
+    devlog(`[rc4] ${moduleName}: no RC4 API hook attached; managed-RC4 memory recovery armed only`);
+  return hooked;
+}
+function installCngRc4PlusMemscan(moduleName) {
+  return installProviderPlusMemscan(installWindowsCngRc4Hooks, moduleName);
 }
 function installCapiRc4PlusMemscan(moduleName) {
-  const any = installWindowsCapiRc4Hooks(moduleName);
-  ensureRc4WindowsMemscanArmed();
-  return any;
+  return installProviderPlusMemscan(installWindowsCapiRc4Hooks, moduleName);
 }
 var rc4_cng_execute_windows = makeRc4Executor("cng(windows)", installCngRc4PlusMemscan);
 var rc4_capi_execute_windows = makeRc4Executor("capi(windows)", installCapiRc4PlusMemscan);

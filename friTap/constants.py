@@ -93,6 +93,20 @@ def direction_for_function(function: str, explicit: str | None = None) -> str:
     return DIRECTION_READ if is_read_function(function) else DIRECTION_WRITE
 
 
+# Canonical function labels whose read/write classification is unambiguous.
+_CANONICAL_DIRECTION_LABELS = {DIRECTION_READ: "SSL_read", DIRECTION_WRITE: "SSL_write"}
+
+
+def direction_label(function: str, explicit: str | None = None) -> str:
+    """Function label to hand to label-based writers (``PCAP.log_plaintext_payload``).
+
+    An explicit ``direction`` maps to the canonical "SSL_read"/"SSL_write"
+    label, so hooks unknown to SSL_READ/SSL_WRITE are still written the right
+    way round; otherwise the record's own *function* label is returned.
+    """
+    return _CANONICAL_DIRECTION_LABELS.get(explicit, function)
+
+
 # Protocol identifiers used in ParseResult / DataCanonical
 PROTOCOL_HTTP1 = "HTTP/1.x"
 PROTOCOL_HTTP2 = "HTTP/2"
@@ -119,7 +133,11 @@ PROTOCOL_RC4 = "RC4"
 #    content type (--probe dry-run mode). A bundle at ABI 1 ignores ``probe``
 #    and installs every hook as usual, which is precisely the kind of silent
 #    disagreement this number exists to make visible.
-AGENT_ABI_VERSION = 2
+# 3: every message's ``protocol`` is a concrete protocol (never ``auto``/``all``):
+#    the hook's record protocol under a meta selection, the selection otherwise;
+#    a hook executor may return ``false`` (installed nothing -> no
+#    ``library_detected``). An ABI-2 bundle stamps the meta selection instead.
+AGENT_ABI_VERSION = 3
 
 
 # Maps a protocol-layer NAME (see friTap.flow.layers) to its human display
@@ -153,7 +171,15 @@ class ContentType:
     SSH_KEY = "ssh_key"
     SSH_KEYLOG = "ssh_keylog"
     SSH_NEWKEYS = "ssh_newkeys"
+    # IPsec/strongSwan key material. IPSEC_IKE carries the IKE_SA keys (one per
+    # IKE_SA, from derive_ike_keys) and IPSEC_ESP the per-direction CHILD_SA
+    # (ESP) keys (from kernel add_sa). They become the Wireshark UAT decryption
+    # tables ikev2_decryption_table / esp_sa (see friTap.protocols.ipsec_handler).
+    # IPSEC_CHILD_SA is the historical (pre-contract) ESP content type, kept for
+    # back-compat with older agent bundles that still emit it.
     IPSEC_CHILD_SA = "ipsec_child_sa_keys"
+    IPSEC_IKE = "ipsec_ike_keys"
+    IPSEC_ESP = "ipsec_esp_keys"
     MTPROTO_KEY = "mtproto_key"
     TELEGRAM_E2E_KEY = "telegram_e2e_key"
     TELEGRAM_E2E_PLAINTEXT = "telegram_e2e_plaintext"
@@ -229,3 +255,8 @@ def build_capture_bpf(
 def build_infrastructure_display_filter(ports: frozenset[int] | None = None) -> str:
     """Build a Wireshark display filter that excludes infrastructure ports."""
     return _build_port_exclusion(ports, "tcp.port == {p}")
+
+
+# Meta protocol selections (``--protocol auto`` / ``all``) choose WHICH hooks
+# install; they are never the protocol a captured record belongs to.
+META_PROTOCOL_SELECTIONS: frozenset[str] = frozenset({"auto", "all"})

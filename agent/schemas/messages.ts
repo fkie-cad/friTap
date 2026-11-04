@@ -30,6 +30,9 @@ export interface DatalogMessage {
     quic_dcid?: string;
     http3_headers?: string[][] | null;
     quic_stream_type?: string | null;
+    direction?: string | null;
+    quic_payload?: string | null;
+    library?: string | null;
 }
 
 export function isDatalogMessage(msg: unknown): msg is DatalogMessage {
@@ -222,12 +225,35 @@ export function isIPSecChildSAKeysMessage(msg: unknown): msg is IPSecChildSAKeys
 export interface IPSecIKEKeysMessage {
     contentType: "ipsec_ike_keys";
     protocol?: string;
+    ike_version?: number;
+    spi_i?: string;
+    spi_r?: string;
+    enc_alg?: number | null;
+    enc_key_len_bits?: number | null;
+    int_alg?: number | null;
     keys?: Record<string, string>;
     message?: string;
 }
 
 export function isIPSecIKEKeysMessage(msg: unknown): msg is IPSecIKEKeysMessage {
     return (msg as any)?.contentType === "ipsec_ike_keys";
+}
+
+export interface IPSecESPKeysMessage {
+    contentType: "ipsec_esp_keys";
+    protocol?: string;
+    spi?: string;
+    src?: string;
+    dst?: string;
+    family?: string;
+    enc_alg?: number | null;
+    int_alg?: number | null;
+    enc_key?: string;
+    int_key?: string;
+}
+
+export function isIPSecESPKeysMessage(msg: unknown): msg is IPSecESPKeysMessage {
+    return (msg as any)?.contentType === "ipsec_esp_keys";
 }
 
 export interface OhttpPlaintextMessage {
@@ -257,4 +283,5 @@ export type AgentMessage = KeylogMessage
     | SSHKeylogMessage
     | IPSecChildSAKeysMessage
     | IPSecIKEKeysMessage
+    | IPSecESPKeysMessage
     | OhttpPlaintextMessage;

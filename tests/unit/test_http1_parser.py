@@ -160,6 +160,60 @@ class TestProtocolErrorResync:
         assert _find_message_start(buf, (b"GET h", b"POST /"), 0) == -1
 
 
+def _feed_bytewise(parser: Http1Parser, data: bytes, direction: str) -> list[ParseResult]:
+    results: list[ParseResult] = []
+    for index in range(len(data)):
+        results += parser.feed(data[index:index + 1], direction)
+    return results
+
+
+def _desynced(direction: str) -> Http1Parser:
+    """A parser whose *direction* is hunting for the next message start."""
+    parser = Http1Parser()
+    bad = b"HTTP/1.1 200 OK\r\nbroken\r\n\r\n" if direction == "read" else b"GET /bad HTTP/1.1\r\nbroken\r\n\r\n"
+    parser.feed(bad, direction)
+    assert direction in parser._resync_bufs
+    return parser
+
+
+class TestResyncAcrossChunkBoundaries:
+    def test_request_signature_split_bytewise_after_garbage(self):
+        parser = _desynced("write")
+        results = _feed_bytewise(parser, b"junk\x00\xff" + _req("/split"), "write")
+        assert _urls(results) == ["/split"]
+
+    def test_response_signature_split_bytewise_after_garbage(self):
+        parser = _desynced("read")
+        results = _feed_bytewise(parser, b"\x00junk HTTP/2 " + _resp(b"ok"), "read")
+        assert [r.status_code for r in results] == [200]
+        assert results[0].body_size == 2
+
+    def test_crlf_split_across_chunks_validates_candidate(self):
+        parser = _desynced("write")
+        assert parser.feed(b"garbage GET /cr HTTP/1.1\r", "write") == []
+        results = parser.feed(b"\nHost: x\r\n\r\n", "write")
+        assert _urls(results) == ["/cr"]
+
+    def test_bytewise_resync_matches_single_chunk(self):
+        data = b"\x00junk\r\nGET" * 50 + _req("/a") + b"\x00\x01\n" + _req("/b")
+        whole = _desynced("write").feed(data, "write")
+        bytewise = _feed_bytewise(_desynced("write"), data, "write")
+        assert [repr(r) for r in bytewise] == [repr(r) for r in whole]
+        assert _urls(whole) == ["/a", "/b"]
+
+    def test_chunks_without_lf_skip_the_rescan(self, monkeypatch):
+        import friTap.parsers.http1 as http1
+        parser = _desynced("write")
+        calls = []
+        real = http1._find_message_start
+        monkeypatch.setattr(http1, "_find_message_start",
+                            lambda *args: calls.append(args) or real(*args))
+        _feed_bytewise(parser, b"GET /no-line-end" + b"a" * 100, "write")
+        assert calls == []
+        assert _urls(parser.feed(b" HTTP/1.1\r\nHost: x\r\n\r\n", "write")) == ["/no-line-endaaaa" + "a" * 96]
+        assert len(calls) == 1
+
+
 class TestStrictContentLength:
     @pytest.mark.parametrize("value", [b"-1", b"+5", b"1_0", b"0x10", b"\xd9\xa1"])
     def test_invalid_content_length_rejected(self, value):

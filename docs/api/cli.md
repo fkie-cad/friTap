@@ -105,10 +105,56 @@ Catch **all** newly spawned processes without filtering by target name.
     significant overhead and affect stability. Use only when necessary.
 
 #### `--enable_child_gating`
-Intercept child processes spawned by the target application (via fork/clone).
+Instrument the child processes of the target -- created with `fork()` or
+`posix_spawn()` -- and, recursively, the children of every instrumented child.
+Each instrumented child is also followed across `exec()` (see below), so the
+typical "fork, then exec a helper that does the TLS" chain is captured:
+`git clone https://...` runs `git-remote-https` (libcurl), a Python script runs
+`curl` through `subprocess`.
 
 ```bash
+fritap --enable_child_gating -s -k keys.log -- /opt/homebrew/bin/git ls-remote https://github.com/frida/frida.git
 fritap --enable_spawn_gating --enable_child_gating -k keys.log target_app
+```
+
+Children are **opt-in**: every instrumented child costs an attach plus an agent
+load (~0.3-1 s on macOS) before it may run, which fork-heavy targets (shells,
+build tools, servers) cannot afford. Without this flag friTap gates children only
+to follow the target's own `exec()`; fork/spawn children are resumed at once,
+uninstrumented. On Android an app's other processes are started by zygote, not
+forked by the app: use `--enable_spawn_gating` for those.
+
+!!! note "Python `subprocess` children on macOS"
+    Python's `subprocess` closes every inherited descriptor in the forked child
+    (`close_fds=True`, the default), including Frida's. Frida 17 then stalls that
+    child ~25 s in `exec()` and holds the new image without reporting it. friTap
+    detects such a held image (its executable path changed, no exec reported)
+    and instruments and resumes it, so the capture still works, ~25 s late per
+    such child. `fork()`+`exec()` children that keep their descriptors (git,
+    bash, `close_fds=False`) and `posix_spawn()` children are followed at once.
+
+#### `--no-follow-exec`
+friTap follows every process it instruments across `exec()` by default: the
+spawned (`-s`) or attached target, and each child instrumented through
+`--enable_child_gating`. A launcher that `exec()`s the real binary (e.g.
+Homebrew's `/opt/homebrew/bin/python3`), or a running process that `exec()`s
+`curl`, stays captured: the new image is held, instrumented, then resumed, so
+its first TLS handshake is not missed, and the outputs (keylog, pcap, JSON)
+never close. Following an `exec()` needs Frida child gating, which costs
+~40-50 ms per `fork()` of a gated process and can slow fork-heavy apps (30
+`subprocess.run()` calls: 0.24 s plain, 1.5 s gated); children friTap does not
+instrument are always resumed right away. Where a session cannot gate, friTap
+re-attaches to the new image after Frida's `process-replaced` detach (its first
+instants then run uninstrumented).
+
+`--no-follow-exec` turns this off: friTap captures only the original image, and
+when the target `exec()`s the capture ends as "target detached" (exit 3).
+`--enable_child_gating` still instruments children when given explicitly; their
+`exec()`'d images are then resumed uninstrumented. Python API: `.follow_exec(False)`.
+
+```bash
+fritap -s --no-follow-exec -k keys.log ./fork_heavy_server
+fritap --no-follow-exec -k keys.log 4242      # attach mode as well
 ```
 
 #### `-ed, --enable_default_fd`
@@ -156,10 +202,25 @@ fritap -k keys.log firefox
 ```
 
 #### `-p, --pcap <path>`
-Name of the PCAP file to write (decrypted traffic).
+Name of the PCAP file to write (decrypted traffic). The container follows
+`--pcap-format` (below): by default a `.pcapng` name writes pcapng, anything
+else classic pcap.
 
 ```bash
 fritap -k keys.log -p traffic.pcap firefox
+```
+
+#### `--pcap-format {auto,pcap,pcapng}`
+Container of the `-p` file, for plaintext captures and `-f` full captures
+alike. `pcapng` embeds the captured keys as a Decryption Secrets Block (DSB),
+so Wireshark decrypts the file without a separate keylog. Default `auto`:
+`.pcapng` extension → pcapng, any other extension → classic pcap. An explicit
+format wins over the extension; a contradicting extension (`-p out.pcap
+--pcap-format pcapng`) is written as requested with a warning. Requires `-p`.
+
+```bash
+fritap -k keys.log -p traffic.bin --pcap-format pcapng firefox   # pcapng
+fritap -k keys.log -p traffic.pcapng firefox                      # pcapng (auto)
 ```
 
 #### `-f, --full_capture`
@@ -396,9 +457,9 @@ fritap -c custom_hooks.js -k keys.log target
 
 #### `--patterns <pattern.json>`
 Provide custom byte patterns for module hooking (libraries without resolvable
-symbols, e.g. stripped Cronet). Accepts a JSON file path or an inline JSON string.
-Patterns deep-merge over the built-in defaults; an invalid file falls back to
-defaults with a warning.
+symbols, e.g. stripped Cronet). Takes a path to a JSON file (inline JSON is
+not accepted — unlike `--offsets`). Patterns deep-merge over the built-in
+defaults; a missing or invalid file falls back to defaults with a warning.
 
 ```bash
 fritap --patterns pattern.json -k keys.log -s com.google.android.youtube
@@ -1074,6 +1135,69 @@ fritap -r capture.tap        # explicit replay
 fritap capture.tap           # a single trailing .tap path replays too
 ```
 
+### `fritap q` — call an agent tool, get JSON
+Runs one tool of the agent API (the same registry the MCP and REST servers
+expose) and prints its JSON result on stdout. Meant for scripts and AI agents.
+
+```bash
+fritap q --list [--json] [--compact]          # tools: name, kind, summary (* = mutating)
+fritap q get_digest --help-json               # spec + JSON-Schema of the parameters
+fritap q get_digest --tap run.tap --budget 800
+fritap q list_endpoints --json '{"tap": "run.tap", "limit": 20}' --compact
+fritap q list_endpoints --params-file params.json   # '-' reads stdin
+```
+
+- **Parameters** come from `--params-file` < `--json` < generated flags (later
+  wins). JSON input is capped at 1 MiB and 64 nesting levels (`bad_param`). Flags are generated from the tool's schema: strings/numbers
+  `--name VALUE` (`--max-bytes` and `--max_bytes` both work), booleans
+  `--name` / `--no-name`, enums take fixed choices, arrays take a comma list
+  and/or a repeated flag (`--fields a,b --fields c`), objects take a JSON string.
+  `fritap q <tool> --help` lists them.
+- **Output**: pretty JSON by default, one line with `--compact`.
+- **Errors**: printed as `{"error", "error_type", "hint"?, "exit_code"}` on
+  **stdout**; the process exits with that `exit_code` (2 = usage/bad parameter,
+  not found, forbidden; 1 = runtime error).
+- **Sandbox**: `--root DIR` (default: cwd) bounds `.tap` paths and exports;
+  `--allow-secrets` permits key material (keylog export); the keylog export
+  call must still confirm it with its own `--confirm-secrets` parameter
+  (`fritap q export --tap run.tap --format keylog --out k.log --allow-secrets
+  --confirm-secrets`);
+  `--max-response-bytes N` caps the response (default 65536).
+- **Captures block**: a capture session lives in the `fritap q` process, so
+  `fritap q start_capture ...` waits until the session ends (its `duration_s`
+  elapsed or the target exited), polling `capture_status`, and prints the final
+  status. Ctrl+C calls `stop_capture`. `--no-wait` returns immediately, but the
+  capture then stops when the process exits.
+- **One process per call**: the `session_id` of `fritap q start_capture` is not
+  usable by a later `fritap q` call. Read the capture through the `tap` path in
+  the printed status (`<root>/.fritap-sessions/<session_id>/capture.tap`);
+  sessions persist across calls only inside `fritap mcp` / `fritap serve`.
+- **Finding values**: `fritap q` always allows `show_values` (the local user
+  owns the data); `fritap mcp` / `fritap serve` refuse it with `forbidden`
+  unless started with `--allow-values`.
+
+- **Leading options**: the q-level options `--root`, `--allow-secrets`,
+  `--compact` and `--max-response-bytes` may also come *before* the tool name
+  (`fritap q --root ./captures get_digest --tap run.tap`).
+- **Unknown tools**: `fritap q get_digets` prints an `unknown_tool` error
+  document with a did-you-mean hint and exits 2.
+
+**Dispatch rule.** After skipping leading q-level options, `fritap q` is the
+query CLI when
+
+1. at least one q-level option was given (no capture flag has these names), or
+2. the next token is `--list`, `-h` or `--help`, or
+3. the next token is a registered tool name or a close misspelling of one
+   (difflib ratio >= 0.75, `get_digets`); 2 and 3 then print `unknown_tool`
+   for a non-tool.
+
+Anything else falls through to capture mode with `q` as the target:
+`fritap q -k keys.log`, `fritap q firefox` and `fritap q com.example.my_app`
+still capture a process named `q`. Likewise `fritap mcp` / `fritap serve`
+start the MCP / REST server only when every following token is one of their
+own options, as defined by their argparse parsers (`fritap mcp --help` /
+`fritap serve --help`); `fritap serve -m` captures a process named `serve`.
+
 ### Bare `fritap` — interactive TUI
 Invoked with **no arguments**, friTap launches the interactive TUI for live
 capture and flow browsing. Requires the `textual` dependency.
@@ -1162,17 +1286,26 @@ banner, log lines, `-v` hexdumps and the output of a spawned target all go to
 
 - `"schema": "fritap.events/1"` (bumped on incompatible changes),
 - `"type"`: `stream_start` (first line), `stream_end` (last line on every
-  teardown, with the process's final `"exit_code"`; `null` if it is not known),
+  teardown, with the process's final `"exit_code"`; `null` if it is not known —
+  plus `"ended_by"`: `duration`, `stopped`, `target_exited` or `error`, omitted
+  when the reason is unknown),
   or the event kind — `keylog`, `data`, `session`, `library`,
   `console`, `error`, `detach`, `instrument`, `platform_report`, `script_loaded`,
   `socket_trace`, `ohttp`, `message`, … (`snake_case` of the event class),
-- `"event"`: the event class name, `"timestamp"` (epoch seconds), `"protocol"`,
-  and the event's fields. `bytes` values (the decrypted plaintext in `data`
+- `"event"`: the event class name, `"event_type"` (present on every event
+  record: the class name again, except `session` records where it is the
+  session's own state such as `started`), `"timestamp"` (epoch seconds),
+  `"protocol"`, and the event's fields. Envelope records (`stream_start`,
+  `stream_end`, `usage_error`, the closing runtime `error`) carry neither
+  `event` nor `event_type`. `bytes` values (the decrypted plaintext in `data`
   records) are hex-encoded.
 
 **Key material** is in the stream only when it was explicitly requested with
 `-k` or `--json-keys`. Otherwise a `keylog` record keeps only `label` (and the
-public `client_random` of NSS lines) plus `"redacted": true`; `stream_start`
+public `client_random` of NSS lines) plus `"redacted": true`. `label` is
+`unknown` when the line had no recognisable label and absent when the record
+carried no keylog line at all (e.g. a payload-only SSH record);
+`client_random` is `"???"` when the agent could not read it; `stream_start`
 reports the policy as `"key_material": true|false`. The `-j file.json` /
 `.jsonl` file outputs follow the same policy (see [`-j`](#-j-json-path)).
 
@@ -1189,7 +1322,7 @@ agent script load failure, backend error, …) adds one record right before
  "error_type": "ExecutableNotFoundError",
  "message": "unable to find executable at '/nonexistent/binary'",
  "hint": "…optional next step…", "exit_code": 1}
-{"schema": "fritap.events/1", "type": "stream_end", "timestamp": 1730000000.1, "exit_code": 1}
+{"schema": "fritap.events/1", "type": "stream_end", "timestamp": 1730000000.1, "exit_code": 1, "ended_by": "error"}
 ```
 
 It is written when the stream closes, so its `exit_code` is the final one (for

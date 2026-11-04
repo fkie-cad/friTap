@@ -18,7 +18,7 @@
 import { HookDefinition, ResolvedFunctions } from "../../core/hook_definition.js";
 import { STANDARD_SOCKET_SYMBOLS } from "../../tls/definitions/shared_constants.js";
 import { noOpClientRandomDecoder } from "../../tls/definitions/shared_factories.js";
-import { ssh_detect_execute } from "../platforms/linux/ssh_linux.js";
+import { installSshHooks } from "../platforms/linux/ssh_linux.js";
 
 function libsshFdDecoder(_ctx: NativePointer, _fns: ResolvedFunctions): number {
     return -1;
@@ -65,7 +65,7 @@ export function createLibsshDefinition(): HookDefinition {
                 // extraHooks always runs in the loader (step 7), independent of
                 // keylog_enabled.
                 install: (_addresses, moduleName, _resolvedFns, _enableDefaultFd) => {
-                    ssh_detect_execute(moduleName, /* is_base_hook */ true);
+                    return installSshHooks(moduleName);
                 },
             },
         ],

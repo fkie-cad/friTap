@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "argv": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "schema": {
+      "type": "string"
+    },
+    "session_dir": {
+      "type": "string"
+    },
+    "session_id": {
+      "type": "string"
+    },
+    "state": {
+      "type": "string"
+    },
+    "tap": {
+      "type": "string"
+    }
+  },
+  "title": "start_capture result",
+  "type": "object"
+}

@@ -275,8 +275,9 @@ def _messages(flow: "Flow", ordinal: int, msg_index: int | None,
         if wanted:
             rows.append(_message_row(ordinal, index, layer, msg, max_bytes, show_values))
     if msg_index is not None and not rows:
+        valid = f"m0..m{total - 1}" if total else f"use {flow_ref(ordinal, None)}"
         raise FlowRefError(f"{flow_ref(ordinal, msg_index)}: flow has {total} messages "
-                           f"(m0..m{max(total - 1, 0)})")
+                           f"({valid})")
     return rows, total
 
 
@@ -316,14 +317,31 @@ def build_flow_detail(
     if max_bytes <= 0:
         raise ValueError("max_bytes must be positive")
     with TapReader(tap_path) as reader:
-        ids = ordered_flow_ids(reader)
-        ordinal, msg_index = _resolve(ids, ref)
-        flow = reader.read_flow(ids[ordinal - 1])
+        return flow_detail_from(reader, ordered_flow_ids(reader), ref,
+                                source_file=os.path.basename(tap_path),
+                                max_bytes=max_bytes, show_values=show_values)
+
+
+def flow_detail_from(
+    reader: Any,
+    ids: list[str],
+    ref: str,
+    *,
+    source_file: str,
+    max_bytes: int = DEFAULT_MAX_BYTES,
+    show_values: bool = False,
+) -> dict:
+    """:func:`build_flow_detail` on an open reader (``ids`` from :func:`ordered_flow_ids`).
+
+    Lets callers rendering many refs open and index the capture once.
+    """
+    ordinal, msg_index = _resolve(ids, ref)
+    flow = reader.read_flow(ids[ordinal - 1])
     if flow is None:
         raise FlowRefError(f"flow {flow_ref(ordinal)} could not be decoded")
     detail: dict[str, Any] = {
         "schema": SCHEMA,
-        "source": {"file": os.path.basename(tap_path)},
+        "source": {"file": source_file},
         "params": {"ref": safe_untrusted(ref, 64), "max_bytes": max_bytes,
                    "show_values": show_values},
         "notice": UNTRUSTED_NOTICE,
@@ -338,4 +356,4 @@ def build_flow_detail(
     return detail
 
 
-__all__ = ["SCHEMA", "DEFAULT_MAX_BYTES", "FlowRefError", "build_flow_detail"]
+__all__ = ["SCHEMA", "DEFAULT_MAX_BYTES", "FlowRefError", "build_flow_detail", "flow_detail_from"]

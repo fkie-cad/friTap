@@ -9,7 +9,7 @@ import { hookBreadcrumb } from "../../util/log.js";
 import { fdOrDeferred, recoveredFd } from "../../shared/socket_fd_tracker.js";
 import { buildRecordMessage } from "../../shared/record_message.js";
 import { recoverTls13Secrets } from "../../shared/tls13_secret_recovery.js";
-import { bytesWrittenFromRetval } from "../../shared/write_length.js";
+import { BufferedSendTracker, UNKNOWN_WRITE_LENGTH, writtenPayload } from "../../shared/write_length.js";
 
 type RecordMessageBuilder = (sslCtx: NativePointer, fd: number) => any | null;
 
@@ -130,6 +130,9 @@ export function installWriteHook(
     // plaintext on a partial write (the app retries with the remainder). The caller owns
     // the buffer for the whole synchronous call, so the onEnter pointer is still valid.
     const lengthArgIndex = hook.args.bytesTransferred === "arg" ? hook.args.lengthArgIndex : undefined;
+    // Would-block calls whose record a later (possibly NULL/0) call flushes: see WriteHookDef.
+    const buffered = hook.bufferedRetryCodes && lengthArgIndex !== undefined
+        ? new BufferedSendTracker(hook.bufferedRetryCodes) : undefined;
     Interceptor.attach(hookAddr, {
         onEnter: function (args: any) {
             hookBreadcrumb(breadcrumb);
@@ -141,6 +144,7 @@ export function installWriteHook(
             recoverTls13Secrets(moduleName, sslCtx);
             this.buf = args[hook.args.bufferArgIndex];
             if (lengthArgIndex !== undefined) this.len = parseInt(args[lengthArgIndex]);
+            if (buffered) this.sslCtx = sslCtx;
             const fd = sslFdOrDeferred(sslCtx, def, resolvedFns);
             if (fd === null) {
                 // Attributed in onLeave, once this call has sent its record (see above).
@@ -156,15 +160,14 @@ export function installWriteHook(
             // (e.g. SSL_ERROR_WANT_WRITE, retried by the app with the same buffer).
             const recovered = this.deferredSsl ? recoveredFd(this.deferredSsl) : -1;
             const returned = retval.toInt32();
-            const count = lengthArgIndex !== undefined
-                ? bytesWrittenFromRetval(this.len, returned)
-                : Math.max(returned, 0);
-            if (count <= 0) return;
+            const requested = lengthArgIndex !== undefined ? this.len : UNKNOWN_WRITE_LENGTH;
+            const payload = writtenPayload(this.buf, requested, returned, this.sslCtx, buffered);
+            if (payload === null) return;
             if (this.deferredSsl) {
                 this.message = buildMessage(this.deferredSsl, recovered);
             }
             if (!this.message) return;
-            sendDatalog(this.message, this.buf.readByteArray(count));
+            sendDatalog(this.message, payload);
         },
     });
 }

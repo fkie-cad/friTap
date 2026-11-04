@@ -23,17 +23,18 @@ from tests.unit._display_filter_helpers import match as _match
 # -- Live collector -----------------------------------------------------------
 
 
-def _collector_with_library(library: str) -> tuple[EventBus, FlowCollector]:
+def _collector_with_library(library: str, protocol: str = "tls") -> tuple[EventBus, FlowCollector]:
     bus = EventBus()
     collector = FlowCollector(event_bus=bus)
     bus.subscribe(DatalogEvent, collector.on_data)
     bus.subscribe(LibraryDetectedEvent, collector.on_library_detected)
-    bus.emit(LibraryDetectedEvent(library=library))
+    # Libraries are announced per protocol family; no cross-family fallback.
+    bus.emit(LibraryDetectedEvent(library=library, protocol=protocol))
     return bus, collector
 
 
 def _live_flow(protocol: str, library: str = "BoringSSL") -> Flow:
-    bus, collector = _collector_with_library(library)
+    bus, collector = _collector_with_library(library, protocol)
     bus.emit(DatalogEvent(
         data=b"\x00\x01\x02\x03payload", function="hook", direction="write",
         src_addr="10.0.0.2", src_port=52000, dst_addr="142.250.1.1",
@@ -50,6 +51,29 @@ def test_live_quic_flow_gets_library_on_quic_layer():
     assert quic is not None and quic.library == "BoringSSL"
     assert flow.layer("tls") is None
     assert not _match("tls", flow)
+
+
+def test_tls_family_library_does_not_leak_onto_quic_flows():
+    bus, collector = _collector_with_library("OpenSSL", "tls")
+    bus.emit(DatalogEvent(
+        data=b"payload", function="hook", direction="write",
+        src_addr="10.0.0.2", src_port=52002, dst_addr="142.250.1.1",
+        dst_port=443, protocol="quic", timestamp=1000.0,
+    ))
+    (flow,) = collector.get_flows()
+    quic = flow.layer("quic")
+    assert quic is None or quic.library == ""
+
+
+def test_records_own_library_wins_over_last_announcement():
+    bus, collector = _collector_with_library("OpenSSL", "tls")
+    bus.emit(DatalogEvent(
+        data=b"payload", function="hook", direction="write",
+        src_addr="10.0.0.2", src_port=52003, dst_addr="142.250.1.1",
+        dst_port=443, protocol="tls", timestamp=1000.0, library="libmonochrome_64.so",
+    ))
+    (flow,) = collector.get_flows()
+    assert flow.layer("tls").library == "libmonochrome_64.so"
 
 
 def test_live_tls_flow_library_unchanged():

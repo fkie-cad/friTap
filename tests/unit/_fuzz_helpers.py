@@ -33,6 +33,10 @@ MAX_CASE_PEAK_BYTES = 64 * MIB
 HANG_GUARD_SECONDS = 5.0
 # tracemalloc slows Python down several times; trace every Nth input only.
 TRACE_EVERY = 5
+# Hang-guard stretch for the memory-only traced run: tracemalloc's slowdown
+# (~3.6x measured for allocation-heavy TL decoding on CPython 3.11) must not
+# turn a merely traced run into a reported hang.
+TRACED_HANG_FACTOR = 3.0
 
 INTERESTING_BYTES = (0x00, 0x01, 0x7F, 0x80, 0xFE, 0xFF)
 
@@ -242,11 +246,27 @@ def run_contract(label: str, action: Callable[[], object], reproducer: str,
                  allowed: tuple[type[BaseException], ...] = (),
                  trace_memory: bool = False,
                  hang_seconds: float = HANG_GUARD_SECONDS) -> None:
-    """Run *action* and enforce exception, time and memory contracts."""
-    peak = 0
-    if trace_memory:
-        tracemalloc.start()
-    start = time.perf_counter()
+    """Run *action* and enforce exception, time and memory contracts.
+
+    The time budget is asserted on an untraced run. With *trace_memory* the
+    (deterministic) action runs a second time under ``tracemalloc`` for the
+    memory budget only: tracemalloc's per-allocation hook slows
+    allocation-heavy parsers ~1.4-3.6x depending on the CPython version, so a
+    traced wall-clock measures the profiler rather than the parser.
+    """
+    elapsed = _timed_run(label, action, reproducer, allowed, hang_seconds)
+    assert elapsed < MAX_CASE_SECONDS, (
+        f"{label}: took {elapsed:.2f} s (> {MAX_CASE_SECONDS} s)\nreproducer:\n{reproducer}")
+    if not trace_memory:
+        return
+    peak = _traced_peak(label, action, reproducer, allowed, hang_seconds * TRACED_HANG_FACTOR)
+    assert peak < MAX_CASE_PEAK_BYTES, (
+        f"{label}: tracemalloc peak {peak / MIB:.1f} MiB\nreproducer:\n{reproducer}")
+
+
+def _run_guarded(label: str, action: Callable[[], object], reproducer: str,
+                 allowed: tuple[type[BaseException], ...], hang_seconds: float) -> None:
+    """Run *action* under the hang guard; fail on any exception not in *allowed*."""
     try:
         with hang_guard(hang_seconds):
             action()
@@ -258,15 +278,25 @@ def run_contract(label: str, action: Callable[[], object], reproducer: str,
             f"reproducer:\n{reproducer}\n{traceback.format_exc()}",
             pytrace=False,
         )
+
+
+def _timed_run(label: str, action: Callable[[], object], reproducer: str,
+               allowed: tuple[type[BaseException], ...], hang_seconds: float) -> float:
+    """Wall-clock seconds of one untraced, guarded run of *action*."""
+    start = time.perf_counter()
+    _run_guarded(label, action, reproducer, allowed, hang_seconds)
+    return time.perf_counter() - start
+
+
+def _traced_peak(label: str, action: Callable[[], object], reproducer: str,
+                 allowed: tuple[type[BaseException], ...], hang_seconds: float) -> int:
+    """``tracemalloc`` peak bytes of one guarded run of *action*."""
+    tracemalloc.start()
+    try:
+        _run_guarded(label, action, reproducer, allowed, hang_seconds)
+        return tracemalloc.get_traced_memory()[1]
     finally:
-        elapsed = time.perf_counter() - start
-        if trace_memory:
-            _current, peak = tracemalloc.get_traced_memory()
-            tracemalloc.stop()
-    assert elapsed < MAX_CASE_SECONDS, (
-        f"{label}: took {elapsed:.2f} s (> {MAX_CASE_SECONDS} s)\nreproducer:\n{reproducer}")
-    assert peak < MAX_CASE_PEAK_BYTES, (
-        f"{label}: tracemalloc peak {peak / MIB:.1f} MiB\nreproducer:\n{reproducer}")
+        tracemalloc.stop()
 
 
 def drive_parser(parser, feeds: list[Feed]) -> None:
@@ -309,7 +339,7 @@ def fuzz_bytes_function(target: str, seed: int, seeds: list[bytes],
     for index in range(mutants):
         data = mutate_bytes(rng, base, hints(base), rng.choice(seeds))
         label = f"{target}[seed={seed},mutant={index}]"
-        call_rng = random.Random(rng.getrandbits(32))
-        run_contract(label, lambda: action(data, call_rng),
+        call_seed = rng.getrandbits(32)  # fresh RNG per run: timed and traced runs match
+        run_contract(label, lambda: action(data, random.Random(call_seed)),
                      f"  bytes.fromhex({data.hex()!r})", allowed,
                      trace_memory=index % TRACE_EVERY == 0)

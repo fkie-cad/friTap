@@ -6,6 +6,7 @@
  */
 
 import { log, devlog } from "../../util/log.js";
+import { findModuleExport } from "../../shared/module_exports.js";
 
 export class IPSec_StrongSwan {
     module_name: string;
@@ -27,7 +28,7 @@ export class IPSec_StrongSwan {
 
         let resolved = 0;
         for (const fn of targetFunctions) {
-            const addr = (Module as any).findExportByName(this.module_name, fn);
+            const addr = findModuleExport(this.module_name, fn);
             if (addr) {
                 this.addresses[fn] = addr;
                 resolved++;

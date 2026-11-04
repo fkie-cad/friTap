@@ -234,7 +234,8 @@ def tokenize(text: str) -> list[Token]:
                 tokens.append(Token(TokenType.FIELD, word, start))
             continue
 
-        raise FilterSyntaxError(f"Unexpected character {ch!r}", i)
+        hint = 'did you mean: ==' if ch == "=" else None
+        raise FilterSyntaxError(f"Unexpected character {ch!r}", i, hint=hint)
 
     tokens.append(Token(TokenType.EOF, "", length))
     return tokens

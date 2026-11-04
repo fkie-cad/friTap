@@ -1,0 +1,179 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "capture": {
+      "type": "string"
+    },
+    "detach_reason": {
+      "type": "string"
+    },
+    "duration_s": {
+      "type": "integer"
+    },
+    "elapsed_s": {
+      "type": "number"
+    },
+    "ended_by": {
+      "description": "Why the session ended (null while active): target_exited, duration, stopped or error. Only 'error' is a failure.",
+      "enum": [
+        "target_exited",
+        "duration",
+        "stopped",
+        "error",
+        null
+      ],
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "error": {
+      "type": "object"
+    },
+    "exit_code": {
+      "description": "friTap's exit code: 0 = duration elapsed / stopped, 3 = target exited (normal end, see ended_by).",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "hook_status": {
+      "description": "attached once any protocol's hooks attached (not proof of traffic; see protocols_in_use).",
+      "enum": [
+        "attached",
+        "no_library_seen",
+        "failed"
+      ],
+      "type": "string"
+    },
+    "idle_hooks": {
+      "additionalProperties": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "description": "{protocol: libraries} hooked without any activity (speculative under protocols=auto; not in use).",
+      "type": "object"
+    },
+    "keylog": {
+      "type": "string"
+    },
+    "keylog_files": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "pcap": {
+      "type": "string"
+    },
+    "phases": {
+      "items": {
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "pid": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "protocols": {
+      "additionalProperties": {
+        "properties": {
+          "data_bytes": {
+            "type": "integer"
+          },
+          "data_events": {
+            "type": "integer"
+          },
+          "errors": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "hook_status": {
+            "description": "Hook level only (attached even when idle); read status for in-use.",
+            "enum": [
+              "attached",
+              "no_library_seen",
+              "failed"
+            ],
+            "type": "string"
+          },
+          "keys": {
+            "type": "integer"
+          },
+          "libraries": {
+            "description": "Libraries this protocol's hooks attached to.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "other_events": {
+            "description": "Session / OHTTP / message records of this protocol.",
+            "type": "integer"
+          },
+          "status": {
+            "description": "active = keys/plaintext/session records seen (in use); idle = hooks installed but nothing seen -- under protocols=auto hooks are speculative, so idle does NOT mean the target uses this protocol; no_library_seen / failed = not hooked.",
+            "enum": [
+              "active",
+              "idle",
+              "no_library_seen",
+              "failed"
+            ],
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "type": "object"
+    },
+    "protocols_in_use": {
+      "description": "Protocols with keys, plaintext or session records (status active). The answer to 'what does the target use'.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "records": {
+      "type": "integer"
+    },
+    "schema": {
+      "type": "string"
+    },
+    "session_id": {
+      "type": "string"
+    },
+    "state": {
+      "enum": [
+        "starting",
+        "running",
+        "stopped",
+        "failed"
+      ],
+      "type": "string"
+    },
+    "stderr_log": {
+      "type": "string"
+    },
+    "stderr_tail": {
+      "type": "string"
+    },
+    "tap": {
+      "type": "string"
+    },
+    "tap_bytes": {
+      "type": "integer"
+    },
+    "target": {
+      "type": "string"
+    }
+  },
+  "title": "capture_status result",
+  "type": "object"
+}

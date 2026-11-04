@@ -13,6 +13,8 @@ import io
 import json
 import time
 
+import pytest
+
 from friTap.analysis import (
     AnalyzerPlugin,
     Finding,
@@ -20,7 +22,13 @@ from friTap.analysis import (
     analyze_tap_multi,
     run_analyzer_safely,
 )
-from friTap.analysis._json_walk import CONTAINER, FIELD, iter_json
+from friTap.analysis._json_walk import (
+    CONTAINER,
+    FIELD,
+    MAX_JSON_DEPTH,
+    exceeds_depth,
+    iter_json,
+)
 from friTap.analysis._limits import (
     MAX_FINDINGS_PER_FLOW,
     bounded_text,
@@ -173,6 +181,43 @@ def test_iter_json_depth_and_node_caps():
     wide = {f"k{i}": i for i in range(100_000)}
     fields = [n for n in iter_json(wide) if n.kind == FIELD]
     assert len(fields) < 50_000
+
+
+def _nested_list(depth: int):
+    root = current = []
+    for _ in range(depth - 1):
+        current.append([])
+        current = current[0]
+    return root
+
+
+@pytest.mark.parametrize("value", [None, 1, "s", 1.5, True])
+def test_exceeds_depth_scalars_are_depth_zero(value):
+    assert exceeds_depth(value, max_depth=0) is False
+
+
+def test_exceeds_depth_boundary():
+    assert exceeds_depth(_nested_list(MAX_JSON_DEPTH)) is False
+    assert exceeds_depth(_nested_list(MAX_JSON_DEPTH + 1)) is True
+    assert exceeds_depth([], max_depth=1) is False
+    assert exceeds_depth([], max_depth=0) is True
+
+
+def test_exceeds_depth_mixed_dicts_and_lists():
+    data = {"a": [1, {"b": [{"c": "x"}]}], "z": 2}  # depth 5: {} [ {} [ {}
+    assert exceeds_depth(data, max_depth=5) is False
+    assert exceeds_depth(data, max_depth=4) is True
+
+
+def test_exceeds_depth_finds_deep_branch_among_shallow_siblings():
+    data = [[1, 2], {"k": "v"}, _nested_list(10)]
+    assert exceeds_depth(data, max_depth=10) is True
+    assert exceeds_depth(data, max_depth=11) is False
+
+
+def test_exceeds_depth_is_iterative_on_huge_depth():
+    # 100k levels: a recursive walker would raise RecursionError.
+    assert exceeds_depth(_nested_list(100_000)) is True
 
 
 def test_iter_json_preserves_preorder():

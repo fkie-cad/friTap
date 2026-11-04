@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "app_protocols": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "type": "object"
+    },
+    "known_protocols": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "protocols": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "type": "object"
+    },
+    "schema": {
+      "const": "fritap.protocols/1"
+    },
+    "source": {
+      "properties": {
+        "file": {
+          "type": "string"
+        },
+        "flows_selected": {
+          "type": "integer"
+        },
+        "flows_total": {
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "title": "list_protocols result",
+  "type": "object"
+}

@@ -62,8 +62,12 @@ export class RusTLS {
                 }
 
                 try {
-                    this.library_method_mapping[`*${moduleName}*`] = ["*rustls_connection_write_tls*", "*rustls_connection_read_tls*", "*rustls_client_config_builder_new*", 
-                "*rustls_client_config_builder_new_custom*", "*rustls_client_config_builder_set_key_log*"]
+                    // Exact names: readAddresses keys each hit by the pattern minus a trailing
+                    // "*", so "*rustls_client_config_builder_new*" was stored under
+                    // "*rustls_client_config_builder_new" (leading "*" kept, and the first of
+                    // its new/new_custom matches) and the by-name lookups never found it.
+                    this.library_method_mapping[`*${moduleName}*`] = ["rustls_connection_write_tls", "rustls_connection_read_tls", "rustls_client_config_builder_new",
+                "rustls_client_config_builder_new_custom", "rustls_client_config_builder_set_key_log"]
                 }catch(e){
                     // right now do nothing
                 }
@@ -276,10 +280,146 @@ export class RusTLS {
         // needs to be setup for the specific plattform
     }
 
+    /**
+     * Symbolized rustls-ffi: inject RusTLS.keyLogCB into every client config builder and
+     * shadow any callback the application installs itself. Shared by the Linux and Android
+     * legacy hookers. Returns whether at least one hook was attached.
+     *  - rustls_client_config_builder_new() returns the builder;
+     *  - rustls_client_config_builder_new_custom() returns a rustls_result and writes the
+     *    builder through its out-parameter (see legacyRustlsBuilderOutArg).
+     */
+    install_tls_keys_callback_hook(): boolean {
+        const lib = this.addresses[this.module_name] || {};
+        const setKeyLogAddr = lib["rustls_client_config_builder_set_key_log"];
+        if (!isUsableAddress(setKeyLogAddr)) {
+            devlog("[rustls] set_key_log unresolved; cannot install builder hooks");
+            return false;
+        }
+        RusTLS.rustls_client_config_set_key_log = new NativeFunction(setKeyLogAddr, 'uint32', ['pointer', 'pointer', 'pointer']);
+        attachBuilderNewHook(lib["rustls_client_config_builder_new"]);
+        attachBuilderNewCustomHook(lib["rustls_client_config_builder_new_custom"]);
+        attachUserKeylogShadow(setKeyLogAddr);
+        log(`[*] ${this.module_name}: keylog hooks installed via rustls_client_config_builder_set_key_log`);
+        return true;
+    }
+
 
 
 
     
 
 
+}
+
+/** rustls_result RUSTLS_RESULT_OK in rustls-ffi (7000); some builds report 0. */
+export function isLegacyRustlsOk(status: number): boolean {
+    return status === 7000 || status === 0;
+}
+
+/**
+ * Pick the `struct rustls_client_config_builder **builder_out` argument of
+ * rustls_client_config_builder_new_custom. rustls-ffi <= 0.10 passed it 5th
+ * (cipher_suites, len, tls_versions, len, out); >= 0.13 passes it 4th
+ * (provider, tls_versions, len, out). In the old layout args[3] is a small length.
+ */
+export function legacyRustlsBuilderOutArg(args: NativePointer[]): NativePointer {
+    const fourth = args[3];
+    return fourth.compare(ptr("0x10000")) < 0 ? args[4] : fourth;
+}
+
+function isUsableAddress(address: NativePointer | undefined): address is NativePointer {
+    return address !== undefined && address !== null && !address.isNull();
+}
+
+function injectKeyLogCallback(builder: NativePointer): void {
+    if (builder.isNull()) return;
+    RusTLS.rustls_client_config_set_key_log(builder, RusTLS.keyLogCB, ptr('0'));
+    devlog("Attached keyLogCB to rustls_client_config_set_key_log");
+}
+
+/** rustls_client_config_builder_new(): the builder is the return value. */
+function attachBuilderNewHook(address: NativePointer | undefined): void {
+    if (!isUsableAddress(address)) return;
+    Interceptor.attach(address, {
+        onLeave(retval: NativePointer) {
+            injectKeyLogCallback(retval);
+        }
+    });
+}
+
+/** rustls_client_config_builder_new_custom(): status return, builder via out-parameter. */
+function attachBuilderNewCustomHook(address: NativePointer | undefined): void {
+    if (!isUsableAddress(address)) return;
+    Interceptor.attach(address, {
+        onEnter(args: any) {
+            this.builderOut = legacyRustlsBuilderOutArg(args);
+        },
+        onLeave(retval: any) {
+            if (!isLegacyRustlsOk(retval.toInt32()) || this.builderOut.isNull()) return;
+            try {
+                injectKeyLogCallback(this.builderOut.readPointer());
+            } catch (e) {
+                devlog("[rustls new_custom] " + e);
+            }
+        }
+    });
+}
+
+/** Log one rustls_keylog_callback invocation of an application-installed callback. */
+function logUserKeylogCallback(args: any): void {
+    const labelPtr = args[0];
+    const labelLen = args[1].toInt32();
+    const clientRandom: NativePointer = args[2];
+    const clientRandomLen = args[3].toInt32();
+    const secret: NativePointer = args[4];
+    const secretLen = args[5].toInt32();
+    if (clientRandom.isNull() || clientRandomLen != 32) {
+        devlog("Invalid client_random: " + clientRandom + " or client_random_length: " + clientRandomLen);
+        return;
+    }
+    if (secret.isNull() || secretLen <= 0 || secretLen > 48) {
+        devlog("Invalid secret or secret_length");
+        return;
+    }
+    const labelStr = labelPtr.readUtf8String(labelLen);
+    const clientRandomHex = toHexString(clientRandom.readByteArray(clientRandomLen));
+    const secretHex = toHexString(secret.readByteArray(secretLen));
+    sendKeylog(`${labelStr} ${clientRandomHex} ${secretHex}`);
+}
+
+/**
+ * If the target sets its own callback, RusTLS.keyLogCB is replaced; hook the
+ * application's callback instead so we still extract the keys.
+ */
+/** Application callbacks already shadowed (one listener each, even across many builders). */
+const shadowedUserCallbacks = new Set<string>();
+
+function attachUserKeylogShadow(setKeyLogAddr: NativePointer): void {
+    Interceptor.attach(setKeyLogAddr, {
+        onEnter(args: any) {
+            this.userCallbackAddress = args[1];
+            devlog("User set CB to: " + this.userCallbackAddress);
+        },
+        onLeave(retval: any) {
+            if (!isLegacyRustlsOk(retval.toInt32())) return;
+            const userCallback: NativePointer = this.userCallbackAddress;
+            if (userCallback.isNull() || userCallback.equals(RusTLS.keyLogCB)) return;
+            if (shadowedUserCallbacks.has(userCallback.toString())) return;
+            shadowedUserCallbacks.add(userCallback.toString());
+            try {
+                Interceptor.attach(userCallback, {
+                    onEnter(args: any) {
+                        devlog("Hooking user-defined callback for Rustls");
+                        try {
+                            logUserKeylogCallback(args);
+                        } catch (e) {
+                            devlog("[rustls user-cb shadow] " + e);
+                        }
+                    }
+                });
+            } catch (e) {
+                devlog("[rustls user-cb attach] " + e);
+            }
+        }
+    });
 }

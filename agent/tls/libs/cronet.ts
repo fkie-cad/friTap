@@ -1,5 +1,6 @@
 import { get_hex_string_from_byte_array, readAddresses, checkNumberOfExports, isSymbolAvailable, getPortsAndAddresses } from "../../shared/shared_functions.js";
 import { sendKeylog, sendDatalog } from "../../shared/shared_structures.js";
+import { attachPlaintextReadHook, attachPlaintextWriteHook, PlaintextCallArgs } from "../../shared/write_hooks.js";
 import { devlog, devlog_debug, devlog_error, log } from "../../util/log.js";
 import { safeKeyLenLogged } from "../../shared/keylog_length.js";
 import { pcap_enabled, patterns as patternsJson, isPatternReplaced, enable_default_fd } from "../../fritap_agent.js";
@@ -309,9 +310,11 @@ export class Cronet {
         return -1;
     }
 
-    // Attach the symbol-resolved SSL_read/SSL_write plaintext hook. Read and write
-    // share everything except the buffer-length source: SSL_read learns the byte
-    // count from retval (onLeave), SSL_write from the length arg (onEnter).
+    // Attach the symbol-resolved SSL_read/SSL_write plaintext hook. Both emit from onLeave
+    // (building the record metadata only then) with the byte count the call returned:
+    // SSL_read the bytes it decrypted into buf, SSL_write the bytes it wrote (fewer with
+    // SSL_MODE_ENABLE_PARTIAL_WRITE; <= 0 on error / WANT_WRITE, retried with the same
+    // buffer) — never the requested length, which duplicates plaintext.
     private installPlaintextHook(symbol: "SSL_read" | "SSL_write", isRead: boolean): void {
         if (!pcap_enabled) return;
         if (!this.do_read_write_hooks) {
@@ -324,37 +327,23 @@ export class Cronet {
             return;
         }
 
-        const lib_addresses = this.addresses;
-        const instance = this;
-        const current_module_name = this.module_name;
+        const address = this.addresses[this.module_name][symbol];
+        const buildMessage = (args: PlaintextCallArgs) => this.buildPlaintextMessage(args[0], symbol, isRead);
+        if (isRead) attachPlaintextReadHook(address, buildMessage);
+        else attachPlaintextWriteHook(address, buildMessage);
+    }
 
-        Interceptor.attach(this.addresses[this.module_name][symbol], {
-            onEnter: function (args: any) {
-                this.fd = instance.resolveFd(args[0]);
-                if (this.fd < 0 && !enable_default_fd) return;
-                const message = getPortsAndAddresses(this.fd as number, isRead, lib_addresses[current_module_name], enable_default_fd);
-                if (message === null) return;
-                message["ssl_session_id"] = openSslSessionIdDecoder(args[0], instance.sessionFns as any);
-                message["client_random"] = instance.get_client_random_from_ssl_struct(args[0]);
-                message["function"] = symbol;
-                if (isRead) {
-                    // Plaintext lands in the buffer during the call; read it in onLeave.
-                    this.message = message;
-                    this.buf = args[1];
-                } else {
-                    // Write payload is already in args[1]; args[2] is the length.
-                    sendDatalog(message, args[1].readByteArray(args[2].toInt32()));
-                }
-            },
-            onLeave: function (retval: any) {
-                if (!isRead) return;
-                retval |= 0; // Cast retval to 32-bit integer.
-                if (retval <= 0 || (this.fd < 0 && !enable_default_fd)) return;
-                if (this.message) {
-                    sendDatalog(this.message, this.buf.readByteArray(retval));
-                }
-            }
-        });
+    // Peer/session metadata of one SSL_read/SSL_write record, or null when the SSL has no
+    // fd and --enable_default_fd is off (the record cannot be attributed).
+    private buildPlaintextMessage(ssl: NativePointer, symbol: string, isRead: boolean): { [key: string]: any } | null {
+        const fd = this.resolveFd(ssl);
+        if (fd < 0 && !enable_default_fd) return null;
+        const message = getPortsAndAddresses(fd, isRead, this.addresses[this.module_name], enable_default_fd);
+        if (message === null) return null;
+        message["ssl_session_id"] = openSslSessionIdDecoder(ssl, this.sessionFns as any);
+        message["client_random"] = this.get_client_random_from_ssl_struct(ssl);
+        message["function"] = symbol;
+        return message;
     }
 
     install_plaintext_read_hook(){

@@ -50,6 +50,7 @@ from .events import (
     OhttpEvent,
     SessionEvent,
 )
+from .pcap_utility import PCAP_FORMAT_AUTO, PCAP_FORMAT_PCAPNG
 
 if TYPE_CHECKING:
     from .ssl_logger import SSL_Logger
@@ -100,7 +101,8 @@ class FriTap:
         self._device = DeviceConfig()
         self._output = OutputConfig()
         self._hooking = HookingConfig()
-        self._protocol = "tls"
+        # Ordered protocol selection; the first entry is the primary protocol.
+        self._protocols: List[str] = ["tls"]
         self._backend_name = "frida"
         self._debug = False
         self._debug_output = False
@@ -152,6 +154,11 @@ class FriTap:
         self._device.enable_child_gating = enable
         return self
 
+    def follow_exec(self, enable: bool = True) -> "FriTap":
+        """Follow instrumented processes across exec() (default on; ``--no-follow-exec``)."""
+        self._device.follow_exec = enable
+        return self
+
     def timeout(self, seconds: int) -> "FriTap":
         """Set timeout before resuming the target process."""
         self._device.timeout = seconds
@@ -164,22 +171,23 @@ class FriTap:
     def pcap(self, path: str) -> "FriTap":
         """Write decrypted traffic to a PCAP file.
 
-        The filename extension is authoritative: ``.pcap`` writes classic
-        libpcap, ``.pcapng`` writes pcapng (with embedded DSB if keys are
-        extracted). Extension overrides any prior call to :meth:`pcapng`.
+        The filename extension decides the container: ``.pcapng`` writes
+        pcapng (with embedded DSB if keys are extracted), anything else classic
+        libpcap. Resets a prior :meth:`pcapng` call (format ``auto``).
         """
         self._output.pcap = path
+        self._output.output_format = PCAP_FORMAT_AUTO
         return self
 
     def pcapng(self, path: str) -> "FriTap":
-        """Write self-decrypting PCAPNG (with DSB).
+        """Write self-decrypting PCAPNG (with DSB), whatever the extension.
 
-        Equivalent to :meth:`pcap` with a ``.pcapng`` extension. If `path`
-        has a different extension, the extension still wins — e.g.
-        ``.pcapng("a.pcap")`` writes classic libpcap.
+        Same as ``--pcap-format pcapng``: the explicit format wins, so
+        ``.pcapng("out.bin")`` writes pcapng; ``.pcapng("a.pcap")`` also writes
+        pcapng and logs a warning about the contradicting extension.
         """
         self._output.pcap = path
-        self._output.output_format = "pcapng"
+        self._output.output_format = PCAP_FORMAT_PCAPNG
         return self
 
     def keylog(self, path: str) -> "FriTap":
@@ -201,6 +209,14 @@ class FriTap:
         :meth:`json_keys` is also set.
         """
         self._output.set_json_target(path)
+        return self
+
+    def tap(self, path: str) -> "FriTap":
+        """Write the decrypted flows to a ``.tap`` capture file (``--tap``).
+
+        The file can be opened with ``fritap --analyze``, ``fritap report`` or the TUI.
+        """
+        self._output.tap_output = path
         return self
 
     def json_keys(self, enable: bool = True) -> "FriTap":
@@ -316,7 +332,18 @@ class FriTap:
 
     def protocol(self, proto: str) -> "FriTap":
         """Set the target protocol: tls, ipsec, ssh, all, auto."""
-        self._protocol = proto
+        self._protocols = [proto]
+        return self
+
+    def protocols(self, names: List[str]) -> "FriTap":
+        """Select several protocols at once (``--protocol tls,rc4``).
+
+        The first name becomes the primary protocol. An empty list keeps the
+        current selection. A later :meth:`protocol` call replaces it.
+        """
+        selected = list(dict.fromkeys(name for name in names if name))
+        if selected:
+            self._protocols = selected
         return self
 
     def backend(self, backend: str) -> "FriTap":
@@ -438,7 +465,8 @@ class FriTap:
             device=self._device,
             output=self._output,
             hooking=self._hooking,
-            protocol=self._protocol,
+            protocol=self._protocols[0],
+            protocols=list(self._protocols),
             backend=self._backend_name,
             debug=self._debug,
             debug_output=self._debug_output,

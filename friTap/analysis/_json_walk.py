@@ -77,4 +77,25 @@ def iter_json(
             yield JsonNode(FIELD, value, path, key)
 
 
-__all__ = ["MAX_JSON_DEPTH", "MAX_JSON_NODES", "CONTAINER", "FIELD", "JsonNode", "iter_json"]
+
+def exceeds_depth(root: Any, max_depth: int = MAX_JSON_DEPTH) -> bool:
+    """True when *root* nests dicts/lists more than *max_depth* levels deep.
+
+    A container counts as depth 1 and a scalar as 0. Iterative (explicit
+    stack), so it is safe on any depth ``json.loads`` accepts: since CPython
+    3.14 that depth is limited by the real C stack, not ``RecursionError``.
+    """
+    if not isinstance(root, (dict, list)):
+        return False
+    stack: list[tuple[Any, int]] = [(root, 1)]
+    while stack:
+        node, depth = stack.pop()
+        if depth > max_depth:
+            return True
+        children = node.values() if isinstance(node, dict) else node
+        stack.extend((child, depth + 1) for child in children if isinstance(child, (dict, list)))
+    return False
+
+
+__all__ = ["MAX_JSON_DEPTH", "MAX_JSON_NODES", "CONTAINER", "FIELD", "JsonNode", "exceeds_depth",
+           "iter_json"]

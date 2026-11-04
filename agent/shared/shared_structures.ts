@@ -12,6 +12,8 @@
  * that protocol's own module; put anything reusable by other protocols here.
  */
 
+import { activeRecordProtocol } from "./record_protocol.js";
+
 // --- Shared runtime state (live ESM bindings; set once at config-handshake) ---
 // Reads are live, taken at hook-INSTALL time (well after config parse), so the
 // defaults below are only ever observed transiently during module import.
@@ -37,7 +39,25 @@ export function setIsShuttingDown(value: boolean): void { _isShuttingDown = valu
 export function setOhttpEnabled(value: boolean): void { ohttp_enabled = value; }
 export function setConfigExtensions(value: Record<string, any>): void { config_extensions = value ?? {}; }
 
-export type ModuleHookingType = (moduleName: string, is_base_hook: boolean) => void;
+/**
+ * A registry row's hook executor. Returning `false` declares that it installed nothing on
+ * the module — a gate declined (RC4 key hooks without -k) or no hookable symbol was
+ * found — so the loaders neither announce the library for that protocol nor report it
+ * (library_detected). `void` (every other executor) or `true` means hooks were installed.
+ * An async executor (installs in the background) returns a Promise of the same verdict:
+ * the loaders announce/report the row once it resolves to anything but `false`.
+ */
+export type ModuleHookingType = (moduleName: string, is_base_hook: boolean) => void | boolean | Promise<void | boolean>;
+
+/** Whether an executor's (settled) return value (see ModuleHookingType) means it installed hooks. */
+export function hookExecutorInstalled(outcome: unknown): boolean {
+    return outcome !== false;
+}
+
+/** Whether an executor returned a Promise (an async executor still installing). */
+export function isPendingHookOutcome(outcome: unknown): outcome is PromiseLike<unknown> {
+    return outcome !== null && typeof outcome === "object" && typeof (outcome as any).then === "function";
+}
 
 export type Platform = "linux" | "darwin" | "windows" | "wine";
 
@@ -111,14 +131,35 @@ export function setSelectedProtocol(protocol: string | string[] | Set<string>): 
     selected_protocol = [...set][0] || "tls";
 }
 
+// Meta selections choose WHICH hooks install (`--protocol auto|all`); they are
+// never a protocol a message belongs to.
+const META_PROTOCOL_SELECTIONS = new Set(["auto", "all"]);
+
+/**
+ * The protocol tag a message is stamped with.
+ *
+ * A concrete selection keeps the historical behaviour: the selected protocol
+ * wins (e.g. TLS data under `--protocol signal` is tagged "signal"). Under a
+ * meta selection the hook's record protocol (`declared`) is used, falling back to
+ * "tls" — the default hook protocol — so "auto"/"all" never reach the host.
+ */
+export function resolveProtocolTag(selected: string, declared?: string): string {
+    if (!META_PROTOCOL_SELECTIONS.has(selected)) return selected;
+    if (declared && !META_PROTOCOL_SELECTIONS.has(declared)) return declared;
+    return "tls";
+}
+
 /**
  * Send a message to the Python side with the active protocol stamped in.
  *
- * @param message  The payload object (will be mutated with `protocol` field)
+ * @param message  The payload object (its `protocol` field is overwritten). The
+ *                 hook's own protocol is the record protocol the loader bound
+ *                 to the emitting hook (agent/shared/record_protocol.ts); it is
+ *                 honoured under a meta selection (see resolveProtocolTag).
  * @param data     Optional binary data to attach
  */
 export function sendWithProtocol(message: { [key: string]: any }, data?: ArrayBuffer | number[] | null): void {
-    message["protocol"] = selected_protocol;
+    message["protocol"] = resolveProtocolTag(selected_protocol, activeRecordProtocol());
     if (data !== undefined && data !== null) {
         send(message, data);
     } else {
@@ -228,6 +269,10 @@ export function sendQuicKeylog(keylogLine: string): void {
  *                     Used by the app-API capture path (OnHeadersDecoded). When
  *                     present and non-empty it is attached as message["http3_headers"];
  *                     header-only sends pass data = null.
+ * @param payload What `data` is (sent as message["quic_payload"]) so the host
+ *                routes the record without knowing hook names: "stream" = raw
+ *                in-order QUIC stream bytes (HTTP/3 frames), "body" = de-framed
+ *                HTTP/3 DATA payload. Omitted for other records.
  */
 export function sendQuicDatalog(
     message: { [key: string]: any },
@@ -237,11 +282,16 @@ export function sendQuicDatalog(
     dcid?: string,
     transport: "udp" | "tcp" = "udp",
     http3Headers?: [string, string][],
+    payload?: QuicPayloadKind,
 ): void {
     message["stream_id"] = streamId;
     if (scid) message["quic_scid"] = scid;
     if (dcid) message["quic_dcid"] = dcid;
     message["transport"] = transport;
     if (http3Headers && http3Headers.length > 0) message["http3_headers"] = http3Headers;
+    if (payload) message["quic_payload"] = payload;
     sendDatalog(message, data);
 }
+
+/** Kind of QUIC record payload (see sendQuicDatalog). */
+export type QuicPayloadKind = "stream" | "body";

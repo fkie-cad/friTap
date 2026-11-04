@@ -18,7 +18,7 @@ from friTap.constants import build_capture_bpf
 
 from .android import Android
 from .constants import is_read_function
-from .pcap_utility import is_pcapng_filename
+from .pcap_utility import PCAP_FORMAT_AUTO, PCAP_FORMAT_PCAPNG, resolve_pcap_format
 from .sinks.tcp_state import (
     InvalidEndpointError,
     ipv4_address_int,
@@ -400,8 +400,12 @@ class PCAP:
 
     def __init__(self,pcap_file_name,SSL_READ,SSL_WRITE, doFullCapture, isMobile, print_debug_infos=False,
                  owner_capture=False, owner_capture_opts=None, target_package=None, target_pid=None,
-                 include_loopback=False, filter_infrastructure=True):
+                 include_loopback=False, filter_infrastructure=True, pcap_format=PCAP_FORMAT_AUTO):
         self.pcap_file_name = pcap_file_name
+        # The -p container ("pcap"/"pcapng"). ``pcap_format`` is the config's
+        # resolved OutputConfig.pcap_container (or the requested format, which
+        # resolves to the same value); resolved here once, read by writes_pcapng.
+        self.pcap_container = resolve_pcap_format(pcap_file_name, pcap_format)
         self.logger = logging.getLogger('friTap')
         # Full local capture (-f): also sniff the loopback interface so localhost
         # traffic (127.0.0.1 / ::1) is recorded. Default OFF — opt-in via --loopback
@@ -492,7 +496,7 @@ class PCAP:
             # When the user requested pcapng, PcapngOutputHandler will own
             # the file and write a proper SHB. Skip the legacy classic-pcap
             # header write that would otherwise be immediately overwritten.
-            if is_pcapng_filename(self.pcap_file_name):
+            if self.writes_pcapng():
                 self.pcap_file = None
             else:
                 self.pcap_file = self.__create_plaintext_pcap()
@@ -1141,6 +1145,10 @@ class PCAP:
         sniff thread saw no packets, or the temp file was already moved
         away), still write a minimal valid pcapng with SHB+IDB(+DSB) so
         the user keeps the TLS keys instead of getting a scapy traceback.
+
+        Returns True when *source_pcap* is no longer needed (its packets are in
+        the output, or it held none) and False when it could not be read, so
+        the caller keeps the raw capture instead of losing its packets.
         """
         from .output.pcapng_blocks import build_dsb, build_epb, build_idb, build_shb
 
@@ -1156,7 +1164,7 @@ class PCAP:
                 source_pcap, output_pcapng,
             )
             self._write_minimal_pcapng_with_keys(output_pcapng, formatted_keys)
-            return
+            return True
 
         try:
             _validate_capture(source_pcap)
@@ -1175,6 +1183,7 @@ class PCAP:
                     for pkt in packets:
                         t_us = int(float(pkt.time) * 1_000_000)
                         fh.write(build_epb(bytes(pkt), t_us))
+            return True
         except (EOFError, struct.error, Scapy_Exception, ValueError, MemoryError) as exc:
             # Truncated/corrupt source (ValueError covers CaptureFormatError
             # from the length pre-check): log the path so the user can
@@ -1185,40 +1194,74 @@ class PCAP:
                 source_pcap, type(exc).__name__, exc,
             )
             self._write_minimal_pcapng_with_keys(output_pcapng, formatted_keys)
+            return False
+
+    def writes_pcapng(self):
+        """True when the -p file is pcapng (the resolved ``pcap_container``)."""
+        return self.pcap_container == PCAP_FORMAT_PCAPNG
 
     def _emit_final(self, source_pcap, formatted_keys, bpf_filter=None):
-        """Decide format from self.pcap_file_name extension and emit accordingly.
+        """Emit the final -p file in the resolved container format.
 
-        For .pcapng targets: emit a fresh pcapng with embedded DSB block.
-        For .pcap (or unrecognised) with a filter: write filtered classic pcap.
-        For .pcap with no filter: rename the temp file in place — source is
-        already classic pcap, and the rename is on the same filesystem
+        The container comes from :meth:`writes_pcapng` (``--pcap-format``,
+        else the extension). For pcapng: emit a fresh pcapng with embedded DSB
+        block. For classic pcap with a filter: write filtered classic pcap.
+        For classic pcap with no filter: rename the temp file in place — source
+        is already classic pcap, and the rename is on the same filesystem
         because _temp_pcap_path puts the temp alongside the final.
+
+        The temp capture is removed once the final file holds its packets, on
+        every path (including an exception raised mid-write, which keeps it).
+        A temp that could not be converted is kept and its path logged, so no
+        captured packets are lost.
         """
-        if is_pcapng_filename(self.pcap_file_name):
-            self._emit_pcapng_with_dsb(
+        consumed = False
+        try:
+            consumed = self._write_final_from(source_pcap, formatted_keys, bpf_filter)
+        finally:
+            self._dispose_temp_capture(source_pcap, consumed)
+
+    def _write_final_from(self, source_pcap, formatted_keys, bpf_filter):
+        """Write the final -p file; True when *source_pcap* is no longer needed."""
+        if self.writes_pcapng():
+            return self._emit_pcapng_with_dsb(
                 source_pcap, self.pcap_file_name, formatted_keys, bpf_filter,
             )
-        elif bpf_filter:
-            self._write_filtered_pcap(source_pcap, bpf_filter)
-        else:
-            os.replace(source_pcap, self.pcap_file_name)
+        if bpf_filter:
+            return self._write_filtered_pcap(source_pcap, bpf_filter)
+        os.replace(source_pcap, self.pcap_file_name)
+        return True
+
+    def _dispose_temp_capture(self, source_pcap, consumed):
+        """Remove the staged temp capture once consumed; otherwise report it."""
+        if not source_pcap or not os.path.exists(source_pcap):
+            return
+        if not consumed:
+            self.logger.warning(f"The raw full capture was kept at {source_pcap}")
+            return
+        try:
+            os.remove(source_pcap)
+        except OSError as exc:
+            self.logger.warning(f"Could not remove the temp capture {source_pcap}: {exc}")
 
     def _write_filtered_pcap(self, source_pcap, bpf_filter):
         """Write the BPF-filtered packets of *source_pcap* as the final classic pcap.
 
         A malformed temp capture is left in place (nothing is lost) and
-        reported instead of raising out of the finalize step.
+        reported instead of raising out of the finalize step. Returns True when
+        the final file was written.
         """
         try:
             _validate_capture(source_pcap)
             wrpcap(self.pcap_file_name, sniff(offline=source_pcap, filter=bpf_filter))
+            return True
         except (EOFError, struct.error, Scapy_Exception, ValueError, MemoryError) as exc:
             self.logger.error(
                 "Full-capture finalization failed reading %s: malformed or "
                 "truncated capture (%s: %s); the unfiltered temp capture is kept",
                 source_pcap, type(exc).__name__, exc,
             )
+            return False
 
     def _record_server_port(self, transport, function, src_port, dst_port):
         """Record the distinct server (destination) port for the manifest.

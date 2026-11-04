@@ -1,6 +1,7 @@
 import { devlog, devlog_error, devlog_debug, log, devlog_info, hookBreadcrumb } from "../../util/log.js";
 import { currentPlatformKey, normalizeArchKey } from "../../util/process_infos.js"
 import { isFunctionPrologueWord } from "../../shared/arm64.js";
+import { attachGoFunctionEntry, isGoArm64StackGuardLoad } from "../../shared/go_attach.js";
 
 const IS_ARM64 = Process.arch === "arm64";
 
@@ -31,7 +32,9 @@ function isLikelyArm64Prologue(address: NativePointer): boolean {
     // sub were ALWAYS false because JS `&` returns a signed int32 for bit-31-set
     // results, so those prologues were silently rejected and their hooks never
     // installed (severe on non-PAC arm64, where almost every prologue is stp/sub).
-    return isFunctionPrologueWord(insn);
+    // Go functions open with their stack-guard load instead (no frame setup yet): the
+    // Go writeKeyLog patterns of stripped binaries start there (go_attach.ts).
+    return isFunctionPrologueWord(insn) || isGoArm64StackGuardLoad(insn);
 }
 
 /*
@@ -426,8 +429,10 @@ export class PatternBasedHooking {
 
                 log(`[*] ${moduleName ?? "<unknown>"}: keylog hooks installed via pattern (${pattern_name} @ ${address})`);
 
-                // Attach the hook using the provided onMatchCallback
-                Interceptor.attach(address, {
+                // Attach the hook using the provided onMatchCallback. A Go arm64 entry
+                // (stack-guard prologue) is hooked after its stack check; any other
+                // match exactly at `address` (shared/go_attach.ts).
+                attachGoFunctionEntry(address, {
                     onEnter: function (args) {
                         // Forward the InvocationContext as `this` so ABI-aware
                         // callbacks can read registers (see shared/call_abi.ts).
@@ -565,7 +570,7 @@ export class PatternBasedHooking {
                 log(`[*] ${moduleName ?? "<unknown>"}: keylog hooks installed via pattern (${pattern_name}, readable-ranges @ ${address})`);
 
                 try {
-                    Interceptor.attach(address, {
+                    attachGoFunctionEntry(address, {
                     onEnter: function (args) { onMatchCallback.call(this, args); },
                     });
                 } catch (e) {

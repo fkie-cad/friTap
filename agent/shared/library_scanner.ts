@@ -3,6 +3,7 @@ import { hookRegistry, HookRegistration, RequestedProtocol, protocolLabel } from
 import { Platform } from "./shared_structures.js";
 import { matchNonTLSLibrary, noteNonTLSLibrary } from "../util/non_tls_libs.js";
 import { baseKey, findLoadedModule, moduleIdentityKey, nameKey } from "./module_identity.js";
+import { executeHookRow } from "./record_protocol.js";
 
 interface ScanResultEntry {
     name: string;
@@ -111,9 +112,37 @@ export function isSupplementaryHookInstalled(match: HookRegistration, moduleName
     return !!match.supplementary && isModuleHooked(moduleName, installTagFor(match, protocol));
 }
 
-/** Record that *match* was installed on *moduleName* (under {@link installTagFor}). */
+/**
+ * Identity of a registry ROW, independent of the protocol SELECTION a loader
+ * pass ran under. The selection label (`tls`, `auto`, `rc4`, ...) is what the
+ * module-level dedup is keyed by, so two passes with different labels — e.g.
+ * the main `--protocol auto` pass and the OHTTP pass that re-runs the TLS
+ * loader under "tls", or `--protocol rc4,tls` (label "rc4") plus that same
+ * OHTTP pass — both resolve the same TLS rows. Without a row-level marker the
+ * executor ran twice and every SSL_read/SSL_write was emitted twice.
+ */
+export function hookRowTag(match: HookRegistration): string {
+    return `row:${match.protocol}:${match.libraryType ?? ""}:${match.library}:${match.pattern}`;
+}
+
+/** Whether this exact registry row is already installed on *moduleName*, under any selection. */
+export function isHookRowInstalled(match: HookRegistration, moduleName: string): boolean {
+    return isModuleHooked(moduleName, hookRowTag(match));
+}
+
+/**
+ * Whether *match* is already handled on *moduleName*: the row ran under any selection, or
+ * (supplementary rows) its own install tag is set. The one per-row check every loader
+ * consults before running a row, so a new loader cannot forget half of it.
+ */
+export function isRowHandled(match: HookRegistration, moduleName: string, protocol: string = "tls"): boolean {
+    return isSupplementaryHookInstalled(match, moduleName, protocol) || isHookRowInstalled(match, moduleName);
+}
+
+/** Record that *match* was installed on *moduleName* (under {@link installTagFor} and its row identity). */
 export function recordHookInstalled(match: HookRegistration, moduleName: string, protocol: string = "tls"): void {
     markModuleHooked(moduleName, installTagFor(match, protocol));
+    markModuleHooked(moduleName, hookRowTag(match));
 }
 
 export function announceSiblingCoverage(
@@ -192,11 +221,13 @@ export function processScanResults(
 
         // Look up hook by library_type
         const typeMatch = hookRegistry.findByLibraryType(platform, entry.library_type, protocol);
-        if (typeMatch) {
+        if (typeMatch && isRowHandled(typeMatch, entry.name, protocolTag)) {
+            devlog(`[Scanner] ${entry.name}: ${typeMatch.library} already installed, skipping`);
+        } else if (typeMatch) {
             log(`[Scanner] ${entry.name} identified as ${entry.library_type} by tlsLibHunter → hooking as ${typeMatch.library}`);
             try {
                 Process.getModuleByName(entry.name).ensureInitialized();
-                typeMatch.hookFn(entry.name, is_base_hook);
+                executeHookRow(typeMatch, entry.name, is_base_hook);
                 recordHookInstalled(typeMatch, entry.name, protocolTag);
             } catch (error) {
                 devlog(`[Scanner] Error hooking ${entry.name}: ${error}`);

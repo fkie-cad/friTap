@@ -18,10 +18,18 @@ export const GO_SYMBOL_CONN_READ = "crypto/tls.(*Conn).Read";
 /** Canonical Go crypto/tls symbol — plaintext write. */
 export const GO_SYMBOL_CONN_WRITE = "crypto/tls.(*Conn).Write";
 
+/** Canonical Go crypto/tls symbol — per-record plaintext writer under (*Conn).Write. */
+export const GO_SYMBOL_WRITE_RECORD_LOCKED = "crypto/tls.(*Conn).writeRecordLocked";
+
+/** Go runtime copy routine — (*Conn).Read's plaintext copy calls it (see go_plaintext.ts). */
+export const GO_SYMBOL_MEMMOVE = "runtime.memmove";
+
 const CANONICAL_SYMBOLS: readonly string[] = [
     GO_SYMBOL_WRITE_KEYLOG,
     GO_SYMBOL_CONN_READ,
     GO_SYMBOL_CONN_WRITE,
+    GO_SYMBOL_WRITE_RECORD_LOCKED,
+    GO_SYMBOL_MEMMOVE,
 ];
 
 /**

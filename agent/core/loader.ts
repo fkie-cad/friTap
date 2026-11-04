@@ -10,6 +10,7 @@ import { installKeylogHook } from "./executors/keylog_callback.js";
 import { installBoringSSLKeylogChain } from "../shared/boringssl_hook_chain.js";
 import { patterns, keylog_enabled } from "../fritap_agent.js";
 import { devlog, log } from "../util/log.js";
+import { activeRecordProtocol, runHookExecutor } from "../shared/record_protocol.js";
 
 /**
  * Execute a data-driven hook definition:
@@ -19,6 +20,10 @@ import { devlog, log } from "../util/log.js";
  * 4. Install read/write hooks via generic executors
  * 5. Dispatch keylog hook based on def.keylog.kind
  * 6. Run extraHooks if present
+ *
+ * Resolves to the row's installed verdict (ModuleHookingType): `false` only for a
+ * definition that delegates everything to extraHooks (SSH/IPsec wrappers) when every
+ * extra hook reported installing nothing; `true` otherwise.
  */
 export async function executeFromDefinition(
     def: HookDefinition,
@@ -26,7 +31,12 @@ export async function executeFromDefinition(
     socketLibrary: string,
     isBaseHook: boolean,
     enableDefaultFd: boolean,
-): Promise<void> {
+): Promise<boolean> {
+    // The row's record protocol is bound only while the executor runs synchronously
+    // (record_protocol.ts); capture it here and re-bind it for the hooks installed
+    // after the pipeline await below, or under --protocol auto/all every SSH/IPsec/QUIC
+    // record of a definition-driven lib would fall back to "tls".
+    const recordProtocol = activeRecordProtocol();
     // 1. Build library_method_mapping
     const mapping: { [key: string]: string[] } = {};
     mapping[`*${moduleName}*`] = def.functions.librarySymbols;
@@ -68,6 +78,27 @@ export async function executeFromDefinition(
     ];
     await resolveWithPipelineAsync(addresses, moduleName, def.offsetKey, pipelineSymbols);
 
+    const install = () => installResolvedDefinition(def, addresses, moduleName, isBaseHook, enableDefaultFd);
+    if (recordProtocol === undefined) return install();
+    return runHookExecutor(recordProtocol, install);
+}
+
+/** Whether a definition installs nothing of its own, leaving all hooking to extraHooks. */
+function delegatesToExtraHooks(def: HookDefinition): boolean {
+    return !def.readHook && !def.writeHook && def.keylog.kind === "none";
+}
+
+/**
+ * Steps 3-8: wrap NativeFunctions and attach every hook of a resolved definition.
+ * Returns the installed verdict documented on executeFromDefinition.
+ */
+function installResolvedDefinition(
+    def: HookDefinition,
+    addresses: { [lib: string]: { [fn: string]: NativePointer } },
+    moduleName: string,
+    isBaseHook: boolean,
+    enableDefaultFd: boolean,
+): boolean {
     // 3. Create NativeFunction wrappers
     const resolvedFns: ResolvedFunctions = {};
     for (const spec of def.nativeFunctions) {
@@ -142,9 +173,10 @@ export async function executeFromDefinition(
     }
 
     // 7. Run extra hooks
+    let extraInstalled = false;
     if (def.extraHooks) {
         for (const extra of def.extraHooks) {
-            extra.install(addresses, moduleName, resolvedFns, enableDefaultFd);
+            extraInstalled = extra.install(addresses, moduleName, resolvedFns, enableDefaultFd) !== false || extraInstalled;
         }
     }
 
@@ -159,4 +191,5 @@ export async function executeFromDefinition(
             devlog(`[loader] base-hook address store error: ${e}`);
         }
     }
+    return extraInstalled || !delegatesToExtraHooks(def);
 }

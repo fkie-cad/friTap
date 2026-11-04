@@ -116,6 +116,9 @@ nav:
     - Python API: api/python.md
     - CLI Reference: api/cli.md
     - .tap File Format: api/tap-format.md
+    - AI Agents (MCP / REST / CLI): api/agent.md
+  - Agent Playbooks:
+    - Privacy Audit: agents/privacy-audit.md
   - Troubleshooting:
     - Common Issues: troubleshooting/common-issues.md
   - Development:

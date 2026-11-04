@@ -13,6 +13,7 @@ import assert from "node:assert/strict";
 import {
     isADRP, isADDimm64, isLDRimmU64, isSTRimmU64, isRET, isBL, isBLR, isFunctionPrologueWord,
     decodeADRPImm, decodeADDImm12, decodeLDRU64Imm, decodeSTRU64Imm, decodeBLImm, regRd, regRn,
+    blTargetOffset, movzW,
     IMM12_OPERAND_MASK, addImm64WordForImm12, ldrU64WordForImm12, maskedWordScanPattern,
     addImm64ScanPattern, ldrU64ScanPattern,
     isADR, decodeADRImm, adrTopByteForTarget, regRt2, regRs,
@@ -278,4 +279,19 @@ test("writesReg: non-writers of x1 are allowed through", () => {
         [0xa94008a3, "ldp x3, x2, [x5]"], [0xf82300a2, "ldadd x3, x2, [x5]"],
     ];
     for (const [w, what] of nonWritersOfX1) assert.equal(writesReg(w >>> 0, 1), false, what);
+});
+
+test("blTargetOffset resolves a backward BL and rejects non-BL words", () => {
+    // 0x5410100: bl 0x51511b0 (Chrome 133 libmonochrome SSL_read -> SSL_peek call)
+    assert.equal(blTargetOffset(0x5410100, 0x97f5042c), 0x51511b0);
+    assert.equal(blTargetOffset(0x1000, 0x94000004), 0x1010);          // forward bl +0x10
+    assert.equal(blTargetOffset(0x1000, 0xd503201f), null);            // nop
+});
+
+test("movzW decodes `mov wN, #imm16` only for the requested register", () => {
+    assert.equal(movzW(0x52800200, 0), 0x10);                          // mov w0, #0x10
+    assert.equal(movzW(0x52800842, 2), 0x42);                          // mov w2, #0x42
+    assert.equal(movzW(0x52800200, 2), null);                          // other register
+    assert.equal(movzW(0xd2800200, 0), null);                          // 64-bit movz x0
+    assert.equal(movzW(0x52a00200, 0), null);                          // shifted (hw=1)
 });

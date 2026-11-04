@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "estimated_tokens": {
+      "type": "integer"
+    },
+    "findings": {
+      "type": "object"
+    },
+    "markdown": {
+      "type": "string"
+    },
+    "notice": {
+      "type": "string"
+    },
+    "params": {
+      "type": "object"
+    },
+    "protocols": {
+      "additionalProperties": {
+        "type": "object"
+      },
+      "type": "object"
+    },
+    "schema": {
+      "enum": [
+        "fritap.digest/2",
+        "fritap.digest_md/1"
+      ]
+    },
+    "source": {
+      "properties": {
+        "file": {
+          "type": "string"
+        },
+        "flows_selected": {
+          "type": "integer"
+        },
+        "flows_total": {
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "truncated": {}
+  },
+  "title": "get_digest result",
+  "type": "object"
+}

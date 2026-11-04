@@ -24,6 +24,8 @@ from rich.markup import escape
 from rich.segment import Segment
 from rich.style import Style
 
+from friTap.analysis._json_walk import exceeds_depth
+
 if TYPE_CHECKING:
     from friTap.tui.modals.body_processing_modal import BodyProcessingResult
 
@@ -837,9 +839,13 @@ if TEXTUAL_AVAILABLE:
             if decoder == "json":
                 try:
                     parsed = json.loads(data)
-                    return json.dumps(parsed, indent=2)
+                    # Indented output grows ~2*depth^2: reject deep nesting
+                    # explicitly (3.14's json.loads no longer raises on it).
+                    if not exceeds_depth(parsed):
+                        return json.dumps(parsed, indent=2)
                 except (json.JSONDecodeError, UnicodeDecodeError, RecursionError):
-                    return f"JSON decode failed \u2014 showing raw:\n{data!r}"
+                    pass
+                return f"JSON decode failed \u2014 showing raw:\n{data!r}"
 
             if decoder == "base64":
                 import base64

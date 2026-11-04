@@ -35,14 +35,14 @@ except ImportError:
     class FridaBasedException(Exception):
         pass
 from .about import __author__, __version__
+from .backends.base import BackendName
+from .config import FriTapConfig, UnsupportedProtocolBackendError
 from .exit_codes import (
     EXIT_OK,
     EXIT_RUNTIME_ERROR,
     EXIT_TARGET_DETACHED,
     EXIT_USAGE_ERROR,
 )
-from .backends.base import BackendName
-from .config import FriTapConfig, UnsupportedProtocolBackendError
 from .fritap_utility import (
     Failure,
     FriTapExit,
@@ -53,6 +53,7 @@ from .fritap_utility import (
 )
 from .inspector import LibraryInspector
 from .legacy.ssl_logger_core import WINE_BASENAMES
+from .pcap_utility import PCAP_FORMAT_AUTO, PCAP_FORMAT_CHOICES
 from .ssl_logger import SSL_Logger
 
 
@@ -93,7 +94,8 @@ _MODERN_LEGACY_DELEGATED = "iOS/macOS Cronet, Windows LSASS"
 
 def _build_lsass_config(pid_of_lsass, *, pcap_name, verbose, keylog, live, debug_mode,
                         host, debug_output, enable_default_fd, patterns,
-                        custom_hook_script, json_output, full_capture, json_keys=False):
+                        custom_hook_script, json_output, full_capture, json_keys=False,
+                        pcap_format=PCAP_FORMAT_AUTO):
     """Config for the LSASS helper session, which contributes to the target's outputs.
 
     It is marked ``auxiliary_session`` and shares the target session's -p, -k
@@ -130,6 +132,11 @@ def _build_lsass_config(pid_of_lsass, *, pcap_name, verbose, keylog, live, debug
         install_lsass_hook=True
     )
     config.output.auxiliary_session = True
+    # Same -p container as the target session sharing the file. Resolved after
+    # marking the session auxiliary, so only the target session warns about an
+    # extension that contradicts --pcap-format.
+    config.output.output_format = pcap_format
+    config.output.resolve_pcap_container()
     # -f: like the target session (which drops its plaintext hooks in full-capture
     # mode, tcpdump records the raw packets), the helper installs no plaintext
     # hooks either, even though a shared -j output would consume them otherwise.
@@ -156,7 +163,8 @@ class LsassHookManager:
     def start_lsass_hook(self, pcap_name=None, verbose=False, keylog=False, live=False, 
                         debug_mode=False, host=False, debug_output=False, 
                         enable_default_fd=False, patterns=None, custom_hook_script=None, 
-                        json_output=None, full_capture=False, json_keys=False):
+                        json_output=None, full_capture=False, json_keys=False,
+                        pcap_format=PCAP_FORMAT_AUTO):
         """Start LSASS hooking in a background thread.
 
         ``full_capture`` is the TARGET session's -f mode: that session alone owns
@@ -189,7 +197,8 @@ class LsassHookManager:
                     live=live, debug_mode=debug_mode, host=host, debug_output=debug_output,
                     enable_default_fd=enable_default_fd, patterns=patterns,
                     custom_hook_script=custom_hook_script, json_output=json_output,
-                    full_capture=full_capture, json_keys=json_keys)
+                    full_capture=full_capture, json_keys=json_keys,
+                    pcap_format=pcap_format)
                 self.lsass_logger = SSL_Logger(config=config)
                 
                 # Start the LSASS session
@@ -280,7 +289,7 @@ _lsass_hook_manager = LsassHookManager()
 def hook_lsass(pcap_name=None, verbose=False, keylog=False, live=False, debug_mode=False, 
                host=False, debug_output=False, enable_default_fd=False, patterns=None, 
                custom_hook_script=None, json_output=None, full_capture=False,
-               json_keys=False):
+               json_keys=False, pcap_format=PCAP_FORMAT_AUTO):
     """
     Hook the Local Security Authority Subsystem Service (LSASS) process.
     This runs in a background thread and doesn't block the main friTap session.
@@ -299,6 +308,7 @@ def hook_lsass(pcap_name=None, verbose=False, keylog=False, live=False, debug_mo
         json_output=json_output,
         full_capture=full_capture,
         json_keys=json_keys,
+        pcap_format=pcap_format,
     )
 
 def cleanup_lsass_hook():
@@ -521,7 +531,24 @@ def _apply_quiet_console(quiet):
 def _stop_capture_after_duration(ssl_log, seconds, logger):
     """Timer callback: end the capture via the same path as Ctrl+C."""
     logger.info(f"--duration {seconds:g}s elapsed; stopping the capture.")
+    if not _capture_already_stopping(ssl_log):
+        from .output.stdout_stream import ENDED_BY_DURATION, note_end_reason
+        note_end_reason(ENDED_BY_DURATION)
     ssl_log.stop_capture_gracefully()
+
+
+def _stop_signal_received(ssl_log):
+    """True once a Ctrl+C/SIGINT (or a --duration stop) started the teardown."""
+    session_manager = getattr(ssl_log, "_session_manager", None)
+    return bool(getattr(session_manager, "_exit_signal_received", False))
+
+
+def _capture_already_stopping(ssl_log):
+    """True when a teardown (stop signal, target exit) is already under way, so
+    the --duration timer is not what ends the run."""
+    return (getattr(ssl_log, "_cleanup_done", False)
+            or getattr(ssl_log, "_session_end_claimed", False)
+            or _stop_signal_received(ssl_log))
 
 
 def _start_duration_timer(ssl_log, seconds, logger):
@@ -588,6 +615,15 @@ def _register_stream_exit_status(ssl_log):
     from .output.stdout_stream import register_exit_status_provider
     register_exit_status_provider(
         lambda: getattr(ssl_log, "_exit_status", EXIT_OK))
+    _register_stream_end_reason(ssl_log)
+
+
+def _register_stream_end_reason(ssl_log):
+    """Let '-j -''s stream_end say a clean run was stopped by a signal
+    (``ended_by: "stopped"``); --duration notes its own reason first."""
+    from .output.stdout_stream import ENDED_BY_STOPPED, register_end_reason_provider
+    register_end_reason_provider(
+        lambda: ENDED_BY_STOPPED if _stop_signal_received(ssl_log) else None)
 
 
 def _record_capture_exit_status(ssl_log, exit_code):
@@ -1028,6 +1064,13 @@ Offline (read / analyze .tap):
                       help="Creates a named pipe /tmp/sharkfin which can be read by Wireshark during the capturing process")
     args.add_argument("-p", "--pcap", metavar="<path>", required=False,
                       help="Name of PCAP file to write")
+    args.add_argument("--pcap-format", dest="pcap_format", choices=PCAP_FORMAT_CHOICES,
+                      default=PCAP_FORMAT_AUTO,
+                      help="Container of the -p file (plaintext and -f full capture): "
+                           "'pcapng' embeds the keys as a Decryption Secrets Block. "
+                           "Default 'auto': .pcapng extension -> pcapng, anything "
+                           "else -> classic pcap. An explicit format wins over the "
+                           "extension (a contradicting extension is warned about).")
     args.add_argument("-s", "--spawn", required=False, action="store_const", const=True,
                       help="Spawn the executable/app instead of attaching to a running process")
     args.add_argument("-sot", "--socket_tracing", metavar="<path>", required=False, nargs='?', const=True,
@@ -1086,7 +1129,14 @@ Offline (read / analyze .tap):
     args.add_argument("--spawn_gating_all", required=False, action="store_const", const=True,
                       help="Catch ALL newly spawned processes without filtering (use with caution)")
     args.add_argument("--enable_child_gating", required=False, action="store_const", const=True,
-                      help="Intercept child processes spawned by the target application")
+                      help="Intercept child processes (fork/posix_spawn) of the target and "
+                           "of every instrumented child, and follow each across exec() "
+                           "(e.g. git -> git-remote-https)")
+    args.add_argument("--no-follow-exec", required=False, action="store_false",
+                      dest="follow_exec", default=True,
+                      help="Do not follow instrumented processes across exec() (spawn "
+                           "and attach mode; e.g. a launcher exec()ing the real binary). "
+                           "Skips child gating, which costs ~40-50 ms per fork.")
     args.add_argument("exec", metavar="<executable/app name/pid>", nargs="+",
                       help="executable/app whose SSL calls to log. Accepts a "
                            "command with arguments for spawn mode, e.g. "
@@ -1532,7 +1582,8 @@ Offline (read / analyze .tap):
             # --owner-capture implies -f (enabled further below), so it counts here.
             hook_lsass(parsed.pcap, parsed.verbose, parsed.keylog, parsed.live, parsed.debug, parsed.host, parsed.debug_output, parsed.enable_default_fd, parsed.patterns, parsed.custom_script, parsed.json,
                        full_capture=bool(parsed.full_capture or getattr(parsed, 'owner_capture', False)),
-                       json_keys=parsed.json_keys)
+                       json_keys=parsed.json_keys,
+                       pcap_format=parsed.pcap_format)
             atexit.register(cleanup_lsass_hook)
     elif (parsed.mobile or parsed.host) and not parsed.no_lsass:
         logger.debug("LSASS hooking is a local-Windows-only feature; skipping for the mobile/remote target.")
@@ -1609,6 +1660,8 @@ Offline (read / analyze .tap):
 
     if parsed.full_capture and parsed.pcap is None:
         parser.error("--full_capture requires -p to set the pcap name")
+    if parsed.pcap_format != PCAP_FORMAT_AUTO and parsed.pcap is None:
+        parser.error("--pcap-format requires -p to set the pcap name")
 
     # Resolve '@file' up front so a missing/unreadable sample is a clean CLI
     # error instead of a traceback from inside config construction.
@@ -1691,6 +1744,7 @@ Offline (read / analyze .tap):
             enable_spawn_gating=parsed.enable_spawn_gating,
             spawn_gating_all=parsed.spawn_gating_all,
             enable_child_gating=parsed.enable_child_gating,
+            follow_exec=parsed.follow_exec,
             mobile=parsed.mobile,
             live=parsed.live,
             environment_file=parsed.environment,
@@ -1715,6 +1769,7 @@ Offline (read / analyze .tap):
             custom_hook_script=parsed.custom_script,
             json_output=parsed.json,
             json_keys=parsed.json_keys,
+            output_format=parsed.pcap_format,
             install_lsass_hook=install_lsass_hook,
             timeout=parsed.timeout,
             script_load_timeout=parsed.script_load_timeout,
@@ -1787,6 +1842,8 @@ Offline (read / analyze .tap):
             
     except KeyboardInterrupt:
         capture_exit_code = None  # unchanged: the Ctrl+C teardown decides
+        from .output.stdout_stream import ENDED_BY_STOPPED, note_end_reason
+        note_end_reason(ENDED_BY_STOPPED)
         logger.info("Keyboard interrupt received. Cleaning up...")
         cleanup_lsass_hook()
         raise
@@ -1941,6 +1998,28 @@ def _looks_like_pcap_input(token):
     )
 
 
+def _agent_api_mode(argv):
+    """Return ``"q"``, ``"mcp"``, ``"serve"`` or ``None`` for an agent-API invocation.
+
+    ``q`` needs leading q-level options, ``--list``/``-h``/``--help`` or a
+    registered (or closely misspelled) tool name next (see
+    ``agent_api.adapters.cli.is_query_invocation``); ``mcp``/``serve`` need
+    every following token to be an option of their argparse parser.
+    """
+    if len(argv) < 2 or argv[1] not in _AGENT_API_COMMANDS:
+        return None
+    if argv[1] == "q":
+        from .commands.query import is_query_invocation as matches
+    elif argv[1] == "mcp":
+        from .commands.mcp import is_mcp_invocation as matches
+    else:
+        from .commands.serve import is_serve_invocation as matches
+    return argv[1] if matches(argv) else None
+
+
+_AGENT_API_COMMANDS = ("q", "mcp", "serve")
+
+
 def _dispatch_special_mode(argv):
     """Resolve the pre-argparse "special mode" from a raw ``argv`` list.
 
@@ -1973,6 +2052,9 @@ def _dispatch_special_mode(argv):
       wizard (confirm input, choose output ``.tap``, supply TLS + per-protocol
       keylogs, convert, then open the result in the replay TUI). ``payload`` is
       the pcap/pcapng path.
+    * ``"q"`` / ``"mcp"`` / ``"serve"`` — agent API: ``fritap q <tool>`` runs one
+      registry tool and prints JSON; ``fritap mcp`` / ``fritap serve`` start the
+      MCP / REST server. ``payload`` is ``argv[2:]``. See :func:`_agent_api_mode`.
     * ``None``              — no special mode; fall through to normal capture.
 
     Disambiguation rule for the bare ``analyze`` subcommand: ``analyze`` is only
@@ -2011,6 +2093,11 @@ def _dispatch_special_mode(argv):
     from .commands.devices import is_listing_invocation
     if is_listing_invocation(argv):
         return (argv[1], argv[2:])
+    # Agent API: `fritap q <tool>|--list`, `fritap mcp`, `fritap serve` — same
+    # guard idea, so a target named q/mcp/serve with capture flags still captures.
+    agent_mode = _agent_api_mode(argv)
+    if agent_mode is not None:
+        return (agent_mode, argv[2:])
 
     # Replay / pcap-wizard: -r/--replay <file>, or a single trailing path.
     # A .pcap/.pcapng input opens the guided pcap-to-tap wizard (convert +
@@ -2082,6 +2169,18 @@ def main():
         if kind in ("devices", "apps"):
             from .commands.devices import run_listing_cli
             return run_listing_cli(kind, payload)
+
+        if kind == "q":
+            from .commands.query import run_query_cli
+            return run_query_cli(payload)
+
+        if kind == "mcp":
+            from .commands.mcp import run_mcp_cli
+            return run_mcp_cli(payload)
+
+        if kind == "serve":
+            from .commands.serve import run_serve_cli
+            return run_serve_cli(payload)
 
         if kind == "replay" and payload is None:
             print("Usage: fritap -r <capture.tap>")

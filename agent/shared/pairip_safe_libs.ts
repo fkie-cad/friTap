@@ -12,7 +12,9 @@
  *
  * ADDING A LIBRARY -- it is one entry below:
  *  - Symbol-exporting BoringSSL/Conscrypt lib: resolution "symbol"; reuse an
- *    existing executor (boring_execute, httpengine_execute, conscrypt_*). Done.
+ *    existing executor family ("boringssl", "httpengine", "conscrypt"). Done.
+ *    (A NEW family also needs a row in BOTH executor tables in
+ *    agent/platforms/android.ts -- legacy and modern.)
  *  - Hidden-symbol / statically-linked lib (e.g. Unity): resolution "offset";
  *    set offsetKey (defaults to the module name) and supply offsets via
  *    --offsets keyed by that name. It NEVER reaches a Memory.scan (the pattern
@@ -23,17 +25,19 @@
  * matchPairipSafeLib(), so a new entry extends all three at once.
  */
 
-import { HookRegistration } from "./registry.js";
-import { ModuleHookingType, Platform, LibraryType } from "./shared_structures.js";
-// Modern (definition-based) executors
-import { boring_execute_modern, httpengine_execute_modern } from "../tls/platforms/android/openssl_boringssl_android.js";
-import { conscrypt_execute_modern } from "../tls/platforms/android/conscrypt.js";
-// Unity (statically-linked MbedTLS 3.x, export-keys compiled out): offset-based
-// master-secret scrape (shared by the modern & legacy slots).
-import { unity_mbedtls_execute, unity_mbedtls_execute_modern } from "../tls/platforms/android/unity_mbedtls_android.js";
-// Legacy (class-based) executors
-import { boring_execute, httpengine_execute } from "../legacy/tls/platforms/android/openssl_boringssl_android.js";
-import { conscrypt_native_execute } from "../legacy/tls/platforms/android/conscrypt.js";
+import type { HookRegistration } from "./registry.js";
+import type { ModuleHookingType, Platform, LibraryType } from "./shared_structures.js";
+
+/**
+ * Executor families the allowlist can name. The concrete executors are
+ * INJECTED by the caller (agent/platforms/android.ts) per hook path -- legacy
+ * (agent/legacy/**) or modern (--modern; agent/tls/**) -- so this shared module
+ * imports neither tree's hookers (the two paths stay separate until merged).
+ */
+export type PairipExecutorKey = "boringssl" | "httpengine" | "conscrypt" | "unity_mbedtls";
+
+/** One concrete executor per family, for a single hook path. */
+export type PairipExecutorTable = Record<PairipExecutorKey, ModuleHookingType>;
 
 /** How a library's TLS functions are located — documentation + validation. */
 export type ResolutionMethod = "symbol" | "offset";
@@ -47,8 +51,8 @@ export interface PairipSafeLib {
     libraryType: LibraryType;
     /** Protocol — always "tls" here. */
     protocol: string;
-    /** Executor selector; receives use_modern so the entry stays declarative. */
-    hookFn: (use_modern: boolean) => ModuleHookingType;
+    /** Executor family; resolved against the injected per-path PairipExecutorTable. */
+    executor: PairipExecutorKey;
     /**
      * Expected resolution. "symbol" = exported/.symtab symbols (turnkey).
      * "offset" = hidden-symbol lib; needs offsets via --offsets (keyed by
@@ -67,31 +71,31 @@ export const PAIRIP_SAFE_LIBS: PairipSafeLib[] = [
     // --- Symbol-exporting BoringSSL / Conscrypt (turnkey) ---
     {
         pattern: /.*libssl\.so/, library: "OpenSSL/BoringSSL", libraryType: "openssl", protocol: "tls",
-        hookFn: (m) => (m ? boring_execute_modern : boring_execute), resolution: "symbol",
+        executor: "boringssl", resolution: "symbol",
     },
     {
         // Statically-linked BoringSSL whose SSL_* surface lives in .symtab;
         // httpengine_execute* opts the module into deep symbol resolution.
         pattern: /.*libhttpengine\.so/, library: "httpengine (BoringSSL)", libraryType: "boringssl", protocol: "tls",
-        hookFn: (m) => (m ? httpengine_execute_modern : httpengine_execute), resolution: "symbol",
+        executor: "httpengine", resolution: "symbol",
     },
     {
         // Blizzard commerce SDK — curl + BoringSSL; exports SSL_CTX_set_keylog_callback.
         // This carries com.blizzard.arc's real TLS (the actual key-capture win).
         pattern: /.*libcommerce_http_client\.so/, library: "Blizzard commerce (BoringSSL)", libraryType: "boringssl", protocol: "tls",
-        hookFn: (m) => (m ? httpengine_execute_modern : httpengine_execute), resolution: "symbol",
+        executor: "httpengine", resolution: "symbol",
     },
     {
         pattern: /libjavacrypto\.so/, library: "Conscrypt (libjavacrypto)", libraryType: "boringssl", protocol: "tls",
-        hookFn: (m) => (m ? boring_execute_modern : boring_execute), resolution: "symbol",
+        executor: "boringssl", resolution: "symbol",
     },
     {
         pattern: /libconscrypt_gmscore_jni\.so/, library: "Conscrypt", libraryType: "boringssl", protocol: "tls",
-        hookFn: (m) => (m ? conscrypt_execute_modern : conscrypt_native_execute), resolution: "symbol",
+        executor: "conscrypt", resolution: "symbol",
     },
     {
         pattern: /libconscrypt_jni\.so/, library: "Conscrypt", libraryType: "boringssl", protocol: "tls",
-        hookFn: (m) => (m ? conscrypt_execute_modern : conscrypt_native_execute), resolution: "symbol",
+        executor: "conscrypt", resolution: "symbol",
     },
     // --- Hidden-symbol / statically-linked (offset-based) ---
     {
@@ -109,7 +113,7 @@ export const PAIRIP_SAFE_LIBS: PairipSafeLib[] = [
         // (WebView 149.0.7827.91 arm64: ssl_log_secret @ 0x5adbb60). The module
         // loads lazily when the login page renders; the spawn watcher catches it.
         pattern: /.*libwebviewchromium\.so/, library: "Android WebView (Chromium BoringSSL)", libraryType: "boringssl", protocol: "tls",
-        hookFn: (m) => (m ? boring_execute_modern : boring_execute), resolution: "offset", offsetKey: "libwebviewchromium.so",
+        executor: "boringssl", resolution: "offset", offsetKey: "libwebviewchromium.so",
     },
     {
         // Unity engine: statically-linked MbedTLS 3.x (UnityTLS), export-keys
@@ -117,7 +121,7 @@ export const PAIRIP_SAFE_LIBS: PairipSafeLib[] = [
         // ssl_compute_master and scrapes the master secret (TLS1.2 CLIENT_RANDOM).
         // Supply the function offset via --offsets keyed "libunity.so".
         pattern: /.*libunity\.so/, library: "Unity (MbedTLS/UnityTLS)", libraryType: "mbedtls", protocol: "tls",
-        hookFn: (m) => (m ? unity_mbedtls_execute_modern : unity_mbedtls_execute), resolution: "offset", offsetKey: "libunity.so",
+        executor: "unity_mbedtls", resolution: "offset", offsetKey: "libunity.so",
     },
 ];
 
@@ -133,12 +137,15 @@ export function matchPairipSafeLib(moduleName: string): PairipSafeLib | undefine
 type Registration = Partial<HookRegistration> &
     Pick<HookRegistration, "platform" | "pattern" | "hookFn" | "library">;
 
-/** Build the registry entries for `--pairip-safe` from the allowlist. */
-export function buildPairipSafeRegistrations(platform: Platform, use_modern: boolean): Registration[] {
+/**
+ * Build the registry entries for `--pairip-safe` from the allowlist, binding
+ * each entry to the caller's executor table (legacy or modern hook path).
+ */
+export function buildPairipSafeRegistrations(platform: Platform, executors: PairipExecutorTable): Registration[] {
     return PAIRIP_SAFE_LIBS.map((l) => ({
         platform,
         pattern: l.pattern,
-        hookFn: l.hookFn(use_modern),
+        hookFn: executors[l.executor],
         library: l.library,
         libraryType: l.libraryType,
         protocol: l.protocol,

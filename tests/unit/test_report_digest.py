@@ -27,66 +27,32 @@ from friTap.analysis._digest_shapes import (
 from friTap.analysis.digest import SCHEMA, build_digest, estimate_tokens
 from friTap.analysis.digest_render import render_json, render_markdown
 from friTap.commands.report import run_report_cli
-from friTap.flow.layers import SignalLayer
-from friTap.flow.models import Flow, FlowChunk, FlowState
-from friTap.flow.tap_writer import TapWriter
 from friTap.friTap import _dispatch_special_mode
-from friTap.parsers.base import ParseResult
+from tests.unit import _digest_helpers as helpers
+from tests.unit._digest_helpers import CLIENT_RANDOM, EMAIL, MASTER_SECRET
+from tests.unit._digest_helpers import http_flow as _http_flow
 
-CLIENT_RANDOM = "ab" * 32
-MASTER_SECRET = "cd" * 48
-EMAIL = "alice.secret@example.org"
+SIGNAL_MESSAGES = (
+    {"direction": "write", "kind": "text", "body": "hello SECRETBODY"},
+    {"direction": "write", "kind": "text", "body": "again SECRETBODY"},
+    {"direction": "read", "kind": "typing", "body": ""},
+)
 
 
 # ---------------------------------------------------------------------------
 # Fixture helpers
 # ---------------------------------------------------------------------------
 
-def _http_flow(flow_id, *, host="api.example.com", method="POST", url="/v1/users/42",
-               body=b"", content_type="application/json", headers=None,
-               protocol="HTTP/1.1", status=200, started=1_700_000_000.0):
-    hdrs = {"host": host, "content-type": content_type}
-    hdrs.update(headers or {})
-    flow = Flow(flow_id=flow_id, connection_id=flow_id, src_addr="10.0.0.1",
-                src_port=50000, dst_addr="93.184.216.34", dst_port=443,
-                state=FlowState.COMPLETE, started=started)
-    flow.chunks.append(FlowChunk(data=b"x" * 100 + body, direction="write", timestamp=started))
-    flow.request = ParseResult(protocol=protocol, method=method, url=url, host=host,
-                               headers=hdrs, body=body, content_type=content_type,
-                               is_complete=True)
-    flow.response = ParseResult(protocol=protocol, status_code=status, is_request=False,
-                                is_complete=True)
-    return flow
-
-
 def _signal_flow(flow_id):
-    flow = Flow(flow_id=flow_id, connection_id=flow_id, src_addr="10.0.0.1",
-                src_port=50001, dst_addr="15.197.251.99", dst_port=443,
-                state=FlowState.COMPLETE, started=1_700_000_100.0)
-    flow.chunks.append(FlowChunk(data=b"\x00" * 64, direction="write", timestamp=1.7e9))
-    layer = SignalLayer()
-    layer.messages = [
-        {"direction": "write", "kind": "text", "body": "hello SECRETBODY"},
-        {"direction": "write", "kind": "text", "body": "again SECRETBODY"},
-        {"direction": "read", "kind": "typing", "body": ""},
-    ]
-    flow.add_layer(layer)
-    return flow
+    return helpers.signal_flow(flow_id, SIGNAL_MESSAGES)
 
 
 def _write_tap(path, flows, *, keylog=True):
-    writer = TapWriter()
-    writer.open(str(path), target="test")
-    for flow in flows:
-        writer.write_flow(flow)
-    if keylog:
-        writer.write_keylog(f"CLIENT_RANDOM {CLIENT_RANDOM} {MASTER_SECRET}")
-    writer.close()
-    return str(path)
+    return str(helpers.write_tap(path, flows, keylog=keylog))
 
 
 def _json_body(email=EMAIL, uid=7):
-    return json.dumps({"email": email, "user": {"id": uid}, "tags": ["a"]}).encode()
+    return helpers.json_body(uid, email=email, tags=True)
 
 
 @pytest.fixture

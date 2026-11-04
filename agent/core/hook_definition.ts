@@ -40,6 +40,13 @@ export interface WriteHookDef {
     symbol: string;
     args: ReadWriteArgLayout;
     functionLabel?: string;
+    /**
+     * Return codes on which the library has already buffered the record and a later call
+     * flushes it — possibly with a NULL/0 buffer (gnutls_record_send on GNUTLS_E_AGAIN /
+     * GNUTLS_E_INTERRUPTED). The executor then attributes the record's plaintext to the
+     * flushing call (shared/write_length.ts BufferedSendTracker). Needs an "arg" layout.
+     */
+    bufferedRetryCodes?: readonly number[];
 }
 
 export type KeylogApproach =
@@ -70,12 +77,17 @@ export type KeylogApproach =
     | { kind: "none" };
 
 export interface ExtraHookDef {
+    /**
+     * Returning `false` declares that this extra hook installed nothing; `void`/`true`
+     * means it did. Only consulted for a definition that installs nothing else (no
+     * read/write hook, keylog kind "none"): see executeFromDefinition's verdict.
+     */
     install: (
         addresses: { [key: string]: { [fn: string]: NativePointer } },
         moduleName: string,
         resolvedFns: ResolvedFunctions,
         enableDefaultFd: boolean,
-    ) => void;
+    ) => void | boolean;
 }
 
 export interface HookDefinition {

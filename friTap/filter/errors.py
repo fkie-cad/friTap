@@ -6,10 +6,17 @@ from dataclasses import dataclass
 
 
 class FilterSyntaxError(Exception):
-    """Raised when a filter expression has invalid syntax."""
+    """Raised when a filter expression has invalid syntax.
 
-    def __init__(self, message: str, position: int = -1) -> None:
+    Attributes:
+        position: Offset of the offending token (-1 when unknown).
+        hint: Optional next step for the user, e.g. an operator
+            did-you-mean (``did you mean: contains``); not part of ``str()``.
+    """
+
+    def __init__(self, message: str, position: int = -1, hint: str | None = None) -> None:
         self.position = position
+        self.hint = hint
         if position >= 0:
             super().__init__(f"{message} (at position {position})")
         else:
