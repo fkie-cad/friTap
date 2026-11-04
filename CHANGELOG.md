@@ -56,6 +56,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Behaviour change: an explicit pcap format now wins over the `-p` extension; `FriTap.pcapng("a.pcap")` writes pcapng (with a warning) instead of classic pcap.
 
 ### Fixed
+  - CI `agent-build-check` now uses Node 22. Node 20 does not expand the `agent/**/*.test.ts` glob passed to `node --test`, so `npm run test:agent` failed with "Could not find". `package.json` now declares `engines.node >=22`.
   - SSH (OpenSSH): `ssh` no longer dies right after start under friTap; offset probes called the target's `sshbuf_len()` on non-buffers, which OpenSSH answers with `raise(SIGSEGV)`. Buffers are now read by struct with guarded reads.
   - SSH (OpenSSH): keys and packets from a spawned `ssh` are no longer lost; its `closefrom(3)` closed the agent's channel, so friTap now keeps the agent's descriptors open across `closefrom()` (Linux).
   - SSH (OpenSSH): cookies are read from `ssh->kex->my/peer` (KEXINIT bodies without a type byte) instead of a wrong `state->kex` walk, and `SHARED_SECRET` is written without the 4-byte length prefix, so Wireshark derives the right keys.

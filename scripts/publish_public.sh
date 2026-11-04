@@ -178,7 +178,13 @@ if "$GATE_PY" -m pytest --version >/dev/null 2>&1; then
     echo "  pytest: clean (signal-coupled tests skipped)"
   else
     echo "ERROR: pytest failed on the scrubbed tree — refusing to publish." >&2
-    tail -30 "$TMP/pytest.log" >&2
+    # $TMP is removed on exit, so keep the full log; print the tracebacks, not
+    # just the tail (which is mostly SKIPPED lines and truncates the assertion).
+    kept_log="$(mktemp "${TMPDIR:-/tmp}/fritap_publish_pytest.XXXXXX")"
+    cp "$TMP/pytest.log" "$kept_log"
+    sed -n '/^=* FAILURES =*$/,/^=* short test summary info =*$/p' "$kept_log" | tail -150 >&2
+    grep -E '^(FAILED|ERROR) |[0-9]+ (passed|failed)' "$kept_log" >&2 || tail -30 "$kept_log" >&2
+    echo "  full pytest log kept at: $kept_log" >&2
     exit 1
   fi
 else

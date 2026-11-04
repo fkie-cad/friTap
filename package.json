@@ -4,6 +4,9 @@
     "description": "Frida agent for logging encrypted traffic as plaintext and extracting its encryption keys",
     "private": true,
     "main": "agent/fritap_agent.ts",
+    "engines": {
+        "node": ">=22"
+    },
     "scripts": {
         "prepare": "npm run build",
         "build": "frida-compile agent/fritap_agent.ts -o friTap/fritap_agent.js",
