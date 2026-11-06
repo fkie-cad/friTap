@@ -340,6 +340,44 @@ class IPSecESPKeysMessage(BaseAgentMessage):
 
 
 # ---------------------------------------------------------------------------
+# SDK / caller attribution (opt-in, --attribute-sdk)
+# ---------------------------------------------------------------------------
+
+class CallerFrame(BaseModel):
+    """One native stack frame in a :class:`CallerStackMessage`.
+
+    ``module`` is the owning module name (empty when unknown); ``symbol`` and
+    ``address`` are the symbolized name and the raw instruction address.
+    """
+
+    module: str = ""
+    symbol: Optional[str] = None
+    address: Optional[str] = None
+
+
+class CallerStackMessage(BaseAgentMessage):
+    """Calling-thread backtrace captured once per connection at the first TLS
+    plaintext hook (OPT-IN via ``--attribute-sdk``; OFF by default).
+
+    Additive, attribution-only message: it carries the SAME connection-identity
+    join fields as :class:`ConnectionLifecycleMessage` (so the host can join it
+    onto a connection — primarily by ``ssl_session_id``) plus the captured
+    native and Java frames. The agent emits it exactly once per SSL object; it
+    never carries key material or plaintext.
+    """
+
+    contentType: Literal["caller_stack"] = "caller_stack"
+    ssl_session_id: str = ""
+    src_addr: Union[int, str] = 0
+    dst_addr: Union[int, str] = 0
+    src_port: int = 0
+    dst_port: int = 0
+    ss_family: str = "AF_INET"
+    java_frames: list[str] = []
+    native_frames: list[CallerFrame] = []
+
+
+# ---------------------------------------------------------------------------
 # OHTTP messages
 # ---------------------------------------------------------------------------
 
@@ -377,6 +415,7 @@ AgentMessage = Annotated[
         IPSecIKEKeysMessage,
         IPSecESPKeysMessage,
         OhttpPlaintextMessage,
+        CallerStackMessage,
     ],
     Field(discriminator="contentType"),
 ]

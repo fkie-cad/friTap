@@ -10,11 +10,12 @@
 //     scope in onEnter (fdOrDeferred) and is attributed in onLeave via recoveredFd(ssl),
 //     which is called on EVERY return path so the scope is always popped.
 
-import { enable_default_fd } from "../fritap_agent.js";
+import { enable_default_fd, attribute_sdk } from "../fritap_agent.js";
 import { devlog_error } from "../util/log.js";
 import { sendDatalog } from "./shared_structures.js";
+import { maybeCaptureCallerStack } from "./sdk_backtrace.js";
 import { fdOrDeferred, recoveredFd, installSslScopeHooks } from "./socket_fd_tracker.js";
-import { buildRecordMessage } from "./record_message.js";
+import { buildRecordMessage, buildCallerStackJoin } from "./record_message.js";
 import { bytesWrittenFromRetval, bytesWrittenFromOutParam } from "./write_length.js";
 
 /** The hooker state the plaintext hooks read (an OpenSSL_BoringSSL instance). */
@@ -113,6 +114,14 @@ export class SslPlaintextHooks {
         const hooks = this;
         Interceptor.attach(address, {
             onEnter(args: any) {
+                // SDK attribution (opt-in): one guarded boolean read when off.
+                // Join on the connection 5-tuple (stable at first read), resolved
+                // exactly as the datalog record's peer, so it matches the flow.
+                if (attribute_sdk) maybeCaptureCallerStack(args[0], this.context, () => buildCallerStackJoin(
+                    args[0], () => hooks.host.SSL_get_fd(args[0]), true,
+                    hooks.host.addresses[hooks.host.module_name], enable_default_fd,
+                    () => hooks.host.getSslSessionId(args[0]),
+                ));
                 this.bufLen = args[2].toInt32();
                 this.buf = args[1];
                 const fd = fdOrDeferred(hooks.host.SSL_get_fd(args[0]), args[0]);
@@ -167,6 +176,12 @@ export class SslPlaintextHooks {
         const hooks = this;
         Interceptor.attach(address, {
             onEnter(args: any) {
+                // SDK attribution (opt-in): one guarded boolean read when off.
+                if (attribute_sdk) maybeCaptureCallerStack(args[0], this.context, () => buildCallerStackJoin(
+                    args[0], () => hooks.host.SSL_get_fd(args[0]), true,
+                    hooks.host.addresses[hooks.host.module_name], enable_default_fd,
+                    () => hooks.host.getSslSessionId(args[0]),
+                ));
                 this.buf = args[1];
                 this.readbytes_ptr = args[3];
                 const fd = fdOrDeferred(hooks.host.SSL_get_fd(args[0]), args[0]);
@@ -215,6 +230,13 @@ export class SslPlaintextHooks {
      */
     private prepareWrite(call: any, args: any, functionName: string): boolean {
         const ssl = args[0];
+        // SDK attribution (opt-in): one guarded boolean read when off. Covers
+        // both SSL_write and SSL_write_ex, whose onEnter both route through here.
+        if (attribute_sdk) maybeCaptureCallerStack(ssl, call.context, () => buildCallerStackJoin(
+            ssl, () => this.host.SSL_get_fd(ssl), false,
+            this.host.addresses[this.host.module_name], enable_default_fd,
+            () => this.host.getSslSessionId(ssl),
+        ));
         const fd = fdOrDeferred(this.writeSslFd(ssl, this.host.is_base_hook), ssl);
         if (fd === null) {
             // No socket fd on the SSL object: attribute in onLeave, after this write sent

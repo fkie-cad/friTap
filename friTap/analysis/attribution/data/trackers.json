@@ -1,0 +1,635 @@
+{
+  "schema": "fritap.trackers/1",
+  "source": "friTap curated tracker seed",
+  "source_url": "https://github.com/fkie-cad/friTap",
+  "source_ref": "seed",
+  "license": "GPL-3.0-only (friTap-authored seed; contains no DuckDuckGo Tracker Radar data)",
+  "kind": "seed",
+  "entry_count": 156,
+  "entries": {
+    "2mdn.net": {
+      "owner": "Google",
+      "category": "advertising"
+    },
+    "2o7.net": {
+      "owner": "Adobe",
+      "category": "analytics"
+    },
+    "adcolony.com": {
+      "owner": "AdColony",
+      "category": "advertising"
+    },
+    "addthis.com": {
+      "owner": "Oracle",
+      "category": "social"
+    },
+    "adform.net": {
+      "owner": "Adform",
+      "category": "advertising"
+    },
+    "adjust.com": {
+      "owner": "Adjust",
+      "category": "analytics"
+    },
+    "admob.com": {
+      "owner": "Google",
+      "category": "advertising"
+    },
+    "adnxs.com": {
+      "owner": "Xandr",
+      "category": "advertising"
+    },
+    "adobedtm.com": {
+      "owner": "Adobe",
+      "category": "tag_manager"
+    },
+    "ads-twitter.com": {
+      "owner": "Twitter",
+      "category": "advertising"
+    },
+    "ads.linkedin.com": {
+      "owner": "LinkedIn",
+      "category": "advertising"
+    },
+    "ads.yahoo.com": {
+      "owner": "Yahoo",
+      "category": "advertising"
+    },
+    "adsafeprotected.com": {
+      "owner": "Integral Ad Science",
+      "category": "advertising"
+    },
+    "adservice.google.com": {
+      "owner": "Google",
+      "category": "advertising"
+    },
+    "adsrvr.org": {
+      "owner": "The Trade Desk",
+      "category": "advertising"
+    },
+    "akamaihd.net": {
+      "owner": "Akamai",
+      "category": "cdn"
+    },
+    "akamaized.net": {
+      "owner": "Akamai",
+      "category": "cdn"
+    },
+    "alb.reddit.com": {
+      "owner": "Reddit",
+      "category": "advertising"
+    },
+    "amazon-adsystem.com": {
+      "owner": "Amazon",
+      "category": "advertising"
+    },
+    "amplitude.com": {
+      "owner": "Amplitude",
+      "category": "analytics"
+    },
+    "an.facebook.com": {
+      "owner": "Facebook",
+      "category": "advertising"
+    },
+    "an.yandex.ru": {
+      "owner": "Yandex",
+      "category": "advertising"
+    },
+    "analytics.tiktok.com": {
+      "owner": "ByteDance",
+      "category": "analytics"
+    },
+    "analytics.twitter.com": {
+      "owner": "Twitter",
+      "category": "analytics"
+    },
+    "app-measurement.com": {
+      "owner": "Google",
+      "category": "analytics"
+    },
+    "app.link": {
+      "owner": "Branch",
+      "category": "analytics"
+    },
+    "appboy.com": {
+      "owner": "Braze",
+      "category": "analytics"
+    },
+    "appcenter.ms": {
+      "owner": "Microsoft",
+      "category": "crash_reporting"
+    },
+    "applovin.com": {
+      "owner": "AppLovin",
+      "category": "advertising"
+    },
+    "applvn.com": {
+      "owner": "AppLovin",
+      "category": "advertising"
+    },
+    "appmetrica.yandex.net": {
+      "owner": "Yandex",
+      "category": "analytics"
+    },
+    "appsflyer.com": {
+      "owner": "AppsFlyer",
+      "category": "analytics"
+    },
+    "appsflyersdk.com": {
+      "owner": "AppsFlyer",
+      "category": "analytics"
+    },
+    "bat.bing.com": {
+      "owner": "Microsoft",
+      "category": "advertising"
+    },
+    "beacon.qq.com": {
+      "owner": "Tencent",
+      "category": "analytics"
+    },
+    "bluekai.com": {
+      "owner": "Oracle",
+      "category": "advertising"
+    },
+    "bnc.lt": {
+      "owner": "Branch",
+      "category": "analytics"
+    },
+    "branch.io": {
+      "owner": "Branch",
+      "category": "analytics"
+    },
+    "braze.com": {
+      "owner": "Braze",
+      "category": "analytics"
+    },
+    "browser-intake-datadoghq.com": {
+      "owner": "Datadog",
+      "category": "analytics"
+    },
+    "bugly.qq.com": {
+      "owner": "Tencent",
+      "category": "crash_reporting"
+    },
+    "bugsnag.com": {
+      "owner": "Bugsnag",
+      "category": "crash_reporting"
+    },
+    "casalemedia.com": {
+      "owner": "Index Exchange",
+      "category": "advertising"
+    },
+    "cdnjs.cloudflare.com": {
+      "owner": "Cloudflare",
+      "category": "cdn"
+    },
+    "chartboost.com": {
+      "owner": "Chartboost",
+      "category": "advertising"
+    },
+    "clarity.ms": {
+      "owner": "Microsoft",
+      "category": "analytics"
+    },
+    "clevertap.com": {
+      "owner": "CleverTap",
+      "category": "analytics"
+    },
+    "cloudflareinsights.com": {
+      "owner": "Cloudflare",
+      "category": "analytics"
+    },
+    "cookiebot.com": {
+      "owner": "Cookiebot",
+      "category": "other"
+    },
+    "cookielaw.org": {
+      "owner": "OneTrust",
+      "category": "other"
+    },
+    "crashlytics.com": {
+      "owner": "Google",
+      "category": "crash_reporting"
+    },
+    "crashlyticsreports-pa.googleapis.com": {
+      "owner": "Google",
+      "category": "crash_reporting"
+    },
+    "criteo.com": {
+      "owner": "Criteo",
+      "category": "advertising"
+    },
+    "criteo.net": {
+      "owner": "Criteo",
+      "category": "advertising"
+    },
+    "ct.pinterest.com": {
+      "owner": "Pinterest",
+      "category": "advertising"
+    },
+    "demdex.net": {
+      "owner": "Adobe",
+      "category": "advertising"
+    },
+    "doubleclick.net": {
+      "owner": "Google",
+      "category": "advertising"
+    },
+    "doubleverify.com": {
+      "owner": "DoubleVerify",
+      "category": "advertising"
+    },
+    "embrace.io": {
+      "owner": "Embrace",
+      "category": "crash_reporting"
+    },
+    "ensighten.com": {
+      "owner": "Ensighten",
+      "category": "tag_manager"
+    },
+    "facebook.com": {
+      "owner": "Facebook",
+      "category": "social"
+    },
+    "facebook.net": {
+      "owner": "Facebook",
+      "category": "social"
+    },
+    "fastly.net": {
+      "owner": "Fastly",
+      "category": "cdn"
+    },
+    "fbcdn.net": {
+      "owner": "Facebook",
+      "category": "cdn"
+    },
+    "firebaselogging-pa.googleapis.com": {
+      "owner": "Google",
+      "category": "analytics"
+    },
+    "flurry.com": {
+      "owner": "Flurry",
+      "category": "analytics"
+    },
+    "fullstory.com": {
+      "owner": "FullStory",
+      "category": "analytics"
+    },
+    "fyber.com": {
+      "owner": "Digital Turbine",
+      "category": "advertising"
+    },
+    "gameanalytics.com": {
+      "owner": "GameAnalytics",
+      "category": "analytics"
+    },
+    "gdt.qq.com": {
+      "owner": "Tencent",
+      "category": "advertising"
+    },
+    "google-analytics.com": {
+      "owner": "Google",
+      "category": "analytics"
+    },
+    "googleadservices.com": {
+      "owner": "Google",
+      "category": "advertising"
+    },
+    "googlesyndication.com": {
+      "owner": "Google",
+      "category": "advertising"
+    },
+    "googletagmanager.com": {
+      "owner": "Google",
+      "category": "tag_manager"
+    },
+    "googletagservices.com": {
+      "owner": "Google",
+      "category": "advertising"
+    },
+    "heapanalytics.com": {
+      "owner": "Heap",
+      "category": "analytics"
+    },
+    "hm.baidu.com": {
+      "owner": "Baidu",
+      "category": "analytics"
+    },
+    "hotjar.com": {
+      "owner": "Hotjar",
+      "category": "analytics"
+    },
+    "iadsdk.apple.com": {
+      "owner": "Apple",
+      "category": "advertising"
+    },
+    "imasdk.googleapis.com": {
+      "owner": "Google",
+      "category": "advertising"
+    },
+    "imrworldwide.com": {
+      "owner": "Nielsen",
+      "category": "analytics"
+    },
+    "inmobi.com": {
+      "owner": "InMobi",
+      "category": "advertising"
+    },
+    "instabug.com": {
+      "owner": "Instabug",
+      "category": "crash_reporting"
+    },
+    "instagram.com": {
+      "owner": "Facebook",
+      "category": "social"
+    },
+    "ironsrc.mobi": {
+      "owner": "ironSource",
+      "category": "advertising"
+    },
+    "jsdelivr.net": {
+      "owner": "jsDelivr",
+      "category": "cdn"
+    },
+    "kochava.com": {
+      "owner": "Kochava",
+      "category": "analytics"
+    },
+    "licdn.com": {
+      "owner": "LinkedIn",
+      "category": "cdn"
+    },
+    "liftoff.io": {
+      "owner": "Liftoff",
+      "category": "advertising"
+    },
+    "linkedin.com": {
+      "owner": "LinkedIn",
+      "category": "social"
+    },
+    "logrocket.io": {
+      "owner": "LogRocket",
+      "category": "analytics"
+    },
+    "mc.yandex.ru": {
+      "owner": "Yandex",
+      "category": "analytics"
+    },
+    "media.net": {
+      "owner": "Media.net",
+      "category": "advertising"
+    },
+    "mintegral.com": {
+      "owner": "Mintegral",
+      "category": "advertising"
+    },
+    "mixpanel.com": {
+      "owner": "Mixpanel",
+      "category": "analytics"
+    },
+    "moatads.com": {
+      "owner": "Oracle",
+      "category": "advertising"
+    },
+    "moloco.com": {
+      "owner": "Moloco",
+      "category": "advertising"
+    },
+    "mparticle.com": {
+      "owner": "mParticle",
+      "category": "analytics"
+    },
+    "mxpnl.com": {
+      "owner": "Mixpanel",
+      "category": "analytics"
+    },
+    "newrelic.com": {
+      "owner": "New Relic",
+      "category": "analytics"
+    },
+    "nr-data.net": {
+      "owner": "New Relic",
+      "category": "analytics"
+    },
+    "omtrdc.net": {
+      "owner": "Adobe",
+      "category": "analytics"
+    },
+    "onelink.me": {
+      "owner": "AppsFlyer",
+      "category": "analytics"
+    },
+    "optimizely.com": {
+      "owner": "Optimizely",
+      "category": "analytics"
+    },
+    "outbrain.com": {
+      "owner": "Outbrain",
+      "category": "advertising"
+    },
+    "pangle.io": {
+      "owner": "ByteDance",
+      "category": "advertising"
+    },
+    "pendo.io": {
+      "owner": "Pendo",
+      "category": "analytics"
+    },
+    "pinimg.com": {
+      "owner": "Pinterest",
+      "category": "cdn"
+    },
+    "pinterest.com": {
+      "owner": "Pinterest",
+      "category": "social"
+    },
+    "pos.baidu.com": {
+      "owner": "Baidu",
+      "category": "advertising"
+    },
+    "posthog.com": {
+      "owner": "PostHog",
+      "category": "analytics"
+    },
+    "pubmatic.com": {
+      "owner": "PubMatic",
+      "category": "advertising"
+    },
+    "quantserve.com": {
+      "owner": "Quantcast",
+      "category": "advertising"
+    },
+    "raygun.io": {
+      "owner": "Raygun",
+      "category": "crash_reporting"
+    },
+    "recaptcha.net": {
+      "owner": "Google",
+      "category": "other"
+    },
+    "reddit.com": {
+      "owner": "Reddit",
+      "category": "social"
+    },
+    "rlcdn.com": {
+      "owner": "LiveRamp",
+      "category": "advertising"
+    },
+    "rollbar.com": {
+      "owner": "Rollbar",
+      "category": "crash_reporting"
+    },
+    "rubiconproject.com": {
+      "owner": "Magnite",
+      "category": "advertising"
+    },
+    "sc-static.net": {
+      "owner": "Snap",
+      "category": "advertising"
+    },
+    "scorecardresearch.com": {
+      "owner": "Comscore",
+      "category": "analytics"
+    },
+    "segment.com": {
+      "owner": "Segment",
+      "category": "analytics"
+    },
+    "segment.io": {
+      "owner": "Segment",
+      "category": "analytics"
+    },
+    "sentry-cdn.com": {
+      "owner": "Sentry",
+      "category": "crash_reporting"
+    },
+    "sentry.io": {
+      "owner": "Sentry",
+      "category": "crash_reporting"
+    },
+    "sharethis.com": {
+      "owner": "ShareThis",
+      "category": "social"
+    },
+    "singular.net": {
+      "owner": "Singular",
+      "category": "analytics"
+    },
+    "smaato.net": {
+      "owner": "Smaato",
+      "category": "advertising"
+    },
+    "smartadserver.com": {
+      "owner": "Equativ",
+      "category": "advertising"
+    },
+    "smartlook.com": {
+      "owner": "Smartlook",
+      "category": "analytics"
+    },
+    "snapchat.com": {
+      "owner": "Snap",
+      "category": "social"
+    },
+    "sng.link": {
+      "owner": "Singular",
+      "category": "analytics"
+    },
+    "startappservice.com": {
+      "owner": "Start.io",
+      "category": "advertising"
+    },
+    "supersonicads.com": {
+      "owner": "ironSource",
+      "category": "advertising"
+    },
+    "t.co": {
+      "owner": "Twitter",
+      "category": "social"
+    },
+    "taboola.com": {
+      "owner": "Taboola",
+      "category": "advertising"
+    },
+    "tagcommander.com": {
+      "owner": "Commanders Act",
+      "category": "tag_manager"
+    },
+    "tapjoy.com": {
+      "owner": "Tapjoy",
+      "category": "advertising"
+    },
+    "tealiumiq.com": {
+      "owner": "Tealium",
+      "category": "tag_manager"
+    },
+    "tiktok.com": {
+      "owner": "ByteDance",
+      "category": "social"
+    },
+    "tiktokcdn.com": {
+      "owner": "ByteDance",
+      "category": "cdn"
+    },
+    "tiktokv.com": {
+      "owner": "ByteDance",
+      "category": "social"
+    },
+    "tiqcdn.com": {
+      "owner": "Tealium",
+      "category": "tag_manager"
+    },
+    "tr.snapchat.com": {
+      "owner": "Snap",
+      "category": "advertising"
+    },
+    "twimg.com": {
+      "owner": "Twitter",
+      "category": "cdn"
+    },
+    "twitter.com": {
+      "owner": "Twitter",
+      "category": "social"
+    },
+    "umeng.com": {
+      "owner": "Alibaba",
+      "category": "analytics"
+    },
+    "unityads.unity3d.com": {
+      "owner": "Unity",
+      "category": "advertising"
+    },
+    "urbanairship.com": {
+      "owner": "Airship",
+      "category": "analytics"
+    },
+    "usercentrics.eu": {
+      "owner": "Usercentrics",
+      "category": "other"
+    },
+    "uxcam.com": {
+      "owner": "UXCam",
+      "category": "analytics"
+    },
+    "vk.com": {
+      "owner": "VK",
+      "category": "social"
+    },
+    "vortex.data.microsoft.com": {
+      "owner": "Microsoft",
+      "category": "analytics"
+    },
+    "vungle.com": {
+      "owner": "Vungle",
+      "category": "advertising"
+    },
+    "wzrkt.com": {
+      "owner": "CleverTap",
+      "category": "analytics"
+    },
+    "x.com": {
+      "owner": "Twitter",
+      "category": "social"
+    }
+  }
+}

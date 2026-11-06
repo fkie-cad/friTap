@@ -33,6 +33,7 @@ from ..config import FriTapConfig, effective_script_load_timeout
 from ..constants import AGENT_ABI_VERSION, SSL_READ, SSL_WRITE
 from ..events import (
     AntiTamperDetectedEvent,
+    CallerStackEvent,
     DatalogEvent,
     DetachEvent,
     EventBus,
@@ -2316,6 +2317,11 @@ class SSL_Logger():
             # --boringssl-anchor-only: force the last-resort BoringSSL anchor
             # locator (tier 4) by skipping the pattern tier (debugging aid).
             'force_anchor_locator': bool(getattr(self._config.hooking, 'force_anchor_locator', False)),
+            # --attribute-sdk: capture the caller backtrace once per connection
+            # at the first TLS plaintext hook and emit it as an additive
+            # `caller_stack` message (SDK/app attribution). OFF by default; when
+            # off the agent's TLS hot path is byte-for-byte unchanged.
+            'attribute_sdk': bool(getattr(self._config.hooking, 'attribute_sdk', False)),
             # Override for the HTTP/3 egress-headers chain layer. "auto" keeps
             # the winner-takes-all fallback; anything else forces a specific
             # layer so chain validation tests can exercise lower tiers on
@@ -3495,6 +3501,10 @@ class SSL_Logger():
             )
             self._event_bus.subscribe(
                 SessionEvent, self._flow_collector.on_session_event
+            )
+            # Opt-in SDK attribution (--attribute-sdk): resolved caller-stack SDK.
+            self._event_bus.subscribe(
+                CallerStackEvent, self._flow_collector.on_sdk
             )
             # Feed protocol key material to the live decryptor (no-op unless the
             # collector was built with signal_messages=True).

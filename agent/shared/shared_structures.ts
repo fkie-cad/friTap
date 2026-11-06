@@ -237,6 +237,51 @@ export function sendConnectionLifecycle(
     sendWithProtocol(message);
 }
 
+/** One symbolized native stack frame in a `caller_stack` message (mirrors the
+ *  generated CallerFrame in agent/schemas/messages.ts). */
+export interface CallerFrame {
+    module: string;
+    symbol: string | null;
+    address: string | null;
+}
+
+/** Connection-identity join fields for a `caller_stack` message: the same set
+ *  sendConnectionLifecycle carries. The host joins primarily on the connection
+ *  5-tuple (src/dst addr+port), because `ssl_session_id` is still null (==0) at
+ *  the first SSL_read/SSL_write where the backtrace is captured; the session id
+ *  is a secondary match only when it is a real, non-"0" id.
+ *  Every field is optional so a caller can emit only what is cheaply available. */
+export interface CallerStackJoin {
+    ssl_session_id?: string | number;
+    src_addr?: number | string;
+    dst_addr?: number | string;
+    src_port?: number;
+    dst_port?: number;
+    ss_family?: string;
+}
+
+/**
+ * Emit an additive `caller_stack` attribution message: the calling thread's
+ * native + Java backtrace for ONE connection, tagged with the connection-join
+ * fields. Modelled on sendConnectionLifecycle / sendDatalog; carries no binary
+ * payload and no key material. Only ever reached from the opt-in SDK-attribution
+ * path (agent/shared/sdk_backtrace.ts) — nothing calls it when --attribute-sdk
+ * is off, so the default wire shape is unchanged.
+ */
+export function sendCallerStack(
+    join: CallerStackJoin,
+    java_frames: string[],
+    native_frames: CallerFrame[],
+): void {
+    const message: { [key: string]: any } = {
+        contentType: "caller_stack",
+        ...join,
+        java_frames,
+        native_frames,
+    };
+    sendWithProtocol(message);
+}
+
 /**
  * Send a QUIC keylog line with BOTH the standard TLS 1.3 label
  * AND a QUIC_ prefixed duplicate.

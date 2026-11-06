@@ -1,5 +1,5 @@
 📦
-1777708 /agent/fritap_agent.js
+1782753 /agent/fritap_agent.js
 ✄
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -1876,6 +1876,7 @@ __export(shared_structures_exports, {
   resolveProtocolTag: () => resolveProtocolTag,
   selected_protocol: () => selected_protocol,
   selected_protocols: () => selected_protocols,
+  sendCallerStack: () => sendCallerStack,
   sendConnectionLifecycle: () => sendConnectionLifecycle,
   sendDatalog: () => sendDatalog,
   sendKeyMaterial: () => sendKeyMaterial,
@@ -1964,6 +1965,15 @@ function sendDatalog(message, data) {
 function sendConnectionLifecycle(event, message) {
   message["contentType"] = "connection_lifecycle";
   message["event"] = event;
+  sendWithProtocol(message);
+}
+function sendCallerStack(join, java_frames, native_frames) {
+  const message = {
+    contentType: "caller_stack",
+    ...join,
+    java_frames,
+    native_frames
+  };
   sendWithProtocol(message);
 }
 function sendQuicKeylog(keylogLine) {
@@ -19140,6 +19150,83 @@ async function resolveWithPipelineAsync(addresses, moduleName, libraryType, requ
 init_node_globals();
 init_shared_structures();
 
+// agent/shared/sdk_backtrace.ts
+init_node_globals();
+init_shared_structures();
+var MAX_FRAMES = 32;
+var seenSsl = /* @__PURE__ */ new Set();
+function symbolizeNativeFrames(addrs, max = MAX_FRAMES) {
+  const frames = [];
+  for (const addr of addrs.slice(0, max)) {
+    try {
+      const sym = DebugSymbol.fromAddress(addr);
+      frames.push({
+        module: sym.moduleName || "",
+        symbol: sym.name || null,
+        address: addr.toString()
+      });
+    } catch (_e) {
+      frames.push({ module: "", symbol: null, address: addr.toString() });
+    }
+  }
+  return frames;
+}
+function captureNativeFrames(context) {
+  let addrs;
+  try {
+    addrs = Thread.backtrace(context, Backtracer.ACCURATE);
+  } catch (_e) {
+    try {
+      addrs = Thread.backtrace(context, Backtracer.FUZZY);
+    } catch (_e2) {
+      return [];
+    }
+  }
+  return symbolizeNativeFrames(addrs);
+}
+function captureJavaFrames() {
+  if (typeof Java === "undefined" || !Java.available)
+    return [];
+  const out = [];
+  try {
+    Java.perform(() => {
+      try {
+        const JavaThread = Java.use("java.lang.Thread");
+        const elems = JavaThread.currentThread().getStackTrace();
+        for (let i = 0; i < elems.length && out.length < MAX_FRAMES; i++) {
+          try {
+            out.push(elems[i].getClassName());
+          } catch (_e) {
+          }
+        }
+      } catch (_e) {
+      }
+    });
+  } catch (_e) {
+  }
+  return out;
+}
+function maybeCaptureCallerStack(ssl, context, join) {
+  if (!attribute_sdk)
+    return;
+  const key = ssl.toString();
+  if (seenSsl.has(key))
+    return;
+  seenSsl.add(key);
+  let joinFields;
+  try {
+    joinFields = join();
+  } catch (_e) {
+    joinFields = {};
+  }
+  const nativeFrames = captureNativeFrames(context);
+  const javaFrames = captureJavaFrames();
+  sendCallerStack(joinFields, javaFrames, nativeFrames);
+}
+function forgetSsl(key) {
+  seenSsl.delete(key);
+}
+
 // agent/shared/socket_fd_tracker.ts
 init_node_globals();
 
@@ -19341,7 +19428,12 @@ function forgetFd(fd) {
       scope.fd = -1;
   }
 }
-function forgetSsl(ssl) {
+function cachedSslFd(ssl) {
+  if (sslToFd.size === 0)
+    return -1;
+  return sslToFd.get(ssl.toString()) ?? -1;
+}
+function forgetSsl2(ssl) {
   if (sslToFd.size === 0)
     return;
   sslToFd.deleteSsl(ssl.toString());
@@ -19427,7 +19519,8 @@ function installSslScopeHooks(moduleName, getFd) {
   }
   attachOnce(findModuleExport(moduleName, "SSL_free"), {
     onEnter(args) {
-      forgetSsl(args[0]);
+      forgetSsl2(args[0]);
+      forgetSsl(args[0].toString());
     }
   });
 }
@@ -19441,6 +19534,52 @@ function buildRecordMessage(ctx, sessionFields) {
   Object.assign(message, sessionFields());
   message["function"] = ctx.functionName;
   return message;
+}
+function buildCallerStackJoin(ssl, fdFn, isRead, methodAddresses, enableDefaultFd, sessionIdFn, resolvePeer) {
+  const join = {};
+  try {
+    join.ssl_session_id = sessionIdFn();
+  } catch (_e) {
+  }
+  let peer = null;
+  if (resolvePeer) {
+    try {
+      peer = resolvePeer();
+    } catch (_e) {
+      peer = null;
+    }
+  } else {
+    let fd = -1;
+    try {
+      fd = fdFn();
+    } catch (_e) {
+      fd = -1;
+    }
+    if (fd < 0)
+      fd = cachedSslFd(ssl);
+    if (fd < 0)
+      fd = recoverSocketFd();
+    if (fd >= 0 || enableDefaultFd) {
+      try {
+        peer = getPortsAndAddresses(fd, isRead, methodAddresses, enableDefaultFd);
+      } catch (_e) {
+        peer = null;
+      }
+    }
+  }
+  if (peer) {
+    if (peer["src_addr"] !== void 0)
+      join.src_addr = peer["src_addr"];
+    if (peer["dst_addr"] !== void 0)
+      join.dst_addr = peer["dst_addr"];
+    if (peer["src_port"] !== void 0)
+      join.src_port = peer["src_port"];
+    if (peer["dst_port"] !== void 0)
+      join.dst_port = peer["dst_port"];
+    if (peer["ss_family"] !== void 0)
+      join.ss_family = peer["ss_family"];
+  }
+  return join;
 }
 
 // agent/shared/tls13_secret_recovery.ts
@@ -19806,6 +19945,8 @@ function installReadHook(def, addresses, moduleName, resolvedFns, enableDefaultF
     onEnter: function(args) {
       hookBreadcrumb(breadcrumb);
       const sslCtx = args[hook.args.sslCtxArgIndex];
+      if (attribute_sdk)
+        maybeCaptureCallerStack(sslCtx, this.context, () => buildCallerStackJoin(sslCtx, () => def.fdDecoder(sslCtx, resolvedFns), true, methodAddresses, enableDefaultFd, () => def.sessionIdDecoder(sslCtx, resolvedFns), def.customAddressExtractor ? () => def.customAddressExtractor(sslCtx, true, resolvedFns, enableDefaultFd) : void 0));
       this.buf = args[hook.args.bufferArgIndex];
       const fd = sslFdOrDeferred(sslCtx, def, resolvedFns);
       if (fd === null) {
@@ -19850,6 +19991,8 @@ function installWriteHook(def, addresses, moduleName, resolvedFns, enableDefault
     onEnter: function(args) {
       hookBreadcrumb(breadcrumb);
       const sslCtx = args[hook.args.sslCtxArgIndex];
+      if (attribute_sdk)
+        maybeCaptureCallerStack(sslCtx, this.context, () => buildCallerStackJoin(sslCtx, () => def.fdDecoder(sslCtx, resolvedFns), false, methodAddresses, enableDefaultFd, () => def.sessionIdDecoder(sslCtx, resolvedFns), def.customAddressExtractor ? () => def.customAddressExtractor(sslCtx, false, resolvedFns, enableDefaultFd) : void 0));
       recoverTls13Secrets(moduleName, sslCtx);
       this.buf = args[hook.args.bufferArgIndex];
       if (lengthArgIndex !== void 0)
@@ -25731,6 +25874,8 @@ var SslPlaintextHooks = class {
     const hooks = this;
     Interceptor.attach(address, {
       onEnter(args) {
+        if (attribute_sdk)
+          maybeCaptureCallerStack(args[0], this.context, () => buildCallerStackJoin(args[0], () => hooks.host.SSL_get_fd(args[0]), true, hooks.host.addresses[hooks.host.module_name], enable_default_fd, () => hooks.host.getSslSessionId(args[0])));
         this.bufLen = args[2].toInt32();
         this.buf = args[1];
         const fd = fdOrDeferred(hooks.host.SSL_get_fd(args[0]), args[0]);
@@ -25783,6 +25928,8 @@ var SslPlaintextHooks = class {
     const hooks = this;
     Interceptor.attach(address, {
       onEnter(args) {
+        if (attribute_sdk)
+          maybeCaptureCallerStack(args[0], this.context, () => buildCallerStackJoin(args[0], () => hooks.host.SSL_get_fd(args[0]), true, hooks.host.addresses[hooks.host.module_name], enable_default_fd, () => hooks.host.getSslSessionId(args[0])));
         this.buf = args[1];
         this.readbytes_ptr = args[3];
         const fd = fdOrDeferred(hooks.host.SSL_get_fd(args[0]), args[0]);
@@ -25831,6 +25978,8 @@ var SslPlaintextHooks = class {
    */
   prepareWrite(call, args, functionName) {
     const ssl = args[0];
+    if (attribute_sdk)
+      maybeCaptureCallerStack(ssl, call.context, () => buildCallerStackJoin(ssl, () => this.host.SSL_get_fd(ssl), false, this.host.addresses[this.host.module_name], enable_default_fd, () => this.host.getSslSessionId(ssl)));
     const fd = fdOrDeferred(this.writeSslFd(ssl, this.host.is_base_hook), ssl);
     if (fd === null) {
       call.deferredSsl = ssl;
@@ -49142,6 +49291,7 @@ var stealth_loader = false;
 var pairip_safe = false;
 var probe = false;
 var force_anchor_locator = false;
+var attribute_sdk = false;
 function recvHandshake(sendChannel, defaultValue, recvChannel) {
   let result = defaultValue;
   send(sendChannel);
@@ -49193,6 +49343,7 @@ quic_egress_headers_layer = config_batch.quic_egress_headers_layer ?? quic_egres
 debug_output = config_batch.debug_output ?? debug_output;
 probe = config_batch.probe ?? probe;
 force_anchor_locator = config_batch.force_anchor_locator ?? force_anchor_locator;
+attribute_sdk = config_batch.attribute_sdk ?? attribute_sdk;
 setConfigExtensions(config_batch.extensions ?? {});
 anti_root = initStage("anti-handshake", () => recvHandshake("anti", anti_root, "antiroot"));
 initStage("pipeline-init", () => initializePipeline(parsedPatterns ?? void 0, experimental));
@@ -49349,6 +49500,7 @@ hookBreadcrumb("agent-init: complete");
 export {
   _isShuttingDown,
   anti_root,
+  attribute_sdk,
   config_extensions,
   debug_output,
   enable_default_fd,

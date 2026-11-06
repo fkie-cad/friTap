@@ -199,6 +199,12 @@ class HookingConfig:
     # the anchor locator be exercised on modules a pattern would otherwise win.
     # Still honours --pairip-safe (tier 4 is a memory scan). Default OFF.
     force_anchor_locator: bool = False
+    # --attribute-sdk (Phase 3b; opt-in, OFF by default). Ask the agent to
+    # capture the calling thread's backtrace once per connection at the first
+    # TLS plaintext hook and emit it as an additive `caller_stack` message for
+    # SDK / app attribution. Adds per-connection attribution metadata only; it
+    # never changes, delays or drops captured traffic. Default OFF.
+    attribute_sdk: bool = False
     # Override which layer of the HTTP/3 egress-headers fallback chain the
     # agent actually attaches to. "auto" (default) keeps the winner-takes-all
     # logic: quiche-internal QuicSpdyStream::WriteHeaders preferred, then
@@ -427,6 +433,7 @@ class FriTapConfig:
         pairip_safe: bool = False,
         probe: bool = False,
         force_anchor_locator: bool = False,
+        attribute_sdk: bool = False,
         quic_egress_headers_layer: str = "auto",
         scan_keys_region: Optional[str] = None,
         memory_scan: bool = False,
@@ -508,6 +515,7 @@ class FriTapConfig:
                 pairip_safe=pairip_safe,
                 probe=probe,
                 force_anchor_locator=force_anchor_locator,
+                attribute_sdk=attribute_sdk,
                 quic_egress_headers_layer=quic_egress_headers_layer,
                 scan_keys_region=scan_keys_region,
                 memory_scan=memory_scan,

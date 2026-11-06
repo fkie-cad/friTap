@@ -439,6 +439,15 @@ class Flow:
     process_name: str = ""
     package_name: str = ""
 
+    # Resolved SDK attribution (opt-in, --attribute-sdk). Populated by the
+    # FlowCollector from a ``caller_stack`` agent message whose backtrace
+    # resolved to a known SDK: the trusted ``{"sdk", "vendor", "category"}``
+    # dict from the bundled signature table (friTap/analysis/attribution/sdk.py),
+    # or ``None`` when no backtrace was captured or none matched. Additive and
+    # persisted into the .tap meta only when set, so a flow without it is
+    # byte-identical to today.
+    sdk: Optional[dict] = None
+
     # Ordered protocol layer stack (outermost transport -> innermost), e.g.
     # [tls, http2] or [quic, http3]. Per-flow LINEAR (HTTP/2-3 streams are
     # already separate flows). Resolved by name via __getattr__: ``flow.tls``,

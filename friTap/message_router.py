@@ -15,6 +15,7 @@ from .connection_index import resolve_connection_key
 from .constants import ContentType, direction_for_function
 from .events import (
     AntiTamperDetectedEvent,
+    CallerStackEvent,
     ConsoleEvent,
     DatalogEvent,
     EventBus,
@@ -135,6 +136,8 @@ class MessageRouter:
             self._emit_hook_breadcrumb(payload)
         elif content_type == ContentType.PLATFORM_REPORT:
             self._emit_platform_report(payload)
+        elif content_type == ContentType.CALLER_STACK:
+            self._emit_caller_stack(payload)
 
     def _emit_keylog(self, payload: dict) -> None:
         self._event_bus.emit(KeylogEvent(
@@ -520,6 +523,41 @@ class MessageRouter:
             return self._data_filter.matches_canonical(proxy)
         except Exception:
             return True
+
+    def _emit_caller_stack(self, payload: dict) -> None:
+        """Resolve a ``caller_stack`` backtrace to its owning SDK and emit a
+        :class:`CallerStackEvent` carrying ONLY the trusted signature metadata.
+
+        The agent sends this once per connection under ``--attribute-sdk``. The
+        frame strings (``java_frames``, ``native_frames[].module``) are
+        attacker-controlled, so they are handed to
+        :func:`~friTap.analysis.attribution.sdk.classify_frames` purely as
+        lookup keys and never echoed: only the trusted ``{sdk, vendor,
+        category}`` dict from the bundled table leaves this method. Nothing is
+        emitted when no signature matches (the flow keeps ``sdk = None``, like
+        any flow without a backtrace), so an unresolved stack is a no-op.
+        """
+        from .analysis.attribution.sdk import classify_frames
+
+        java_frames = [f for f in (payload.get("java_frames") or []) if isinstance(f, str)]
+        native_modules = [
+            frame.get("module")
+            for frame in (payload.get("native_frames") or [])
+            if isinstance(frame, dict) and isinstance(frame.get("module"), str) and frame.get("module")
+        ]
+        sdk = classify_frames(java_frames=java_frames, native_modules=native_modules)
+        if sdk is None:
+            return
+        src_addr_str, src_port, dst_addr_str, dst_port, *_ = self._resolve_addresses(payload)
+        self._event_bus.emit(CallerStackEvent(
+            ssl_session_id=str(payload.get("ssl_session_id", "")),
+            src_addr=src_addr_str,
+            src_port=src_port,
+            dst_addr=dst_addr_str,
+            dst_port=dst_port,
+            sdk=sdk.as_dict(),
+            protocol=payload_protocol(payload, "tls"),
+        ))
 
     def _emit_lifecycle(self, payload: dict) -> None:
         src_addr_str, src_port, dst_addr_str, dst_port, *_ = self._resolve_addresses(payload)

@@ -157,6 +157,27 @@ class SessionEvent(FriTapEvent):
 
 
 @dataclass
+class CallerStackEvent(FriTapEvent):
+    """Resolved SDK attribution for a connection's calling-thread backtrace.
+
+    Emitted by :class:`~friTap.message_router.MessageRouter` when an opt-in
+    ``caller_stack`` agent message (``--attribute-sdk``) resolves to a known
+    SDK. The :class:`~friTap.flow.collector.FlowCollector` joins it onto the
+    flow sharing ``ssl_session_id`` (the 5-tuple is a best-effort fallback) and
+    stamps ``flow.sdk``. ``sdk`` is the trusted
+    ``{"sdk", "vendor", "category"}`` dict from the bundled signature table (see
+    :mod:`friTap.analysis.attribution.sdk`), never a frame string copied from
+    the target; the event carries no key material or plaintext.
+    """
+    ssl_session_id: str = ""
+    src_addr: str = ""
+    src_port: int = 0
+    dst_addr: str = ""
+    dst_port: int = 0
+    sdk: Optional[Dict[str, Any]] = None
+
+
+@dataclass
 class ConsoleEvent(FriTapEvent):
     """Emitted for console log messages from the agent."""
     message: str = ""

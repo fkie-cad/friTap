@@ -76,6 +76,12 @@ setup(
             "tui/css/*.tcss",
             "patterns/*.json",
             "memory_scanning/*.json",
+            # Offline attribution datasets, by exact name: the local-only
+            # trackers_full.json (CC BY-NC-SA 4.0) must never ship.
+            "analysis/attribution/data/trackers.json",
+            "analysis/attribution/data/sdk_signatures.json",
+            "analysis/attribution/data/public_suffix_list.dat",
+            "analysis/attribution/data/README.md",
             "plugins/shared_utility/*.js",
             "plugins/examples/README.md",
             "offline/mtproto/schema/*.tl",

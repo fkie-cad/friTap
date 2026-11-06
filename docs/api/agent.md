@@ -1,6 +1,6 @@
 # Using friTap from AI agents
 
-friTap ships an **agent API**: one registry of 14 tools that an AI agent (or
+friTap ships an **agent API**: one registry of 16 tools that an AI agent (or
 any script) can call to discover targets, run a live capture and read the
 decrypted traffic in small, token-budgeted pieces. The same tools are exposed
 four ways:
@@ -49,6 +49,8 @@ on stderr and exits with `2`.
 | `list_endpoints` | read | | Endpoint clusters (method, path template, key shapes), busiest first (paginated) |
 | `list_findings` | read | | Analyzer findings (secrets, PII, IOCs), most severe first, values redacted (paginated) |
 | `get_flow` | read | | One flow by ref (`f12` or `f12#m3`): metadata, request/response, messages |
+| `find_values` | read | | Trace specific known values (email, ad-id, GPS, ...) through traffic; prove a leak |
+| `diff` | read | | Diff two captures, or two phases of one, into added/removed/changed endpoints |
 | `export` | export | yes | Write a capture as `har`, `markdown` or `keylog`; returns path and sha256 |
 
 Read tools and `export` take a capture source: either `tap` (a `.tap` path
@@ -66,9 +68,10 @@ capture_status                      poll: is a library hooked? data flowing? pro
 mark_phase "login" ...              label what you do in the app
 stop_capture                        clean teardown, .tap finalized
 list_protocols                      which protocol slices exist
-get_digest                          overview (budgeted)
+get_digest                          overview (budgeted; attribute=true adds owner/category/party)
 list_endpoints / list_findings      paginated detail
 get_flow ref=f12                    one flow / message
+find_values / diff                  prove a known value leaks / diff two captures or phases
 export                              har / markdown / keylog file
 ```
 
@@ -172,8 +175,42 @@ fritap q get_digest --tap run.tap --filter 'http.host contains "api"'
 fritap q list_endpoints --tap run.tap --protocol tls --limit 20
 fritap q list_findings --tap run.tap --min-severity medium
 fritap q get_flow --tap run.tap --ref f12 --fields request,response --max-bytes 1024
+# prove a specific value leaves the device (and in what encoded shape)
+fritap q find_values --tap run.tap --json \
+  '{"values": [{"value": "alice@example.com", "kind": "email", "label": "signup"}]}'
+# what changed between two captures, or between two phases of one capture
+fritap q diff --tap-a before.tap --tap-b after.tap --first-party myapp.com
+fritap q diff --tap run.tap --phase-a consent-denied --phase-b consent-granted
 ```
 
+- `find_values` traces operator-supplied *known* values (an email, advertising
+  id, GPS fix, free string, ...) through decoded traffic, deriving the obvious
+  obfuscations (URL/base64/hex encodings, md5/sha1/sha256) and reporting each
+  hit's `transform`, `confidence`, `direction` and `where`. The matched span is
+  withheld unless `show_values` (and the server allows it); short/low-entropy
+  canaries are kept but flagged under `warnings`. The `kind` canonical values
+  are `aaid`, `android_id`, `email`, `free`, `gps`, `imei`, `ip`, `phone`; the
+  PII-detector aliases `advertising_id`/`idfa`/`gaid`/`adid`/`idfv` (→ `aaid`)
+  and `geo`/`geolocation`/`location` (→ `gps`) are also accepted.
+- `diff` reports the HTTP endpoints that **appeared**, **disappeared** or
+  **changed** (status codes, content types, request volume) between two
+  captures (`tap_a`/`tap_b`) or two phase windows of one capture (`tap` +
+  `phase_a`/`phase_b`, read from the `phases.jsonl` sidecar next to the tap, or
+  `phases_path`). Host groups carry offline `owner`/`category`/`party`
+  attribution; `first_party` marks which domains are first-party.
+- `get_digest` with `attribute: true` (optionally `first_party`) annotates each
+  host row with trusted `owner`/`category`/`party`; omit it and the digest is
+  unchanged.
+- When a capture was taken with `--attribute-sdk`, the flows carry the calling
+  SDK resolved from their backtrace. The digest lifts it onto the host and
+  endpoint rows (and `diff` onto the endpoint rows) as a trusted top-level
+  `sdks` list of `{sdk, vendor, category}` (from the bundled signature table,
+  **not** `untrusted`); captures without it are unchanged.
+- `first_party` (on `get_digest` and `diff`) is a list of domains, or the string
+  `"auto"` to infer the app's own backend: the most-contacted non-tracker
+  registrable domains (eTLD+1), plus any other non-tracker domain seen at least
+  half as often. `get_digest` infers from the digested hosts; `diff` infers from
+  the union of both sides' hosts so party labels stay comparable across A/B.
 - `list_protocols` returns the valid slice names: `protocols` (e.g. `tls`,
   `mtproto`), `app_protocols` (e.g. `http2`, `grpc`, `websocket`) and
   `known_protocols`.

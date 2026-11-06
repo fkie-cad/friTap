@@ -521,6 +521,10 @@ def encode_flow(flow: "Flow") -> bytes:
         meta["process_name"] = flow.process_name
     if getattr(flow, "package_name", ""):
         meta["package_name"] = flow.package_name
+    # Resolved SDK attribution dict ({sdk,vendor,category}); omitted when None
+    # so a flow without it is byte-identical to a pre-attribution record.
+    if getattr(flow, "sdk", None):
+        meta["sdk"] = flow.sdk
     # Non-mutating lookup (encoding is a pure read): layer() returns None when
     # absent rather than attaching an empty TLS layer to every serialized flow.
     tls = flow.layer("tls")
@@ -814,6 +818,7 @@ def decode_flow(payload: bytes) -> "Flow":
     flow.remote_port = meta.get("remote_port", 0)
     flow.process_name = meta.get("process_name", "")
     flow.package_name = meta.get("package_name", "")
+    flow.sdk = meta.get("sdk", None)
     flow.hook_function = meta.get("hook_function", "")
     flow.hook_stack = meta.get("hook_stack", "")
     flow.tags = list(meta.get("tags", []))

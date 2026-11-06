@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 from friTap.agent_api import envelope, protocol_catalog
 from friTap.agent_api.context import ToolContext
+from friTap.agent_api.errors import ToolError
 from friTap.agent_api.registry import ToolSpec
 from friTap.agent_api.schema import (
     COMPACT_PAGE_LIMIT,
@@ -44,7 +45,13 @@ SCHEMA_PROTOCOLS = "fritap.protocols/1"
 SCHEMA_DIGEST_MD = "fritap.digest_md/1"
 SCHEMA_ENDPOINTS = "fritap.endpoints/1"
 SCHEMA_FINDINGS = "fritap.findings/1"
+SCHEMA_FIND_VALUES = "fritap.find_values/1"
+SCHEMA_DIFF = "fritap.diff/1"
+SCHEMA_DIFF_MD = "fritap.diff_md/1"
 SCHEMA_EXPORT = "fritap.export/1"
+
+#: Phase-marker sidecar written next to a session's capture.tap (mark_phase).
+PHASES_SIDECAR = "phases.jsonl"
 
 
 # ---------------------------------------------------------------------------
@@ -155,6 +162,15 @@ def _digest_params() -> dict[str, dict]:
                    "description": "Approximate token budget; low-volume rows drop first."},
         "format": {"type": "string", "enum": ["json", "md"], "default": "json",
                    "description": "json (structured) or md (compact Markdown)."},
+        "attribute": {"type": "boolean", "default": False,
+                      "description": "Annotate each host with owner/category/party "
+                                     "(offline tracker attribution)."},
+        "first_party": {
+            "anyOf": [{"type": "array", "items": {"type": "string"}},
+                      {"type": "string", "const": "auto"}],
+            "description": "Domains to treat as first-party when attributing hosts "
+                           "(implies attribute), or \"auto\" to infer the app's own "
+                           "non-tracker backend domains from the capture."},
         **SHOW_VALUES,
     }
 
@@ -270,6 +286,199 @@ _FINDINGS_SPEC = ToolSpec(
 
 
 # ---------------------------------------------------------------------------
+# find_values (canary known-value search)
+# ---------------------------------------------------------------------------
+
+def _find_values(params: dict, ctx: ToolContext) -> dict:
+    tap = resolve_tap_source(params, ctx)
+    return envelope.ok(SCHEMA_FIND_VALUES, reading.find_values(tap, params), notice=True)
+
+
+def _find_values_params() -> dict[str, dict]:
+    from friTap.analysis.canary import CANARY_KIND_ALIASES, CANARY_KINDS
+    from friTap.analysis.digest import DEFAULT_BUDGET_TOKENS
+
+    kinds = sorted(set(CANARY_KINDS) | set(CANARY_KIND_ALIASES))
+    return {
+        "values": {"type": "array", "minItems": 1,
+                   "items": object_schema({
+                       "value": {"type": "string", "minLength": 1,
+                                 "description": "The exact value to trace (never logged)."},
+                       "kind": {"type": "string", "enum": kinds,
+                                "description": "How to normalize it before searching. Canonical "
+                                               "kinds: aaid, android_id, email, free, gps, imei, "
+                                               "ip, phone. Aliases: advertising_id/idfa/gaid/adid/"
+                                               "idfv -> aaid; geo/geolocation/location -> gps."},
+                       "label": {"type": "string", "minLength": 1,
+                                 "description": "A name for this canary in the results."},
+                   }, required=("value", "label")),
+                   "description": "Known values (email, ad-id, GPS fix, free string, ...) "
+                                  "to search for across decoded traffic."},
+        "budget": {"type": "integer", "minimum": 100, "maximum": MAX_DIGEST_BUDGET,
+                   "default": DEFAULT_BUDGET_TOKENS,
+                   "description": "Approximate token budget; lowest-confidence hits drop first."},
+        **SHOW_VALUES,
+    }
+
+
+_FIND_VALUES_SPEC = ToolSpec(
+    name="find_values",
+    summary="Trace specific known values (email, ad-id, GPS, ...) through traffic; prove a leak.",
+    params_schema=_tap_schema(_find_values_params(), required=("values",)),
+    handler=_find_values,
+    kind="read",
+    result_schema=_result(SCHEMA_FIND_VALUES, {
+        "source": {"type": "object", "properties": {
+            "file": _STR, "flows_total": _INT}},
+        "summary": {"type": "object", "properties": {
+            "hits": _INT, "canaries": _INT, "by_label": _COUNTS, "by_confidence": _COUNTS}},
+        "warnings": {"type": "array", "items": {"type": "object", "properties": {
+            "label": _STR, "kind": _STR, "warning": _STR}}},
+        "truncated": {}, **_NOTICE,
+        "rows": {"type": "array", "items": {"type": "object", "properties": {
+            "label": _STR, "kind": _STR, "transform": _STR, "confidence": _STR,
+            "direction": _STR, "where": _STR, "ref": _STR,
+            "untrusted": {"type": "object"}}}},
+    }),
+)
+
+
+# ---------------------------------------------------------------------------
+# diff (semantic capture / phase diff)
+# ---------------------------------------------------------------------------
+
+_DIFF_TAP_KEYS = ("tap_a", "tap_b")
+_DIFF_PHASE_KEYS = ("tap", "phase_a", "phase_b")
+
+
+def _diff_require(params: dict, keys: tuple[str, ...], what: str) -> None:
+    missing = [key for key in keys if not params.get(key)]
+    if missing:
+        raise ToolError(f"{what} needs {', '.join(keys)}; missing {', '.join(missing)}",
+                        "bad_param", param=missing[0])
+
+
+def _diff_mode(params: dict) -> str:
+    """Return ``"taps"`` or ``"phases"``; raise ``bad_param`` unless exactly one is given."""
+    taps = [key for key in _DIFF_TAP_KEYS if params.get(key)]
+    phases = [key for key in _DIFF_PHASE_KEYS if params.get(key)]
+    if taps and phases:
+        raise ToolError("pass either tap_a+tap_b or tap+phase_a+phase_b, not both", "bad_param",
+                        hint="diff two taps OR two phase windows of one capture")
+    if taps:
+        _diff_require(params, _DIFF_TAP_KEYS, "tap diff")
+        return "taps"
+    if phases:
+        _diff_require(params, _DIFF_PHASE_KEYS, "phase diff")
+        if params["phase_a"] == params["phase_b"]:
+            raise ToolError("phase_a and phase_b must differ", "bad_param",
+                            param="phase_b", hint="diff two different phase windows")
+        return "phases"
+    raise ToolError("one of (tap_a, tap_b) or (tap, phase_a, phase_b) is required", "bad_param",
+                    hint="diff two taps, or two phase windows of one capture")
+
+
+def _diff_phases_path(tap, phases_path: str | None, ctx: ToolContext):
+    from friTap.agent_api.paths import resolve_under_root
+
+    if phases_path:
+        path = resolve_under_root(phases_path, ctx.root)
+    else:
+        path = tap.with_name(PHASES_SIDECAR)
+    if not path.exists():
+        raise ToolError(f"no phase markers found ({path.name})", "not_found",
+                        hint="capture with mark_phase, or pass phases_path")
+    return path
+
+
+def _diff_classifier(first_party, host_counts_fn):
+    """Host -> attribution classifier for a diff.
+
+    *first_party* is a list of domains, the ``"auto"`` sentinel (infer the set
+    from the union of both sides' hosts via *host_counts_fn*, so party labels
+    are comparable across A/B) or falsy (none). *host_counts_fn* is a zero-arg
+    callable returning the union ``{host: count}``; it runs only for ``"auto"``.
+    """
+    from friTap.analysis.attribution import AUTO_FIRST_PARTY, infer_first_party, make_classifier
+
+    if first_party == AUTO_FIRST_PARTY:
+        first_party = infer_first_party(host_counts_fn(), make_classifier(()))
+    return make_classifier(tuple(first_party or ()))
+
+
+def _build_diff(params: dict, ctx: ToolContext):
+    from friTap.agent_api.paths import resolve_under_root
+    from friTap.agent_api.services.sources import TAP_SUFFIX
+    from friTap.analysis.diff import (
+        diff_phases, diff_taps, host_counts_phases, host_counts_taps, load_phases,
+    )
+
+    first_party = params.get("first_party")
+
+    if _diff_mode(params) == "taps":
+        tap_a = resolve_under_root(params["tap_a"], ctx.root, suffix=TAP_SUFFIX)
+        tap_b = resolve_under_root(params["tap_b"], ctx.root, suffix=TAP_SUFFIX)
+        classify = _diff_classifier(first_party,
+                                    lambda: host_counts_taps(str(tap_a), str(tap_b)))
+        return diff_taps(str(tap_a), str(tap_b), classify=classify, budget=params.get("budget"))
+    tap = resolve_under_root(params["tap"], ctx.root, suffix=TAP_SUFFIX)
+    phases = load_phases(str(_diff_phases_path(tap, params.get("phases_path"), ctx)))
+    classify = _diff_classifier(
+        first_party,
+        lambda: host_counts_phases(str(tap), phases, params["phase_a"], params["phase_b"]))
+    return diff_phases(str(tap), phases, params["phase_a"], params["phase_b"], classify=classify)
+
+
+def _diff(params: dict, ctx: ToolContext) -> dict:
+    result = _build_diff(params, ctx)
+    budget = params.get("budget")
+    if params["format"] == "md":
+        return envelope.ok(SCHEMA_DIFF_MD, {"markdown": result.to_markdown(budget=budget)},
+                           notice=True)
+    return envelope.ok(SCHEMA_DIFF, result.to_dict(budget=budget), notice=True)
+
+
+def _diff_params() -> dict[str, dict]:
+    return {
+        "tap_a": {"type": "string", "minLength": 1,
+                  "description": "Baseline .tap (tap diff mode; pair with tap_b)."},
+        "tap_b": {"type": "string", "minLength": 1,
+                  "description": "Comparison .tap (tap diff mode; pair with tap_a)."},
+        "tap": {"type": "string", "minLength": 1,
+                "description": "Capture to diff two phase windows of (phase diff mode)."},
+        "phase_a": {"type": "string", "minLength": 1,
+                    "description": "Baseline phase label (phase diff mode)."},
+        "phase_b": {"type": "string", "minLength": 1,
+                    "description": "Comparison phase label (phase diff mode)."},
+        "phases_path": {"type": "string", "minLength": 1,
+                        "description": "phases.jsonl sidecar (default: next to the tap)."},
+        "first_party": {
+            "anyOf": [{"type": "array", "items": {"type": "string"}},
+                      {"type": "string", "const": "auto"}],
+            "description": "Domains treated as first-party for host attribution, or "
+                           "\"auto\" to infer them from the union of both sides' hosts."},
+        "budget": {"type": "integer", "minimum": 100, "maximum": MAX_DIGEST_BUDGET,
+                   "description": "Approximate token budget; lowest-volume rows drop first."},
+        "format": {"type": "string", "enum": ["json", "md"], "default": "json",
+                   "description": "json (structured) or md (Markdown report)."},
+    }
+
+
+_DIFF_SPEC = ToolSpec(
+    name="diff",
+    summary="Diff two captures, or two phases of one, into added/removed/changed endpoints.",
+    params_schema=object_schema(_diff_params()),
+    handler=_diff,
+    kind="read",
+    result_schema={"type": "object", "properties": {
+        "schema": {"enum": [SCHEMA_DIFF, SCHEMA_DIFF_MD]},
+        "mode": _STR, "a": _STR, "b": _STR, "summary": {"type": "object"},
+        "added": _ROWS, "removed": _ROWS, "changed": _ROWS,
+        "truncated": {}, "markdown": _STR, **_NOTICE}},
+)
+
+
+# ---------------------------------------------------------------------------
 # export
 # ---------------------------------------------------------------------------
 
@@ -311,6 +520,8 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
     _ENDPOINTS_SPEC,
     _FLOW_SPEC,
     _FINDINGS_SPEC,
+    _FIND_VALUES_SPEC,
+    _DIFF_SPEC,
     _EXPORT_SPEC,
 )
 

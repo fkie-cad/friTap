@@ -125,6 +125,26 @@ class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
         # created AFTER the session event arrived (the common handshake-before-
         # data ordering). Keyed by connection_id; cleared in _finalize_connection.
         self._session_tls: dict[str, dict] = {}  # conn_id -> {version,sni,alpn,cipher}
+        # Pending SDK attributions from caller_stack agent messages (opt-in
+        # --attribute-sdk) that arrived BEFORE their flow existed. Keyed by the
+        # connection 5-tuple (an unordered-endpoint key; see _sdk_tuple_key) —
+        # the agent's ssl_session_id is still null (=="0") at the first
+        # SSL_read/SSL_write where the backtrace is captured, so the 5-tuple is
+        # the stable join key; a real (non-"0") ssl_session_id is kept as a
+        # secondary key. Each key maps to a FIFO queue of SDK dicts, drained one
+        # per matching flow at birth by _stamp_metadata (mirroring _session_tls)
+        # and CONSUMED on use so a later connection reusing the same 5-tuple does
+        # not inherit a prior connection's SDK.
+        self._sdk_pending: dict[tuple, list[dict]] = {}
+        # Per-connection resolved SDK, keyed by connection_id. One caller_stack
+        # is captured per connection, but a connection carries many flows (HTTP/2
+        # streams, HTTP/1.1 keep-alive exchanges) born over its whole lifetime.
+        # This map holds the connection's SDK so a flow born AFTER the attribution
+        # inherits it at birth (_stamp_metadata) — even in the headless capture
+        # path (retain_completed=False), where an earlier attributed sibling has
+        # already been written and released from _flows. Cleared in
+        # _finalize_connection so it stays bounded by LIVE connections.
+        self._connection_sdks: dict[str, dict] = {}  # conn_id -> {sdk,vendor,category}
         # Orphan request index: server_key -> [(timestamp, flow_id), ...], keyed
         # by the REMOTE (server) endpoint of the request (see _orphan_key), in
         # least-recently-appended order; capped at MAX_ORPHAN_REQUESTS entries
@@ -936,6 +956,176 @@ class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
         for event_type, flow in pending:
             self._notify(event_type, flow)
 
+    @staticmethod
+    def _sdk_tuple_key(src_addr, src_port, dst_addr, dst_port):
+        """Unordered connection-5-tuple key for SDK joins, or ``None``.
+
+        Direction-insensitive: the caller_stack is captured at whichever of the
+        first SSL_read/SSL_write runs first, so its src/dst orientation may be
+        the reverse of the flow's stored one. Sorting the two endpoints makes
+        both resolve to the SAME key. ``None`` when neither endpoint carries an
+        address (nothing to join on).
+        """
+        src = (str(src_addr or ""), int(src_port or 0))
+        dst = (str(dst_addr or ""), int(dst_port or 0))
+        if not src[0] or not dst[0]:
+            return None
+        return (src, dst) if src <= dst else (dst, src)
+
+    def _flow_tuple_key(self, flow):
+        """The unordered 5-tuple key for *flow*'s stored endpoints (or ``None``)."""
+        return self._sdk_tuple_key(
+            flow.src_addr, flow.src_port, flow.dst_addr, flow.dst_port)
+
+    @staticmethod
+    def _real_sid(sid: str) -> bool:
+        """True for a usable ssl_session_id: non-empty and not the null "0".
+
+        At the first SSL_read/SSL_write ``SSL_get_session(ssl)`` is still null,
+        so ``getSslSessionId`` returns ``0`` for every freshly-captured
+        caller_stack; such ids match no specific connection and are ignored.
+        """
+        return bool(sid) and sid != "0"
+
+    def on_sdk(self, event) -> None:
+        """EventBus subscriber for CallerStackEvent -- attach resolved SDK.
+
+        Joins the backtrace's resolved SDK onto its flow on the connection
+        **5-tuple** (``_sdk_tuple_key``), which the agent resolves exactly as a
+        datalog record's peer and is stable at the first SSL_read/SSL_write. The
+        ``ssl_session_id`` is only a SECONDARY match, and only when it is a real
+        (non-"0") id: at first write ``SSL_get_session`` is still null, so every
+        caller_stack carries ``ssl_session_id == "0"`` and the old id-only join
+        matched nothing.
+
+        Finds the target flow as the earliest (insertion order) matching flow
+        that does NOT already carry an SDK — so OS fd/port reuse (two
+        connections sharing a 5-tuple over time) attributes each caller_stack to
+        a distinct connection instead of clobbering one — then propagates the
+        SDK to every other flow on that target's connection_id (the connection's
+        caller_stack is captured once, but an HTTP/2 connection carries many
+        stream flows). An existing SDK is never overwritten. When no matching
+        flow exists yet (backtrace before the first data event) the SDK is
+        stashed on the 5-tuple and drained at flow birth by
+        :meth:`_stamp_metadata` (which also lets a later stream inherit its
+        connection's already-joined SDK). No-op when the stack resolved to no SDK
+        or carried neither a usable 5-tuple nor a real session id. Updated flows
+        are notified after the lock.
+        """
+        sdk = getattr(event, 'sdk', None)
+        if not sdk:
+            return
+        sid = str(getattr(event, 'ssl_session_id', '') or '')
+        real_sid = self._real_sid(sid)
+        tkey = self._sdk_tuple_key(
+            getattr(event, 'src_addr', ''), getattr(event, 'src_port', 0),
+            getattr(event, 'dst_addr', ''), getattr(event, 'dst_port', 0))
+        if tkey is None and not real_sid:
+            return
+        pending = []
+        with self._lock:
+            target = self._first_unattributed_sdk_flow(tkey, sid, real_sid)
+            if target is not None:
+                target.sdk = sdk
+                pending.append((FlowEventType.UPDATED, target))
+                # Remember the connection's SDK so flows of this connection born
+                # LATER inherit it at birth (_stamp_metadata) -- including after
+                # an earlier sibling was written and released (headless path).
+                self._connection_sdks[target.connection_id] = sdk
+                # One caller_stack is captured per TLS connection (per-SSL dedup
+                # in the agent), but an HTTP/2 connection multiplexes many
+                # streams, each recorded as its own flow sharing the target's
+                # connection_id. Propagate the SDK to the sibling flows still
+                # present so every stream of the connection is attributed, not
+                # just the first. Keyed on connection_id (not the 5-tuple), so a
+                # later connection that reuses the 5-tuple -- a distinct
+                # connection_id -- is never touched here.
+                for sibling in self._sibling_flows_without_sdk(
+                        target.connection_id, target):
+                    sibling.sdk = sdk
+                    pending.append((FlowEventType.UPDATED, sibling))
+            else:
+                # Arrival-before-flow: stash on the 5-tuple (preferred) or the
+                # real session id, drained at flow birth by _stamp_metadata.
+                stash_key = tkey if tkey is not None else ("sid", sid)
+                self._sdk_pending.setdefault(stash_key, []).append(sdk)
+        for event_type, flow in pending:
+            self._notify(event_type, flow)
+
+    def _first_unattributed_sdk_flow(self, tkey, sid: str, real_sid: bool):
+        """Earliest flow (insertion order) matching the join keys and lacking an
+        SDK, or ``None``. Must be called under ``self._lock``."""
+        for flow in self._flows.values():
+            if getattr(flow, 'sdk', None):
+                continue
+            if tkey is not None and self._flow_tuple_key(flow) == tkey:
+                return flow
+            if real_sid and str(flow.ssl_session_id or '') == sid:
+                return flow
+        return None
+
+    def _sibling_flows_without_sdk(self, conn_id, exclude):
+        """Flows on connection *conn_id* that lack an SDK, excluding *exclude*.
+
+        Backs the per-connection SDK propagation in :meth:`on_sdk` (one
+        caller_stack attributes every flow of its connection, e.g. all HTTP/2
+        streams). Must be called under ``self._lock``.
+        """
+        siblings = []
+        if not conn_id:
+            return siblings
+        for fid in self._flow_index.get(conn_id, ()):
+            flow = self._flows.get(fid)
+            if flow is None or flow is exclude:
+                continue
+            if not getattr(flow, 'sdk', None):
+                siblings.append(flow)
+        return siblings
+
+    def _connection_sdk(self, conn_id):
+        """The SDK resolved for connection *conn_id*, else ``None`` -- so a flow
+        born after its connection's caller_stack joined inherits that SDK.
+
+        Prefers the persistent per-connection map (survives a sibling being
+        written and released in the headless path); falls back to an attributed
+        sibling still present in ``_flows``. Must be called under ``self._lock``.
+        """
+        if not conn_id:
+            return None
+        mapped = self._connection_sdks.get(conn_id)
+        if mapped:
+            return mapped
+        for fid in self._flow_index.get(conn_id, ()):
+            flow = self._flows.get(fid)
+            if flow is not None:
+                sdk = getattr(flow, 'sdk', None)
+                if sdk:
+                    return sdk
+        return None
+
+    def _take_pending_sdk(self, flow):
+        """Pop and return one stashed SDK matching *flow*, or ``None``.
+
+        Checks the flow's 5-tuple key first, then its real session id. Consuming
+        the stash entry (FIFO) stops a later connection reusing the same 5-tuple
+        from inheriting this one's SDK. Must be called under ``self._lock``.
+        """
+        keys = []
+        tkey = self._flow_tuple_key(flow)
+        if tkey is not None:
+            keys.append(tkey)
+        sid = str(flow.ssl_session_id or '')
+        if self._real_sid(sid):
+            keys.append(("sid", sid))
+        for key in keys:
+            queue = self._sdk_pending.get(key)
+            if queue:
+                sdk = queue.pop(0)
+                if not queue:
+                    del self._sdk_pending[key]
+                return sdk
+        return None
+
     def get_flow_summaries(self) -> list["FlowSummary"]:
         """Lightweight summaries for all flows (no chunks, no body bytes).
 
@@ -989,6 +1179,8 @@ class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
             self._h2_stream_flows.clear()
             self._clear_orphan_requests()
             self._session_tls.clear()
+            self._sdk_pending.clear()
+            self._connection_sdks.clear()
             self._flow_retained_bytes.clear()
             self._truncated_flow_ids.clear()
 
@@ -1314,9 +1506,10 @@ class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
         for key in stale_streams:
             del self._h2_stream_flows[key]
 
-        # Drop the cached TLS metadata for this connection to avoid unbounded
-        # growth across many short-lived connections.
+        # Drop the cached TLS metadata and resolved SDK for this connection to
+        # avoid unbounded growth across many short-lived connections.
         self._session_tls.pop(conn.conn_id, None)
+        self._connection_sdks.pop(conn.conn_id, None)
 
     def _periodic_sweep(self, pending: list) -> None:
         """Periodic maintenance: clean stale indices, idle connections, body caches.
@@ -1953,6 +2146,26 @@ class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
         cached_meta = self._session_tls.get(flow.connection_id)
         if cached_meta:
             self._apply_session_metadata(flow, cached_meta)
+        # Backfill an SDK attribution captured before this flow existed (the
+        # caller_stack backtrace arrives once per connection, possibly ahead of
+        # the first data event). Joined on the connection 5-tuple (see on_sdk),
+        # mirroring the TLS handshake backfill above; never clobbers an SDK
+        # already set, and the stash entry is consumed so a reused 5-tuple does
+        # not inherit it.
+        if not getattr(flow, 'sdk', None):
+            cached_sdk = self._take_pending_sdk(flow)
+            if cached_sdk:
+                flow.sdk = cached_sdk
+                # First flow of a stashed caller_stack: seed the connection map
+                # so this connection's later flows inherit at birth.
+                self._connection_sdks[flow.connection_id] = cached_sdk
+            else:
+                # Inherit the connection's SDK if an earlier flow of this same
+                # connection was already attributed -- including one already
+                # written and released (headless path), via the persistent map.
+                inherited = self._connection_sdk(flow.connection_id)
+                if inherited:
+                    flow.sdk = inherited
         flow.process_name = self._process_name
         flow.package_name = self._package_name
         # Hook origin: prefer the first chunk's function, fall back to event.

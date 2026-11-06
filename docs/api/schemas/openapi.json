@@ -260,6 +260,120 @@
         },
         "type": "object"
       },
+      "diff_params": {
+        "additionalProperties": false,
+        "properties": {
+          "budget": {
+            "description": "Approximate token budget; lowest-volume rows drop first.",
+            "maximum": 8000,
+            "minimum": 100,
+            "type": "integer"
+          },
+          "first_party": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "const": "auto",
+                "type": "string"
+              }
+            ],
+            "description": "Domains treated as first-party for host attribution, or \"auto\" to infer them from the union of both sides' hosts."
+          },
+          "format": {
+            "default": "json",
+            "description": "json (structured) or md (Markdown report).",
+            "enum": [
+              "json",
+              "md"
+            ],
+            "type": "string"
+          },
+          "phase_a": {
+            "description": "Baseline phase label (phase diff mode).",
+            "minLength": 1,
+            "type": "string"
+          },
+          "phase_b": {
+            "description": "Comparison phase label (phase diff mode).",
+            "minLength": 1,
+            "type": "string"
+          },
+          "phases_path": {
+            "description": "phases.jsonl sidecar (default: next to the tap).",
+            "minLength": 1,
+            "type": "string"
+          },
+          "tap": {
+            "description": "Capture to diff two phase windows of (phase diff mode).",
+            "minLength": 1,
+            "type": "string"
+          },
+          "tap_a": {
+            "description": "Baseline .tap (tap diff mode; pair with tap_b).",
+            "minLength": 1,
+            "type": "string"
+          },
+          "tap_b": {
+            "description": "Comparison .tap (tap diff mode; pair with tap_a).",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "diff_result": {
+        "properties": {
+          "a": {
+            "type": "string"
+          },
+          "added": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "b": {
+            "type": "string"
+          },
+          "changed": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "markdown": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "notice": {
+            "type": "string"
+          },
+          "removed": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "schema": {
+            "enum": [
+              "fritap.diff/1",
+              "fritap.diff_md/1"
+            ]
+          },
+          "summary": {
+            "type": "object"
+          },
+          "truncated": {}
+        },
+        "type": "object"
+      },
       "export_params": {
         "additionalProperties": false,
         "oneOf": [
@@ -361,6 +475,191 @@
         },
         "type": "object"
       },
+      "find_values_params": {
+        "additionalProperties": false,
+        "oneOf": [
+          {
+            "required": [
+              "tap"
+            ]
+          },
+          {
+            "required": [
+              "session_id"
+            ]
+          }
+        ],
+        "properties": {
+          "budget": {
+            "default": 1500,
+            "description": "Approximate token budget; lowest-confidence hits drop first.",
+            "maximum": 8000,
+            "minimum": 100,
+            "type": "integer"
+          },
+          "session_id": {
+            "description": "Id of a capture session started with start_capture.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "show_values": {
+            "default": false,
+            "description": "Show raw captured values instead of redacting them.",
+            "type": "boolean"
+          },
+          "tap": {
+            "description": "Path to a .tap capture file (inside the sandbox root).",
+            "minLength": 1,
+            "type": "string"
+          },
+          "values": {
+            "description": "Known values (email, ad-id, GPS fix, free string, ...) to search for across decoded traffic.",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "description": "How to normalize it before searching. Canonical kinds: aaid, android_id, email, free, gps, imei, ip, phone. Aliases: advertising_id/idfa/gaid/adid/idfv -> aaid; geo/geolocation/location -> gps.",
+                  "enum": [
+                    "aaid",
+                    "adid",
+                    "advertising_id",
+                    "android_id",
+                    "email",
+                    "free",
+                    "gaid",
+                    "geo",
+                    "geolocation",
+                    "gps",
+                    "idfa",
+                    "idfv",
+                    "imei",
+                    "ip",
+                    "location",
+                    "phone"
+                  ],
+                  "type": "string"
+                },
+                "label": {
+                  "description": "A name for this canary in the results.",
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "value": {
+                  "description": "The exact value to trace (never logged).",
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "value",
+                "label"
+              ],
+              "type": "object"
+            },
+            "minItems": 1,
+            "type": "array"
+          }
+        },
+        "required": [
+          "values"
+        ],
+        "type": "object"
+      },
+      "find_values_result": {
+        "properties": {
+          "notice": {
+            "type": "string"
+          },
+          "rows": {
+            "items": {
+              "properties": {
+                "confidence": {
+                  "type": "string"
+                },
+                "direction": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "ref": {
+                  "type": "string"
+                },
+                "transform": {
+                  "type": "string"
+                },
+                "untrusted": {
+                  "type": "object"
+                },
+                "where": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "schema": {
+            "const": "fritap.find_values/1"
+          },
+          "source": {
+            "properties": {
+              "file": {
+                "type": "string"
+              },
+              "flows_total": {
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "summary": {
+            "properties": {
+              "by_confidence": {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              "by_label": {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              "canaries": {
+                "type": "integer"
+              },
+              "hits": {
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "truncated": {},
+          "warnings": {
+            "items": {
+              "properties": {
+                "kind": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "warning": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
       "get_digest_params": {
         "additionalProperties": false,
         "oneOf": [
@@ -381,6 +680,11 @@
             "minLength": 1,
             "type": "string"
           },
+          "attribute": {
+            "default": false,
+            "description": "Annotate each host with owner/category/party (offline tracker attribution).",
+            "type": "boolean"
+          },
           "budget": {
             "default": 1500,
             "description": "Approximate token budget; low-volume rows drop first.",
@@ -392,6 +696,21 @@
             "description": "Display filter expression (Wireshark-like syntax).",
             "minLength": 1,
             "type": "string"
+          },
+          "first_party": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "const": "auto",
+                "type": "string"
+              }
+            ],
+            "description": "Domains to treat as first-party when attributing hosts (implies attribute), or \"auto\" to infer the app's own non-tracker backend domains from the capture."
           },
           "focus": {
             "default": "all",
@@ -1682,6 +2001,108 @@
         "x-fritap-mutating": false
       }
     },
+    "/v1/tools/diff": {
+      "post": {
+        "operationId": "diff",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/diff_params"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/diff_result"
+                }
+              }
+            },
+            "description": "Tool result"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid parameters or request body"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing or wrong bearer token"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Forbidden by server policy (sandbox root, capture, secrets)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unknown tool or resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict (e.g. capture still running)"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Request body too large"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Tool runtime error"
+          }
+        },
+        "summary": "Diff two captures, or two phases of one, into added/removed/changed endpoints.",
+        "tags": [
+          "read"
+        ],
+        "x-fritap-mutating": false
+      }
+    },
     "/v1/tools/export": {
       "post": {
         "operationId": "export",
@@ -1782,6 +2203,108 @@
           "export"
         ],
         "x-fritap-mutating": true
+      }
+    },
+    "/v1/tools/find_values": {
+      "post": {
+        "operationId": "find_values",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/find_values_params"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/find_values_result"
+                }
+              }
+            },
+            "description": "Tool result"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid parameters or request body"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing or wrong bearer token"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Forbidden by server policy (sandbox root, capture, secrets)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unknown tool or resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict (e.g. capture still running)"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Request body too large"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Tool runtime error"
+          }
+        },
+        "summary": "Trace specific known values (email, ad-id, GPS, ...) through traffic; prove a leak.",
+        "tags": [
+          "read"
+        ],
+        "x-fritap-mutating": false
       }
     },
     "/v1/tools/get_digest": {

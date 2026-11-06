@@ -14,6 +14,8 @@ import importlib
 _AGENT_MESSAGE_NAMES = (
     "AgentMessage",
     "BaseAgentMessage",
+    "CallerFrame",
+    "CallerStackMessage",
     "ConsoleDebugMessage",
     "ConsoleDevMessage",
     "ConsoleErrorMessage",
@@ -77,6 +79,9 @@ __all__ = [
     "IPSecChildSAKeysMessage",
     "IPSecIKEKeysMessage",
     "IPSecESPKeysMessage",
+    # SDK / caller attribution (opt-in)
+    "CallerStackMessage",
+    "CallerFrame",
     # Canonical pipeline events
     "Direction",
     "AddressFamily",

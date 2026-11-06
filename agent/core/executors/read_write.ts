@@ -4,10 +4,11 @@
 
 import { HookDefinition, ResolvedFunctions } from "../hook_definition.js";
 import { sendDatalog } from "../../shared/shared_structures.js";
-import { pcap_enabled } from "../../fritap_agent.js";
+import { pcap_enabled, attribute_sdk } from "../../fritap_agent.js";
 import { hookBreadcrumb } from "../../util/log.js";
+import { maybeCaptureCallerStack } from "../../shared/sdk_backtrace.js";
 import { fdOrDeferred, recoveredFd } from "../../shared/socket_fd_tracker.js";
-import { buildRecordMessage } from "../../shared/record_message.js";
+import { buildRecordMessage, buildCallerStackJoin } from "../../shared/record_message.js";
 import { recoverTls13Secrets } from "../../shared/tls13_secret_recovery.js";
 import { BufferedSendTracker, UNKNOWN_WRITE_LENGTH, writtenPayload } from "../../shared/write_length.js";
 
@@ -82,6 +83,16 @@ export function installReadHook(
             // uncatchable, so record the hook first. Throttled in hookBreadcrumb.
             hookBreadcrumb(breadcrumb);
             const sslCtx = args[hook.args.sslCtxArgIndex];
+            // SDK attribution (opt-in): one guarded boolean read when off.
+            // Join on the connection 5-tuple (stable at first read), resolved
+            // exactly as the datalog record's peer, so it matches the flow.
+            if (attribute_sdk) maybeCaptureCallerStack(sslCtx, this.context, () => buildCallerStackJoin(
+                sslCtx, () => def.fdDecoder(sslCtx, resolvedFns), true, methodAddresses, enableDefaultFd,
+                () => def.sessionIdDecoder(sslCtx, resolvedFns),
+                def.customAddressExtractor
+                    ? () => def.customAddressExtractor!(sslCtx, true, resolvedFns, enableDefaultFd)
+                    : undefined,
+            ));
             this.buf = args[hook.args.bufferArgIndex];
             const fd = sslFdOrDeferred(sslCtx, def, resolvedFns);
             if (fd === null) {
@@ -137,6 +148,16 @@ export function installWriteHook(
         onEnter: function (args: any) {
             hookBreadcrumb(breadcrumb);
             const sslCtx = args[hook.args.sslCtxArgIndex];
+            // SDK attribution (opt-in): one guarded boolean read when off.
+            // Join on the connection 5-tuple (stable at first write), resolved
+            // exactly as the datalog record's peer, so it matches the flow.
+            if (attribute_sdk) maybeCaptureCallerStack(sslCtx, this.context, () => buildCallerStackJoin(
+                sslCtx, () => def.fdDecoder(sslCtx, resolvedFns), false, methodAddresses, enableDefaultFd,
+                () => def.sessionIdDecoder(sslCtx, resolvedFns),
+                def.customAddressExtractor
+                    ? () => def.customAddressExtractor!(sslCtx, false, resolvedFns, enableDefaultFd)
+                    : undefined,
+            ));
             // M2 spike (internally gated/one-shot): for an attached process
             // whose handshake we missed, recover TLS 1.3 traffic secrets from
             // the live ssl->s3 and emit them as keylog lines. No-op unless a

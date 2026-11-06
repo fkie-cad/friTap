@@ -5,6 +5,10 @@ include README.md
 include friTap/fritap_memscan.js
 recursive-include friTap/patterns *.json
 recursive-include friTap/memory_scanning *.json
+include friTap/analysis/attribution/data/trackers.json
+include friTap/analysis/attribution/data/sdk_signatures.json
+include friTap/analysis/attribution/data/public_suffix_list.dat
+include friTap/analysis/attribution/data/README.md
 recursive-include friTap/offline/mtproto/schema *.tl SOURCE.txt
 recursive-include friTap/plugins/shared_utility *.js
 recursive-include friTap/tui/css *.tcss

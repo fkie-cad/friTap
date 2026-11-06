@@ -84,7 +84,7 @@ def _text(doc) -> str:
 def test_registers_all_read_tools(registry):
     assert set(registry.names()) == {
         "list_supported_protocols", "list_protocols", "get_digest", "list_endpoints",
-        "get_flow", "list_findings", "export",
+        "get_flow", "list_findings", "find_values", "diff", "export",
     }
     for spec in registry.specs():
         assert spec.result_schema and len(spec.summary) <= 100

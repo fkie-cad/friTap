@@ -19,6 +19,11 @@
       "minLength": 1,
       "type": "string"
     },
+    "attribute": {
+      "default": false,
+      "description": "Annotate each host with owner/category/party (offline tracker attribution).",
+      "type": "boolean"
+    },
     "budget": {
       "default": 1500,
       "description": "Approximate token budget; low-volume rows drop first.",
@@ -30,6 +35,21 @@
       "description": "Display filter expression (Wireshark-like syntax).",
       "minLength": 1,
       "type": "string"
+    },
+    "first_party": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "const": "auto",
+          "type": "string"
+        }
+      ],
+      "description": "Domains to treat as first-party when attributing hosts (implies attribute), or \"auto\" to infer the app's own non-tracker backend domains from the capture."
     },
     "focus": {
       "default": "all",

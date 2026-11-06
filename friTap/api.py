@@ -41,6 +41,7 @@ from typing import TYPE_CHECKING, Callable, List, Optional
 
 from .config import DeviceConfig, FriTapConfig, HookingConfig, OutputConfig
 from .events import (
+    CallerStackEvent,
     DatalogEvent,
     EventBus,
     FlowEvent,
@@ -520,6 +521,8 @@ class FriTap:
             event_bus.subscribe(DatalogEvent, flow_collector.on_data)
             event_bus.subscribe(LibraryDetectedEvent, flow_collector.on_library_detected)
             event_bus.subscribe(SessionEvent, flow_collector.on_session_event)
+            # Opt-in SDK attribution (--attribute-sdk): resolved caller-stack SDK.
+            event_bus.subscribe(CallerStackEvent, flow_collector.on_sdk)
             # OHTTP parity with the TUI: attach Signal-over-OHTTP inner payloads.
             event_bus.subscribe(OhttpEvent, flow_collector.on_ohttp)
             for cb in self._flow_callbacks:

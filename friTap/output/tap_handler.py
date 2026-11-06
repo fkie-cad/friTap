@@ -74,6 +74,7 @@ class TapOutputHandler(OutputHandler):
     def _subscribe_collector(self, event_bus: "EventBus") -> None:
         """Same event wiring as the TUI's live capture (minus FlowEvent re-emit)."""
         from ..events import (
+            CallerStackEvent,
             DatalogEvent,
             LibraryDetectedEvent,
             OhttpEvent,
@@ -83,6 +84,7 @@ class TapOutputHandler(OutputHandler):
         event_bus.subscribe(OhttpEvent, self._collector.on_ohttp)
         event_bus.subscribe(LibraryDetectedEvent, self._collector.on_library_detected)
         event_bus.subscribe(SessionEvent, self._collector.on_session_event)
+        event_bus.subscribe(CallerStackEvent, self._collector.on_sdk)
 
     def _write_remaining_flows(self, writer) -> None:
         """flush() completes active flows without notifying; persist the rest."""

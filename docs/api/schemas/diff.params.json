@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "budget": {
+      "description": "Approximate token budget; lowest-volume rows drop first.",
+      "maximum": 8000,
+      "minimum": 100,
+      "type": "integer"
+    },
+    "first_party": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "const": "auto",
+          "type": "string"
+        }
+      ],
+      "description": "Domains treated as first-party for host attribution, or \"auto\" to infer them from the union of both sides' hosts."
+    },
+    "format": {
+      "default": "json",
+      "description": "json (structured) or md (Markdown report).",
+      "enum": [
+        "json",
+        "md"
+      ],
+      "type": "string"
+    },
+    "phase_a": {
+      "description": "Baseline phase label (phase diff mode).",
+      "minLength": 1,
+      "type": "string"
+    },
+    "phase_b": {
+      "description": "Comparison phase label (phase diff mode).",
+      "minLength": 1,
+      "type": "string"
+    },
+    "phases_path": {
+      "description": "phases.jsonl sidecar (default: next to the tap).",
+      "minLength": 1,
+      "type": "string"
+    },
+    "tap": {
+      "description": "Capture to diff two phase windows of (phase diff mode).",
+      "minLength": 1,
+      "type": "string"
+    },
+    "tap_a": {
+      "description": "Baseline .tap (tap diff mode; pair with tap_b).",
+      "minLength": 1,
+      "type": "string"
+    },
+    "tap_b": {
+      "description": "Comparison .tap (tap diff mode; pair with tap_a).",
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "title": "diff parameters",
+  "type": "object"
+}

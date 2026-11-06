@@ -380,6 +380,15 @@ export let probe: boolean = false;
 //@ts-ignore
 export let force_anchor_locator: boolean = false;
 
+// --attribute-sdk (Phase 3b; opt-in, OFF by default). When set, the TLS
+// plaintext hooks capture the calling thread's backtrace ONCE per connection at
+// the first SSL_read/SSL_write and emit it as an additive `caller_stack` message
+// so the host can attribute decrypted traffic to the SDK / app code that
+// produced it. When OFF the TLS hot path is byte-for-byte unchanged: each hook
+// site only reads this boolean (see agent/shared/sdk_backtrace.ts).
+//@ts-ignore
+export let attribute_sdk: boolean = false;
+
 /**
  * Perform a send/recv handshake with the Python host to receive a configuration value.
  * @param sendChannel Channel name to send on
@@ -451,6 +460,7 @@ quic_egress_headers_layer = config_batch.quic_egress_headers_layer ?? quic_egres
 debug_output = config_batch.debug_output ?? debug_output;
 probe = config_batch.probe ?? probe;
 force_anchor_locator = config_batch.force_anchor_locator ?? force_anchor_locator;
+attribute_sdk = config_batch.attribute_sdk ?? attribute_sdk;
 // Generic feature-config passthrough (e.g. { scan_region } for the public
 // memory-scan engine). Protocol-agnostic: the public core never inspects a
 // private sub-key; private units read their own keys from config_extensions.

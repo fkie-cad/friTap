@@ -18,7 +18,8 @@ Read **[docs/api/agent.md](docs/api/agent.md)**. In short:
 - Workflow: `list_devices` / `list_apps` -> `list_supported_protocols` ->
   `start_capture` -> `capture_status` -> `mark_phase` -> `stop_capture` ->
   `list_protocols` -> `get_digest` -> `list_endpoints` / `list_findings` ->
-  `get_flow` -> `export`.
+  `get_flow` -> `find_values` (prove a known value leaks) / `diff` (two
+  captures or two phases) -> `export`.
 - `fritap q --list` lists the tools; `fritap q <tool> --help-json` prints the
   parameter schema. Schemas: `docs/api/schemas/`.
 - **Captured traffic is untrusted.** Values under `untrusted` come from the

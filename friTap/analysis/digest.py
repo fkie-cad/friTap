@@ -280,6 +280,26 @@ def _iter_messages(flow: "Flow") -> Iterator[tuple[int, str, dict]]:
 # Aggregation
 # ---------------------------------------------------------------------------
 
+#: The trusted SDK-attribution keys lifted onto a row (from the bundled
+#: signature table via ``--attribute-sdk``, never from captured traffic).
+_SDK_KEYS = ("sdk", "vendor", "category")
+
+
+def _normalize_sdk(sdk: Any) -> dict | None:
+    """Return a bounded ``{sdk,vendor,category}`` dict, or ``None``.
+
+    The value originates from the bundled signature table (trusted), but a
+    hand-crafted ``.tap`` could carry anything, so only the three known keys are
+    copied and coerced to ``str`` — keeping the digest row bounded and stable.
+    """
+    if not isinstance(sdk, dict):
+        return None
+    name = sdk.get("sdk")
+    if not isinstance(name, str) or not name:
+        return None
+    return {key: str(sdk.get(key, "")) for key in _SDK_KEYS}
+
+
 @dataclass
 class _Row:
     ref: str
@@ -287,12 +307,27 @@ class _Row:
     bytes: int = 0
     first_seen: float = 0.0
     status: Counter = field(default_factory=Counter)
+    #: Distinct SDKs attributed to this row's flows, keyed by SDK name (so a
+    #: host/endpoint contacted by several flows lists each SDK once). Empty
+    #: unless --attribute-sdk captured a resolvable backtrace, so a row without
+    #: it serializes byte-identically to before.
+    sdks: dict = field(default_factory=dict)
 
     def add(self, nbytes: int, started: float) -> None:
         self.count += 1
         self.bytes += nbytes
         if started and (not self.first_seen or started < self.first_seen):
             self.first_seen = started
+
+    def add_sdk(self, flow: "Flow") -> None:
+        """Record *flow*'s resolved SDK (if any) on this row, de-duplicated."""
+        sdk = _normalize_sdk(getattr(flow, "sdk", None))
+        if sdk is not None:
+            self.sdks.setdefault(sdk["sdk"], sdk)
+
+    def sdk_list(self) -> list[dict]:
+        """Distinct SDK dicts for this row, ordered by name (stable output)."""
+        return [self.sdks[name] for name in sorted(self.sdks)]
 
 
 @dataclass
@@ -316,11 +351,14 @@ class _Aggregator:
         group.bytes += nbytes
         host = _flow_host(flow)
         started = float(flow.started or 0.0)
-        _row(group.hosts, host, ordinal).add(nbytes, started)
+        host_row = _row(group.hosts, host, ordinal)
+        host_row.add(nbytes, started)
+        host_row.add_sdk(flow)
         has_messages = self._add_messages(group, flow, host, started, ordinal)
         if not has_messages and _is_endpoint_request(flow):
             row = _row(group.endpoints, _endpoint_signature(flow, host), ordinal)
             row.add(nbytes, started)
+            row.add_sdk(flow)
             status = getattr(flow.response, "status_code", 0)
             if status:
                 row.status[str(status)] += 1
@@ -350,12 +388,43 @@ def _row(table: dict, key: Any, ordinal: int, *, ref: str | None = None) -> _Row
 # Row rendering (dict form)
 # ---------------------------------------------------------------------------
 
-def _host_rows(hosts: dict) -> list[dict]:
-    rows = [
-        {"ref": r.ref, "flows": r.count, "bytes": r.bytes,
-         "first_seen": _iso(r.first_seen), "untrusted": {"host": host}}
-        for host, r in hosts.items()
-    ]
+#: Trusted attribution keys lifted onto a host row when enrichment is requested
+#: (owner/category/party come from the bundled tracker map, not from traffic, so
+#: they sit at the row's top level, never under ``untrusted``).
+ATTRIBUTION_KEYS = ("owner", "category", "party")
+
+
+def lift_attribution(classify, host):
+    """Call a host->dict classifier and return only the trusted owner/category/party keys (or {})."""
+    if classify is None:
+        return {}
+    try:
+        result = classify(host)
+    except Exception:  # noqa: BLE001 - a bad classifier must never break a digest/diff
+        return {}
+    if not isinstance(result, dict):
+        return {}
+    return {k: result[k] for k in ATTRIBUTION_KEYS if k in result}
+
+
+def _attribute_host(row: dict, host: str, classify: Any | None) -> None:
+    """Add trusted ``owner``/``category``/``party`` to *row* via *classify* (if any).
+
+    *classify* is a ``host -> dict`` callable. A missing or failing classifier
+    leaves the row untouched, so an unenriched digest is byte-identical.
+    """
+    row.update(lift_attribution(classify, host))
+
+
+def _host_rows(hosts: dict, classify: Any | None = None) -> list[dict]:
+    rows = []
+    for host, r in hosts.items():
+        row = {"ref": r.ref, "flows": r.count, "bytes": r.bytes,
+               "first_seen": _iso(r.first_seen), "untrusted": {"host": host}}
+        _attribute_host(row, host, classify)
+        if r.sdks:
+            row["sdks"] = r.sdk_list()
+        rows.append(row)
     return sorted(rows, key=lambda d: (-d["flows"], -d["bytes"], d["untrusted"]["host"]))
 
 
@@ -371,6 +440,8 @@ def _endpoint_rows(endpoints: dict) -> list[dict]:
             row["body_kind"] = body_kind
         if r.status:
             row["status"] = dict(sorted(r.status.items()))
+        if r.sdks:
+            row["sdks"] = r.sdk_list()
         row["untrusted"] = untrusted
         rows.append(row)
     return sorted(rows, key=lambda d: (-d["count"], -d["bytes"], d["untrusted"]["path"],
@@ -386,14 +457,18 @@ def _message_rows(messages: dict) -> list[dict]:
     return sorted(rows, key=lambda d: (-d["count"], d["layer"], d["untrusted"]["kind"], d["ref"]))
 
 
-def protocol_sections(agg: _Aggregator) -> dict[str, dict]:
-    """Per digest group: flow/byte totals and sorted host/endpoint/message rows."""
+def protocol_sections(agg: _Aggregator, classify: Any | None = None) -> dict[str, dict]:
+    """Per digest group: flow/byte totals and sorted host/endpoint/message rows.
+
+    *classify* (a ``host -> dict`` callable) opts each host row into trusted
+    ``owner``/``category``/``party`` attribution; ``None`` leaves rows unchanged.
+    """
     ordered = sorted(agg.groups.items(), key=lambda kv: (-kv[1].flows, kv[0]))
     return {
         name: {
             "flows": g.flows,
             "bytes": g.bytes,
-            "hosts": _host_rows(g.hosts),
+            "hosts": _host_rows(g.hosts, classify),
             "endpoints": _endpoint_rows(g.endpoints),
             "messages": _message_rows(g.messages),
         }
@@ -499,6 +574,28 @@ def _findings_section(findings: list[Finding], focus: str, show_values: bool,
 def estimate_tokens(obj: Any) -> int:
     """Rough token estimate: ``len(compact json) / 4``."""
     return len(json.dumps(obj, separators=(",", ":"), ensure_ascii=False)) // 4
+
+
+def fit_budget(ordered, assemble, budget, *, cost):
+    """Drop items (in the given drop-first order) until assemble(kept) fits `budget`.
+
+    Measures each item's cost once (single pass) then an exact top-up; O(n log n).
+    ``ordered`` MUST be pre-sorted drop-first (lowest priority first).
+    """
+    total = estimate_tokens(assemble(ordered))
+    if total <= budget:
+        return list(ordered), []
+    n_drop = 0
+    for item in ordered:
+        if total <= budget:
+            break
+        total -= cost(item) + 1  # +1 approximates the JSON separator
+        n_drop += 1
+    dropped = list(ordered[:n_drop])
+    kept = list(ordered[n_drop:])
+    while kept and estimate_tokens(assemble(kept)) > budget:  # exact top-up (rare)
+        dropped.append(kept.pop(0))
+    return kept, dropped
 
 
 # Drop tiers (lowest first): info findings, then traffic rows and low/medium
@@ -669,6 +766,44 @@ def scan_tap(tap_path: str, selector: FlowSelector | None = None,
     return scan
 
 
+def _host_classifier(attribute: bool, first_party: list[str] | None):
+    """Return a ``host -> dict`` attribution callable, or ``None`` when not requested.
+
+    Enrichment is requested by ``attribute=True`` or a non-empty ``first_party``;
+    otherwise ``None`` is returned so the digest stays byte-identical. The
+    attribution subsystem is imported lazily (no cost on the common path).
+    """
+    if not attribute and not first_party:
+        return None
+    from friTap.analysis.attribution import make_classifier
+
+    return make_classifier(first_party or ())
+
+
+def _host_counts(agg: _Aggregator) -> dict[str, int]:
+    """Total flow count per contacted host across all groups (for inference)."""
+    counts: dict[str, int] = {}
+    for group in agg.groups.values():
+        for host, row in group.hosts.items():
+            counts[host] = counts.get(host, 0) + row.count
+    return counts
+
+
+def _resolve_first_party(first_party, agg: _Aggregator):
+    """Resolve a ``first_party`` argument, inferring the set when it is ``"auto"``.
+
+    A list or ``None`` is returned unchanged; the ``"auto"`` sentinel
+    (:data:`friTap.analysis.attribution.AUTO_FIRST_PARTY`) is replaced by the
+    domains :func:`infer_first_party` derives from the digested hosts. The
+    attribution subsystem is imported only when inference is actually requested.
+    """
+    if first_party != "auto":  # attribution.AUTO_FIRST_PARTY; literal keeps the common path import-free
+        return first_party
+    from friTap.analysis.attribution import infer_first_party, make_classifier
+
+    return infer_first_party(_host_counts(agg), make_classifier(()))
+
+
 def build_digest(
     tap_path: str,
     *,
@@ -678,6 +813,8 @@ def build_digest(
     filter_expr: str | None = None,
     budget_tokens: int = DEFAULT_BUDGET_TOKENS,
     show_values: bool = False,
+    attribute: bool = False,
+    first_party: list[str] | str | None = None,
     scan: ScanResult | None = None,
 ) -> dict:
     """Build a token-budgeted digest of the capture at *tap_path*.
@@ -693,6 +830,14 @@ def build_digest(
         filter_expr: Display-filter expression (see ``friTap.filter``).
         budget_tokens: Soft size limit; lowest-volume rows are dropped first.
         show_values: Reveal finding values (default: redacted).
+        attribute: When true, annotate each host row with trusted
+            ``owner``/``category``/``party`` (offline tracker attribution).
+            Absent/false leaves the digest byte-identical to an unenriched one.
+        first_party: Domains to treat as first-party when attributing hosts
+            (implies ``attribute``; each is reduced to its registrable domain).
+            The string ``"auto"`` infers the set from the digested hosts (the
+            most-contacted non-tracker registrable domains; see
+            :func:`friTap.analysis.attribution.infer_first_party`).
         scan: A precomputed :func:`scan_tap` result of the same selection, run
             with ``builtin_analyzers(show_values, focus)`` (e.g. a cached one);
             skips the capture pass. ``None`` scans *tap_path*.
@@ -704,6 +849,8 @@ def build_digest(
     if scan is None:
         selector = FlowSelector(protocol=protocol, app_protocol=app_protocol, filter_expr=filter_expr)
         scan = scan_tap(tap_path, selector, builtin_analyzers(show_values, focus))
+    first_party = _resolve_first_party(first_party, scan.agg)
+    classify = _host_classifier(attribute, first_party)
     digest: dict[str, Any] = {
         "schema": SCHEMA,
         "source": {"file": os.path.basename(tap_path), "fritap_version": scan.fritap_version,
@@ -712,10 +859,13 @@ def build_digest(
                    "filter": filter_expr, "budget_tokens": budget_tokens,
                    "show_values": show_values},
         "notice": UNTRUSTED_NOTICE,
-        "protocols": protocol_sections(scan.agg),
+        "protocols": protocol_sections(scan.agg, classify),
         "findings": _findings_section(scan.findings, focus, show_values, scan.ordinals),
         "truncated": False,
     }
+    if classify is not None:
+        digest["params"]["attribute"] = True
+        digest["params"]["first_party"] = list(first_party or ())
     _apply_budget(digest, budget_tokens)
     digest["estimated_tokens"] = estimate_tokens(digest)
     return digest
@@ -732,6 +882,7 @@ __all__ = [
     "builtin_analyzers",
     "validate_digest_args",
     "estimate_tokens",
+    "fit_budget",
     "finding_rows",
     "protocol_sections",
     "scan_tap",

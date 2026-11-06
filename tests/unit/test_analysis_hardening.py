@@ -331,14 +331,20 @@ _PATHOLOGICAL = [
 
 
 def test_regex_scans_on_5mb_pathological_input_are_fast():
+    # Guards against catastrophic regex backtracking (ReDoS). Measure CPU time,
+    # not wall-clock: catastrophic backtracking explodes the CPU the scan burns
+    # regardless of machine load, whereas co-scheduled load only steals
+    # wall-clock. A wall-clock bound flakes under CPU contention (e.g. parallel
+    # CI); a CPU-time bound stays meaningful. The ceiling is generous enough for
+    # a slow CI core yet orders of magnitude below any real ReDoS.
     for body in _PATHOLOGICAL:
         flow = _flow(req_body=body, resp_body=body, resp_content_type="text/plain")
-        start = time.monotonic()
+        start = time.process_time()
         CredentialAnalyzer().analyze_flow(flow)
         PrivacyAnalyzer().analyze_flow(flow)
         IocAnalyzer().analyze_flow(flow)
-        elapsed = time.monotonic() - start
-        assert elapsed < 2.0, (body[:10], elapsed)
+        cpu_elapsed = time.process_time() - start
+        assert cpu_elapsed < 3.0, (body[:10], cpu_elapsed)
 
 
 def test_email_pattern_still_matches_normal_addresses():

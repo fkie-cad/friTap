@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "oneOf": [
+    {
+      "required": [
+        "tap"
+      ]
+    },
+    {
+      "required": [
+        "session_id"
+      ]
+    }
+  ],
+  "properties": {
+    "budget": {
+      "default": 1500,
+      "description": "Approximate token budget; lowest-confidence hits drop first.",
+      "maximum": 8000,
+      "minimum": 100,
+      "type": "integer"
+    },
+    "session_id": {
+      "description": "Id of a capture session started with start_capture.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "show_values": {
+      "default": false,
+      "description": "Show raw captured values instead of redacting them.",
+      "type": "boolean"
+    },
+    "tap": {
+      "description": "Path to a .tap capture file (inside the sandbox root).",
+      "minLength": 1,
+      "type": "string"
+    },
+    "values": {
+      "description": "Known values (email, ad-id, GPS fix, free string, ...) to search for across decoded traffic.",
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "description": "How to normalize it before searching. Canonical kinds: aaid, android_id, email, free, gps, imei, ip, phone. Aliases: advertising_id/idfa/gaid/adid/idfv -> aaid; geo/geolocation/location -> gps.",
+            "enum": [
+              "aaid",
+              "adid",
+              "advertising_id",
+              "android_id",
+              "email",
+              "free",
+              "gaid",
+              "geo",
+              "geolocation",
+              "gps",
+              "idfa",
+              "idfv",
+              "imei",
+              "ip",
+              "location",
+              "phone"
+            ],
+            "type": "string"
+          },
+          "label": {
+            "description": "A name for this canary in the results.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "value": {
+            "description": "The exact value to trace (never logged).",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "value",
+          "label"
+        ],
+        "type": "object"
+      },
+      "minItems": 1,
+      "type": "array"
+    }
+  },
+  "required": [
+    "values"
+  ],
+  "title": "find_values parameters",
+  "type": "object"
+}

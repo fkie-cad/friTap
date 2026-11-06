@@ -1300,6 +1300,14 @@ Offline (read / analyze .tap):
                            "keylog label strings and derives the ctx offsets from its prologue. Use it "
                            "to verify tier 4 on modules a pattern would otherwise cover. Still honours "
                            "--pairip-safe (tier 4 is a memory scan). No effect on non-arm64 targets.")
+    args.add_argument("--attribute-sdk", required=False, action="store_const",
+                      const=True, default=False, dest="attribute_sdk",
+                      help="OPT-IN (off by default). Capture the calling thread's backtrace once per "
+                           "connection at the first TLS plaintext hook and emit it as an additive "
+                           "'caller_stack' message, so decrypted traffic can be attributed to the SDK / "
+                           "app code that produced it. Adds per-connection attribution metadata only; it "
+                           "never changes, delays or drops captured traffic. Both native and (on Android) "
+                           "Java frames are recorded.")
     args.add_argument("--owner-capture", "-oc", required=False, action="store_const",
                       const=True, default=False, dest="owner_capture",
                       help="Android/Linux: scope the full packet capture (-f) to ONLY the target "
@@ -1789,6 +1797,7 @@ Offline (read / analyze .tap):
             pairip_safe=getattr(parsed, 'pairip_safe', False),
             probe=parsed.probe,
             force_anchor_locator=getattr(parsed, 'force_anchor_locator', False),
+            attribute_sdk=getattr(parsed, 'attribute_sdk', False),
             quic_egress_headers_layer=getattr(parsed, 'quic_egress_headers_layer', 'auto'),
             scan_keys_region=getattr(parsed, 'scan_keys_region', None),
             memory_scan=bool(getattr(parsed, 'memory_scan', False)),

@@ -878,6 +878,7 @@ class CaptureController:
             # Wire FlowCollector to event bus for data events
             if self._flow_collector is not None:
                 from friTap.events import (
+                    CallerStackEvent,
                     DatalogEvent,
                     KeylogEvent,
                     LibraryDetectedEvent,
@@ -900,6 +901,10 @@ class CaptureController:
                 )
                 self._ssl_logger._event_bus.subscribe(
                     SessionEvent, self._flow_collector.on_session_event
+                )
+                # Opt-in SDK attribution (--attribute-sdk): resolved caller-stack SDK.
+                self._ssl_logger._event_bus.subscribe(
+                    CallerStackEvent, self._flow_collector.on_sdk
                 )
                 # Give FlowCollector access to EventBus for emitting FlowEvents
                 self._flow_collector.set_event_bus(self._ssl_logger._event_bus)

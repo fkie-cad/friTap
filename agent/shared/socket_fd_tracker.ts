@@ -58,6 +58,10 @@
 
 import { devlog } from "../util/log.js";
 import { SslFdCache } from "./ssl_fd_cache.js";
+// SDK-attribution dedup eviction (opt-in; inert when --attribute-sdk is off, the
+// set is then always empty). Aliased: this module already exports its own fd-cache
+// forgetSsl(NativePointer).
+import { forgetSsl as forgetCallerStackSsl } from "./sdk_backtrace.js";
 
 const SOCK_STREAM = 1; // portable across Linux/Android/macOS/iOS
 
@@ -247,6 +251,18 @@ function forgetFd(fd: number): void {
     }
 }
 
+/**
+ * The stream fd an earlier scoped call of `ssl` did I/O on, or -1 when unknown.
+ * Read-only view of the SSL->fd recovery cache; used by the opt-in SDK-attribution
+ * path (buildCallerStackJoin) to resolve a BIO-based connection's peer 5-tuple
+ * from the SSL object when SSL_get_fd() returns -1. Empty (always -1) until a
+ * scoped fd-less call has been observed, so it costs nothing on socket-based stacks.
+ */
+export function cachedSslFd(ssl: NativePointer): number {
+    if (sslToFd.size === 0) return -1;
+    return sslToFd.get(ssl.toString()) ?? -1;
+}
+
 /** SSL_free(ssl): the pointer may be reused by a new SSL object of another connection. */
 export function forgetSsl(ssl: NativePointer): void {
     if (sslToFd.size === 0) return;
@@ -362,6 +378,6 @@ export function installSslScopeHooks(moduleName: string, getFd: (ssl: NativePoin
         });
     }
     attachOnce(findModuleExport(moduleName, "SSL_free"), {
-        onEnter(args) { forgetSsl(args[0]); },
+        onEnter(args) { forgetSsl(args[0]); forgetCallerStackSsl(args[0].toString()); },
     });
 }

@@ -23,7 +23,11 @@ from typing import Any, Literal, Union, get_args, get_origin
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from pydantic import BaseModel  # noqa: E402
+
 from friTap.schemas.agent_messages import (  # noqa: E402
+    CallerFrame,
+    CallerStackMessage,
     ConnectionLifecycleMessage,
     ConsoleDebugMessage,
     ConsoleDevMessage,
@@ -114,6 +118,10 @@ def python_type_to_ts(annotation: Any) -> str:
     if annotation in TYPE_MAP:
         return TYPE_MAP[annotation]
 
+    # Nested Pydantic models -> their generated interface name (e.g. CallerFrame).
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return annotation.__name__
+
     # Handle dict
     if origin is dict:
         key_type, val_type = get_args(annotation)
@@ -176,6 +184,11 @@ def generate_union_type(models: list[type]) -> str:
 
 def generate_all() -> str:
     """Generate the complete TypeScript file content."""
+    # Nested value objects referenced by a message field: emitted as interfaces
+    # only (no type guard, NOT part of the AgentMessage union).
+    supporting_models = [
+        CallerFrame,
+    ]
     models = [
         KeylogMessage,
         DatalogMessage,
@@ -195,9 +208,14 @@ def generate_all() -> str:
         IPSecIKEKeysMessage,
         IPSecESPKeysMessage,
         OhttpPlaintextMessage,
+        CallerStackMessage,
     ]
 
     parts = [HEADER]
+
+    for model in supporting_models:
+        parts.append(generate_interface(model))
+        parts.append("")
 
     for model in models:
         parts.append(generate_interface(model))

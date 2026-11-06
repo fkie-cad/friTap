@@ -1,0 +1,175 @@
+{
+  "schema": "fritap.sdk_signatures/1",
+  "source": "friTap curated SDK signature seed",
+  "source_url": "https://reports.exodus-privacy.eu.org/api/trackers",
+  "license": "Curated seed (friTap); optional Exodus Privacy merge is AGPL — see data/README.md",
+  "kind": "seed",
+  "entry_count": 33,
+  "entries": {
+    "com.adjust.sdk": {
+      "sdk": "Adjust",
+      "vendor": "Adjust",
+      "category": "attribution"
+    },
+    "com.amplitude": {
+      "sdk": "Amplitude",
+      "vendor": "Amplitude",
+      "category": "analytics"
+    },
+    "com.appboy": {
+      "sdk": "Braze",
+      "vendor": "Braze",
+      "category": "analytics"
+    },
+    "com.applovin": {
+      "sdk": "AppLovin",
+      "vendor": "AppLovin",
+      "category": "advertising"
+    },
+    "com.appsflyer.": {
+      "sdk": "AppsFlyer",
+      "vendor": "AppsFlyer",
+      "category": "attribution"
+    },
+    "com.braze": {
+      "sdk": "Braze",
+      "vendor": "Braze",
+      "category": "analytics"
+    },
+    "com.bugsnag": {
+      "sdk": "Bugsnag",
+      "vendor": "SmartBear",
+      "category": "crash_reporting"
+    },
+    "com.chartboost": {
+      "sdk": "Chartboost",
+      "vendor": "Chartboost",
+      "category": "advertising"
+    },
+    "com.crashlytics": {
+      "sdk": "Crashlytics",
+      "vendor": "Google",
+      "category": "crash_reporting"
+    },
+    "com.facebook.": {
+      "sdk": "Facebook SDK",
+      "vendor": "Meta",
+      "category": "social"
+    },
+    "com.flurry": {
+      "sdk": "Flurry",
+      "vendor": "Yahoo",
+      "category": "analytics"
+    },
+    "com.google.android.gms.": {
+      "sdk": "Google Play Services",
+      "vendor": "Google",
+      "category": "other"
+    },
+    "com.google.android.gms.ads": {
+      "sdk": "Google Mobile Ads",
+      "vendor": "Google",
+      "category": "advertising"
+    },
+    "com.google.android.gms.measurement": {
+      "sdk": "Google Analytics for Firebase",
+      "vendor": "Google",
+      "category": "analytics"
+    },
+    "com.google.firebase.": {
+      "sdk": "Firebase",
+      "vendor": "Google",
+      "category": "analytics"
+    },
+    "com.google.firebase.crashlytics": {
+      "sdk": "Crashlytics",
+      "vendor": "Google",
+      "category": "crash_reporting"
+    },
+    "com.ironsource": {
+      "sdk": "ironSource",
+      "vendor": "Unity",
+      "category": "advertising"
+    },
+    "com.mixpanel": {
+      "sdk": "Mixpanel",
+      "vendor": "Mixpanel",
+      "category": "analytics"
+    },
+    "com.onesignal": {
+      "sdk": "OneSignal",
+      "vendor": "OneSignal",
+      "category": "push"
+    },
+    "com.segment.analytics": {
+      "sdk": "Segment",
+      "vendor": "Twilio",
+      "category": "analytics"
+    },
+    "com.squareup.okhttp": {
+      "sdk": "OkHttp",
+      "vendor": "Square",
+      "category": "networking"
+    },
+    "com.unity3d.": {
+      "sdk": "Unity",
+      "vendor": "Unity",
+      "category": "framework"
+    },
+    "com.unity3d.ads": {
+      "sdk": "Unity Ads",
+      "vendor": "Unity",
+      "category": "advertising"
+    },
+    "com.urbanairship": {
+      "sdk": "Airship",
+      "vendor": "Airship",
+      "category": "push"
+    },
+    "com.vungle": {
+      "sdk": "Vungle",
+      "vendor": "Vungle",
+      "category": "advertising"
+    },
+    "io.branch.": {
+      "sdk": "Branch",
+      "vendor": "Branch",
+      "category": "attribution"
+    },
+    "io.sentry": {
+      "sdk": "Sentry",
+      "vendor": "Sentry",
+      "category": "crash_reporting"
+    },
+    "libcronet": {
+      "sdk": "Cronet",
+      "vendor": "Google",
+      "category": "networking"
+    },
+    "libflutter.so": {
+      "sdk": "Flutter",
+      "vendor": "Google",
+      "category": "framework"
+    },
+    "libhermes.so": {
+      "sdk": "React Native",
+      "vendor": "Meta",
+      "category": "framework"
+    },
+    "libreactnativejni.so": {
+      "sdk": "React Native",
+      "vendor": "Meta",
+      "category": "framework"
+    },
+    "okhttp3": {
+      "sdk": "OkHttp",
+      "vendor": "Square",
+      "category": "networking"
+    },
+    "retrofit2": {
+      "sdk": "Retrofit",
+      "vendor": "Square",
+      "category": "networking"
+    }
+  }
+}

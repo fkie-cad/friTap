@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import os
 import threading
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
@@ -142,6 +142,7 @@ def digest(tap: Path, params: dict[str, Any]) -> dict[str, Any]:
         str(tap), focus=focus, protocol=params.get("protocol"),
         app_protocol=params.get("app_protocol"), filter_expr=params.get("filter"),
         budget_tokens=params["budget"], show_values=params.get("show_values", False),
+        attribute=params.get("attribute", False), first_party=params.get("first_party"),
         scan=digest_scan(tap, params),
     )
 
@@ -227,6 +228,89 @@ def findings(tap: Path, params: dict[str, Any]) -> tuple[dict[str, Any], dict[st
     return _source(tap, scan), summary, finding_rows(selected, show_values, scan.ordinals)
 
 
+# ---------------------------------------------------------------------------
+# Canary known-value search (find_values)
+# ---------------------------------------------------------------------------
+
+#: Confidence ranking for budget trimming (lowest-confidence rows drop first).
+from friTap.analysis.canary import _CONFIDENCE_RANK
+
+
+def _count_by(rows: list[dict], key: str) -> dict[str, int]:
+    """Count rows grouped by ``row[key]`` (sorted for a stable document)."""
+    return dict(sorted(Counter(str(r.get(key, "")) for r in rows).items()))
+
+
+def _canary_warnings(canaries: list) -> list[dict]:
+    """The non-empty ``Canary.warning`` notes, as serializable rows."""
+    return [{"label": c.label, "kind": c.kind, "warning": c.warning}
+            for c in canaries if c.warning]
+
+
+def _find_values_body(tap: Path, flows_total: int,
+                      canaries: list, rows: list[dict], budget: int | None) -> dict[str, Any]:
+    """Assemble the (optionally budget-trimmed) ``find_values`` result body."""
+    from friTap.analysis import digest
+
+    warnings = _canary_warnings(canaries)
+
+    def assemble(kept: list[dict]) -> dict[str, Any]:
+        kept_ids = {id(row) for row in kept}
+        in_order = [row for row in rows if id(row) in kept_ids]  # keep original order
+        body: dict[str, Any] = {
+            "source": {"file": tap.name, "flows_total": flows_total},
+            "summary": {"hits": len(in_order), "canaries": len(canaries),
+                        "by_label": _count_by(in_order, "label"),
+                        "by_confidence": _count_by(in_order, "confidence")},
+            "warnings": warnings,
+            "rows": in_order,
+        }
+        dropped = len(rows) - len(in_order)
+        if dropped:
+            body["truncated"] = digest._truncated_marker(Counter({"rows": dropped}))
+        return body
+
+    if budget is None:
+        return assemble(list(rows))
+
+    # Drop lowest-confidence first; fit_budget measures each row's cost once.
+    ordered = sorted(rows, key=lambda r: _CONFIDENCE_RANK.get(r.get("confidence", ""), 0))
+    kept, _dropped = digest.fit_budget(ordered, assemble, budget,
+                                       cost=digest.estimate_tokens)
+    return assemble(kept)
+
+
+def find_values(tap: Path, params: dict[str, Any]) -> dict[str, Any]:
+    """Search a capture for the operator's known canary values.
+
+    Expands each ``{value, kind, label}`` spec into its obvious obfuscations
+    and scans every decoded flow. Matched spans stay under ``untrusted`` and
+    are withheld unless ``show_values`` (gated by the registry / server policy).
+    """
+    from friTap.analysis import canary
+    from friTap.analysis.digest import flow_ref
+    from friTap.flow.tap_reader import TapReader
+
+    canaries = canary.parse_canaries(params.get("values") or [])
+    show_values = bool(params.get("show_values", False))
+    candidates = canary.build_candidates(canaries)
+
+    # Stream flows once (don't hold every decoded body in memory) and tag each
+    # hit with the shared f<N> ref the other read tools emit, not the raw id.
+    rows: list[dict] = []
+    flows_total = 0
+    with TapReader(str(tap)) as reader:
+        for ordinal, _summary, flow in reader.iter_flows():
+            flows_total += 1
+            ref = flow_ref(ordinal)
+            for hit in canary.scan_flow(flow, candidates):
+                row = canary.hit_to_row(hit, show_values)
+                row.pop("flow_id", None)
+                row["ref"] = ref
+                rows.append(row)
+    return _find_values_body(tap, flows_total, canaries, rows, params.get("budget"))
+
+
 __all__ = [
     "FLOW_FIELDS",
     "SCAN_CACHE_SIZE",
@@ -239,6 +323,7 @@ __all__ = [
     "digest_markdown",
     "endpoints",
     "findings",
+    "find_values",
     "flow_detail",
     "project_flow_fields",
     "selector_for",

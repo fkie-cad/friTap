@@ -193,6 +193,11 @@ class ContentType:
     # One-shot dry-run diagnostic (--probe): the agent reports which platform
     # branch it selected and, in probe mode, stops before installing hooks.
     PLATFORM_REPORT = "platform_report"
+    # Opt-in SDK/caller attribution (--attribute-sdk): the calling-thread
+    # backtrace captured once per connection at the first TLS plaintext hook.
+    # Additive and attribution-only; carries no key material or plaintext. The
+    # host resolves it to an owning SDK and attaches it to the matching flow.
+    CALLER_STACK = "caller_stack"
     ERROR = "error"
 
 

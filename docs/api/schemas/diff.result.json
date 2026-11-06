@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "a": {
+      "type": "string"
+    },
+    "added": {
+      "items": {
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "b": {
+      "type": "string"
+    },
+    "changed": {
+      "items": {
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "markdown": {
+      "type": "string"
+    },
+    "mode": {
+      "type": "string"
+    },
+    "notice": {
+      "type": "string"
+    },
+    "removed": {
+      "items": {
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "schema": {
+      "enum": [
+        "fritap.diff/1",
+        "fritap.diff_md/1"
+      ]
+    },
+    "summary": {
+      "type": "object"
+    },
+    "truncated": {}
+  },
+  "title": "diff result",
+  "type": "object"
+}

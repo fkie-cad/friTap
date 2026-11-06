@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "notice": {
+      "type": "string"
+    },
+    "rows": {
+      "items": {
+        "properties": {
+          "confidence": {
+            "type": "string"
+          },
+          "direction": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "ref": {
+            "type": "string"
+          },
+          "transform": {
+            "type": "string"
+          },
+          "untrusted": {
+            "type": "object"
+          },
+          "where": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "schema": {
+      "const": "fritap.find_values/1"
+    },
+    "source": {
+      "properties": {
+        "file": {
+          "type": "string"
+        },
+        "flows_total": {
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "summary": {
+      "properties": {
+        "by_confidence": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "type": "object"
+        },
+        "by_label": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "type": "object"
+        },
+        "canaries": {
+          "type": "integer"
+        },
+        "hits": {
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "truncated": {},
+    "warnings": {
+      "items": {
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "warning": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "type": "array"
+    }
+  },
+  "title": "find_values result",
+  "type": "object"
+}

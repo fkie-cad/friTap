@@ -298,7 +298,7 @@ def test_tap_handler_close_with_mocks_is_idempotent():
     collector = types.SimpleNamespace(
         subscribe=lambda cb: None, flush=lambda: calls.append("flush"),
         get_flows=lambda: [flow], on_data=None, on_ohttp=None,
-        on_library_detected=None, on_session_event=None)
+        on_library_detected=None, on_session_event=None, on_sdk=None)
     writer = types.SimpleNamespace(
         open=lambda path, target="": calls.append("open"), path="x.tap", flow_count=1,
         written_flow_ids=set(), on_flow_event=None,
@@ -320,7 +320,8 @@ def test_tap_handler_still_finalizes_when_flush_raises():
 
     collector = types.SimpleNamespace(subscribe=lambda cb: None, flush=boom,
                                       get_flows=lambda: [], on_data=None, on_ohttp=None,
-                                      on_library_detected=None, on_session_event=None)
+                                      on_library_detected=None, on_session_event=None,
+                                      on_sdk=None)
     writer = types.SimpleNamespace(open=lambda path, target="": None, path="x.tap",
                                    flow_count=0, written_flow_ids=set(),
                                    on_flow_event=None, write_flow=None,
