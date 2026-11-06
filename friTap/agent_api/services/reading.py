@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from friTap.agent_api.services.protocols import check_slice
+from friTap.analysis.canary import _CONFIDENCE_RANK  # lowest-confidence rows trim first
 
 FLOW_FIELDS = ("flow", "request", "response", "messages")
 _FLOW_BASE_KEYS = ("schema", "source", "params", "notice")
@@ -231,10 +232,6 @@ def findings(tap: Path, params: dict[str, Any]) -> tuple[dict[str, Any], dict[st
 # ---------------------------------------------------------------------------
 # Canary known-value search (find_values)
 # ---------------------------------------------------------------------------
-
-#: Confidence ranking for budget trimming (lowest-confidence rows drop first).
-from friTap.analysis.canary import _CONFIDENCE_RANK
-
 
 def _count_by(rows: list[dict], key: str) -> dict[str, int]:
     """Count rows grouped by ``row[key]`` (sorted for a stable document)."""

@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """Regenerate the attribution datasets from upstream, deterministically.
 

@@ -1840,7 +1840,7 @@
   },
   "info": {
     "title": "friTap agent API",
-    "version": "2.6.3"
+    "version": "2.6.4"
   },
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "openapi": "3.1.0",

@@ -27,7 +27,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, Optional, Tuple, Tuple
+from typing import Dict, Iterable, Optional, Tuple
 
 _DATA_DIR = Path(__file__).resolve().parent / "data"
 DEFAULT_SDK_SIGNATURES_PATH = _DATA_DIR / "sdk_signatures.json"

@@ -28,7 +28,6 @@ from friTap.analysis.canary import (
 from friTap.flow.models import Flow, FlowChunk, FlowState
 from friTap.parsers.base import ParseResult
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

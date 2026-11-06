@@ -399,7 +399,11 @@ def _diff_classifier(first_party, host_counts_fn):
     are comparable across A/B) or falsy (none). *host_counts_fn* is a zero-arg
     callable returning the union ``{host: count}``; it runs only for ``"auto"``.
     """
-    from friTap.analysis.attribution import AUTO_FIRST_PARTY, infer_first_party, make_classifier
+    from friTap.analysis.attribution import (
+        AUTO_FIRST_PARTY,
+        infer_first_party,
+        make_classifier,
+    )
 
     if first_party == AUTO_FIRST_PARTY:
         first_party = infer_first_party(host_counts_fn(), make_classifier(()))
@@ -410,7 +414,11 @@ def _build_diff(params: dict, ctx: ToolContext):
     from friTap.agent_api.paths import resolve_under_root
     from friTap.agent_api.services.sources import TAP_SUFFIX
     from friTap.analysis.diff import (
-        diff_phases, diff_taps, host_counts_phases, host_counts_taps, load_phases,
+        diff_phases,
+        diff_taps,
+        host_counts_phases,
+        host_counts_taps,
+        load_phases,
     )
 
     first_party = params.get("first_party")

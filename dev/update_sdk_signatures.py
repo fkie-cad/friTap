@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """Regenerate / extend the bundled SDK signature table, deterministically.
 
@@ -36,7 +35,7 @@ import sys
 import urllib.request
 from collections import OrderedDict
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Optional
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "friTap" / "analysis" / "attribution" / "data"
 SIGNATURES_PATH = DATA_DIR / "sdk_signatures.json"

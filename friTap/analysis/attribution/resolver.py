@@ -31,7 +31,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional
 
 _DATA_DIR = Path(__file__).resolve().parent / "data"
 DEFAULT_TRACKERS_PATH = _DATA_DIR / "trackers.json"

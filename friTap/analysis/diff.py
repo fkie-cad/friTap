@@ -36,7 +36,7 @@ import json
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterable, Iterator, Optional
+from typing import Any, Callable, Iterable, Optional
 
 from friTap.analysis._digest_shapes import MAX_TEXT_CHARS, safe_untrusted
 from friTap.analysis.digest import (

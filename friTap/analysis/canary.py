@@ -31,7 +31,11 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Iterable
 from urllib.parse import parse_qs, quote, quote_plus, urlparse
 
-from friTap.analysis._digest_shapes import MAX_HOST_CHARS, MAX_TEXT_CHARS, safe_untrusted
+from friTap.analysis._digest_shapes import (
+    MAX_HOST_CHARS,
+    MAX_TEXT_CHARS,
+    safe_untrusted,
+)
 from friTap.analysis._limits import MAX_SCAN_BYTES, bounded_text
 from friTap.analysis.credentials import _shannon_entropy
 

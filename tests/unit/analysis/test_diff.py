@@ -18,7 +18,6 @@ import pytest
 
 from friTap.analysis.diff import (
     SCHEMA,
-    DiffResult,
     diff_phases,
     diff_taps,
     load_phases,
