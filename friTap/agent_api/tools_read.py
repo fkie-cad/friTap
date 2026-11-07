@@ -171,6 +171,9 @@ def _digest_params() -> dict[str, dict]:
             "description": "Domains to treat as first-party when attributing hosts "
                            "(implies attribute), or \"auto\" to infer the app's own "
                            "non-tracker backend domains from the capture."},
+        "masvs": {"type": "boolean", "default": False,
+                  "description": "Tag each finding with the OWASP MASVS v2.1 "
+                                 "controls it maps to (e.g. MASVS-NETWORK-1)."},
         **SHOW_VALUES,
     }
 
@@ -269,6 +272,9 @@ _FINDINGS_SPEC = ToolSpec(
                      "description": "Only this finding category."},
         "min_severity": {"type": "string", "enum": list(SEVERITIES),
                          "description": "Only findings at least this severe."},
+        "masvs": {"type": "boolean", "default": False,
+                  "description": "Tag each finding with the OWASP MASVS v2.1 "
+                                 "controls it maps to (e.g. MASVS-NETWORK-1)."},
         **_COMPACT_PAGE,
         **SHOW_VALUES,
     }),
@@ -280,7 +286,8 @@ _FINDINGS_SPEC = ToolSpec(
             "total": _INT, "by_severity": _COUNTS, "by_category": _COUNTS}},
         "rows": {"type": "array", "items": {"type": "object", "properties": {
             "ref": _STR, "count": _INT, "severity": _STR, "category": _STR,
-            "source": _STR, "untrusted": {"type": "object"}}}},
+            "source": _STR, "masvs": {"type": "array", "items": _STR},
+            "untrusted": {"type": "object"}}}},
     }),
 )
 

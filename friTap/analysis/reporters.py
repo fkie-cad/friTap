@@ -24,6 +24,7 @@ import re
 from typing import Any, Protocol, runtime_checkable
 
 from friTap.analysis import Finding, Severity
+from friTap.analysis.masvs import classify_masvs
 from friTap.analysis.redaction import redact_finding
 
 # ---------------------------------------------------------------------------
@@ -146,10 +147,12 @@ def _prepare(findings: list[Finding], redact_pii: bool) -> list[Finding]:
 class JsonReporter:
     """Report findings as a JSON document."""
 
-    def __init__(self, *, indent: int = 2, include_meta: bool = True, redact_pii: bool = True) -> None:
+    def __init__(self, *, indent: int = 2, include_meta: bool = True, redact_pii: bool = True,
+                 masvs: bool = False) -> None:
         self._indent = indent
         self._include_meta = include_meta
         self._redact_pii = redact_pii
+        self._masvs = masvs
 
     def report(self, findings: list[Finding], meta: dict[str, Any] | None = None) -> str:
         findings = _prepare(findings, self._redact_pii)
@@ -159,9 +162,22 @@ class JsonReporter:
             output["meta"] = meta
 
         output["summary"] = self._build_summary(findings)
-        output["findings"] = [_finding_to_dict(f) for f in findings]
+        output["findings"] = [self._finding_entry(f) for f in findings]
 
         return json.dumps(output, indent=self._indent, default=str)
+
+    def _finding_entry(self, finding: Finding) -> dict[str, Any]:
+        """Finding dict, plus the MASVS controls it maps to when enabled.
+
+        The ``masvs`` key is added only when requested and non-empty, so the
+        default output is byte-identical to before.
+        """
+        entry = _finding_to_dict(finding)
+        if self._masvs:
+            controls = classify_masvs(finding)
+            if controls:
+                entry["masvs"] = controls
+        return entry
 
     def _build_summary(self, findings: list[Finding]) -> dict[str, Any]:
         source_counts: dict[str, int] = {}
@@ -187,17 +203,19 @@ class CsvReporter:
         "confidence", "description",
     ]
 
-    def __init__(self, *, redact_pii: bool = True) -> None:
+    def __init__(self, *, redact_pii: bool = True, masvs: bool = False) -> None:
         self._redact_pii = redact_pii
+        self._masvs = masvs
 
     def report(self, findings: list[Finding], meta: dict[str, Any] | None = None) -> str:
         findings = _prepare(findings, self._redact_pii)
         output = io.StringIO()
-        writer = csv.DictWriter(output, fieldnames=self._COLUMNS, extrasaction="ignore")
+        columns = [*self._COLUMNS, "masvs"] if self._masvs else self._COLUMNS
+        writer = csv.DictWriter(output, fieldnames=columns, extrasaction="ignore")
         writer.writeheader()
 
         for f in findings:
-            writer.writerow({
+            row = {
                 "severity": f.severity.value,
                 "title": _csv_cell(f.title),
                 "source": _csv_cell(f.source),
@@ -205,7 +223,10 @@ class CsvReporter:
                 "flow_id": _csv_cell(f.flow_id),
                 "confidence": f.confidence,
                 "description": _csv_cell(f.description),
-            })
+            }
+            if self._masvs:
+                row["masvs"] = ";".join(classify_masvs(f))
+            writer.writerow(row)
 
         return output.getvalue()
 
@@ -213,9 +234,11 @@ class CsvReporter:
 class MarkdownReporter:
     """Report findings as a Markdown document."""
 
-    def __init__(self, *, include_evidence: bool = False, redact_pii: bool = True) -> None:
+    def __init__(self, *, include_evidence: bool = False, redact_pii: bool = True,
+                 masvs: bool = False) -> None:
         self._include_evidence = include_evidence
         self._redact_pii = redact_pii
+        self._masvs = masvs
 
     def report(self, findings: list[Finding], meta: dict[str, Any] | None = None) -> str:
         findings = _prepare(findings, self._redact_pii)
@@ -263,6 +286,10 @@ class MarkdownReporter:
                         _markdown_text(c, single_line=True) for c in f.metadata["compliance"]
                     )
                     lines.append(f"- **Compliance:** {compliance}")
+                if self._masvs:
+                    controls = classify_masvs(f)
+                    if controls:
+                        lines.append(f"- **MASVS:** {', '.join(controls)}")
 
                 if self._include_evidence and f.evidence:
                     lines.append("\n**Evidence:**")
@@ -277,8 +304,9 @@ class MarkdownReporter:
 class TableReporter:
     """Report findings as an aligned text table (for terminal output)."""
 
-    def __init__(self, *, redact_pii: bool = True) -> None:
+    def __init__(self, *, redact_pii: bool = True, masvs: bool = False) -> None:
         self._redact_pii = redact_pii
+        self._masvs = masvs
 
     def report(self, findings: list[Finding], meta: dict[str, Any] | None = None) -> str:
         findings = _prepare(findings, self._redact_pii)
@@ -287,6 +315,11 @@ class TableReporter:
 
         lines: list[str] = []
         rows = [self._sanitized_row(f) for f in findings]
+
+        # Optional MASVS column (between Category and Title); None when disabled,
+        # so the default table layout is byte-identical.
+        masvs_cells = ([",".join(classify_masvs(f)) or "-" for f in findings]
+                       if self._masvs else None)
 
         # Compute column widths
         sev_w = max(len(f.severity.value) for f in findings)
@@ -298,9 +331,14 @@ class TableReporter:
         title_w = min(max(len(r["title"]) for r in rows), 60)
         title_w = max(title_w, 5)
 
+        masvs_head = ""
+        if masvs_cells is not None:
+            masvs_w = max(max((len(c) for c in masvs_cells), default=5), len("MASVS"))
+            masvs_head = f"{'MASVS':<{masvs_w}}  "
+
         header = (
             f"{'Severity':<{sev_w}}  {'Source':<{src_w}}  {'Category':<{cat_w}}  "
-            f"{'Title':<{title_w}}  Description"
+            f"{masvs_head}{'Title':<{title_w}}  Description"
         )
         sep = "-" * max(len(header), 80)
 
@@ -308,13 +346,14 @@ class TableReporter:
         lines.append(header)
         lines.append(sep)
 
-        for f, row in zip(findings, rows):
+        for i, (f, row) in enumerate(zip(findings, rows)):
             cat = row["category"]
             title = row["title"][:title_w]
             desc = row["description"][:80]
+            masvs_cell = f"{masvs_cells[i]:<{masvs_w}}  " if masvs_cells is not None else ""
             lines.append(
                 f"{f.severity.value:<{sev_w}}  {row['source']:<{src_w}}  {cat:<{cat_w}}  "
-                f"{title:<{title_w}}  {desc}"
+                f"{masvs_cell}{title:<{title_w}}  {desc}"
             )
 
         lines.append(sep)

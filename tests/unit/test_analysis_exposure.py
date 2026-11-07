@@ -122,12 +122,12 @@ def test_registry_resolution(monkeypatch):
     monkeypatch.setattr("friTap.analysis.registry._DISCOVERY_DONE", True)
 
     builtin = len(ANALYZER_REGISTRY)
-    assert builtin == 4
+    assert builtin == 5
     assert "privacy" in ANALYZER_REGISTRY
 
     for spec in (None, "all", ""):
         resolved = resolve_analyzers(spec)
-        assert len(resolved) == 4
+        assert len(resolved) == 5
         assert {a.name for a in resolved} == set(ANALYZER_REGISTRY)
 
     pair = resolve_analyzers("credentials,ioc")

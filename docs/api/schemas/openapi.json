@@ -731,6 +731,11 @@
             ],
             "type": "string"
           },
+          "masvs": {
+            "default": false,
+            "description": "Tag each finding with the OWASP MASVS v2.1 controls it maps to (e.g. MASVS-NETWORK-1).",
+            "type": "boolean"
+          },
           "protocol": {
             "description": "Only flows carrying this protocol (e.g. tls, http2, mtproto).",
             "minLength": 1,
@@ -1180,6 +1185,11 @@
             "minimum": 1,
             "type": "integer"
           },
+          "masvs": {
+            "default": false,
+            "description": "Tag each finding with the OWASP MASVS v2.1 controls it maps to (e.g. MASVS-NETWORK-1).",
+            "type": "boolean"
+          },
           "min_severity": {
             "description": "Only findings at least this severe.",
             "enum": [
@@ -1233,6 +1243,12 @@
                 },
                 "count": {
                   "type": "integer"
+                },
+                "masvs": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
                 },
                 "ref": {
                   "type": "string"
@@ -1840,7 +1856,7 @@
   },
   "info": {
     "title": "friTap agent API",
-    "version": "2.6.4"
+    "version": "2.6.5"
   },
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "openapi": "3.1.0",

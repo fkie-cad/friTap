@@ -52,12 +52,19 @@ def _make_privacy(*, reveal_pii: bool = False, verbose: bool = False, **_ignored
     return PrivacyAnalyzer(reveal_pii=reveal_pii, verbose=verbose)
 
 
+def _make_tls_hygiene(**_ignored) -> "BaseAnalyzer":
+    """Factory for TlsHygieneAnalyzer (takes no configuration)."""
+    from friTap.analysis.security import TlsHygieneAnalyzer
+    return TlsHygieneAnalyzer()
+
+
 # Name -> factory. Keys MUST equal each analyzer class's ``.name`` attribute.
 ANALYZER_REGISTRY: dict[str, Callable[..., "BaseAnalyzer"]] = {
     "ioc": _make_ioc,
     "credentials": _make_credentials,
     "privacy": _make_privacy,
     "protobuf": _make_protobuf,
+    "tls_hygiene": _make_tls_hygiene,
 }
 
 

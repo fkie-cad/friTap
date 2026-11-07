@@ -487,6 +487,7 @@ _ANALYZER_CATEGORIES: dict[str, frozenset[str]] = {
     "ioc": frozenset({"network", "pii"}),  # e-mail IOCs are pii
     "privacy": frozenset({"pii"}),
     "protobuf": frozenset({"protocol"}),
+    "tls_hygiene": frozenset({"network"}),  # weak TLS/cipher/cleartext; security focus
 }
 
 
@@ -529,13 +530,21 @@ def _shown_title(finding: Finding, show_values: bool) -> str:
 
 
 def finding_rows(findings: list[Finding], show_values: bool,
-                 ordinals: dict[str, int]) -> list[dict]:
+                 ordinals: dict[str, int], masvs: bool = False) -> list[dict]:
     """Cluster findings by (severity, category, source, title); most severe first.
 
     Redaction leaves severity/category/source alone, so clustering needs only
     the redacted title; the full :func:`redact_finding` (description) runs once
     per cluster, on its first finding.
+
+    When *masvs* is true, each cluster gains a trusted ``masvs`` list (the OWASP
+    MASVS controls the finding maps to) — but only when that list is non-empty,
+    so unmapped findings and the ``masvs=False`` default stay byte-identical.
     """
+    classify = None
+    if masvs:
+        from friTap.analysis.masvs import classify_masvs as classify
+
     clusters: dict[tuple, dict] = {}
     for finding in findings:
         key = (finding.severity.value, finding.category or "uncategorized", finding.source,
@@ -550,20 +559,24 @@ def finding_rows(findings: list[Finding], show_values: bool,
                 "untrusted": {"title": key[3],
                               "description": safe_untrusted(shown.description, MAX_TEXT_CHARS)},
             }
+            if classify is not None:
+                controls = classify(finding)
+                if controls:
+                    row["masvs"] = controls
         row["count"] += 1
     return sorted(clusters.values(),
                   key=lambda r: (severity_rank(r["severity"]), -r["count"], r["untrusted"]["title"]))
 
 
 def _findings_section(findings: list[Finding], focus: str, show_values: bool,
-                      ordinals: dict[str, int]) -> dict:
+                      ordinals: dict[str, int], masvs: bool = False) -> dict:
     selected = apply(findings, FindingFilter(categories=_FOCUS_CATEGORIES[focus]))
     stats = summarize(selected)
     return {
         "total": stats["total"],
         "by_severity": dict(sorted(stats["by_severity"].items(), key=lambda kv: severity_rank(kv[0]))),
         "by_category": dict(sorted(stats["by_category"].items())),
-        "top": finding_rows(selected, show_values, ordinals)[:TOP_FINDINGS],
+        "top": finding_rows(selected, show_values, ordinals, masvs)[:TOP_FINDINGS],
     }
 
 
@@ -766,6 +779,33 @@ def scan_tap(tap_path: str, selector: FlowSelector | None = None,
     return scan
 
 
+def scan_flows(flows: Iterable["Flow"], selector: FlowSelector | None = None,
+               analyzers: Iterable = (), *, fritap_version: str = "") -> ScanResult:
+    """Aggregate an in-memory iterable of flows into a :class:`ScanResult`.
+
+    The no-file counterpart of :func:`scan_tap`: a live TUI session holds decoded
+    flows in memory and has no ``.tap`` path, so this runs the same aggregation
+    and *analyzers* over the flows directly, for feeding to ``build_digest(...,
+    scan=...)``. Ordinals follow iteration order so digest refs (``f<N>``) stay
+    stable within the pass.
+    """
+    selector = selector or FlowSelector()
+    analyzers = list(analyzers)
+    result = ScanResult(agg=_Aggregator(), findings=[], ordinals={})
+    total = 0
+    for ordinal, flow in enumerate(flows, start=1):
+        total = ordinal
+        if not selector.matches(flow):
+            continue
+        result.ordinals[flow.flow_id] = ordinal
+        result.agg.add_flow(flow, _flow_bytes(flow, 0), ordinal)
+        for analyzer in analyzers:
+            result.findings.extend(run_analyzer_safely(analyzer, flow))
+    result.flows_total = total
+    result.fritap_version = fritap_version
+    return result
+
+
 def _host_classifier(attribute: bool, first_party: list[str] | None):
     """Return a ``host -> dict`` attribution callable, or ``None`` when not requested.
 
@@ -815,6 +855,7 @@ def build_digest(
     show_values: bool = False,
     attribute: bool = False,
     first_party: list[str] | str | None = None,
+    masvs: bool = False,
     scan: ScanResult | None = None,
 ) -> dict:
     """Build a token-budgeted digest of the capture at *tap_path*.
@@ -838,6 +879,9 @@ def build_digest(
             The string ``"auto"`` infers the set from the digested hosts (the
             most-contacted non-tracker registrable domains; see
             :func:`friTap.analysis.attribution.infer_first_party`).
+        masvs: When true, annotate each finding row with the OWASP MASVS v2.1
+            controls it maps to (:mod:`friTap.analysis.masvs`). Absent/false
+            leaves the digest byte-identical.
         scan: A precomputed :func:`scan_tap` result of the same selection, run
             with ``builtin_analyzers(show_values, focus)`` (e.g. a cached one);
             skips the capture pass. ``None`` scans *tap_path*.
@@ -860,12 +904,14 @@ def build_digest(
                    "show_values": show_values},
         "notice": UNTRUSTED_NOTICE,
         "protocols": protocol_sections(scan.agg, classify),
-        "findings": _findings_section(scan.findings, focus, show_values, scan.ordinals),
+        "findings": _findings_section(scan.findings, focus, show_values, scan.ordinals, masvs),
         "truncated": False,
     }
     if classify is not None:
         digest["params"]["attribute"] = True
         digest["params"]["first_party"] = list(first_party or ())
+    if masvs:
+        digest["params"]["masvs"] = True
     _apply_budget(digest, budget_tokens)
     digest["estimated_tokens"] = estimate_tokens(digest)
     return digest
@@ -886,6 +932,7 @@ __all__ = [
     "finding_rows",
     "protocol_sections",
     "scan_tap",
+    "scan_flows",
     "flow_group",
     "flow_ref",
     "parse_ref",

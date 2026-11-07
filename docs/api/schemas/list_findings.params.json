@@ -47,6 +47,11 @@
       "minimum": 1,
       "type": "integer"
     },
+    "masvs": {
+      "default": false,
+      "description": "Tag each finding with the OWASP MASVS v2.1 controls it maps to (e.g. MASVS-NETWORK-1).",
+      "type": "boolean"
+    },
     "min_severity": {
       "description": "Only findings at least this severe.",
       "enum": [

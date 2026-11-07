@@ -36,6 +36,7 @@ except ImportError:
     TEXTUAL_AVAILABLE = False
 
 from friTap.analysis import EVIDENCE_VALUE_KEYS, primary_evidence_value
+from friTap.analysis.masvs import classify_masvs
 from friTap.tui.themes import c
 from friTap.tui.widgets.wire_text import safe_static_text
 
@@ -194,6 +195,14 @@ if TEXTUAL_AVAILABLE:
             if primary is not None:
                 lines.append(f"[bold {c('warning')}]Matched value[/]")
                 lines.append(f"[{c('accent')}]{_esc(primary)}[/]")
+                lines.append("")
+
+            # OWASP MASVS controls this finding maps to (derived, same mapping
+            # the digest's `masvs` option uses). Shown only when non-empty.
+            controls = classify_masvs(f)
+            if controls:
+                lines.append(f"[bold {c('primary')}]MASVS[/]")
+                lines.append(_esc(", ".join(controls)))
                 lines.append("")
 
             ev = f.evidence or {}

@@ -28,7 +28,8 @@ Read **[docs/api/agent.md](docs/api/agent.md)**. In short:
   (narrow it with `--allow-target`); paths are confined to `--root`; key
   material needs `--allow-secrets`; unredacted finding values
   (`show_values: true`) need `--allow-values`.
-- Playbook: [docs/agents/privacy-audit.md](docs/agents/privacy-audit.md).
+- Playbooks: [docs/agents/privacy-audit.md](docs/agents/privacy-audit.md),
+  [docs/agents/security-audit.md](docs/agents/security-audit.md).
 
 ## Working on friTap
 

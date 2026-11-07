@@ -70,6 +70,11 @@
       ],
       "type": "string"
     },
+    "masvs": {
+      "default": false,
+      "description": "Tag each finding with the OWASP MASVS v2.1 controls it maps to (e.g. MASVS-NETWORK-1).",
+      "type": "boolean"
+    },
     "protocol": {
       "description": "Only flows carrying this protocol (e.g. tls, http2, mtproto).",
       "minLength": 1,

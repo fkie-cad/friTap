@@ -550,6 +550,7 @@ Hand-written schemas of the two streaming/document formats:
 ## See also
 
 - [Privacy audit playbook](../agents/privacy-audit.md)
+- [Security audit playbook](../agents/security-audit.md)
 - [CLI reference: machine-readable output](cli.md#machine-readable-output)
 - [Traffic analysis and the digest](../advanced/traffic-analysis.md)
 - [.tap file format](tap-format.md)

@@ -57,6 +57,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--show-values", action="store_true",
                         help="Reveal finding values (and, with --flow, payload values) "
                              "instead of redacting them.")
+    parser.add_argument("--masvs", action="store_true",
+                        help="Tag each finding with the OWASP MASVS v2.1 controls it maps "
+                             "to (e.g. MASVS-NETWORK-1); omitted, the digest is unchanged.")
     parser.add_argument("--flow", dest="flow_ref", default=None, metavar="REF",
                         help="Drill into one digest ref (f12, f12#m3, or a full flow id): "
                              "print its metadata and decoded messages instead of the digest.")
@@ -105,6 +108,7 @@ def _digest(args: argparse.Namespace) -> str:
         filter_expr=args.filter_expr,
         budget_tokens=args.budget,
         show_values=args.show_values,
+        masvs=args.masvs,
     )
     return RENDERERS[args.output_format](digest)
 

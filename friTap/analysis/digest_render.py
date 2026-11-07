@@ -60,8 +60,9 @@ def _message_line(row: dict) -> str:
 
 def _finding_line(row: dict) -> str:
     u = row["untrusted"]
+    masvs = f" [{', '.join(row['masvs'])}]" if row.get("masvs") else ""
     return (f"- {row['severity']}/{row['category']} x{row['count']} {_code(u['title'])} "
-            f"— {_code(u['description'])} ({row['ref'] or 'cross-flow'})")
+            f"— {_code(u['description'])} ({row['ref'] or 'cross-flow'}){masvs}")
 
 
 _SECTION_RENDERERS: tuple[tuple[str, str, Callable[[dict], str]], ...] = (

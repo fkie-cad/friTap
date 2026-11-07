@@ -119,6 +119,7 @@ def analyze_tap_report(
     source: str | None = None,
     category: str | None = None,
     show_pii: bool = False,
+    masvs: bool = False,
 ) -> AnalyzeReport:
     """Run analyzers over *tap_file* and return findings + a rendered report.
 
@@ -139,6 +140,8 @@ def analyze_tap_report(
       (``secret``/``pii``/``network``/``protocol``).
     * ``show_pii`` — reveal PII/secret values instead of redacting them
       (forwarded to analyzers as ``reveal_pii``; default redacts).
+    * ``masvs`` — add the OWASP MASVS v2.1 controls each finding maps to
+      (a column/field in the report); default off leaves the report unchanged.
 
     Raises ``ValueError`` for an unknown *report_format* or an unresolvable
     analyzer spec, ``ImportError`` for a bad ``analyzer_path``; any .tap
@@ -172,7 +175,7 @@ def analyze_tap_report(
     meta = {"tap_file": tap_file, "analyzers": analyzer_names}
     # AnalyzeReport.findings keep full fidelity; only the rendered report is
     # redacted (unless show_pii). The reporter is the redaction enforcement point.
-    rendered = _REPORTER_REGISTRY[report_format](redact_pii=not show_pii).report(filtered, meta)
+    rendered = _REPORTER_REGISTRY[report_format](redact_pii=not show_pii, masvs=masvs).report(filtered, meta)
     return AnalyzeReport(
         findings=filtered,
         rendered=rendered,
@@ -351,6 +354,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Reveal PII/secret values in the report instead of redacting them (default: redacted).",
     )
     parser.add_argument(
+        "--masvs",
+        action="store_true",
+        help="Add an OWASP MASVS v2.1 column/field mapping each finding to its controls "
+             "(e.g. MASVS-NETWORK-1); default off leaves the report unchanged.",
+    )
+    parser.add_argument(
         "--analyzer-path",
         default=None,
         help="Load an external analyzer ('module' or 'module:Class').",
@@ -421,6 +430,7 @@ def run_analyze_cli(argv: list[str]) -> int:
             source=args.source,
             category=args.category,
             show_pii=args.show_pii,
+            masvs=args.masvs,
         )
     except Exception as exc:  # noqa: BLE001 — surface any read/analyze failure cleanly
         logger.error("Analysis failed: %s", exc)
@@ -448,7 +458,7 @@ def run_analyze_cli(argv: list[str]) -> int:
     try:
         sidecar = _sidecar_path(args.tap_file)
         with open(sidecar, "w", encoding="utf-8") as fh:
-            fh.write(JsonReporter(redact_pii=not args.show_pii).report(filtered, meta))
+            fh.write(JsonReporter(redact_pii=not args.show_pii, masvs=args.masvs).report(filtered, meta))
         logger.info("Findings sidecar written to %s", sidecar)
     except OSError as exc:
         logger.warning("Could not write findings sidecar: %s", exc)

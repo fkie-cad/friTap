@@ -323,9 +323,9 @@ def test_cli_errors(tmp_path, mixed_tap):
 
 
 @pytest.mark.parametrize("focus, expected", [
-    ("all", ["credentials", "ioc", "privacy", "protobuf"]),
+    ("all", ["credentials", "ioc", "privacy", "protobuf", "tls_hygiene"]),
     ("privacy", ["ioc", "privacy"]),
-    ("security", ["credentials", "ioc", "protobuf"]),
+    ("security", ["credentials", "ioc", "protobuf", "tls_hygiene"]),
 ])
 def test_focus_runs_only_relevant_analyzers(focus, expected):
     from friTap.analysis.digest import _analyzer_names_for

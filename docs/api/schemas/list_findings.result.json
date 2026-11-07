@@ -19,6 +19,12 @@
           "count": {
             "type": "integer"
           },
+          "masvs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "ref": {
             "type": "string"
           },

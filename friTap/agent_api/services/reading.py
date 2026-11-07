@@ -144,6 +144,7 @@ def digest(tap: Path, params: dict[str, Any]) -> dict[str, Any]:
         app_protocol=params.get("app_protocol"), filter_expr=params.get("filter"),
         budget_tokens=params["budget"], show_values=params.get("show_values", False),
         attribute=params.get("attribute", False), first_party=params.get("first_party"),
+        masvs=params.get("masvs", False),
         scan=digest_scan(tap, params),
     )
 
@@ -226,7 +227,8 @@ def findings(tap: Path, params: dict[str, Any]) -> tuple[dict[str, Any], dict[st
     stats = summarize(selected)
     summary = {"total": stats["total"], "by_severity": stats["by_severity"],
                "by_category": stats["by_category"]}
-    return _source(tap, scan), summary, finding_rows(selected, show_values, scan.ordinals)
+    return (_source(tap, scan), summary,
+            finding_rows(selected, show_values, scan.ordinals, params.get("masvs", False)))
 
 
 # ---------------------------------------------------------------------------

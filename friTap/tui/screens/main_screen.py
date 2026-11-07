@@ -129,6 +129,7 @@ if TEXTUAL_AVAILABLE:
             Binding("p", "findings_quick_pii", "PII", show=False),
             Binding("1", "findings_quick_critical", "Critical", show=False),
             Binding("r", "restart_wizard", "Restart Wizard", show=False),
+            Binding("R", "report_digest", "Report", show=False),
         ]
 
         def __init__(
@@ -2198,6 +2199,50 @@ if TEXTUAL_AVAILABLE:
             panel.reset()
             panel.display = True
             panel.focus()
+
+        def action_report_digest(self) -> None:
+            """Show the ``fritap report`` digest for the capture ('R').
+
+            Opens a scrollable Report modal (hosts/endpoints/findings grouped
+            per protocol, with MASVS tags and a cyclable all/security/privacy
+            focus). Works for a replay (reads the ``.tap``) and for a live
+            capture (digests the in-memory flows via ``scan_flows`` — no save
+            required).
+            """
+            from friTap.analysis.digest import (
+                FlowSelector,
+                build_digest,
+                builtin_analyzers,
+                scan_flows,
+            )
+            from friTap.analysis.digest_render import render_markdown
+            from friTap.tui.modals.report_modal import ReportModal
+
+            replay_path = self._replay_file
+            flows = None
+            if not replay_path:
+                if self._has_capture_flows():
+                    try:
+                        flows = self._capture.flow_collector.get_flows()
+                    except Exception:
+                        flows = None
+                if not flows:
+                    self.notify("Nothing to report yet — capture or open a .tap first.",
+                                severity="warning")
+                    return
+
+            def make_markdown(focus: str) -> str:
+                if replay_path:
+                    digest = build_digest(replay_path, focus=focus, masvs=True,
+                                          budget_tokens=6000)
+                else:
+                    scan = scan_flows(flows, FlowSelector(),
+                                      builtin_analyzers(False, focus))
+                    digest = build_digest("(live capture)", focus=focus, masvs=True,
+                                          budget_tokens=6000, scan=scan)
+                return render_markdown(digest)
+
+            self.app.push_screen(ReportModal(make_markdown, initial="all"))
 
         def on_analyzer_panel_run_requested(
             self, event: "AnalyzerPanel.RunRequested"
