@@ -70,8 +70,9 @@ def test_report_modal_opens_and_cycles_focus(tmp_path):
     _write_tap(tap)
 
     async def _run() -> None:
-        from friTap.tui.modals.report_modal import ReportModal
         from textual.widgets import Static
+
+        from friTap.tui.modals.report_modal import ReportModal
 
         app = FriTapApp(replay_file=tap)
         async with app.run_test(size=(170, 50)) as pilot:

@@ -8,6 +8,9 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # The unit suite takes ~4 min; fail fast instead of stalling until the
+    # runner is lost (seen once on 3.12, run 42357449207).
+    timeout-minutes: 20
 
     strategy:
       matrix:

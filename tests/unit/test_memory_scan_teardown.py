@@ -101,6 +101,19 @@ def exits(monkeypatch):
     return calls
 
 
+def _join_session_end_workers() -> None:
+    """Wait for leftover ``fritap-session-end`` threads to finish.
+
+    A wedged worker that the bounded end abandoned still runs cleanup()
+    (and so ``os._exit``) once released; it must do that while the
+    ``exits`` fixture's patch is active, not after the test's teardown.
+    """
+    for worker in threading.enumerate():
+        if worker.name == "fritap-session-end":
+            worker.join(WAIT)
+            assert not worker.is_alive(), "session-end worker never finished"
+
+
 def test_headless_scan_ended_runs_full_teardown_once(exits):
     pcap = _FakePcap()
     obj = _make_logger(pcap)
@@ -178,3 +191,8 @@ def test_bounded_end_sets_done_event_on_pre_flush_wedge(exits, monkeypatch):
         assert obj._done_event.is_set(), "wedged teardown must not hang the exit"
     finally:
         release.set()
+        _join_session_end_workers()
+
+    # The released worker finishes cleanup() through the patched os._exit
+    # (if it outlived the test it would hit the real one and kill pytest).
+    assert exits == [0]
