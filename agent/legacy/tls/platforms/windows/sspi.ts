@@ -1,6 +1,7 @@
 import { readAddresses, resolveOffsets } from "../../../../shared/shared_functions.js";
 import { executeSSLLibrary } from "../../../shared/shared_functions_legacy.js";
 import { sendKeylog, sendDatalog } from "../../../../shared/shared_structures.js";
+import { stampRecordLibrary } from "../../../../shared/record_message.js";
 import { Tls13PhaseTracker, makeHandshakeKey } from "../../../../shared/tls13_phase_tracker.js";
 import { socket_library } from "../../../../platforms/windows.js";
 import { devlog, log } from "../../../../util/log.js";
@@ -53,6 +54,8 @@ export class SSPI_Windows {
 
     install_plaintext_read_hook(){
         if (!pcap_enabled) return;
+        // Captured here: inside the function(){} callbacks `this` is the invocation context.
+        const library = this.module_name;
         Interceptor.attach(this.addresses[this.module_name]["DecryptMessage"], {
             onEnter: function(args){
                 this.pMessage = args[1];
@@ -86,6 +89,7 @@ export class SSPI_Windows {
                         message["dst_addr"] = 222;
                         message["function"] = "DecryptMessage"
                         message["ssl_session_id"] = 10
+                        stampRecordLibrary(message, library)
                         sendDatalog(message, bytes)
                     }
                 }
@@ -97,6 +101,8 @@ export class SSPI_Windows {
 
     install_plaintext_write_hook(){
         if (!pcap_enabled) return;
+        // Captured here: inside the function(){} callbacks `this` is the invocation context.
+        const library = this.module_name;
         Interceptor.attach(this.addresses[this.module_name]["EncryptMessage"], {
 
             onEnter: function(args){
@@ -129,6 +135,7 @@ export class SSPI_Windows {
                                 message["dst_addr"] = 222;
                                 message["function"] = "EncryptMessage"
                                 message["ssl_session_id"] = 10
+                                stampRecordLibrary(message, library)
                                 sendDatalog(message, bytes)
                             }
                         }

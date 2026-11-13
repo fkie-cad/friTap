@@ -677,13 +677,39 @@ across all of the flow's transcript layers). Refs are a pure function of the
 `.tap`, so they stay the same across runs and digest filters. To save tokens,
 no ref → flow-id table is emitted; `--flow` resolves a ref. A finding row's
 `ref` is the flow of the cluster's first finding, or `""` (empty) when that
-finding is not tied to a selected flow.
+finding is not tied to a selected flow; `refs` lists every distinct flow the
+cluster covers (first-seen order, at most 10, with `refs_more` counting the
+rest; empty when no finding is tied to a selected flow).
 
 **Budget.** When the digest exceeds `--budget`, rows are dropped in this order
 until it fits: `info` findings first, then traffic rows and low/medium findings
 by lowest volume (request/flow count, then bytes), and high/critical findings
 last. Summary counts are never dropped. A `truncated` object records how many
 rows each section lost, and `estimated_tokens` gives the final size.
+
+### Reading SDK attribution
+
+When the capture was taken with `--attribute-sdk`, the digest adds two trusted
+keys (outside `untrusted`):
+
+* `sdks` on host and endpoint rows: the distinct `{sdk, vendor, category}` the
+  row's flows are attributed to (the flow's winning originator claim, falling
+  back to its older `sdk`). A row without attributed flows has no `sdks`.
+* `transports` on host rows: the sorted transport kinds (`cronet`,
+  `webview`, `httpengine`, ...) of the row's flows. These are set on every
+  TLS/QUIC flow, also without `--attribute-sdk`.
+
+The digest does not show how strong a claim is. For that, read the flow's
+`attribution` block from the `.tap` (`Flow.attribution` from
+`TapReader.iter_flows()`): `source` (`java-request`, `context`,
+`native-stack`, `connection-fallback`), `confidence` (`high`, `medium`,
+`low`), `mixed` and `bucket`. Give more weight to a `java-request`/`high`
+claim than to a `connection-fallback`/`low` one. Per-request Java contexts
+(Android, `-p` captures) are stored as separate records, read with
+`TapReader.iter_request_contexts()`; they hold full request URLs including
+query strings. See [Transport vs originator](../api/agent.md#transport-vs-originator)
+for the fields and the claim order, and [the `.tap` format](../api/tap-format.md)
+for the records.
 
 ### Safety
 
@@ -724,7 +750,7 @@ Schema `/2` replaced the `/1` refs `flow:<flow-id>[#msg<n>]` with the short
     }
   },
   "findings": {"total": 48, "by_severity": {"critical": 3, "info": 45}, "by_category": {"secret": 9},
-               "top": [{"ref": "f7", "count": 3, "severity": "critical", "category": "secret",
+               "top": [{"ref": "f7", "refs": ["f7", "f9"], "count": 3, "severity": "critical", "category": "secret",
                         "source": "credentials",
                         "untrusted": {"title": "Basic auth credentials in request", "description": "..."}}]},
   "truncated": false,

@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 
 from friTap.analysis import Finding, Severity
 from friTap.analysis._limits import bounded_text, cap_findings, clip
+from friTap.synthetic_endpoints import flow_endpoints_synthetic
 
 if TYPE_CHECKING:
     from friTap.flow.models import Flow
@@ -92,7 +93,9 @@ class IocAnalyzer:
 
     def _extract_connection_iocs(self, flow: "Flow", findings: list[Finding]) -> None:
         """Extract IOCs from connection metadata (dst IP, dst port)."""
-        if flow.dst_addr:
+        if flow.dst_addr and not flow_endpoints_synthetic(flow):
+            # Synthetic 198.18.0.0/15 endpoints (fd-less records) are never a
+            # real destination, whatever include_private_ips says.
             try:
                 ipaddress.ip_address(flow.dst_addr)
                 is_ip = True

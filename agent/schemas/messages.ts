@@ -284,10 +284,39 @@ export interface CallerStackMessage {
     ss_family?: string;
     java_frames?: string[];
     native_frames?: CallerFrame[];
+    client_random?: string;
+    tid?: number;
+    thread_name?: string;
+    pid?: number;
+    transport_module?: string;
 }
 
 export function isCallerStackMessage(msg: unknown): msg is CallerStackMessage {
     return (msg as any)?.contentType === "caller_stack";
+}
+
+export interface RequestContextMessage {
+    contentType: "request_context";
+    protocol?: string;
+    event: "start" | "redirect" | "response" | "end" | "webview_load" | "webview_request";
+    req_id: string;
+    stack_kind?: string | null;
+    url?: string | null;
+    method?: string | null;
+    frames?: string[];
+    thread?: string | null;
+    tid?: number | null;
+    t_ms?: number | null;
+    status?: number | null;
+    negotiated_protocol?: string | null;
+    cached?: boolean | null;
+    error?: string | null;
+    webview_id?: string | null;
+    main_frame?: boolean | null;
+}
+
+export function isRequestContextMessage(msg: unknown): msg is RequestContextMessage {
+    return (msg as any)?.contentType === "request_context";
 }
 
 export type AgentMessage = KeylogMessage
@@ -308,4 +337,5 @@ export type AgentMessage = KeylogMessage
     | IPSecIKEKeysMessage
     | IPSecESPKeysMessage
     | OhttpPlaintextMessage
-    | CallerStackMessage;
+    | CallerStackMessage
+    | RequestContextMessage;

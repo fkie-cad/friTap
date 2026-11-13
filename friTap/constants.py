@@ -198,6 +198,8 @@ class ContentType:
     # Additive and attribution-only; carries no key material or plaintext. The
     # host resolves it to an owning SDK and attaches it to the matching flow.
     CALLER_STACK = "caller_stack"
+    # Opt-in Java request context (--attribute-sdk); attribution-only, no keys or bodies.
+    REQUEST_CONTEXT = "request_context"
     ERROR = "error"
 
 

@@ -1,0 +1,15 @@
+{
+  "name": "fritap",
+  "owner": {
+    "name": "Daniel Baier",
+    "email": "daniel.baier@fkie.fraunhofer.de"
+  },
+  "plugins": [
+    {
+      "name": "fritap",
+      "source": "./",
+      "description": "friTap skills and a read-only MCP server for analyzing Frida-based TLS key and plaintext captures.",
+      "homepage": "https://github.com/fkie-cad/friTap"
+    }
+  ]
+}

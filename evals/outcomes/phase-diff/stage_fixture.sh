@@ -1,0 +1,1 @@
+../_shared/stage_fixture.sh

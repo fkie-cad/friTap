@@ -1,0 +1,18 @@
+schema_version: "1.1"
+name: trigger-privacy-audit-1
+description: 'German-English: GDPR check'
+tags: [trigger, positive]
+runs: 3
+execution:
+  max_turns: 3
+  timeout_seconds: 120
+  allowed_tools: [Skill]
+  prompt: |
+    For our GDPR review I must show what personal data our fitness app is sending to which third parties. Can you make this with friTap and write a report?
+graders:
+  - name: fires-fritap-privacy-audit
+    type: tool_used
+    tool: Skill
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?fritap-privacy-audit"'
+    min: 1
+    arm: both

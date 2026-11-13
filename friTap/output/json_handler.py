@@ -176,6 +176,8 @@ class JsonOutputHandler(OutputHandler):
                 "dst_port": event.dst_port,
                 "ss_family": event.ss_family,
                 "data_length": data_length,
+                # Additive: the tuple above is a synthetic 198.18.0.0/15 one.
+                "endpoints_synthetic": bool(event.endpoints_synthetic),
             })
             self._data["statistics"]["total_connections"] += 1
             self._data["statistics"]["total_bytes_captured"] += data_length

@@ -13,6 +13,7 @@ import { registerBlinkTarget, PAIRIP_BLINK_ENABLED } from "../../shared/pairip_b
 import { createKeylogCallbackTracker } from "../../shared/keylog_callback_tracker.js";
 import { STANDARD_SOCKET_SYMBOLS, DUMMY_SESSION_ID_OPENSSL } from "./shared_constants.js";
 import { createLifecycleHook, createBufferedClientRandomDecoder } from "./shared_factories.js";
+import { forgetSslIdentity } from "../../shared/ssl_identity.js";
 import { installBoringSSLSymbolHook, makeBoringSslDumpKeys, DumpKeysCb } from "../../shared/boringssl_symbol_hook.js";
 import { fdOrDeferred, recoveredFd, installSslScopeHooks } from "../../shared/socket_fd_tracker.js";
 import { buildRecordMessage } from "../../shared/record_message.js";
@@ -108,7 +109,7 @@ export function createOpenSslDefinition(options?: OpenSslDefOptions): HookDefini
 
     def.extraHooks = [
         ...(def.extraHooks || []),
-        createLifecycleHook("SSL_free", openSslFdDecoder, openSslSessionIdDecoder, openSslClientRandomDecoder),
+        createLifecycleHook("SSL_free", openSslFdDecoder, openSslSessionIdDecoder, openSslClientRandomDecoder, forgetSslIdentity),
         ...(skipRW ? [] : [createSslFdScopeHooks()]),
     ];
 
@@ -126,9 +127,9 @@ export function createBoringSSLKeylogApproach(): KeylogApproach {
             }
 
             const keylogCb = new NativeCallback(
-                function (_ssl: NativePointer, line: NativePointer) {
+                function (ssl: NativePointer, line: NativePointer) {
                     devlog(`invoking keylog_callback from OpenSSL_BoringSSL (${modName})`);
-                    sendKeylog(line.readCString());
+                    sendKeylog(line.readCString(), ssl, modName);
                 },
                 "void",
                 ["pointer", "pointer"],
@@ -182,7 +183,7 @@ export function createBoringSSLKeylogApproach(): KeylogApproach {
                             Interceptor.attach(userCb, {
                                 onEnter: function (innerArgs: any) {
                                     devlog(`invoking user-installed keylog_callback from OpenSSL_BoringSSL (${modName})`);
-                                    sendKeylog(innerArgs[1].readCString());
+                                    sendKeylog(innerArgs[1].readCString(), innerArgs[0], modName);
                                 },
                             });
                         }
@@ -239,11 +240,14 @@ export function createSslFdScopeHooks(): ExtraHookDef {
 
 // Peer/session metadata for one SSL_read_ex/SSL_write_ex record, or null when it
 // cannot be attributed (no usable fd and no --enable_default_fd, or a non-IP socket).
+// A deferred record whose fd stayed unrecovered (-1) but whose client_random is known
+// is kept without address fields (buildRecordMessage -> buildEndpointlessRecord).
 function buildExMessage(
     fd: number, isRead: boolean, ssl: NativePointer, functionName: string,
     methodAddresses: { [fn: string]: NativePointer }, resolvedFns: ResolvedFunctions, enableDefaultFd: boolean,
+    library: string,
 ): any | null {
-    return buildRecordMessage({ fd, isRead, functionName, methodAddresses, enableDefaultFd }, () => ({
+    return buildRecordMessage({ fd, isRead, functionName, methodAddresses, enableDefaultFd, library, ssl }, () => ({
         ssl_session_id: openSslSessionIdDecoder(ssl, resolvedFns),
         client_random: openSslClientRandomDecoder(ssl, resolvedFns),
     }));
@@ -274,7 +278,7 @@ export function createSslReadWriteExHooks(): ExtraHookDef[] {
                                 this.deferredSsl = ssl;
                                 return;
                             }
-                            const message = buildExMessage(fd, true, ssl, "SSL_read_ex", addresses[modName], resolvedFns, enableDefaultFd);
+                            const message = buildExMessage(fd, true, ssl, "SSL_read_ex", addresses[modName], resolvedFns, enableDefaultFd, modName);
                             if (message === null) return;
                             this.message = message;
                         },
@@ -284,7 +288,7 @@ export function createSslReadWriteExHooks(): ExtraHookDef[] {
                             // SSL_read_ex returns 1 on success; on failure *readbytes is not meaningful.
                             if ((retval | 0) <= 0) return;
                             if (this.deferredSsl) {
-                                this.message = buildExMessage(recovered, true, this.deferredSsl, "SSL_read_ex", addresses[modName], resolvedFns, enableDefaultFd);
+                                this.message = buildExMessage(recovered, true, this.deferredSsl, "SSL_read_ex", addresses[modName], resolvedFns, enableDefaultFd, modName);
                             }
                             if (!this.message) return;
                             const actualBytes = this.readbytes.readU32();
@@ -310,7 +314,7 @@ export function createSslReadWriteExHooks(): ExtraHookDef[] {
                                 this.deferredSsl = ssl;
                                 return;
                             }
-                            const message = buildExMessage(fd, false, ssl, "SSL_write_ex", addresses[modName], resolvedFns, enableDefaultFd);
+                            const message = buildExMessage(fd, false, ssl, "SSL_write_ex", addresses[modName], resolvedFns, enableDefaultFd, modName);
                             if (message === null) return;
                             this.message = message;
                         },
@@ -321,7 +325,7 @@ export function createSslReadWriteExHooks(): ExtraHookDef[] {
                             const count = bytesWrittenFromOutParam(this.bufLen, retval.toInt32(), this.written);
                             if (count <= 0) return;
                             if (this.deferredSsl) {
-                                this.message = buildExMessage(recovered, false, this.deferredSsl, "SSL_write_ex", addresses[modName], resolvedFns, enableDefaultFd);
+                                this.message = buildExMessage(recovered, false, this.deferredSsl, "SSL_write_ex", addresses[modName], resolvedFns, enableDefaultFd, modName);
                             }
                             if (!this.message) return;
                             sendDatalog(this.message, this.buf.readByteArray(count));

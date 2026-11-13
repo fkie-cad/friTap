@@ -106,6 +106,36 @@ def _make_display_filter(src_addr, dst_addr, src_port, dst_port, ss_family):
     }.items())
 
 
+def _payload_endpoint_fields(payload) -> dict:
+    """The socket-tuple fields of a datalog *payload*, defaulted when absent.
+
+    An fd-less record (memory-BIO TLS) carries no tuple: addresses and family
+    default to ``None`` (rendered as the missing address), ports to ``0``.
+    """
+    return {
+        "src_addr": payload.get("src_addr"),
+        "src_port": payload.get("src_port") or 0,
+        "dst_addr": payload.get("dst_addr"),
+        "dst_port": payload.get("dst_port") or 0,
+        "ss_family": payload.get("ss_family"),
+    }
+
+
+def _log_payload_to_pcap(logger_instance, payload, data) -> None:
+    """Write a datalog record to the -p/live pcap; an address-less record is skipped.
+
+    The legacy path has no option-5 pinner, so a record without a socket tuple
+    (no ``ss_family``) cannot be placed in a TCP stream.
+    """
+    endpoints = _payload_endpoint_fields(payload)
+    if not endpoints["ss_family"]:
+        return
+    logger_instance.pcap_obj.log_plaintext_payload(
+        endpoints["ss_family"], direction_label(payload["function"], payload.get("direction")),
+        endpoints["src_addr"], endpoints["src_port"], endpoints["dst_addr"],
+        endpoints["dst_port"], data)
+
+
 def _add_socket_trace_entries(logger_instance, src_addr, dst_addr, payload):
     logger_instance.traced_Socket_Set.add(
         _make_display_filter(src_addr, dst_addr, payload["src_port"], payload["dst_port"], payload["ss_family"])
@@ -204,22 +234,25 @@ def handle_message_legacy(logger_instance, payload, data, message):
         elif not data or len(data) == 0:
             return
         else:
-            src_addr = get_addr_string(payload["src_addr"], payload["ss_family"])
-            dst_addr = get_addr_string(payload["dst_addr"], payload["ss_family"])
+            # .get-based: an fd-less (address-less) datalog record must not KeyError.
+            endpoints = _payload_endpoint_fields(payload)
+            function = payload.get("function", "")
+            src_addr = get_addr_string(endpoints["src_addr"], endpoints["ss_family"])
+            dst_addr = get_addr_string(endpoints["dst_addr"], endpoints["ss_family"])
 
             if not logger_instance.socket_trace and not logger_instance.full_capture:
-                logger_instance.logger.info("SSL Session: " + str(payload["ssl_session_id"]))
+                logger_instance.logger.info("SSL Session: " + str(payload.get("ssl_session_id")))
 
             if logger_instance.full_capture:
                 logger_instance.traced_scapy_socket_Set.add(
-                    _make_scapy_filter(src_addr, dst_addr, payload["ss_family"])
+                    _make_scapy_filter(src_addr, dst_addr, endpoints["ss_family"])
                 )
 
             if logger_instance.socket_trace:
-                _add_socket_trace_entries(logger_instance, src_addr, dst_addr, payload)
-                logger_instance.logger.debug(f"[socket_trace] {src_addr}:{payload['src_port']} --> {dst_addr}:{payload['dst_port']}")
+                _add_socket_trace_entries(logger_instance, src_addr, dst_addr, endpoints)
+                logger_instance.logger.debug(f"[socket_trace] {src_addr}:{endpoints['src_port']} --> {dst_addr}:{endpoints['dst_port']}")
             else:
-                logger_instance.logger.info("[%s] %s:%d --> %s:%d" % (payload["function"], src_addr, payload["src_port"], dst_addr, payload["dst_port"]))
+                logger_instance.logger.info("[%s] %s:%d --> %s:%d" % (function, src_addr, endpoints["src_port"], dst_addr, endpoints["dst_port"]))
                 if hexdump:
                     hexdump.hexdump(data)
                 else:
@@ -228,13 +261,13 @@ def handle_message_legacy(logger_instance, payload, data, message):
             if logger_instance.json_output:
                 connection_entry = {
                     "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "function": payload["function"],
+                    "function": function,
                     "ssl_session_id": payload.get("ssl_session_id"),
                     "src_addr": src_addr,
-                    "src_port": payload["src_port"],
+                    "src_port": endpoints["src_port"],
                     "dst_addr": dst_addr,
-                    "dst_port": payload["dst_port"],
-                    "ss_family": payload["ss_family"],
+                    "dst_port": endpoints["dst_port"],
+                    "ss_family": endpoints["ss_family"],
                     "data_length": len(data) if data else 0
                 }
                 # Stream the connection event to the crash-safe sidecar; keep
@@ -246,13 +279,11 @@ def handle_message_legacy(logger_instance, payload, data, message):
                 logger_instance.session_data["statistics"]["total_bytes_captured"] += len(data) if data else 0
 
     if logger_instance.pcap_name and payload["contentType"] == "datalog" and not logger_instance.full_capture:
-        logger_instance.pcap_obj.log_plaintext_payload(payload["ss_family"], direction_label(payload["function"], payload.get("direction")), payload["src_addr"],
-                 payload["src_port"], payload["dst_addr"], payload["dst_port"], data)
+        _log_payload_to_pcap(logger_instance, payload, data)
 
     if logger_instance.live and payload["contentType"] == "datalog" and not logger_instance.full_capture:
         try:
-            logger_instance.pcap_obj.log_plaintext_payload(payload["ss_family"], direction_label(payload["function"], payload.get("direction")), payload["src_addr"],
-                     payload["src_port"], payload["dst_addr"], payload["dst_port"], data)
+            _log_payload_to_pcap(logger_instance, payload, data)
         except (BrokenPipeError, IOError):
             logger_instance.detach_with_timeout(logger_instance.process)
             logger_instance.cleanup(logger_instance.live, logger_instance.socket_trace, logger_instance.full_capture, logger_instance.debug)

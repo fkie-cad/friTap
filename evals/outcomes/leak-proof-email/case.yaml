@@ -1,0 +1,37 @@
+schema_version: "1.1"
+name: outcome-leak-proof-email
+description: Prove where a known email value leaks using find_values.
+tags: [outcome]
+runs: 3
+context:
+  scaffold_script: stage_fixture.sh
+execution:
+  max_turns: 15
+  timeout_seconds: 300
+  allowed_tools: [Read, Glob, Skill]
+  prompt: |
+    I logged into com.example.shop with the test account canary.user@example.test while
+    recording audit.tap (in this folder). Does that email address end up anywhere other
+    than the shop's own servers? I need proof, not a guess.
+graders:
+  - name: used-find-values
+    type: tool_used
+    tool: mcp__plugin_fritap_fritap__find_values
+    min: 1
+    arm: both
+  - name: names-tracker-host
+    type: regex
+    pattern: 'track\.adnet-metrics\.test'
+    match: contains
+    arm: both
+  - name: verdict-correct
+    type: llm
+    focus: last_message
+    weight: 2
+    arm: both
+    criteria: |
+      Ground truth: the email is sent to api.example-shop.test in the login POST body
+      (flow f2) and to track.adnet-metrics.test in the uid query parameter of
+      GET /collect (flow f3, URL-encoded). PASS if the answer says yes, it leaks to
+      track.adnet-metrics.test, cites where (query parameter / flow), and does not claim
+      it reaches any other host. FAIL otherwise.

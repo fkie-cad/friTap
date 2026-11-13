@@ -16,9 +16,16 @@ import psutil
 
 from friTap.constants import build_capture_bpf
 
+from ._fs_util import is_non_empty_file
 from .android import Android
 from .constants import is_read_function
-from .pcap_utility import PCAP_FORMAT_AUTO, PCAP_FORMAT_PCAPNG, resolve_pcap_format
+from .pcap_utility import (
+    MANIFEST_SUFFIX,
+    PCAP_FORMAT_AUTO,
+    PCAP_FORMAT_PCAPNG,
+    PCAP_MAGIC_TO_ENDIAN,
+    resolve_pcap_format,
+)
 from .sinks.tcp_state import (
     InvalidEndpointError,
     ipv4_address_int,
@@ -109,10 +116,7 @@ def _libpcap_hint() -> str:
 DLT_EN10MB = 1
 _ETHERTYPE_IPV4 = 0x0800
 _ETHERTYPE_IPV6 = 0x86DD
-_PCAP_MAGIC_TO_ENDIAN = {
-    b"\xd4\xc3\xb2\xa1": "<", b"\x4d\x3c\xb2\xa1": "<",
-    b"\xa1\xb2\xc3\xd4": ">", b"\xa1\xb2\x3c\x4d": ">",
-}
+_PCAP_MAGIC_TO_ENDIAN = PCAP_MAGIC_TO_ENDIAN  # shared table (friTap.pcap_utility)
 
 
 def _packet_linktype(packet):
@@ -1336,17 +1340,49 @@ class PCAP:
         (so the field is still populated for diagnostics).
         """
         for path in candidates:
-            if not path:
-                continue
-            try:
-                if os.path.isfile(path) and os.path.getsize(path) > 0:
-                    return str(path)
-            except OSError:
-                continue
+            if PCAP._is_written_keylog(path):
+                return str(path)
         for path in candidates:
             if path:
                 return str(path)
         return None
+
+    @staticmethod
+    def _is_written_keylog(path) -> bool:
+        """Whether *path* names an existing keylog file that holds content."""
+        return is_non_empty_file(path)
+
+    @staticmethod
+    def _tls_keylog_candidates(pcap) -> tuple:
+        """TLS keylog candidates in manifest priority: split, base ``-k``, last handler."""
+        active_keylogs = getattr(pcap, "active_keylogs", None) or {}
+        return (
+            active_keylogs.get("tls"),
+            getattr(pcap, "base_keylog_path", None),
+            getattr(pcap, "keylog_path", None),
+        )
+
+    @staticmethod
+    def _resolve_written_keylog(pcap) -> "str | None":
+        """First TLS keylog candidate of *pcap* that exists with content.
+
+        A staticmethod taking the PCAP explicitly so ``_write_capture_manifest``
+        also works on the lightweight stubs the unit tests bind it to.
+        """
+        for path in PCAP._tls_keylog_candidates(pcap):
+            if PCAP._is_written_keylog(path):
+                return str(path)
+        return None
+
+    def written_keylog_path(self) -> "str | None":
+        """The TLS keylog that was really written (exists, non-empty), else ``None``.
+
+        Single source of truth for "did this capture write a keylog?": the
+        capture manifest and the shutdown decryption hint both ask this, so
+        they can never disagree. Resolves the path lazily at call time, unlike
+        a handle snapshot taken before the first key arrived.
+        """
+        return self._resolve_written_keylog(self)
 
     def set_active_keylogs(self, mapping: dict) -> None:
         """Record the per-protocol split keylog paths for the manifest.
@@ -1389,6 +1425,55 @@ class PCAP:
         """
         if path:
             self._tls_midstream_secrets_path = str(path)
+
+    def set_endpoint_pinner(self, pinner) -> None:
+        """Hand over the router's option-5 :class:`~friTap.endpoint_pinner.EndpointPinner`.
+
+        Its synthetic -> real mapping table drives the ``-p`` rewrite at stop
+        (:meth:`finalize_plaintext_capture`).
+        """
+        self._endpoint_pinner = pinner
+
+    def finalize_plaintext_capture(self) -> None:
+        """Finalize the closed ``-p`` pcap: rewrite synthetic streams, record the summary.
+
+        Only acts when the pinner pinned synthetic connections and the -p file
+        is a regular file (not a live FIFO). Never raises.
+        """
+        try:
+            pinner = getattr(self, "_endpoint_pinner", None)
+            mappings = pinner.mappings() if pinner is not None else []
+            if not mappings or not os.path.isfile(self.pcap_file_name):
+                return
+            from .pcap_tuple_rewrite import rewrite_synthetic_endpoints
+            summary = rewrite_synthetic_endpoints(self.pcap_file_name, mappings, self.logger)
+            self._add_mapping_overflow(summary, pinner)
+            self._write_synthetic_endpoints_manifest(summary)
+        except Exception:  # noqa: BLE001 - finalize must never break teardown
+            self.logger.debug("plaintext pcap finalize failed", exc_info=True)
+
+    @staticmethod
+    def _add_mapping_overflow(summary: dict, pinner) -> None:
+        """Record ``mapping_overflow`` (pins left out of a full mapping table) when > 0."""
+        overflow = getattr(pinner, "mapping_overflow_count", 0) or 0
+        if overflow > 0:
+            summary["mapping_overflow"] = overflow
+
+    def _write_synthetic_endpoints_manifest(self, summary: dict) -> None:
+        """Write ``<pcap>.fritap.json`` with the additive ``synthetic_endpoints`` key.
+
+        A ``-p`` pcap holds plaintext, so the TLS port / keylog keys of the
+        full-capture manifest are deliberately left out (they would make the
+        offline pipeline try to decrypt plaintext).
+        """
+        import json as _json
+        manifest_path = self.pcap_file_name + MANIFEST_SUFFIX
+        try:
+            with open(manifest_path, "w", encoding="utf-8") as fh:
+                _json.dump({"synthetic_endpoints": summary}, fh, indent=2)
+            self.logger.debug(f"Wrote capture manifest {manifest_path}")
+        except OSError as e:
+            self.logger.warning(f"Could not write capture manifest: {e}")
 
     def _add_known_server_ports(self, transport_key, ports) -> None:
         """Seed explicit server ports into ``_observed_server_ports[transport_key]``.
@@ -1525,24 +1610,13 @@ class PCAP:
             # the base -k keylog (written by the separate LSASS session). The base
             # path is not carried in active_keylogs (the factory only hands us the
             # splits), so it is passed separately via set_base_keylog() and slotted
-            # in here as the middle candidate. Resolved once, only when a keylog
-            # field below will record it.
-            base_keylog_path = getattr(self, "base_keylog_path", None)
-            tls_keylog = (
-                self._keylog_with_content(
-                    active_keylogs.get("tls"), base_keylog_path, self.keylog_path)
-                if self.keylog_path or "tls" in active_keylogs or base_keylog_path
-                else None
-            )
-            # _keylog_with_content falls back to the first candidate even when none
-            # exists; that tail is exactly what produced the phantom .tls path in the
-            # manifest. Gate every keylog write below on a file that really exists
-            # with content, so a never-written split is omitted, not recorded.
-            tls_keylog_has_content = bool(
-                tls_keylog
-                and os.path.isfile(tls_keylog)
-                and os.path.getsize(tls_keylog) > 0
-            )
+            # in here as the middle candidate (see _tls_keylog_candidates).
+            # written_keylog_path() is shared with the shutdown decryption hint so
+            # both always agree. It returns None unless a candidate really exists
+            # with content (the old first-candidate fallback is what produced the
+            # phantom .tls path), so a never-written split is omitted, not recorded.
+            tls_keylog = self._resolve_written_keylog(self)  # == written_keylog_path()
+            tls_keylog_has_content = tls_keylog is not None
             if self.keylog_path:
                 # Generic "keylog" = the TLS keylog (the SSLKEYLOGFILE a back-compat
                 # consumer feeds to tshark to strip TLS first). In a multi-protocol
@@ -1603,7 +1677,7 @@ class PCAP:
                     resolved_keylogs["tls"] = tls_keylog
                 if resolved_keylogs:
                     manifest["keylogs"] = resolved_keylogs
-            manifest_path = f"{self.pcap_file_name}.fritap.json"
+            manifest_path = self.pcap_file_name + MANIFEST_SUFFIX
             with open(manifest_path, "w", encoding="utf-8") as fh:
                 _json.dump(manifest, fh, indent=2)
             self.logger.debug(f"Wrote capture manifest {manifest_path}")

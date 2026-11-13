@@ -161,6 +161,8 @@ export class QuicConnectionTracker {
     // best-effort: the per-connection synthetic local port still keeps each
     // connection in its own Wireshark conversation.
     private _observedPeer: ObservedPeer | null = null;
+    // Delivers peers a native observer queued since the last read (see setObservedPeerFeed).
+    private _observedPeerFeed: (() => void) | null = null;
 
     // Last peer key (`addr:port`) we emitted a devlog for, per branch. The libc
     // connect() observer fires on EVERY UDP connect() — including every DNS
@@ -243,6 +245,11 @@ export class QuicConnectionTracker {
         }
     }
 
+    /** `feed` runs before each read of the observed peer and calls setObservedPeer for queued peers. */
+    setObservedPeerFeed(feed: () => void): void {
+        this._observedPeerFeed = feed;
+    }
+
     /**
      * Resolve connection info for a key, always returning a usable, parseable
      * 4-tuple. Prefers a registered connection, then a deterministic synthetic
@@ -262,6 +269,7 @@ export class QuicConnectionTracker {
      */
     synthesizeInfo(connPtr: string): QuicConnectionInfo {
         const h = hashPtr(connPtr);
+        this._observedPeerFeed?.();
         const peer = this._observedPeer;
 
         if (peer && peer.family === "AF_INET6") {

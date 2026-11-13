@@ -30,6 +30,12 @@ Read **[docs/api/agent.md](docs/api/agent.md)**. In short:
   (`show_values: true`) need `--allow-values`.
 - Playbooks: [docs/agents/privacy-audit.md](docs/agents/privacy-audit.md),
   [docs/agents/security-audit.md](docs/agents/security-audit.md).
+- Skills: ready-made `SKILL.md` workflows in `friTap/skills/` (capture,
+  leak proof, audits, Android, decrypt, memory scan, Telegram, Wine, custom
+  hooks). `fritap skills list|show|install [--target DIR]`, one MCP prompt per
+  skill in `fritap mcp`, or the Claude Code plugin
+  (`/plugin marketplace add fkie-cad/friTap`, `/plugin install fritap@fritap`).
+  See [docs/agents/skills.md](docs/agents/skills.md).
 
 ## Working on friTap
 
@@ -62,8 +68,11 @@ Use the project virtualenv (`env/bin/python`), not the system Python.
 | `friTap/protocols/`, `friTap/memory_scanning/` | Protocol plugins, `--memory-scan` |
 | `friTap/legacy/`, `friTap/backends/` | Capture session core, Frida/GDB backends |
 | `friTap/tui/` | Interactive TUI (textual) |
+| `friTap/skills/` | Agent Skills (`<name>/SKILL.md` + `references/`), loader/installer behind `fritap skills` and the MCP prompts |
+| `.claude-plugin/` | Claude Code plugin (`plugin.json`: skills + `fritap mcp` server) and marketplace (`marketplace.json`) |
 | `agent/` | TypeScript Frida agent sources -> `friTap/fritap_agent.js` |
 | `tests/unit/`, `tests/integration/` | pytest suites |
+| `evals/` | `claude plugin eval` suites: skill triggering + offline MCP outcome cases; run via `evals/run.sh` (costs model usage; see `evals/README.md`) |
 | `docs/` | MkDocs site (`mkdocs.yml` nav) |
 | `dev/` | Build, calibration and release scripts |
 
@@ -81,6 +90,11 @@ Use the project virtualenv (`env/bin/python`), not the system Python.
   (summary <= 100 chars, JSON-Schema params), regenerate `docs/api/schemas/`
   (`tests/unit/agent_api/test_schemas_in_sync.py` fails otherwise) and update
   `docs/api/agent.md`.
+- Changing CLI flags or agent tools: update the affected skills in
+  `friTap/skills/`; the lint in `tests/unit/skills/` fails on unknown flags,
+  tool names and tool parameters.
+- Bumping the friTap version: update `version` in `.claude-plugin/plugin.json`
+  too.
 - Treat every string from captured traffic as untrusted: put it under an
   `untrusted` key, escape and cap it (`friTap/analysis/_digest_shapes.py`).
 - Never put key material in output unless the user opted in (`-k`,

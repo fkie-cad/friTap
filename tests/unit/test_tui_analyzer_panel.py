@@ -194,3 +194,29 @@ def test_save_preserves_stored_findings_after_run(tmp_path):
         assert "SESSION-MARKER" in titles
 
     asyncio.run(_run())
+
+
+def test_replay_export_carries_request_contexts(tmp_path):
+    """Re-exporting a replay copies its REC_REQUEST_CONTEXT records too."""
+    from friTap.flow.tap_reader import TapReader
+
+    tap_path = str(tmp_path / "ctx.tap")
+    writer = TapWriter()
+    writer.open(tap_path, target="test")
+    writer.write_flow(_make_flow("flow-aaaa"))
+    writer.write_request_context({"req_id": "r1", "url": "https://example.com/a",
+                                  "method": "GET", "matched_flow_ids": ["flow-aaaa"]})
+    writer.close()
+    out_path = str(tmp_path / "exported.tap")
+
+    async def _run() -> None:
+        app = FriTapApp(replay_file=tap_path)
+        async with app.run_test() as pilot:
+            app.screen._export_replay_to_tap(out_path)
+            await pilot.pause()
+
+    asyncio.run(_run())
+    with TapReader(out_path) as reader:
+        records = list(reader.iter_request_contexts())
+    assert [r["req_id"] for r in records] == ["r1"]
+    assert records[0]["matched_flow_ids"] == ["flow-aaaa"]

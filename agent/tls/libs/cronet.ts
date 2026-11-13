@@ -1,5 +1,6 @@
 import { get_hex_string_from_byte_array, readAddresses, checkNumberOfExports, isSymbolAvailable, getPortsAndAddresses } from "../../shared/shared_functions.js";
 import { sendKeylog, sendDatalog } from "../../shared/shared_structures.js";
+import { SslRecordSource, buildEndpointlessSslRecord, finishSslRecord } from "../../shared/record_message.js";
 import { attachPlaintextReadHook, attachPlaintextWriteHook, PlaintextCallArgs } from "../../shared/write_hooks.js";
 import { devlog, devlog_debug, devlog_error, log } from "../../util/log.js";
 import { safeKeyLenLogged } from "../../shared/keylog_length.js";
@@ -63,7 +64,8 @@ export class Cronet {
 
         this.keylog_callback = new NativeCallback(function (ctxPtr: NativePointer, linePtr: NativePointer) {
             devlog("invoking keylog_callback from Cronet ("+ moduleName +")");
-            sendKeylog(linePtr.readCString().toUpperCase());
+            // keylog_callback is (const SSL *ssl, const char *line): ctxPtr is the SSL*.
+            sendKeylog(linePtr.readCString().toUpperCase(), ctxPtr, moduleName);
         }, "void", ["pointer", "pointer"])
 
         try{
@@ -233,7 +235,7 @@ export class Cronet {
 
         //devlog("invoking ssl_log_secret() from BoringSSL statically linked into Cronet");
         devlog("invoking shadow keylog_callback from Cronet (" + this.module_name + ")");
-        sendKeylog(labelStr+" "+client_random+" "+secret_key);
+        sendKeylog(labelStr+" "+client_random+" "+secret_key, sslStructPtr, this.module_name);
 
         // M2 spike: libsignal's BoringSSL keys flow through THIS Cronet path
         // (not boringSslDumpKeys). Mark the SSL* as keyed, and learn where the
@@ -334,16 +336,33 @@ export class Cronet {
     }
 
     // Peer/session metadata of one SSL_read/SSL_write record, or null when the SSL has no
-    // fd and --enable_default_fd is off (the record cannot be attributed).
+    // fd, no known client_random and --enable_default_fd is off (the record cannot be
+    // attributed). An fd-less record with a client_random carries no address fields.
     private buildPlaintextMessage(ssl: NativePointer, symbol: string, isRead: boolean): { [key: string]: any } | null {
         const fd = this.resolveFd(ssl);
-        if (fd < 0 && !enable_default_fd) return null;
+        if (fd < 0) {
+            const endpointless = buildEndpointlessSslRecord(this.recordSource(), ssl, symbol, isRead);
+            if (endpointless !== null || !enable_default_fd) return endpointless;
+        }
         const message = getPortsAndAddresses(fd, isRead, this.addresses[this.module_name], enable_default_fd);
         if (message === null) return null;
         message["ssl_session_id"] = openSslSessionIdDecoder(ssl, this.sessionFns as any);
-        message["client_random"] = this.get_client_random_from_ssl_struct(ssl);
         message["function"] = symbol;
+        // library + client_random through the shared per-SSL* identity (cache -> module
+        // layout -> the struct probe), so repeat records of a connection skip the probe.
+        finishSslRecord(message, this.recordSource(), ssl, symbol, isRead);
         return message;
+    }
+
+    // This module's per-SSL lookups for the shared record builder (record_message.ts).
+    private recordSource(): SslRecordSource {
+        return {
+            library: this.module_name,
+            methodAddresses: this.addresses[this.module_name],
+            enableDefaultFd: enable_default_fd,
+            probeClientRandom: (ssl) => this.get_client_random_from_ssl_struct(ssl),
+            sessionFields: (ssl) => ({ ssl_session_id: openSslSessionIdDecoder(ssl, this.sessionFns as any) }),
+        };
     }
 
     install_plaintext_read_hook(){

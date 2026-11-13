@@ -19,6 +19,8 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 from urllib.parse import parse_qs, urlparse
 
+from friTap.synthetic_endpoints import flow_endpoints_synthetic
+
 if TYPE_CHECKING:
     from friTap.flow.models import Flow
 
@@ -125,6 +127,11 @@ def _entry_comment(flow: "Flow") -> str:
     return " | ".join(parts)
 
 
+def _has_synthetic_server(flow: "Flow") -> bool:
+    """True when *flow*'s endpoints are synthetic (see :func:`flow_endpoints_synthetic`)."""
+    return flow_endpoints_synthetic(flow)
+
+
 def flow_to_har_entry(flow: "Flow", include_bodies: bool = False) -> dict | None:
     """Convert one flow to a HAR entry; ``None`` for non-HTTP flows."""
     if flow.request is None and flow.response is None:
@@ -140,6 +147,9 @@ def flow_to_har_entry(flow: "Flow", include_bodies: bool = False) -> dict | None
         "serverIPAddress": flow.dst_addr or "",
         "connection": flow.connection_id or "",
     }
+    if _has_synthetic_server(flow):
+        # Optional in HAR 1.2; a synthetic 198.18.0.0/15 address is no real server.
+        del entry["serverIPAddress"]
     comment = _entry_comment(flow)
     if comment:
         entry["comment"] = comment

@@ -17,11 +17,11 @@
           "type": "array"
         },
         {
-          "const": "auto",
+          "minLength": 1,
           "type": "string"
         }
       ],
-      "description": "Domains treated as first-party for host attribution, or \"auto\" to infer them from the union of both sides' hosts."
+      "description": "Domains treated as first-party for host attribution: a list of domains, a comma-separated string (\"a.com,b.com\"), or \"auto\" to infer them from the union of both sides' hosts."
     },
     "format": {
       "default": "json",
@@ -44,6 +44,21 @@
     },
     "phases_path": {
       "description": "phases.jsonl sidecar (default: next to the tap).",
+      "minLength": 1,
+      "type": "string"
+    },
+    "session_a": {
+      "description": "Baseline capture session id (tap diff mode; instead of tap_a).",
+      "minLength": 1,
+      "type": "string"
+    },
+    "session_b": {
+      "description": "Comparison capture session id (tap diff mode; instead of tap_b).",
+      "minLength": 1,
+      "type": "string"
+    },
+    "session_id": {
+      "description": "Capture session to diff two phase windows of (phase diff mode; instead of tap).",
       "minLength": 1,
       "type": "string"
     },

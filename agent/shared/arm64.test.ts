@@ -12,8 +12,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
     isADRP, isADDimm64, isLDRimmU64, isSTRimmU64, isRET, isBL, isBLR, isFunctionPrologueWord,
+    isLandingPadWord, PACIASP, BTI_C,
     decodeADRPImm, decodeADDImm12, decodeLDRU64Imm, decodeSTRU64Imm, decodeBLImm, regRd, regRn,
-    blTargetOffset, movzW,
+    blTargetOffset, movzW, isMovReg64, movRegSource, movRegDest, directBranchOffset,
     IMM12_OPERAND_MASK, addImm64WordForImm12, ldrU64WordForImm12, maskedWordScanPattern,
     addImm64ScanPattern, ldrU64ScanPattern,
     isADR, decodeADRImm, adrTopByteForTarget, regRt2, regRs,
@@ -101,6 +102,20 @@ test("isFunctionPrologueWord recognizes the union of prologue forms", () => {
     // Not a prologue word.
     assert.equal(isFunctionPrologueWord(0x8b010020), false); // add x0, x1, x1
     assert.equal(isFunctionPrologueWord(0x00000000), false);
+});
+
+test("isLandingPadWord accepts exactly paciasp and `bti c`", () => {
+    assert.equal(PACIASP, 0xd503233f);
+    assert.equal(BTI_C, 0xd503245f);
+    assert.equal(isLandingPadWord(PACIASP), true);
+    assert.equal(isLandingPadWord(BTI_C), true);
+    assert.equal(isLandingPadWord(PACIASP | 0), true);                     // signed int32 input
+    assert.equal(isLandingPadWord(0xd503237f), false); // pacibsp
+    assert.equal(isLandingPadWord(0xd503241f), false); // bti
+    assert.equal(isLandingPadWord(0xd503249f), false); // bti j
+    assert.equal(isLandingPadWord(0xd50324df), false); // bti jc
+    assert.equal(isLandingPadWord(0xa9bf7bfd), false); // stp x29,x30,[sp,#-16]!
+    assert.equal(isLandingPadWord(0xd503201f), false); // nop
 });
 
 test("immediate decoders", () => {
@@ -281,6 +296,32 @@ test("writesReg: non-writers of x1 are allowed through", () => {
     for (const [w, what] of nonWritersOfX1) assert.equal(writesReg(w >>> 0, 1), false, what);
 });
 
+test("writesReg: SIMD/FP destinations are not GPR writes", () => {
+    const simdOnly: [number, string][] = [
+        [0x6f00e400, "movi v0.2d, #0"], [0x9e670000, "fmov d0, x0"], [0x9e620000, "scvtf d0, x0"],
+        [0x3d8007e0, "str q0, [sp, #0x10]"], [0x3dc007e0, "ldr q0, [sp, #0x10]"], [0xfd400000, "ldr d0, [x0]"],
+        [0xad0103e0, "stp q0, q0, [sp, #0x20]"], [0xad400400, "ldp q0, q1, [x0]"], [0x3ce06800, "ldr q0, [x0, x0]"],
+        [0x9c000000, "ldr q0, <literal>"], [0x1e602000, "fcmp d0, d0"], [0x4e208400, "add v0.16b, v0.16b, v0.16b"],
+    ];
+    for (const [w, what] of simdOnly) assert.equal(writesReg(w >>> 0, 0), false, what);
+});
+
+test("writesReg: SIMD/FP forms that write a GPR stay writes", () => {
+    const gprWriters: [number, string][] = [
+        [0x0e043c00, "umov w0, v0.s[0]"], [0x0e012c00, "smov w0, v0.b[0]"], [0x9e660000, "fmov x0, d0"],
+        [0x9e780000, "fcvtzs x0, d0"], [0x1e7e0000, "fjcvtzs w0, d0"], [0x4e080c00, "dup v0.2d, x0 (copy class kept fail-closed)"],
+    ];
+    for (const [w, what] of gprWriters) assert.equal(writesReg(w >>> 0, 0), true, what);
+});
+
+test("writesReg: SIMD/FP load/store writeback still writes the base register", () => {
+    assert.equal(writesReg(0x3dc00420 >>> 0, 1), false, "ldr q0, [x1, #16]");
+    assert.equal(writesReg(0x3cc10c20 >>> 0, 1), true, "ldr q0, [x1, #16]!");
+    assert.equal(writesReg(0x3c810420 >>> 0, 1), true, "str q0, [x1], #16");
+    assert.equal(writesReg(0xadc10420 >>> 0, 1), true, "ldp q0, q1, [x1, #32]!");
+    assert.equal(writesReg(0x3cc10c20 >>> 0, 0), false, "ldr q0, [x1, #16]! does not write x0");
+});
+
 test("blTargetOffset resolves a backward BL and rejects non-BL words", () => {
     // 0x5410100: bl 0x51511b0 (Chrome 133 libmonochrome SSL_read -> SSL_peek call)
     assert.equal(blTargetOffset(0x5410100, 0x97f5042c), 0x51511b0);
@@ -294,4 +335,42 @@ test("movzW decodes `mov wN, #imm16` only for the requested register", () => {
     assert.equal(movzW(0x52800200, 2), null);                          // other register
     assert.equal(movzW(0xd2800200, 0), null);                          // 64-bit movz x0
     assert.equal(movzW(0x52a00200, 0), null);                          // shifted (hw=1)
+});
+
+test("isMovReg64 matches `mov xD, xM` for any register pair", () => {
+    assert.equal(isMovReg64(0xaa0003f3), true);                         // mov x19, x0
+    assert.equal(isMovReg64(0xaa1303e0), true);                         // mov x0, x19
+    assert.equal(isMovReg64(0xaa1f03e8), true);                         // mov x8, xzr
+});
+
+test("isMovReg64 rejects ORR variants that are not a plain 64-bit move", () => {
+    assert.equal(isMovReg64(0xaa020020), false);                        // orr x0, x1, x2 (Rn != xzr)
+    assert.equal(isMovReg64(0x2a0003f3), false);                        // mov w19, w0 (32-bit)
+    assert.equal(isMovReg64(0xaa0007f3), false);                        // orr x19, xzr, x0, lsl #1
+    assert.equal(isMovReg64(0xaa2003f3), false);                        // mvn x19, x0 (ORN)
+    assert.equal(isMovReg64(0x910003f3), false);                        // mov x19, sp (ADD alias)
+});
+
+test("movRegSource / movRegDest decode Rm and Rd, null for other words", () => {
+    assert.equal(movRegSource(0xaa0003f3), 0);                          // mov x19, x0
+    assert.equal(movRegDest(0xaa0003f3), 19);
+    assert.equal(movRegSource(0xaa1303e0), 19);                         // mov x0, x19
+    assert.equal(movRegDest(0xaa1303e0), 0);
+    assert.equal(movRegSource(0x2a0003f3), null);
+    assert.equal(movRegDest(0xd503201f), null);                         // nop
+});
+
+// Words from libmonochrome_64.so's ssl_log_secret (objdump; pc in the comment).
+test("directBranchOffset decodes B, B.cond, CBZ/CBNZ and TBZ targets (signed)", () => {
+    assert.equal(directBranchOffset(0x17fffff7), 0x47aa330 - 0x47aa354);  // b (backward)
+    assert.equal(directBranchOffset(0xb40005c8), 0x47aa350 - 0x47aa298);  // cbz x8 (forward)
+    assert.equal(directBranchOffset(0x350002a0), 0x47aa358 - 0x47aa304);  // cbnz w0
+    assert.equal(directBranchOffset(0x540005c8), 0x47aa3d4 - 0x47aa31c);  // b.hi
+    assert.equal(directBranchOffset(0x3607fce0), 0x47aa308 - 0x47aa36c);  // tbz w0, #0 (backward)
+});
+
+test("directBranchOffset is null for calls, returns and plain instructions", () => {
+    assert.equal(directBranchOffset(0x9400001c), null);                   // bl
+    assert.equal(directBranchOffset(0xd65f03c0), null);                   // ret
+    assert.equal(directBranchOffset(0xaa0003f3), null);                   // mov x19, x0
 });

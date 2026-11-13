@@ -106,7 +106,7 @@ export class Flutter {
         }
 
         devlog("invoking ssl_log_secret() from BoringSSL statically linked into Flutter");
-        sendKeylog(labelStr+" "+client_random+" "+secret_key);
+        sendKeylog(labelStr+" "+client_random+" "+secret_key, sslStructPtr, this.module_name);
     }
 
     install_plaintext_read_hook(){

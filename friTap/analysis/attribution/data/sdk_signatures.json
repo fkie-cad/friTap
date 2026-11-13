@@ -4,8 +4,61 @@
   "source_url": "https://reports.exodus-privacy.eu.org/api/trackers",
   "license": "Curated seed (friTap); optional Exodus Privacy merge is AGPL — see data/README.md",
   "kind": "seed",
-  "entry_count": 33,
+  "entry_count": 45,
+  "chromium_browser_packages": [
+    "chrome",
+    "com.android.chrome",
+    "com.brave.browser",
+    "com.brave.browser_beta",
+    "com.brave.browser_nightly",
+    "com.chrome.*",
+    "com.google.android.apps.chrome",
+    "com.kiwibrowser.browser",
+    "com.microsoft.emmx",
+    "com.microsoft.emmx.*",
+    "com.opera.browser",
+    "com.sec.android.app.sbrowser",
+    "com.sec.android.app.sbrowser.beta",
+    "com.vivaldi.browser",
+    "com.yandex.browser",
+    "org.chromium.chrome"
+  ],
+  "chromium_internal_hosts": [
+    "*.gvt1.com",
+    "clients2.google.com",
+    "clients4.google.com",
+    "clientservices.googleapis.com",
+    "content-autofill.googleapis.com",
+    "dns.google",
+    "optimizationguide-pa.googleapis.com",
+    "safebrowsing.googleapis.com",
+    "update.googleapis.com"
+  ],
   "entries": {
+    "Chromium Embedded Framework": {
+      "sdk": "Chromium Embedded Framework",
+      "vendor": "CEF Project",
+      "category": "transport",
+      "transport_kind": "cef"
+    },
+    "Electron Framework": {
+      "sdk": "Electron",
+      "vendor": "OpenJS Foundation",
+      "category": "transport",
+      "transport_kind": "electron"
+    },
+    "Google Chrome Framework": {
+      "sdk": "Google Chrome (macOS)",
+      "vendor": "Google",
+      "category": "transport",
+      "transport_kind": "chrome"
+    },
+    "chrome.dll": {
+      "sdk": "Google Chrome (Windows)",
+      "vendor": "Google",
+      "category": "transport",
+      "transport_kind": "chrome"
+    },
     "com.adjust.sdk": {
       "sdk": "Adjust",
       "vendor": "Adjust",
@@ -141,25 +194,69 @@
       "vendor": "Sentry",
       "category": "crash_reporting"
     },
+    "libcef": {
+      "sdk": "Chromium Embedded Framework (libcef)",
+      "vendor": "CEF Project",
+      "category": "transport",
+      "transport_kind": "cef"
+    },
+    "libchrome": {
+      "sdk": "Chrome/WebView (libchrome)",
+      "vendor": "Google",
+      "category": "transport",
+      "transport_kind": "chrome-or-webview"
+    },
     "libcronet": {
       "sdk": "Cronet",
       "vendor": "Google",
-      "category": "networking"
+      "category": "networking",
+      "transport_kind": "cronet"
     },
     "libflutter.so": {
       "sdk": "Flutter",
       "vendor": "Google",
-      "category": "framework"
+      "category": "framework",
+      "transport_kind": "flutter"
     },
     "libhermes.so": {
       "sdk": "React Native",
       "vendor": "Meta",
       "category": "framework"
     },
+    "libhttpengine": {
+      "sdk": "Android HttpEngine",
+      "vendor": "Google",
+      "category": "transport",
+      "transport_kind": "httpengine"
+    },
+    "libmainlinecronet": {
+      "sdk": "Mainline Cronet (HttpEngine)",
+      "vendor": "Google",
+      "category": "transport",
+      "transport_kind": "httpengine"
+    },
+    "libmonochrome": {
+      "sdk": "Chrome/WebView (libmonochrome)",
+      "vendor": "Google",
+      "category": "transport",
+      "transport_kind": "chrome-or-webview"
+    },
     "libreactnativejni.so": {
       "sdk": "React Native",
       "vendor": "Meta",
       "category": "framework"
+    },
+    "libsignal_jni": {
+      "sdk": "libsignal",
+      "vendor": "Signal",
+      "category": "transport",
+      "transport_kind": "libsignal"
+    },
+    "libwebviewchromium": {
+      "sdk": "Android System WebView",
+      "vendor": "Google",
+      "category": "transport",
+      "transport_kind": "webview"
     },
     "okhttp3": {
       "sdk": "OkHttp",
@@ -170,6 +267,12 @@
       "sdk": "Retrofit",
       "vendor": "Square",
       "category": "networking"
+    },
+    "stable_cronet_libssl": {
+      "sdk": "Stable Cronet BoringSSL",
+      "vendor": "Google",
+      "category": "transport",
+      "transport_kind": "httpengine"
     }
   }
 }

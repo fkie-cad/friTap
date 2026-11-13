@@ -28,12 +28,17 @@ def pad4(n: int) -> int:
     return (n + 3) & ~3
 
 
-def build_block(block_type: int, body: bytes) -> bytes:
-    """Build a complete PCAPNG block with padding and trailing length."""
+def build_block(block_type: int, body: bytes, endian: str = "<") -> bytes:
+    """Build a complete PCAPNG block with padding and trailing length.
+
+    *endian* is the ``struct`` byte order of the section the block goes into
+    (little-endian unless rewriting a big-endian section).
+    """
     padded_len = pad4(len(body))
     block_len = 12 + padded_len
     padding = b"\x00" * (padded_len - len(body))
-    return struct.pack("<II", block_type, block_len) + body + padding + struct.pack("<I", block_len)
+    return (struct.pack(endian + "II", block_type, block_len) + body + padding
+            + struct.pack(endian + "I", block_len))
 
 
 def build_shb() -> bytes:

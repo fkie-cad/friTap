@@ -1,0 +1,18 @@
+schema_version: "1.1"
+name: trigger-capture-2
+description: 'specific: capture + HAR export of an iOS app'
+tags: [trigger, positive]
+runs: 3
+execution:
+  max_turns: 3
+  timeout_seconds: 120
+  allowed_tools: [Skill]
+  prompt: |
+    I have a jailbroken iPhone connected over USB. Please record the decrypted HTTPS traffic of com.example.shop while I go through checkout, then give me the hosts it contacted and export the session to checkout.har.
+graders:
+  - name: fires-fritap-capture
+    type: tool_used
+    tool: Skill
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?fritap-capture"'
+    min: 1
+    arm: both

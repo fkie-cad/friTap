@@ -90,6 +90,16 @@ class DatalogEvent(FriTapEvent):
     # bytes) | "body" (de-framed DATA payload) | "" (untagged / not QUIC).
     quic_payload: str = ""
     library: str = ""  # module that produced the record (e.g. libssl.so)
+    # Option 5 (additive): the endpoints above are a synthetic 198.18.0.0/15
+    # pin for an fd-less connection (see friTap.endpoint_pinner), never a real
+    # address. observed_* carry the real tuple when this record had one but the
+    # connection stays pinned to its synthetic tuple (one TCP stream).
+    endpoints_synthetic: bool = False
+    observed_src_addr: str = ""
+    observed_src_port: int = 0
+    observed_dst_addr: str = ""
+    observed_dst_port: int = 0
+    observed_ss_family: str = ""
 
 
 @dataclass
@@ -158,16 +168,21 @@ class SessionEvent(FriTapEvent):
 
 @dataclass
 class CallerStackEvent(FriTapEvent):
-    """Resolved SDK attribution for a connection's calling-thread backtrace.
+    """A connection's calling-thread backtrace, with its SDK when one matched.
 
-    Emitted by :class:`~friTap.message_router.MessageRouter` when an opt-in
-    ``caller_stack`` agent message (``--attribute-sdk``) resolves to a known
-    SDK. The :class:`~friTap.flow.collector.FlowCollector` joins it onto the
-    flow sharing ``ssl_session_id`` (the 5-tuple is a best-effort fallback) and
-    stamps ``flow.sdk``. ``sdk`` is the trusted
+    Emitted by :class:`~friTap.message_router.MessageRouter` for EVERY opt-in
+    ``caller_stack`` agent message (``--attribute-sdk``). The
+    :class:`~friTap.flow.collector.FlowCollector` joins it onto the flow by the
+    connection's ``client_random`` first, then the 4-tuple, then a real
+    ``ssl_session_id``; it stores the compact stack as ``flow.caller_stack`` and
+    stamps ``flow.sdk`` only when ``sdk`` is set. ``sdk`` is the trusted
     ``{"sdk", "vendor", "category"}`` dict from the bundled signature table (see
-    :mod:`friTap.analysis.attribution.sdk`), never a frame string copied from
-    the target; the event carries no key material or plaintext.
+    :mod:`friTap.analysis.attribution.sdk`) on a classifier match, else
+    ``None``. Frame strings come from the target: they travel only under
+    ``untrusted`` (``native_frames[:16]`` as ``{module, symbol}``,
+    ``java_frames[:16]``) and as the top-level ``thread_name`` /
+    ``transport_module``, escaped and capped at 120 characters each. The event carries no key material or
+    plaintext.
     """
     ssl_session_id: str = ""
     src_addr: str = ""
@@ -175,13 +190,61 @@ class CallerStackEvent(FriTapEvent):
     dst_addr: str = ""
     dst_port: int = 0
     sdk: Optional[Dict[str, Any]] = None
+    # Optional connection/thread identity (additive; empty/0 when the agent
+    # could not read it). client_random is the per-connection join key.
+    client_random: str = ""
+    tid: int = 0
+    thread_name: str = ""
+    pid: int = 0
+    transport_module: str = ""
+    # Escaped, capped target strings (see friTap.caller_stack_shapes).
+    untrusted: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class RequestContextEvent(FriTapEvent):
+    """One lifecycle point of a Java-level HTTP request (``--attribute-sdk``).
+
+    ``timestamp`` is the host receive time (what the join compares); ``t_ms`` is the agent's
+    clock, used only for ordering. Strings are escaped and capped by the router.
+    """
+    event: str = ""
+    req_id: str = ""
+    stack_kind: str = ""
+    url: str = ""
+    method: str = ""
+    frames: List[str] = field(default_factory=list)
+    thread: str = ""
+    tid: Optional[int] = None
+    t_ms: Optional[float] = None
+    status: Optional[int] = None
+    negotiated_protocol: str = ""
+    cached: Optional[bool] = None
+    error: str = ""
+    webview_id: str = ""
+    main_frame: Optional[bool] = None
 
 
 @dataclass
 class ConsoleEvent(FriTapEvent):
-    """Emitted for console log messages from the agent."""
+    """Emitted for console log messages from the agent.
+
+    ``origin`` is :data:`AGENT_DEV_ORIGIN` for the agent's developer
+    diagnostics (``console_dev`` and the ``devlog_*`` levels), which only
+    belong in debug output; empty for ordinary console lines.
+    """
     message: str = ""
     level: str = "info"
+    origin: str = ""
+
+
+#: ConsoleEvent.origin of agent developer diagnostics (devlog / console_dev).
+AGENT_DEV_ORIGIN = "agent_dev"
+
+
+def is_agent_dev_console(event: FriTapEvent) -> bool:
+    """True for a ConsoleEvent carrying an agent developer diagnostic."""
+    return isinstance(event, ConsoleEvent) and event.origin == AGENT_DEV_ORIGIN
 
 
 @dataclass

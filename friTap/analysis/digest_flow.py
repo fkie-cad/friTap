@@ -36,6 +36,7 @@ from friTap.analysis.digest import (
     _iso,
     _iter_messages,
     _server_endpoint,
+    flow_endpoints_synthetic,
     flow_group,
     flow_ref,
     ordered_flow_ids,
@@ -175,10 +176,19 @@ def _endpoint(addr: str, port: int) -> str:
     return safe_untrusted(f"{addr}:{port}" if port else addr, 80)
 
 
-def _flow_meta(flow: "Flow", ordinal: int) -> dict:
+def _flow_phase(flow: "Flow", phases: list[dict] | None) -> str | None:
+    """Phase label (from ``mark_phase`` markers) the flow started in, if any."""
+    if not phases:
+        return None
+    from friTap.analysis.diff import phase_label_for
+
+    return phase_label_for(float(flow.started or 0.0), phases)
+
+
+def _flow_meta(flow: "Flow", ordinal: int, phases: list[dict] | None = None) -> dict:
     stack = [safe_untrusted(getattr(layer, "name", "") or "?", 32)
              for layer in getattr(flow, "layers", []) or []]
-    return {
+    meta = {
         "ref": flow_ref(ordinal),
         "flow_id": safe_untrusted(flow.flow_id, 200),
         "src": _endpoint(flow.src_addr, flow.src_port),
@@ -193,6 +203,13 @@ def _flow_meta(flow: "Flow", ordinal: int) -> dict:
         "bytes": _flow_bytes(flow, 0),
         "untrusted": {"host": _flow_host(flow)},
     }
+    phase = _flow_phase(flow, phases)
+    if phase is not None:
+        meta["phase"] = safe_untrusted(phase, 64)
+    if flow_endpoints_synthetic(flow):
+        # src/dst/server are synthetic 198.18.0.0/15 addresses, not real peers.
+        meta["endpoints_synthetic"] = True
+    return meta
 
 
 def _add_body(out: dict, untrusted: dict, body: bytes, content_type: str,
@@ -312,14 +329,17 @@ def build_flow_detail(
         FlowRefError: malformed ref, unknown flow, or unknown message index.
         ValueError: non-positive ``max_bytes``.
     """
+    from friTap.analysis.diff import load_sidecar_phases
     from friTap.flow.tap_reader import TapReader
 
     if max_bytes <= 0:
         raise ValueError("max_bytes must be positive")
+    phases = load_sidecar_phases(tap_path)
     with TapReader(tap_path) as reader:
         return flow_detail_from(reader, ordered_flow_ids(reader), ref,
                                 source_file=os.path.basename(tap_path),
-                                max_bytes=max_bytes, show_values=show_values)
+                                max_bytes=max_bytes, show_values=show_values,
+                                phases=phases)
 
 
 def flow_detail_from(
@@ -330,10 +350,13 @@ def flow_detail_from(
     source_file: str,
     max_bytes: int = DEFAULT_MAX_BYTES,
     show_values: bool = False,
+    phases: list[dict] | None = None,
 ) -> dict:
     """:func:`build_flow_detail` on an open reader (``ids`` from :func:`ordered_flow_ids`).
 
     Lets callers rendering many refs open and index the capture once.
+    *phases* (from :func:`friTap.analysis.diff.load_phases`) adds a ``phase``
+    key to the flow metadata when the flow started inside a phase window.
     """
     ordinal, msg_index = _resolve(ids, ref)
     flow = reader.read_flow(ids[ordinal - 1])
@@ -345,7 +368,7 @@ def flow_detail_from(
         "params": {"ref": safe_untrusted(ref, 64), "max_bytes": max_bytes,
                    "show_values": show_values},
         "notice": UNTRUSTED_NOTICE,
-        "flow": _flow_meta(flow, ordinal),
+        "flow": _flow_meta(flow, ordinal, phases),
     }
     if msg_index is None:
         detail["request"] = _exchange_part(flow, True, max_bytes, show_values)

@@ -113,12 +113,16 @@ def build_memory_scan_engine(config: "Config") -> MemoryScanEngine:
 
     Encapsulates the wiring the core used to inline: reads the ``-ms`` value,
     interval, selected protocols and ``--no-lsass`` flag off *config*, and
-    co-locates the two sidecar files with the memory-scan keylog:
+    co-locates the four sidecar files (see :func:`_sidecar_paths_for`) with the
+    memory-scan keylog:
 
     * ``<memscan-keylog-stem>.schannel.unpaired`` — Schannel unpaired secrets for
       the offline pcap correlator;
     * ``<memscan-keylog-stem>.rc4.keylog`` — RC4 keys recovered from the heap,
-      written even when ``--protocol rc4`` / ``-k`` was not given.
+      written even when ``--protocol rc4`` / ``-k`` was not given;
+    * ``<memscan-keylog-stem>.mtproto.keylog`` — Telegram MTProto auth/E2E keys;
+    * ``<memscan-keylog-stem>.tls_midstream.secrets.jsonl`` — TLS 1.3
+      secret bundles for mid-stream flows (no captured ClientHello).
 
     A bad/absent keylog path must never block the scan, so sidecar derivation is
     best-effort (falls back to ``None`` → the engine writes to a default file).

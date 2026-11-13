@@ -19,6 +19,7 @@ from friTap.agent_api.context import ToolContext
 from friTap.agent_api.envelope import dumps_compact
 from friTap.agent_api.errors import ToolError
 from friTap.agent_api.registry import Registry, ToolSpec
+from friTap.agent_api.schema import split_top_level_groups
 
 logger = logging.getLogger("friTap.agent_api.mcp")
 
@@ -43,13 +44,18 @@ def mcp_available() -> bool:
 
 
 def tool_definition(spec: ToolSpec):
-    """Build the ``mcp.types.Tool`` for ``spec``."""
+    """Build the ``mcp.types.Tool`` for ``spec``.
+
+    A top-level ``oneOf`` (e.g. "``tap`` or ``session_id``") makes Claude clients
+    drop the tool, so the group is stated in the description instead.
+    """
     from mcp import types
 
+    input_schema, group_note = split_top_level_groups(spec.params_schema)
     return types.Tool(
         name=spec.name,
-        description=spec.summary,
-        inputSchema=spec.params_schema,
+        description=f"{spec.summary} {group_note}".strip(),
+        inputSchema=input_schema,
         annotations=types.ToolAnnotations(
             readOnlyHint=not spec.mutating,
             destructiveHint=spec.mutating and spec.kind == "capture",
@@ -81,6 +87,61 @@ def call_tool_result(registry: Registry, context: ToolContext, name: str, argume
     )
 
 
+PROMPT_ARGUMENTS = (
+    ("target", "App or process to analyze (package name, process name or PID)."),
+    ("device", "Device to use (e.g. a USB/adb serial); omit for the local host."),
+)
+
+
+def prompt_definition(skill):
+    """Build the ``mcp.types.Prompt`` for a packaged ``friTap.skills.Skill``."""
+    from mcp import types
+
+    arguments = [types.PromptArgument(name=name, description=text, required=False)
+                 for name, text in PROMPT_ARGUMENTS]
+    return types.Prompt(name=skill.name, description=skill.description, arguments=arguments)
+
+
+def list_prompt_definitions() -> list:
+    """One MCP prompt per packaged skill, sorted by name."""
+    from friTap.skills import list_skills
+
+    return [prompt_definition(skill) for skill in list_skills()]
+
+
+def prompt_preamble(arguments: dict | None) -> str:
+    """Short first line naming the given target and device (empty when neither is set)."""
+    given = [(name, (arguments or {}).get(name)) for name, _ in PROMPT_ARGUMENTS]
+    parts = [f"{name} `{value}`" for name, value in given if value]
+    return f"Apply this workflow to {' on '.join(parts)}.\n\n" if parts else ""
+
+
+def get_prompt_result(name: str, arguments: dict | None):
+    """Render skill ``name`` as a ``GetPromptResult``; unknown names raise ``McpError``."""
+    from mcp import types
+
+    skill = _skill_or_mcp_error(name)
+    text = prompt_preamble(arguments) + skill.body
+    message = types.PromptMessage(role="user", content=types.TextContent(type="text", text=text))
+    return types.GetPromptResult(description=skill.description, messages=[message])
+
+
+def _skill_or_mcp_error(name: str):
+    """The skill called ``name``; an unknown name is a JSON-RPC invalid-params error."""
+    from mcp import types
+    from mcp.shared.exceptions import McpError
+
+    from friTap.skills import get_skill
+
+    try:
+        return get_skill(name)
+    except KeyError:
+        error = ToolError(f"unknown prompt {name!r}", "unknown_prompt",
+                          hint="list_prompts shows the available prompts")
+        raise McpError(types.ErrorData(code=types.INVALID_PARAMS, message=error.error,
+                                       data=error.to_dict())) from None
+
+
 def build_server(registry: Registry, context: ToolContext):
     """Create the low-level MCP ``Server`` bound to ``registry`` and ``context``."""
     import anyio
@@ -100,7 +161,20 @@ def build_server(registry: Registry, context: ToolContext):
         # Tools block (file IO, subprocess control): keep the event loop free.
         return await anyio.to_thread.run_sync(partial(call_tool_result, registry, context, name, arguments))
 
+    _register_prompts(server)
     return server
+
+
+def _register_prompts(server) -> None:
+    """Expose the packaged skills as MCP prompts (this also advertises ``prompts``)."""
+
+    @server.list_prompts()
+    async def _list_prompts():
+        return list_prompt_definitions()
+
+    @server.get_prompt()
+    async def _get_prompt(name: str, arguments: dict | None):
+        return get_prompt_result(name, arguments)
 
 
 def route_logging_to_stderr(level: int = logging.WARNING) -> None:
@@ -209,5 +283,6 @@ def serve_http(registry: Registry, context: ToolContext, *, host: str, port: int
 
 __all__ = [
     "DEFAULT_HTTP_PORT", "MISSING_MCP_ERROR", "MCP_PATH", "mcp_available", "tool_definition",
-    "call_tool_result", "build_server", "serve_stdio", "build_http_app", "serve_http", "BearerAuth",
+    "call_tool_result", "PROMPT_ARGUMENTS", "prompt_definition", "list_prompt_definitions",
+    "prompt_preamble", "get_prompt_result", "build_server", "serve_stdio", "build_http_app", "serve_http", "BearerAuth",
 ]

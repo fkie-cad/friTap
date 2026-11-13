@@ -16,7 +16,7 @@ import { HookRegistry } from "./registry.js";
 import { PLATFORM_DARWIN } from "./shared_structures.js";
 import { executorModuleName, forgetUnloadedModule, isModuleHooked, markModuleHooked, processScanResults } from "./library_scanner.js";
 import { hookRegistry } from "./registry.js";
-import { hookDynamicLoader, ssl_library_loader } from "./shared_functions.js";
+import { hookDynamicLoader, loadedModulePath, ssl_library_loader } from "./shared_functions.js";
 import { findLoadedModule } from "./module_identity.js";
 
 const G = globalThis as any;
@@ -70,14 +70,14 @@ function opensslRow(reg: HookRegistry, hookFn: (m: string, b: boolean) => void, 
 }
 
 /** Installs a dlopen hook for `reg` and returns a function simulating one dlopen(path). */
-function dlopenHook(reg: HookRegistry, functionName: string, protocol = "tls"): (path: string) => void {
+function dlopenHook(reg: HookRegistry, functionName: string, protocol = "tls", extractModulePath = true): (path: string) => void {
     let callbacks: any;
     const originalAttach = G.Interceptor.attach;
     G.Interceptor.attach = (_addr: any, cb: any) => { callbacks = cb; return { detach: () => { } }; };
     try {
         load(`/usr/lib/${functionName}.dylib`, `0x${(0x9000 + loaded.length).toString(16)}`);
         hookDynamicLoader(
-            { platform: PLATFORM_DARWIN, platformLabel: "MacOS", loaderLibrary: new RegExp(functionName), functionName, extractModulePath: true } as any,
+            { platform: PLATFORM_DARWIN, platformLabel: "MacOS", loaderLibrary: new RegExp(functionName), functionName, extractModulePath } as any,
             reg, [`${functionName}.dylib`], false, protocol,
         );
     } finally {
@@ -317,4 +317,46 @@ test("an executor returning true (or void) is reported under its own protocol", 
         assert.deepEqual(detected.map((d) => d.protocol), ["tls", "rc4"]);
         assert.deepEqual(consoles.filter((c) => c.includes("will be hooked")).map((c) => c.match(/\((\w+)\)!$/)?.[1]), ["tls", "rc4"]);
     } finally { unload(m); }
+});
+
+// Pixel 5: the Android dynamic-loader config does not set extractModulePath, so
+// library_detected carried path "" and the host could not tell GMS Cronet (mapped
+// from com.google.android.gms-.../split_CronetDynamite_installtime.apk) from an
+// embedded libcronet. The report now resolves the path itself.
+for (const [label, extractModulePath] of [["without extractModulePath", false], ["with extractModulePath", true]] as const) {
+    test(`dlopen ${label}: library_detected carries the mapped module path`, () => {
+        const m = load(CELLAR, extractModulePath ? "0x9100" : "0x9200");
+        try {
+            const reg = new HookRegistry();
+            opensslRow(reg, () => { }, "tls", "OpenSSL");
+            const { detected } = captureSends(() =>
+                dlopenHook(reg, `dlopen_path_${extractModulePath}`, "tls", extractModulePath)(CELLAR));
+            assert.equal(detected.length, 1);
+            assert.equal(detected[0].path, CELLAR);
+        } finally { unload(m); }
+    });
+}
+
+test("initial scan: library_detected carries the mapped module path", () => {
+    const m = load(CELLAR, "0x9300");
+    try {
+        const reg = new HookRegistry();
+        opensslRow(reg, () => { }, "tls", "OpenSSL");
+        const { detected } = captureSends(() =>
+            ssl_library_loader(PLATFORM_DARWIN, reg, ["libssl.3.dylib"], "MacOS", true, "tls"));
+        assert.deepEqual(detected.map((d) => d.path), [CELLAR]);
+    } finally { unload(m); }
+});
+
+test("loadedModulePath: the mapped path, or \"\" when unmapped or the lookup throws", () => {
+    const m = load(CELLAR, "0x9400");
+    try {
+        assert.equal(loadedModulePath("libssl.3.dylib"), CELLAR);
+    } finally { unload(m); }
+    assert.equal(loadedModulePath("libssl.3.dylib"), "");
+    const original = G.Process.findModuleByName;
+    G.Process.findModuleByName = () => { throw new Error("boom"); };
+    try {
+        assert.equal(loadedModulePath("libssl.3.dylib"), "");
+    } finally { G.Process.findModuleByName = original; }
 });

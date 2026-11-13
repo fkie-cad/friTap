@@ -21,7 +21,10 @@ from friTap.analysis.diff import (
     diff_phases,
     diff_taps,
     load_phases,
+    load_sidecar_phases,
     phase_label_for,
+    phase_labels,
+    phases_sidecar_for,
 )
 from friTap.analysis.digest import estimate_tokens
 from tests.unit import _digest_helpers as helpers
@@ -164,6 +167,33 @@ def test_diff_phases_rejects_equal_labels(tmp_path):
     ])
     with pytest.raises(ValueError):
         diff_phases(tap, phases, "active", "active")
+
+
+def test_diff_taps_labels_default_to_basenames(before_after):
+    diff = diff_taps(*before_after).to_dict()
+    assert (diff["a"], diff["b"]) == ("a.tap", "b.tap")
+
+
+def test_diff_taps_label_override(before_after):
+    diff = diff_taps(*before_after, a_label="sess-1", b_label="sess-2").to_dict()
+    assert (diff["a"], diff["b"]) == ("sess-1", "sess-2")
+    one_sided = diff_taps(*before_after, b_label="sess-2").to_dict()
+    assert (one_sided["a"], one_sided["b"]) == ("a.tap", "sess-2")
+
+
+def test_phase_labels_distinct_in_marker_order():
+    phases = [{"t": 1.0, "label": "warmup"}, {"t": 2.0, "label": "active"},
+              {"t": 3.0, "label": "warmup"}]
+    assert phase_labels(phases) == ["warmup", "active"]
+
+
+def test_sidecar_phases_present_and_absent(tmp_path):
+    tap = tmp_path / "capture.tap"
+    assert phases_sidecar_for(str(tap)) == tmp_path / "phases.jsonl"
+    assert load_sidecar_phases(str(tap)) is None
+    (tmp_path / "phases.jsonl").write_text(
+        json.dumps({"t": 1000.0, "label": "warmup"}) + "\n", encoding="utf-8")
+    assert load_sidecar_phases(str(tap)) == [{"t": 1000.0, "label": "warmup"}]
 
 
 # ---------------------------------------------------------------------------

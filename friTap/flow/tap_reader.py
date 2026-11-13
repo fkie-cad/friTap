@@ -27,11 +27,13 @@ from friTap.flow.tap_format import (
     _RECORD_ENVELOPE,
     FLAG_HAS_FINDINGS,
     FLAG_HAS_INDEX,
+    FLAG_HAS_REQUEST_CONTEXTS,
     FOOTER_MAGIC,
     REC_FINDING,
     REC_FLOW,
     REC_KEYLOG,
     REC_META,
+    REC_REQUEST_CONTEXT,
     FlowSummary,
     TapHeader,
     TapMeta,
@@ -43,6 +45,7 @@ from friTap.flow.tap_format import (
     decode_keylog,
     decode_meta,
     decode_record_envelope,
+    decode_request_context,
     find_sync_marker,
     verify_payload_crc,
 )
@@ -58,6 +61,7 @@ logger = logging.getLogger(__name__)
 #: metadata) stays far below this. A record claiming more is treated as corrupt.
 MAX_RECORD_PAYLOAD = 1 << 30  # 1 GiB
 _KEYLOG_ONLY = frozenset({REC_KEYLOG})
+_REQUEST_CONTEXT_ONLY = frozenset({REC_REQUEST_CONTEXT})
 
 
 class TapReader:
@@ -276,14 +280,7 @@ class TapReader:
         records are skipped.
         """
         self._ensure_open()
-        with self._io_lock:
-            records = [
-                payload
-                for _offset, _rec_type, payload, stored_crc in self._iter_records(
-                    self._data_start, rec_types=_KEYLOG_ONLY)
-                if verify_payload_crc(payload, stored_crc)
-            ]
-        for payload in records:
+        for payload in self._intact_payloads(_KEYLOG_ONLY):
             try:
                 key_data, timestamp = decode_keylog(payload)
             except (ValueError, AttributeError, RecursionError):  # bad/deep JSON, not an object
@@ -293,6 +290,34 @@ class TapReader:
                 logger.debug("Skipping KEYLOG record whose key_data is not a string")
                 continue
             yield key_data, timestamp if isinstance(timestamp, (int, float)) else 0.0
+
+    def iter_request_contexts(self) -> Iterator[dict]:
+        """Yield intact REC_REQUEST_CONTEXT records, re-bounded; skipped for a
+        closed file without FLAG_HAS_REQUEST_CONTEXTS."""
+        self._ensure_open()
+        if not self._may_hold_request_contexts():
+            return
+        for payload in self._intact_payloads(_REQUEST_CONTEXT_ONLY):
+            record = decode_request_context(payload)
+            if record is None:
+                logger.debug("Skipping undecodable REQUEST_CONTEXT record")
+                continue
+            yield record
+
+    def _intact_payloads(self, rec_types: frozenset) -> list[bytes]:
+        """CRC-valid payloads of *rec_types*, read in one pass under the I/O lock."""
+        with self._io_lock:
+            return [
+                payload
+                for _offset, _rec_type, payload, stored_crc in self._iter_records(
+                    self._data_start, rec_types=rec_types)
+                if verify_payload_crc(payload, stored_crc)
+            ]
+
+    def _may_hold_request_contexts(self) -> bool:
+        """False only for an indexed file written without request contexts."""
+        flags = self._header.flags if self._header is not None else 0
+        return not (flags & FLAG_HAS_INDEX) or bool(flags & FLAG_HAS_REQUEST_CONTEXTS)
 
     def has_findings(self) -> bool:
         """True if the file contains any persisted findings."""

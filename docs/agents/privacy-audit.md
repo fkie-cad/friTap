@@ -1,5 +1,10 @@
 # Privacy audit playbook
 
+!!! tip "Ready-to-use skill"
+    This playbook is also packaged as the `fritap-privacy-audit` agent skill.
+    Install it with `fritap skills install fritap-privacy-audit` or the Claude
+    Code plugin, or use it as an MCP prompt; see [Agent skills](skills.md).
+
 A step-by-step recipe for an AI agent (or a human driving the same tools) to
 answer: **what personal data does this app send, to whom, and when?** It uses
 only the [agent API](../api/agent.md) tools, so it works the same over MCP,
@@ -42,11 +47,11 @@ fritap mcp --root ./audit --allow-capture --allow-target 'com.example.app'
    the `protocols` map: under automatic detection hooks are installed
    speculatively, so `idle_hooks` (e.g. `rc4` on libssl) is not usage.
 3. Drive the app through the scenarios and call `mark_phase` **before** each:
-   `launch`, `consent_declined`, `login`, `browse`, `background`, `logout`.
+   `launch`, `consent-declined`, `login`, `browse`, `background`, `logout`.
    A consent-declined phase is the key one: traffic after it shows what is sent
    without consent.
-4. `stop_capture`. Note the `tap` path and the `phases` (label + time) in the
-   final status.
+4. `stop_capture`. Note the `tap` path and the `phases` (label, epoch `t`,
+   ISO `at`) in the final status. Labels are lower-case and hyphenated.
 
 ## 3. Overview
 
@@ -75,8 +80,10 @@ fritap mcp --root ./audit --allow-capture --allow-target 'com.example.app'
 1. For each finding or suspicious endpoint, `get_flow {"ref": "f12"}` (or a
    message ref `f12#m3`) with a small `max_bytes` and `fields`
    (`["request"]`) to see what was sent.
-2. Attribute the flow to a phase by comparing its `started` time with the
-   `phases` timestamps from step 2.
+2. Attribute the flow to a phase with its `phase` field (the `mark_phase`
+   label it started in; present when the `phases.jsonl` sidecar sits next to
+   the tap). To compare whole phases, use
+   `diff {"session_id": "...", "phase_a": "launch", "phase_b": "consent-declined"}`.
 3. Only pass `show_values: true` when the user explicitly needs the raw value
    (e.g. to confirm it is their test account's e-mail address).
 
@@ -97,6 +104,7 @@ fritap mcp --root ./audit --allow-capture --allow-target 'com.example.app'
   library (e.g. a statically linked TLS stack without `library_scan` /
   `patterns`) is missing; check per-protocol `data_events` in
   `capture_status`.
-- Searching the capture for planted canary values and diffing traffic between
-  phases are **planned** additions to the agent API and are not available yet;
-  do both manually for now with `filter` and the phase timestamps.
+- To prove that a planted canary value leaves the device, use the
+  `find_values` tool; to compare traffic between phases (or two captures), use
+  the `diff` tool. The `fritap-leak-proof` skill walks through both; see
+  [Agent skills](skills.md).

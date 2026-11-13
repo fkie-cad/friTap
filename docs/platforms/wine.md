@@ -82,6 +82,12 @@ A bare `--wine` (no value) means `--wine auto`, e.g.
     with key extraction. Use `-p … -f` instead, or select the experimental Frida
     agent with `--wine off --experimental`.
 
+!!! note "Default key log on the GDB path"
+    Without `-k`, the GDB path still writes the keys, to `./wine_sslkeys.log`
+    in the current directory, and logs a warning naming that file
+    (`No keylog file given (-k); writing keys to …`). Pass `-k FILE` to choose
+    the location.
+
 ### Full packet capture (`-p … -f`) {#full-packet-capture}
 
 friTap can record the raw traffic of the Wine app while the GDB extractor
@@ -183,7 +189,8 @@ fritap -s -k keys.log -p cap.pcapng -f wine /path/to/app.exe
     its hooks, and friTap resumes the app with `SIGCONT` while gdb stays attached
     (`set detach-on-fork on` so the app's vfork'd Wine helpers run free). This
     eliminates the attach race for short one-shots like `curl` (whole run ≈ 0.5 s,
-    handshake ≈ 150 ms after the image maps). Needs `ptrace_scope=0` as above.
+    handshake ≈ 150 ms after the image maps). Non-root runs need
+    `ptrace_scope=0`; under `sudo` it is optional (see above).
 
 ### Signatures and different Wine / library builds
 
@@ -198,6 +205,8 @@ GnuTLS/OpenSSL build differs from the shipped signatures, regenerate them:
   (see `agent_gdb/wine/utils/README.md`), then supply them via `--patterns patterns.json`
   to `agent_gdb/wine/wine_key_extract.py` (which loads them through the
   `FRITAP_PATTERNS` environment variable).
+- Or pass the same file to friTap itself: `fritap --patterns patterns.json …`
+  now reaches the GDB extractor too (see below).
 - Or add the new hex signatures directly to `DEFAULT_TLS_PATTERNS` /
   `DEFAULT_WINE_PATTERNS` in `agent_gdb/wine/gdb_script/gdb_wine_extract.py`.
 
@@ -228,6 +237,43 @@ GnuTLS/OpenSSL build differs from the shipped signatures, regenerate them:
       of the box. A dynamically linked LibreSSL `libssl-*.dll` / `libtls-*.dll`
       instead uses the exported `SSL_get_client_random`.
 
+#### `--patterns` on the GDB route
+
+`fritap --patterns FILE` is passed to the GDB extractor. It accepts both formats:
+
+- **GDB flat format** (what `wine_hunter.py` writes:
+  `{"<hex bytes>": {"name": …, "offset": …, "handler": …}}`): used unchanged.
+- **friTap's v2 format** (the one the Frida Wine agent reads, see
+  [Custom / version-specific signatures via `--patterns`](#custom-version-specific-signatures-via-patterns)):
+  friTap translates the Wine entries into a temporary flat file for the
+  session and deletes it afterwards.
+
+| v2 entry | GDB handler |
+|----------|-------------|
+| `modules.gnutls.wine.x64.gnutls_keylog_sysv` | `GnuTLSCallKeylogUnixBP` |
+| `modules.gnutls.wine.x64.gnutls_keylog_win64` | `GnuTLSCallKeylogWindowsBP` |
+| `modules.openssl.wine.x64.openssl_log_secret_win64` | `OpenSSLCallSSLLogSecretWindowsBP` |
+| `modules.libressl.x64.hkdfWithLen`, `libressl.windows.x64.hkdfWithLen` | `LibreSSLHkdfExpandLabelWinBP` |
+| `modules.libressl.x64.prf`, `libressl.windows.x64.prf` | `LibreSSLTls1PrfWinBP` |
+
+`primary`, `fallback` and `second_fallback` each become an entry. The GDB
+extractor hooks every match of every entry, while the Frida agent stops at the
+first pattern that matches. Each translated entry gets `offset` 0: like the Frida
+agent, the breakpoint goes on the first matched byte, the function entry.
+
+Limits of the translation. Each skipped entry gets a warning:
+
+- **x86-64 only.** The GDB handlers read x86-64 registers, so `arm64`, `x86` and
+  `arm` entries (e.g. `gnutls_keylog_aarch64`) are skipped.
+- **No wildcards.** The GDB scanner matches exact bytes, so a pattern containing
+  `?`/`??` is skipped. Give a fully specified `fallback` if you need one.
+- **Unknown signature ids** are skipped. The table above lists the ids it knows.
+- If nothing translates, friTap warns
+  `--patterns has no Wine/GDB-applicable entries; ignored` and the extractor
+  runs on its built-in signatures only.
+
+User patterns are added to the built-in signatures. They do not replace them.
+
 You can also run the extractor standalone, outside friTap:
 
 ```bash
@@ -257,7 +303,7 @@ target goes to the GDB extractor even if `--experimental` is given.
   below). Lower `ptrace_scope` so gdb/Frida can attach as a non-root user:
 
   ```bash
-  sudo sysctl kernel.yama.ptrace_scope=0   # one-time; survives until reboot
+  sudo sysctl -w kernel.yama.ptrace_scope=0   # one-time; survives until reboot
   ```
 
 !!! danger "Common mistake: running Wine as root with a user-owned WINEPREFIX"
@@ -724,7 +770,7 @@ works on your box:
 Run it as your desktop user (not root):
 
 ```bash
-sysctl kernel.yama.ptrace_scope=0   # one-time, if not already 0
+sudo sysctl -w kernel.yama.ptrace_scope=0   # one-time, if not already 0
 dev/wine_e2e_test.sh
 ```
 

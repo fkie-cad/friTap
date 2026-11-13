@@ -21,6 +21,7 @@ import { findNonExportedSymbols, getBaseAddress, decodeSockaddr, readSockaddrFam
 import { PatternStrategy } from "../../shared/strategies/pattern_strategy.js";
 import { isReadable, safeReadPointer, safeReadU8, safeReadULong, safeReadUtf8, resetReadableCache } from "../../util/safe_memory.js";
 import { currentPlatformKey, normalizeArchKey } from "../../util/process_infos.js";
+import { nativeSocketObserver, NativeSocketObserver } from "../../shared/native_socket_observer.js";
 
 /**
  * Parse a sockaddr into the pcap-writer address encoding (AF_INET → host-order
@@ -247,6 +248,12 @@ function installQuicSocketObserver(): void {
     if (socketObserverInstalled) return;
     socketObserverInstalled = true;
 
+    const observer = nativeSocketObserver();
+    if (observer !== null && observer.armUdpPeerRecording()) {
+        quicConnectionTracker.setObservedPeerFeed(() => feedObservedPeers(observer));
+        devlog("[Google QUICHE] recording UDP connect() peers natively for real-peer recovery");
+        return;
+    }
     const udpFds = new Set<number>();
     const socketAddr = Module.findGlobalExportByName("socket");
     const connectAddr = Module.findGlobalExportByName("connect");
@@ -285,6 +292,14 @@ function installQuicSocketObserver(): void {
         });
     }
     devlog("[Google QUICHE] installed libc UDP socket observer for real-peer recovery");
+}
+
+/** Hands the UDP connect() peers the native observer recorded to the tracker, in call order. */
+function feedObservedPeers(observer: NativeSocketObserver): void {
+    for (const sockaddr of observer.drainUdpPeers()) {
+        const peer = parseObservedPeer(sockaddr);
+        if (peer) quicConnectionTracker.setObservedPeer(peer);
+    }
 }
 
 /**

@@ -1,8 +1,11 @@
-import { log } from "../../../../util/log.js";
 import { Java } from "../../../../shared/javalib.js";
 import { byteArrayToString, byteArrayToNumber, getAttribute, reflectionByteArrayToString } from "../../../../shared/shared_functions.js";
 import { sendKeylog, sendDatalog } from "../../../../shared/shared_structures.js";
 import { pcap_enabled } from "../../../../fritap_agent.js";
+import { stampRecordLibrary } from "../../../../shared/record_message.js";
+
+/** Library label of BouncyCastle/SpongyCastle records (Java JSSE provider, no native module). */
+const BOUNCYCASTLE_LIBRARY_LABEL = "bouncycastle";
 export function execute() {
     setTimeout(function () {
         Java.perform(function () {
@@ -36,6 +39,7 @@ export function execute() {
                 message["ssl_session_id"] = byteArrayToString(this.this$0.value.getConnection().getSession().getId())
                 //log(message["ssl_session_id"])
                 message["function"] = "writeApplicationData"
+                stampRecordLibrary(message, BOUNCYCASTLE_LIBRARY_LABEL)
                 sendDatalog(message, result)
 
                 return this.write(buf, offset, len)
@@ -64,8 +68,8 @@ export function execute() {
                     message["ss_family"] = "AF_INET6"
                 }
                 message["ssl_session_id"] = byteArrayToString(this.this$0.value.getConnection().getSession().getId())
-                log(message["ssl_session_id"])
                 message["function"] = "readApplicationData"
+                stampRecordLibrary(message, BOUNCYCASTLE_LIBRARY_LABEL)
                 sendDatalog(message, result)
 
                 return bytesRead

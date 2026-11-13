@@ -3,6 +3,7 @@
   "additionalProperties": false,
   "properties": {
     "label": {
+      "description": "Short phase name, lower-case and hyphenated (e.g. consent-declined). diff phase_a/phase_b must match it exactly.",
       "maxLength": 200,
       "minLength": 1,
       "type": "string"

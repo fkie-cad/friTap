@@ -1,5 +1,6 @@
 import { readAddresses, getPortsAndAddresses, resolveOffsets} from "../../shared/shared_functions.js";
 import { sendDatalog } from "../../shared/shared_structures.js";
+import { stampRecordLibrary } from "../../shared/record_message.js";
 import { enable_default_fd, pcap_enabled } from "../../fritap_agent.js";
 import { log } from "../../util/log.js";
 import { resolveWithPipelineAsync } from "../../shared/pipeline_utils.js";
@@ -182,6 +183,7 @@ export class mbed_TLS {
                 var message = getPortsAndAddresses(mbed_TLS.getSocketDescriptor(args[0]) as number, true, lib_addesses[current_module_name], enable_default_fd)
                 message["ssl_session_id"] = mbed_TLS.getSessionId(args[0])
                 message["function"] = "mbedtls_ssl_read"
+                stampRecordLibrary(message, current_module_name)
                 this.message = message
             },
             onLeave: function (retval: any) {
@@ -219,6 +221,7 @@ export class mbed_TLS {
                 var message = getPortsAndAddresses(mbed_TLS.getSocketDescriptor(args[0]) as number, false, lib_addesses[current_module_name], enable_default_fd)
                 message["ssl_session_id"] = mbed_TLS.getSessionId(args[0])
                 message["function"] = "mbedtls_ssl_write"
+                stampRecordLibrary(message, current_module_name)
                 sendDatalog(message, data)
             }
         });

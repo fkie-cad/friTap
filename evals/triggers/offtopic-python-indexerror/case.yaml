@@ -1,0 +1,19 @@
+schema_version: "1.1"
+name: trigger-offtopic-python-indexerror
+description: 'unrelated Python bug'
+tags: [trigger, offtopic]
+runs: 3
+execution:
+  max_turns: 3
+  timeout_seconds: 120
+  allowed_tools: [Skill]
+  prompt: |
+    Fix this: `IndexError: list index out of range` on `row[3]` when parsing a CSV in my script.
+graders:
+  - name: no-fritap-skill
+    type: tool_used
+    tool: Skill
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?fritap-'
+    min: 0
+    max: 0
+    arm: both

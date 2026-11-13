@@ -67,7 +67,7 @@ arguments works as-is (`fritap -s -k keys.log wine app.exe`).
     read them as friTap options (friTap has its own `-s`/`-k`). Put a `--` before
     the target; everything after it belongs to the target. `--` is not needed when
     the target has no dash-arguments. (This is separate from the
-    [`-ms`/`-sot` `--` rule](#-ms-memory-scan-patternjson).)
+    [`-ms`/`-sot` `--` rule](#-ms-memory-scan-patternjsonengine).)
 
     ```bash
     fritap -s -k keys.log -- wine "$CURL" -sk https://web.de
@@ -159,7 +159,11 @@ fritap --no-follow-exec -k keys.log 4242      # attach mode as well
 
 #### `-ed, --enable_default_fd`
 Activate the fallback socket information (`127.0.0.1:1234-127.0.0.1:2345`)
-whenever the socket's file descriptor cannot be determined.
+whenever the socket's file descriptor (FD) cannot be determined. The fallback
+tuple is oriented: writes go `1234->2345`, reads `2345->1234`. Records whose
+TLS client_random is known are instead emitted without addresses, so the host
+assigns each connection its own synthetic tuple (see
+[Connections without a socket: synthetic endpoints](#connections-without-a-socket-synthetic-endpoints)).
 
 ```bash
 fritap -m -ed -k keys.log com.example.app
@@ -222,6 +226,53 @@ format wins over the extension; a contradicting extension (`-p out.pcap
 fritap -k keys.log -p traffic.bin --pcap-format pcapng firefox   # pcapng
 fritap -k keys.log -p traffic.pcapng firefox                      # pcapng (auto)
 ```
+
+#### Connections without a socket: synthetic endpoints
+
+Some TLS stacks (Chromium/Cronet memory BIOs and similar) hand friTap plaintext
+records that have no socket fd, so there is no real IP/port tuple. Previously
+these records were dropped, or with `-ed` merged onto the one shared fake tuple
+`127.0.0.1:1234 <-> 127.0.0.1:2345`. Now, when such a record carries a TLS
+client_random, friTap gives the connection its own stable **synthetic** TCP
+tuple derived from `blake2s(client_random)`:
+
+| Side | Address | Port |
+|------|---------|------|
+| client | `198.18.x.y` | `49152-65535` |
+| server | `198.19.x.y` | `443` |
+
+`198.18.0.0/15` is the RFC 2544 benchmarking range, so a synthetic address is
+never a real host.
+
+- **Pinned per connection.** The first tuple a connection (client_random) is
+  seen with, real or synthetic, is used for all of its records, so one TLS
+  connection is one TCP stream in the `-p` pcap and in the live sinks.
+- **Rewrite at stop.** If a real tuple is learned later, the `-p` pcap is
+  rewritten when the capture stops: each synthetic stream is switched to its
+  real tuple only when that is safe, i.e. a real tuple was learned **and** no
+  other stream in the file already uses that real 4-tuple (in either
+  orientation). On a conflict, or when no real tuple was learned, the stream
+  stays synthetic. Rewritten packets keep their timestamps, seq/ack and
+  payload; an IPv6 real tuple becomes an IPv6 packet; checksums are
+  recomputed. The rewrite is atomic (temp file + rename) and on any error the
+  original pcap is kept. Classic pcap and pcapng `-p` output are both handled.
+- **Manifest summary.** The outcome is recorded under the additive
+  `synthetic_endpoints` key of the sidecar manifest `<pcap>.fritap.json` (see
+  [Manifest sidecar](../advanced/offline-pcap-to-tap.md#manifest-sidecar-pcapfritapjson)).
+  The key is written only when the capture had synthetic connections.
+- **Live sinks** (live Wireshark `-l`, live auto-decrypt) keep showing the
+  synthetic tuple. JSON/JSONL data records carry an additive
+  `endpoints_synthetic: true`; `.tap` flows carry `endpoints_synthetic` and are
+  upgraded to the real endpoints live once they are learned. Digests, HAR and
+  IOC output skip synthetic addresses.
+- **Requires a client_random.** Records without one (Go TLS, Windows
+  SSPI/Schannel) keep the old behavior: dropped, or merged onto the `-ed`
+  fallback tuple.
+
+!!! tip "Wireshark: decode the synthetic port 443 as HTTP/2"
+    Plaintext HTTP/2 on the synthetic server port 443 is not auto-detected.
+    Use *Decode As* `tcp.port == 443` -> `HTTP2`, or with tshark:
+    `tshark -r traffic.pcap -d tcp.port==443,http2`.
 
 #### `-f, --full_capture`
 Do a full packet capture instead of logging only the decrypted TLS payload. Set
@@ -325,11 +376,15 @@ fritap --tap capture.tap --duration 60 target
 ```
 
 #### `-l, --live`
-Create a named pipe `/tmp/sharkfin` that Wireshark can read during the capture.
+Create a named pipe `<tempdir>/fritap_sharkfin.pcapng` that Wireshark can read
+during the capture. `<tempdir>` is a fresh `mkdtemp()` directory, so it follows
+`$TMPDIR` (on macOS it is under `/var/folders/...`, not `/tmp`). The exact path is
+printed at start. Not supported on Windows.
 
 ```bash
 fritap -l target
-# then in Wireshark: File -> Open -> /tmp/sharkfin
+# friTap prints: Created named pipe: <tempdir>/fritap_sharkfin.pcapng
+wireshark -k -i <tempdir>/fritap_sharkfin.pcapng
 ```
 
 #### `-sot, --socket_tracing [<path>]`
@@ -393,17 +448,42 @@ fritap -m -k keys.log --scan-keys-region libfoo.so com.example.app
     [`--script-load-timeout`](#-script-load-timeout-seconds) when this flag is
     active.
 
-#### `-ms, --memory-scan [<pattern.json>]`
+<a id="-ms-memory-scan-patternjson"></a>
+
+#### `-ms, --memory-scan [<pattern.json|engine>]`
 Recover TLS secrets by **scanning the target's heap memory** instead of hooking
 the TLS library. This is a complementary, **independently-injected** Frida agent
 (`friTap/fritap_memscan.js`) that periodically re-scans the process heap for
 secret-carrying structures and writes what it finds as an NSS keylog. It works on
 **both** the legacy (default) and `--modern` agent paths and on every OS Frida
-supports; the scan engine is platform-generic, and the shipped default profile
-targets **BoringSSL** (validated on Android/Chrome).
+supports. The scan engines are driven by profiles in one central database,
+`friTap/memory_scanning/patterns.json`, which ships five profiles:
 
-The optional value is a path to a custom pattern/profile JSON that
-overrides/extends the shipped defaults (`friTap/memory_scanning/patterns.json`).
+| Profile id | Engine | Platform | Protocol |
+| --- | --- | --- | --- |
+| `boringssl-2025-inplacevector-u8len` | boringssl | all | `tls` |
+| `boringssl-signal-libsignal-scudo` | boringssl | android | `tls` |
+| `rc4-memscan-generic` | rc4 | all | `rc4` |
+| `schannel-win11-ncryptsslp` | schannel (read-only scan of `lsass.exe`) | windows | `tls` |
+| `tgnet-android-arm64-2026` | mtproto | android | `mtproto` |
+
+Without a value, a profile is used when its protocol is in the selected
+[`--protocol`](#-protocol-name) set (`telegram` also selects `mtproto`) and its
+platform matches the target. So the default `--protocol tls` scans BoringSSL on
+every platform plus Schannel on Windows (skipped with `-nl`/`--no-lsass`);
+`--protocol tls,rc4` adds RC4. The Schannel profile is calibrated for Windows 11
+**arm64** only; **x64** ships uncalibrated and recovers nothing from the heap
+(friTap's normal ncrypt/lsass hooks still run).
+
+The optional value overrides that selection:
+
+| Value | Effect |
+| --- | --- |
+| `boringssl` \| `schannel` \| `rc4` \| `mtproto` | Scan only that engine, regardless of `--protocol`. |
+| `telegram` | Alias for `mtproto` (Telegram cloud + E2E keys, Android arm64). |
+| `<profile-id>` | Scan only that profile (an id from the table above). |
+| `<pattern.json>` | A custom pattern/profile file that overrides/extends the shipped database. |
+
 See [Memory-scan secret profiles](../advanced/patterns.md#memory-scan-secret-profiles).
 
 Where recovered keys are written depends on the other flags:
@@ -414,10 +494,24 @@ Where recovered keys are written depends on the other flags:
 | `-ms` with `-k <file>` | Recovered keys are written to a dedicated file **beside** it — `<stem>.memscan<ext>` (e.g. `keys.log` → `keys.memscan.log`) — never a second handle onto the `-k` file. |
 | `-ms` with `-p`/`-c`/etc. | The memory-scan agent runs **alongside** the normal capture. |
 
+Protocol-specific findings go to sidecars next to that memory-scan keylog
+(`<ms-stem>` is its path without the extension, e.g. `keys.memscan`). Each file is
+created only when the engine emits that kind of finding:
+
+| File | Contents |
+| --- | --- |
+| `<stem>.memscan<ext>` (or `<target>_memscan.keylog`) | Main NSS keylog lines (BoringSSL secrets, paired Schannel secrets). |
+| `<ms-stem>.schannel.unpaired` | Windows `lsass` Schannel secrets with no memory-resident client random; pair them offline with `--schannel-unpaired`. |
+| `<ms-stem>.rc4.keylog` | `RC4_KEY` lines from the RC4 engine. |
+| `<ms-stem>.mtproto.keylog` | `MTPROTO_AUTH_KEY` / `MTPROTO_E2E_KEY` / `MTPROTO_OBF_KEY` lines from the MTProto engine. |
+| `<ms-stem>.tls_midstream.secrets.jsonl` | BoringSSL mid-stream TLS 1.3 secret bundles (client/server traffic secrets, exporter) for connections whose handshake was missed. |
+
 ```bash
 fritap -ms -- com.android.chrome
 fritap -ms -k keys.keylog -p out.pcap -- com.android.chrome
 fritap -ms my_patterns.json com.android.chrome
+fritap -ms schannel -- app.exe
+fritap -m -ms telegram -- org.telegram.messenger
 ```
 
 !!! warning "Put the target after `--` (or after the pattern file)"
@@ -466,8 +560,9 @@ fritap --patterns pattern.json -k keys.log -s com.google.android.youtube
 ```
 
 See [Pattern-based hooking](../advanced/patterns.md) for the correct schema
-(`library -> arch -> function -> [hex strings]`), wildcard rules, and how to
-generate patterns with BoringSecretHunter.
+(default engine: `modules -> module -> os -> arch -> function -> {primary, fallback}`;
+`--modern`: `library -> os -> arch -> function -> [hex strings]`), wildcard rules,
+and how to generate patterns with BoringSecretHunter.
 
 #### `--offsets <offsets.json>`
 Provide custom offsets for hooked functions as a JSON file or inline JSON string
@@ -591,12 +686,14 @@ The accepted values are **not a fixed list** — they are every *registered*
 protocol name plus `all` and `auto`, so the set grows with the protocol registry
 (and with installed protocol plugins). Run `fritap --help` for the exact set your
 build accepts; at the time of writing it is
-`{mtproto, signal, ssh, telegram, tls, all, auto}`.
+`ipsec, mtproto, rc4, signal, ssh, telegram, tls, all, auto, custom`.
 
 - `tls` covers the **TLS family** — TLS, QUIC, and **OHTTP**. There is no
   separate `--protocol ohttp` / `--ohttp` flag; OHTTP is on by default within
   `--protocol tls`. See [OHTTP](../protocols/ohttp.md).
-- `ssh` is exclusive (only its hooks install). No protocol
+- `ssh`, `ipsec` and `mtproto` are exclusive (only their hooks install; they
+  cannot be combined with another protocol, e.g. `--protocol ipsec,tls` is an
+  error; custom ciphers excepted). No protocol
   auto-enables the modern agent path; every protocol runs on the default legacy
   path and on `--modern`.
 - `all` hooks every supported protocol and asks for confirmation (skip with
@@ -607,12 +704,13 @@ build accepts; at the time of writing it is
   per protocol/cipher (`keys.tls.log`, `keys.rc4.log`, …); a single protocol
   (e.g. `--protocol rc4`) writes `keys.log` directly.
 
-!!! warning "IPsec is EXPERIMENTAL and not selectable yet"
-    `--protocol ipsec` is **not accepted yet** — the IPsec handler is not
-    registered, so the CLI rejects it. The agent-side strongSwan hooks install
-    (on both the legacy and `--modern` paths) only via `--protocol all`/`auto`,
-    and are **detection-only**: IPsec/IKE detection works, key extraction does
-    not yet. See [IPsec](../protocols/ipsec.md).
+!!! note "IPsec (strongSwan)"
+    `--protocol ipsec` is a built-in, exclusive protocol. On Linux and Android
+    the agent hooks strongSwan (`charon` / libcharon, on both the legacy and
+    `--modern` paths) and extracts IKEv2 SA keys and ESP Child-SA keys; with
+    `-k` friTap writes Wireshark `ikev2_decryption_table` and `esp_sa` tables
+    next to the keylog. The strongSwan hooks also run under `--protocol all`/`auto`.
+    See [IPsec](../protocols/ipsec.md).
 
 ```bash
 fritap --protocol ssh -k keys.log sshd
@@ -1074,7 +1172,8 @@ Sub-flags (own parser): `--from-pcap <file>` (required), `--keylog <path>`,
 `--tap <path>`, `--scan`, `--tls-port <n>` (repeatable), `--quic-port <n>`
 (repeatable), `--decode-as <rule>` (repeatable), `--tls-heuristic`,
 `--tshark-path <path>`, `--repair-keylog` (re-pair keylog secrets whose
-client_random is not in the capture by trial decryption). A sidecar manifest `<pcap>.fritap.json` supplies
+client_random is not in the capture by trial decryption; writes
+`<stem>.relabeled.keylog` and decrypts with it). A sidecar manifest `<pcap>.fritap.json` supplies
 defaults (CLI flags win). Exit codes: `0` success, `2` pcap not found, `3` tshark
 missing, `4` ran but produced no decrypted packets (wrong keys/ports), `5` no
 decryption keys (no keylog and no embedded DSB), `1` other failure.

@@ -54,3 +54,29 @@ test("primary Cronet row keeps its exclusions", () => {
 test("supplementary QUICHE row still covers libcronet.so", () => {
     assert.ok(rowPattern("Google QUICHE (Cronet)").test("libcronet.so"));
 });
+
+test("supplementary QUICHE row covers libhttpengine.so alongside its BoringSSL row", () => {
+    const source = readFileSync(ANDROID_TS, "utf8");
+    const quicheRow = source.split("\n").find((l) => l.includes(`library: "Google QUICHE (HttpEngine)",`));
+    assert.ok(quicheRow);
+    assert.match(quicheRow, /hookFn: google_quiche_execute,.*libraryType: "google_quiche", protocol: "tls", supplementary: true/);
+    assert.ok(rowPattern("Google QUICHE (HttpEngine)").test("libhttpengine.so"));
+    // The primary (key-extracting) row is unchanged and NOT supplementary.
+    const primaryRow = source.split("\n").find((l) => l.includes(`library: "httpengine (BoringSSL)",`));
+    assert.ok(primaryRow && !primaryRow.includes("supplementary"));
+    assert.ok(rowPattern("httpengine (BoringSSL)").test("libhttpengine.so"));
+});
+
+test("supplementary Cronet plaintext row matches libcronet builds and stays supplementary", () => {
+    const source = readFileSync(ANDROID_TS, "utf8");
+    const row = source.split("\n").find((l) => l.includes(`library: "BoringSSL plaintext (Cronet)",`));
+    assert.ok(row);
+    assert.match(row, /hookFn: chromium_plaintext_execute,.*protocol: "tls", supplementary: true/);
+    const pattern = rowPattern("BoringSSL plaintext (Cronet)");
+    for (const name of ["libcronet.so", "libcronet.143.0.7445.0.so", "libcronet.157.0.8103.14.so"]) {
+        assert.ok(pattern.test(name), `${name} must match the Cronet plaintext row`);
+    }
+    for (const name of ["libmainlinecronet.150.so", "stable_cronet_libssl.so", "xlibcronet.so"]) {
+        assert.ok(!pattern.test(name), `${name} must not match the Cronet plaintext row`);
+    }
+});

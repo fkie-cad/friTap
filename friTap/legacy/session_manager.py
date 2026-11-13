@@ -18,6 +18,7 @@ import threading
 import time
 from typing import TYPE_CHECKING
 
+from .._fs_util import is_non_empty_file
 from ..backends.base import BackendName
 from ..pcap_utility import PCAP_FORMAT_PCAPNG
 from ..spawn_target import resolve_spawn_target
@@ -169,6 +170,26 @@ class SessionManager:
         logger.set_exit_status(EXIT_RUNTIME_ERROR)
         sys.exit(EXIT_RUNTIME_ERROR)
 
+    def _resolve_attached_process_name(self, logger) -> None:
+        """After a numeric-PID attach, resolve the process name once and hand
+        it to the flow collector(s), which otherwise only know the PID string.
+
+        Name targets already carry their name, so they make no device call.
+        Best effort: a failed lookup is logged at debug and never breaks the
+        attach.
+        """
+        target = str(logger.target_app or "")
+        if not target.isnumeric():
+            return
+        try:
+            name = logger._backend.process_name(logger.device, int(target))
+            if name:
+                self._logger.debug("Resolved pid %s to process %s", target, name)
+                logger.apply_resolved_process_name(name)
+        except Exception as exc:  # noqa: BLE001 - must never break the attach
+            self._logger.debug("Could not resolve process name for pid %s: %s",
+                               target, exc)
+
     def start_session(self, own_message_handler=None):
         """Start a friTap capture session. Delegates to SSL_Logger internals."""
         logger = self._l
@@ -233,6 +254,7 @@ class SessionManager:
             # without logger.pid the filter degrades to accept-anything and an
             # unrelated app's crash would be reported as our target's.
             logger.pid = getattr(logger.process, "pid", None)
+            self._resolve_attached_process_name(logger)
             if logger.timeout:
                 logger.target_threads = logger._backend.enumerate_threads(logger.process)
                 if logger.target_threads:
@@ -380,12 +402,33 @@ class SessionManager:
         # it into the requested output file (and removes the temp copy).
         self._logger.debug(f"full {capture_type} capture staged at {temp_path}")
         pcap_obj = self._l.pcap_obj
-        keylog_file = getattr(self._l, "keylog_file", None)
         self._logger.info(full_capture_decryption_hint(
             pcap_obj.pcap_file_name,
             pcap_obj.pcap_container,
-            getattr(keylog_file, "name", None),
+            self._written_keylog_name(pcap_obj),
         ))
+
+    def _written_keylog_name(self, pcap_obj):
+        """The keylog the user can load, or ``None`` when none was written.
+
+        Same rule as the capture manifest (``PCAP.written_keylog_path``): the
+        keylog handler opens its file lazily, so the ``keylog_file`` handle
+        snapshot taken at setup is usually ``None`` and is only a last resort.
+        """
+        resolve_written = getattr(pcap_obj, "written_keylog_path", None)
+        written_path = resolve_written() if callable(resolve_written) else None
+        if written_path:
+            return written_path
+        live_path = self._live_keylog_path()
+        if is_non_empty_file(live_path):
+            return live_path
+        return getattr(getattr(self._l, "keylog_file", None), "name", None)
+
+    def _live_keylog_path(self):
+        resolve = getattr(self._l, "_live_keylog_path", None)
+        if callable(resolve):
+            return resolve()
+        return getattr(self._l, "keylog", None)
 
     def install_signal_handler(self):
         """Route Ctrl+C (SIGINT) and SIGTERM to the graceful teardown."""

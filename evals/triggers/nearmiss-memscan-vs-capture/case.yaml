@@ -1,0 +1,25 @@
+schema_version: "1.1"
+name: trigger-nearmiss-memscan-vs-capture
+description: 'hooks crash app: memory scan, not capture loop'
+tags: [trigger, nearmiss]
+runs: 3
+execution:
+  max_turns: 3
+  timeout_seconds: 120
+  allowed_tools: [Skill]
+  prompt: |
+    Every time friTap hooks the TLS library the app crashes. Is there a way to get the session keys without hooking, e.g. by reading its memory?
+graders:
+  - name: fires-fritap-memory-scan
+    type: tool_used
+    tool: Skill
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?fritap-memory-scan"'
+    min: 1
+    arm: both
+  - name: not-fritap-capture
+    type: tool_used
+    tool: Skill
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?fritap-capture"'
+    min: 0
+    max: 0
+    arm: both

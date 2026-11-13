@@ -1,0 +1,20 @@
+{
+  "name": "fritap",
+  "description": "friTap skills and a read-only MCP server for analyzing Frida-based TLS key and plaintext captures.",
+  "version": "2.6.7",
+  "author": {
+    "name": "Daniel Baier",
+    "email": "daniel.baier@fkie.fraunhofer.de"
+  },
+  "homepage": "https://github.com/fkie-cad/friTap",
+  "repository": "https://github.com/fkie-cad/friTap",
+  "license": "GPL-3.0-only",
+  "keywords": ["frida", "tls", "ssl", "keylog", "traffic-analysis", "mcp"],
+  "skills": "./friTap/skills/",
+  "mcpServers": {
+    "fritap": {
+      "command": "fritap",
+      "args": ["mcp", "--root", "${CLAUDE_PROJECT_DIR}"]
+    }
+  }
+}

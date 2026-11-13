@@ -1,0 +1,18 @@
+schema_version: "1.1"
+name: trigger-security-audit-2
+description: 'specific: tokens, cleartext, weak ciphers'
+tags: [trigger, positive]
+runs: 3
+execution:
+  max_turns: 3
+  timeout_seconds: 120
+  allowed_tools: [Skill]
+  prompt: |
+    Pentest of com.corp.timesheet: I want to know if login credentials, JWTs or API keys show up in its traffic, whether anything still goes over plain http, and if it negotiates old TLS versions. Capture with friTap and give me findings with evidence.
+graders:
+  - name: fires-fritap-security-audit
+    type: tool_used
+    tool: Skill
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?fritap-security-audit"'
+    min: 1
+    arm: both

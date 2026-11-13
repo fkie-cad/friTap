@@ -7,7 +7,7 @@ Decrypts and logs an executables or mobile applications SSL/TLS traffic.
 Arguments:
   - `-m`, `--mobile` Attach to a process on android or iOS
   - `-k <path>`, `--keylog <path>` Log the keys used for tls traffic
-  - `-l`, `--live` Creates a named pipe /tmp/sharkfin which can be read by Wireshark during the capturing process
+  - `-l`, `--live` Creates a named pipe `<tempdir>/fritap_sharkfin.pcapng` (a fresh `mkdtemp()` directory, so it follows `$TMPDIR`, e.g. `/var/folders/...` on macOS) which can be read by Wireshark during the capturing process. The exact path is printed at start; open it with `wireshark -k -i <path>`. Not supported on Windows.
   - `-p  <path>`, `--pcap <path>` Name of PCAP file to write
   - `-s`, `--spawn` Spawn the executable/app instead of attaching to a running process
   - `-v`, `--verbose` Show verbose output
@@ -31,11 +31,11 @@ Output:
 
 ![Log pcap output](/images/pcap_output.png)
 
-Note that the packets in this pcap currently only reflect the content, source and destination of packets. Certain IP/TCP header information may be omitted or set to default values. For a more precise output, log the traffic separately and decrypt it using the keys logged by the `-keylog` option (see example below). 
+Note that the packets in this pcap currently only reflect the content, source and destination of packets. Certain IP/TCP header information may be omitted or set to default values. For a more precise output, log the traffic separately and decrypt it using the keys logged by the `-k`/`--keylog` option (see example below). 
 Also, when you try to analyse the resulting pcap, it might happen that wireshark mistakes the decrypted traffic for still being encoded because it still runs on port 443 (happens e.g. for HTTP2 traffic, Http1.1 seems to work fine). To circumvent this, just tell wireshark to decode traffic on port 443 as HTTP2 traffic (or  any other).
 
 ## Log keys of TLS traffic
-`fritap -m -spawn --keylog myKeyLogFile.log com.example.app`
+`fritap -m --spawn --keylog myKeyLogFile.log com.example.app`
 
 Output:
 
@@ -47,17 +47,19 @@ The script logs the keys used for encryption like described [here](https://devel
 
 ```bash
 $ fritap -l com.example.app
-[*] Created named pipe for Wireshark live view to /tmp/tmp9is_q9_k/fritap_sharkfin
-[*] Now open this named pipe with Wireshark in another terminal: sudo wireshark -k -i /tmp/tmp9is_q9_k/fritap_sharkfin
-[*] friTap will continue after the named pipe is ready....
+[*] friTap live view on Wireshark (PCAPNG with auto-decrypt)
+[*] Created named pipe: /tmp/tmp9is_q9_k/fritap_sharkfin.pcapng
+[*] Open with: wireshark -k -i /tmp/tmp9is_q9_k/fritap_sharkfin.pcapng
 
 ```
 
-In another terminal we than open this named pipe with Wireshark:
+In another terminal we then open this named pipe with Wireshark, using the path friTap printed (the `tmp…` directory is random and lives under `$TMPDIR`, e.g. `/var/folders/...` on macOS):
 
 ```bash
-$ sudo wireshark -k -i /tmp/tmp9is_q9_k/fritap_sharkfin &
+$ wireshark -k -i /tmp/tmp9is_q9_k/fritap_sharkfin.pcapng &
 ```
+
+The live view is not supported on Windows.
 
 Now we can see and analyze all the packets live with Wireshark. As soon as we stop the capturing friTap will exit. For later analysis it is than possible to safe the capture as pcap:
 
@@ -134,6 +136,33 @@ We define different hooking categories for which specific byte patterns are used
     SSL_Write
 
 Each category has a primary and fallback byte pattern, allowing flexibility when the primary pattern fails.
+
+Pass your pattern file with `--patterns <pattern.json>` (a **path** to a JSON file; inline JSON strings are not accepted). It is deep-merged over the shipped defaults:
+
+```bash
+fritap -m --patterns pattern.json -k keys.log -s com.google.android.youtube
+```
+
+The category snippets below show only the **leaf** of each entry. They are not valid on their own: pasted at the top level they are rejected. Every category must sit inside the full nesting **`modules` → module → platform → arch → category** (default legacy engine), for example:
+
+```json
+{
+  "modules": {
+    "libcronet.so": {
+      "android": {
+        "arm64": {
+          "Dump-Keys": {
+            "primary":  "AA BB CC DD EE FF ...",
+            "fallback": "FF EE DD CC BB AA ..."
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+The platform key is one of `android` / `ios` / `linux` / `macos` / `windows`. The `--modern` engine also accepts a list-based form without the `modules` wrapper: **library → os → arch → function → `["<hex>", ...]`** (the list order is the primary/fallback chain). See [Pattern-based hooking](docs/advanced/patterns.md) for the full schema, architecture keys and wildcard rules.
 
 
 ### 1. Dump-Keys
@@ -215,7 +244,7 @@ Instead of hooking the TLS library, friTap can recover TLS secrets by **scanning
 - `-ms` with `--protocol rc4` scans the **RC4** engine (S-box / candidate-key recovery) instead of any TLS engine.
 - `-ms` with `--protocol tls,rc4` scans every applicable engine (e.g. on Windows: BoringSSL + Schannel + RC4).
 - `-ms <engine>` (e.g. `-ms schannel`, `-ms rc4`, `-ms boringssl`) is a **targeted** override that scans only that engine, regardless of `--protocol`.
-- `-ms mtproto` (alias `-ms telegram`) scans the **MTProto/Telegram** engine on **Android arm64 only** (matches `libtmessages.*.so`), recovering Telegram cloud and E2E secret-chat keys in a single pass. Live recovery writes them to a sidecar `<stem>.mtproto.keylog` (containing both `MTPROTO_AUTH_KEY` and `MTPROTO_E2E_KEY` lines). See [Capturing Telegram / MTProto keys](#capturing-telegram--mtproto-keys).
+- `-ms mtproto` (alias `-ms telegram`) scans the **MTProto/Telegram** engine on **Android arm64 only** (matches `libtmessages.*.so`), recovering Telegram cloud and E2E secret-chat keys in a single pass. Live recovery writes them to a sidecar `<stem>.mtproto.keylog` (containing `MTPROTO_AUTH_KEY`, `MTPROTO_E2E_KEY` and `MTPROTO_OBF_KEY` lines). See [Capturing Telegram / MTProto keys](#capturing-telegram--mtproto-keys).
 
 Schannel TLS secrets recovered from `lsass` have no memory-resident client-random, so they are written **unpaired** to `<stem>.schannel.unpaired`; run the offline decryptor with `--schannel-unpaired` to correlate them against a capture and emit a normal, Wireshark-loadable NSS keylog.
 
@@ -232,7 +261,8 @@ Schannel TLS secrets recovered from `lsass` have no memory-resident client-rando
 # Heap-only secret recovery; keys written to com.android.chrome_memscan.keylog
 fritap -ms -- com.android.chrome
 
-# Memory scan alongside a normal capture, sharing one keylog
+# Memory scan alongside a normal capture; hooked keys go to keys.keylog,
+# heap-recovered keys to a separate keys.memscan.keylog beside it
 fritap -ms -k keys.keylog -p out.pcap -- com.android.chrome
 
 # Custom pattern/profile file (before the target)
@@ -282,7 +312,9 @@ fritap --from-pcap out.pcap --keylog keys.tls.log --rc4-keylog keys.rc4.log
 
 ## Capturing Telegram / MTProto keys
 
-Telegram's MTProto 2.0 keys can be recovered heap-side with the memory scanner. `-ms mtproto` (alias `-ms telegram`) scans `libtmessages.*.so` on **Android arm64 only** and recovers, in one pass, both the cloud keys and the E2E secret-chat keys. Live recovery writes them to a sidecar file `<stem>.mtproto.keylog`, which contains both `MTPROTO_AUTH_KEY` and `MTPROTO_E2E_KEY` lines.
+Telegram's MTProto 2.0 keys can be recovered heap-side with the memory scanner. `-ms mtproto` (alias `-ms telegram`) scans `libtmessages.*.so` on **Android arm64 only** and recovers, in one pass, both the cloud keys and the E2E secret-chat keys. Live recovery writes them to a sidecar file `<stem>.mtproto.keylog`, which contains `MTPROTO_AUTH_KEY` and `MTPROTO_E2E_KEY` lines plus `MTPROTO_OBF_KEY` lines (the live obfuscated-transport CTR state used for mid-stream recovery).
+
+friTap can also extract the keys with a live hook on tgnet's `Datacenter::getAuthKey` (`--protocol mtproto` / `--protocol telegram` with `-k`), e.g. `fritap -m -s --protocol telegram -f -p tg.pcapng -k tg.keys org.telegram.messenger`. Live MTProto plaintext capture (decrypted messages straight from the agent) is planned but not implemented yet; use keys + pcap + offline decryption. See [docs/protocols/telegram.md](docs/protocols/telegram.md).
 
 ```bash
 # Live recovery of Telegram cloud + E2E keys (Android arm64)
@@ -307,6 +339,44 @@ Feed the recovered keylog back into the shipped offline decryptor with `--mtprot
 ```bash
 fritap --from-pcap cap.pcap --mtproto-keylog x.mtproto.keylog --tap out.tap
 ```
+
+## SDK/caller attribution (`--attribute-sdk`)
+
+`--attribute-sdk` (opt-in) records the calling backtrace once per connection, so flows in the `.tap` carry the SDK that caused them (`attribution.originator`) next to the TLS module that carried them (`attribution.transport`). See [docs/api/agent.md](docs/api/agent.md#transport-vs-originator).
+
+```bash
+fritap -m --attribute-sdk --tap out.tap com.example.app
+```
+
+`FRITAP_SDK_SIGNATURES=path[:path]` (`os.pathsep`-separated) layers extra signature files over the bundled `sdk_signatures.json`; a missing or invalid file is warned about and skipped.
+
+### Per-request attribution with `-p` (Android)
+
+Chromium-based stacks (Cronet, GMS Cronet, HttpEngine, WebView) send every request from a shared network thread, so the native backtrace rarely shows the SDK. On Android, `--attribute-sdk` together with a plaintext capture (`-p`) also hooks the Java side where each request is built and records that Java stack per request (the Java request context). friTap then matches each request to its flow by method, normalized URL and time:
+
+```bash
+fritap -m -p out.pcap --attribute-sdk --tap out.tap com.example.app
+```
+
+These hooks are installed only with `-p`. They are not installed with `-f` (full capture has no plaintext hooks), `--pairip-safe` or `--quic-only`. Supported stacks, the matching rules and known limits are in [docs/platforms/android.md](docs/platforms/android.md#per-request-sdk-attribution-java-request-context).
+
+A flow can get more than one claim (from its native stack, its connection, a request context). A claim replaces the current one only when it ranks strictly higher: confidence first, then the source.
+
+| source | what it is | confidence |
+|---|---|---|
+| `java-request` | the flow's own request, matched to a Java request context | `high`; `medium` when requests from different SDKs had the same URL and friTap picked one by order |
+| `context` | a WebView request other than the `loadUrl`/`postUrl` navigation itself (subresources, page-initiated navigations), attributed through the WebView load that owns it | `medium` at most |
+| `native-stack` | the caller backtrace joined to the connection | `high` only on `libsignal`; `medium` on Chromium-family and other transports |
+| `connection-fallback` | inherited from another flow of the same connection | always `low` |
+
+So the order is `java-request`/`high` > `java-request`/`medium` > `context`/`medium` > `native-stack`/`medium` > `connection-fallback`/`low`. A connection whose flows have different originators is marked `mixed`.
+
+Some traffic is put in a `bucket` instead of being given an SDK:
+
+- `cache`: a request served from the HTTP cache. It has no flow, so only its request-context record in the `.tap` carries the bucket.
+- `chromium-internal`: Chromium's own background traffic, not caused by an app SDK: an unattributed flow on a Chromium-family transport whose host is in the `chromium_internal_hosts` signature list (Safe Browsing, component updater, variations, DoH, …; see `friTap/analysis/attribution/data/README.md`). A later originator claim removes the bucket.
+
+> **Privacy:** the Java request context records the **full URL, including the query string** (which often holds tokens, ids or other personal data), plus the HTTP method, status and up to 32 Java frames. URLs are capped at 2048 characters and escaped. They are written to the `.tap` as request-context records (see [docs/api/tap-format.md](docs/api/tap-format.md)) even when no flow matches. Treat a `.tap` captured with `--attribute-sdk` like the decrypted traffic itself.
 
 ## Using friTap with a custom Frida scripts
 

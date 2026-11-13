@@ -21,7 +21,9 @@ from typing import IO, Any, Callable, Optional
 
 from friTap.agent_api.capture.runner import CaptureRequest, session_keylog_files
 from friTap.agent_api.capture.status import TERMINAL_STATES, StatusTracker
+from friTap.agent_api.errors import ToolError
 from friTap.analysis._limits import safe_json_loads
+from friTap.analysis.digest import _iso as iso_utc
 from friTap.output.stdout_stream import STREAM_SCHEMA
 
 STDERR_NAME = "stderr.log"
@@ -109,15 +111,31 @@ class CaptureSession:
     # -- phases --------------------------------------------------------------
 
     def mark_phase(self, label: str) -> dict[str, Any]:
-        """Record a timestamped phase marker (also appended to phases.jsonl)."""
-        now = self._clock()
-        t_rel = None if self.started_at is None else round(max(0.0, now - self.started_at), 3)
-        entry = {"t": now, "t_rel": t_rel, "label": label}
+        """Record a timestamped phase marker (also appended to phases.jsonl).
+
+        Raises:
+            ToolError: ``bad_param`` when the session already ended.
+        """
+        entry = self._phase_entry(label)
         with self._lock:
+            self._reject_if_ended()
             self._phases.append(entry)
             with open(self.session_dir / PHASES_NAME, "a", encoding="utf-8") as fh:
                 fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
         return dict(entry)
+
+    def _phase_entry(self, label: str) -> dict[str, Any]:
+        now = self._clock()
+        t_rel = None if self.started_at is None else round(max(0.0, now - self.started_at), 3)
+        return {"t": now, "at": iso_utc(now), "t_rel": t_rel, "label": label}
+
+    def _reject_if_ended(self) -> None:
+        """Caller holds ``self._lock``."""
+        state = self._tracker.state
+        if state in TERMINAL_STATES:
+            raise ToolError(f"capture session {self.session_id!r} is {state}; "
+                            "phases can only be marked while it runs", "bad_param",
+                            hint="start a new capture with start_capture", param="session_id")
 
     # -- status --------------------------------------------------------------
 

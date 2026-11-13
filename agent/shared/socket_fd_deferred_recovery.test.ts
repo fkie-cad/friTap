@@ -31,6 +31,7 @@ import { installReadHook, installWriteHook } from "../core/executors/read_write.
 import { createSslReadWriteExHooks } from "../tls/definitions/openssl.js";
 import { OpenSSL_BoringSSL, usesBioGetFd } from "../tls/libs/openssl_boringssl.js";
 import { OpenSSL_BoringSSL as AndroidOpenSSL_BoringSSL } from "../legacy/tls/libs/openssl_boringssl.js";
+import { SslPlaintextHooks, SslPlaintextHost } from "./ssl_plaintext_hooks.js";
 
 const G = globalThis as any;
 
@@ -479,4 +480,78 @@ test("android legacy: an SSL object WITH a socket fd is attributed in onEnter (n
     assert.equal(out.length, 1);
     assert.equal(out[0].message.src_port, 50095);
     assert.equal(Buffer.from(out[0].data).toString(), "hel", "min(num, retval) bytes");
+});
+
+// ── message.library: every record names the module that produced it ─────────
+// WHY: TCP-TLS datalog records used to carry no `library`, so the host stamped each new
+// flow with whichever TLS library was announced LAST. On a Pixel 5, every WebView
+// (libwebviewchromium.so) HTTP/2 flow was labelled libcronet.*.so because Cronet
+// announced after WebView. Each hook must stamp its own module.
+
+test("modern executors: read and write records carry library = the hooked module", () => {
+    const withFd = { ...def, fdDecoder: () => 13 };
+    const addrs = { [MOD]: { SSL_read: addr("SSL_read_lib"), SSL_write: addr("SSL_write_lib"), ...SOCKET_FNS } };
+    installReadHook(withFd, addrs, MOD, {}, false);
+    installWriteHook(withFd, addrs, MOD, {}, false);
+    const r = call("SSL_read_lib", [addr("ssl"), plaintext("HTTP/1.1"), int(4096)], 8);
+    const w = call("SSL_write_lib", [addr("ssl"), plaintext("GET /"), int(5)], 5);
+    assert.equal(r.length, 1);
+    assert.equal(w.length, 1);
+    assert.equal(r[0].message.library, MOD);
+    assert.equal(w[0].message.library, MOD);
+});
+
+test("modern SSL_read_ex / SSL_write_ex: records carry library = the hooked module", () => {
+    const EX_MOD = "libssl.ex.dylib";
+    const addrs = { [EX_MOD]: { SSL_read_ex: addr("SSL_read_ex_lib"), SSL_write_ex: addr("SSL_write_ex_lib"), ...SOCKET_FNS } };
+    const fns: any = { SSL_get_fd: () => 14 };
+    for (const extra of createSslReadWriteExHooks()) extra.install(addrs, EX_MOD, fns, false);
+    const written = mem(8);
+    written.writeU32(3);
+    const w = call("SSL_write_ex_lib", [addr("ssl"), plaintext("GET"), int(3), written], 1);
+    const readbytes = mem(8);
+    readbytes.writeU32(2);
+    const r = call("SSL_read_ex_lib", [addr("ssl"), plaintext("OK"), int(4096), readbytes], 1);
+    assert.equal(w[0].message.library, EX_MOD);
+    assert.equal(r[0].message.library, EX_MOD);
+});
+
+/** A minimal SslPlaintextHooks host with a working SSL_get_fd for `moduleName`. */
+function plaintextHostFor(moduleName: string, fd: number): SslPlaintextHost {
+    return {
+        moduleName,
+        module_name: moduleName,
+        is_base_hook: true,
+        addresses: { [moduleName]: { ...SOCKET_FNS } },
+        SSL_get_fd: () => fd,
+        SSL_get_session: null,
+        SSL_SESSION_get_id: null,
+        getSslSessionId: () => "",
+    };
+}
+
+function attachPlaintextHooksFor(moduleName: string, fd: number): void {
+    const hooks = new SslPlaintextHooks(plaintextHostFor(moduleName, fd), { readmod: null, writemod: null }, false);
+    hooks.attachRead(addr(`${moduleName}_SSL_read`));
+    hooks.attachWrite(addr(`${moduleName}_SSL_write`));
+}
+
+test("SslPlaintextHooks: two modules each stamp their OWN library (no last-announced bleed)", () => {
+    attachPlaintextHooksFor("libwebviewchromium.so", 71);
+    attachPlaintextHooksFor("libcronet.157.0.8103.14.so", 72);
+    for (const mod of ["libwebviewchromium.so", "libcronet.157.0.8103.14.so"]) {
+        const r = call(`${mod}_SSL_read`, [addr("ssl"), plaintext("HTTP/2"), int(4096)], 6);
+        const w = call(`${mod}_SSL_write`, [addr("ssl"), plaintext("PRI *"), int(5)], 5);
+        assert.equal(r.length, 1);
+        assert.equal(w.length, 1);
+        assert.equal(r[0].message.library, mod, `read record of ${mod}`);
+        assert.equal(w[0].message.library, mod, `write record of ${mod}`);
+    }
+});
+
+test("SslPlaintextHooks: a host without a module name emits no library key", () => {
+    attachPlaintextHooksFor("", 73);
+    const w = call("_SSL_write", [addr("ssl"), plaintext("x"), int(1)], 1);
+    assert.equal(w.length, 1);
+    assert.equal("library" in w[0].message, false);
 });

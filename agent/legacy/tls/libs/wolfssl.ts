@@ -1,5 +1,6 @@
 import { readAddresses, getPortsAndAddresses, resolveOffsets } from "../../../shared/shared_functions.js";
 import { sendDatalog } from "../../../shared/shared_structures.js";
+import { stampRecordLibrary } from "../../../shared/record_message.js";
 import { attachPlaintextWriteHook } from "../../../shared/write_hooks.js";
 import { log } from "../../../util/log.js";
 import { enable_default_fd, pcap_enabled, keylog_enabled } from "../../../fritap_agent.js";
@@ -92,6 +93,8 @@ export class WolfSSL {
                 var message = getPortsAndAddresses(WolfSSL.wolfSSL_get_fd(args[0]) as number, true, lib_addesses[current_module_name], enable_default_fd)
                 
                 message["function"] = "wolfSSL_read"
+                
+                stampRecordLibrary(message, current_module_name)
                 message["ssl_session_id"] = WolfSSL.getSslSessionId(args[0])
                 this.message = message
                 this.buf = args[1]
@@ -119,6 +122,7 @@ export class WolfSSL {
             if (message === null) return null
             message["ssl_session_id"] = WolfSSL.getSslSessionId(args[0])
             message["function"] = "wolfSSL_write"
+            stampRecordLibrary(message, current_module_name)
             return message
         })
     }

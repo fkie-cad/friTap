@@ -1,0 +1,19 @@
+schema_version: "1.1"
+name: trigger-offtopic-frida-java
+description: 'generic Frida root-detection bypass'
+tags: [trigger, offtopic]
+runs: 3
+execution:
+  max_turns: 3
+  timeout_seconds: 120
+  allowed_tools: [Skill]
+  prompt: |
+    Write a Frida script that logs every call to com.example.app.Settings.load(String) in Java, with the argument and return value.
+graders:
+  - name: no-fritap-skill
+    type: tool_used
+    tool: Skill
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?fritap-'
+    min: 0
+    max: 0
+    arm: both

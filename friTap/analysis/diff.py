@@ -51,6 +51,7 @@ from friTap.analysis.digest import (
     flow_ref,
     lift_attribution,
 )
+from friTap.flow.attribution import flow_originator
 from friTap.flow.tap_reader import TapReader
 
 # /1: first cut of the semantic diff schema.
@@ -58,6 +59,9 @@ SCHEMA = "fritap.diff/1"
 
 #: Cap on how many drill-down refs are listed per endpoint row.
 _MAX_REFS = 5
+
+#: Phase-marker sidecar written next to a session's capture.tap (mark_phase).
+PHASES_SIDECAR = "phases.jsonl"
 
 ClassifyFn = Callable[[str], Optional[dict]]
 
@@ -104,7 +108,7 @@ class _Endpoint:
         ctype = (getattr(flow, "response_content_type", "") or "").split(";", 1)[0].strip()
         if ctype:
             self.content_types.add(safe_untrusted(ctype, MAX_TEXT_CHARS))
-        sdk = _normalize_sdk(getattr(flow, "sdk", None))
+        sdk = _normalize_sdk(flow_originator(flow))
         if sdk is not None:
             self.sdks.setdefault(sdk["sdk"], sdk)
 
@@ -229,6 +233,24 @@ def load_phases(path: str) -> list[dict]:
         phases.append({"t": epoch, "label": str(obj.get("label", ""))})
     phases.sort(key=lambda p: p["t"])
     return phases
+
+
+def phases_sidecar_for(tap_path: str) -> Path:
+    """The ``phases.jsonl`` sidecar path next to *tap_path* (may not exist)."""
+    return Path(tap_path).with_name(PHASES_SIDECAR)
+
+
+def load_sidecar_phases(tap_path: str) -> Optional[list[dict]]:
+    """Phases from the sidecar next to *tap_path*, or ``None`` when there is none."""
+    path = phases_sidecar_for(tap_path)
+    if not path.is_file():
+        return None
+    return load_phases(str(path))
+
+
+def phase_labels(phases: list[dict]) -> list[str]:
+    """Distinct phase labels in marker order."""
+    return list(dict.fromkeys(phase["label"] for phase in phases))
 
 
 def phase_label_for(started: float, phases: list[dict]) -> Optional[str]:
@@ -476,7 +498,9 @@ def _render_markdown(diff: dict) -> str:
 
 def diff_taps(tap_a_path: str, tap_b_path: str, *,
               classify: Optional[ClassifyFn] = None,
-              budget: Optional[int] = None) -> DiffResult:
+              budget: Optional[int] = None,
+              a_label: Optional[str] = None,
+              b_label: Optional[str] = None) -> DiffResult:
     """Diff the endpoint sets of two ``.tap`` captures.
 
     Args:
@@ -486,9 +510,12 @@ def diff_taps(tap_a_path: str, tap_b_path: str, *,
             each host group is annotated with its ``owner``/``category``/``party``.
         budget: optional soft token budget for :meth:`DiffResult.to_dict` /
             :meth:`DiffResult.to_markdown` (lowest-volume rows dropped first).
+        a_label: optional label for side A (e.g. a capture session id);
+            defaults to the basename of *tap_a_path*.
+        b_label: optional label for side B; defaults to the basename of *tap_b_path*.
 
     Returns:
-        A :class:`DiffResult` whose ``a``/``b`` are the two paths.
+        A :class:`DiffResult` whose ``a``/``b`` are the two labels.
     """
     with TapReader(str(tap_a_path)) as reader_a:
         before = _collect_endpoints(reader_a.iter_flows())
@@ -497,7 +524,8 @@ def diff_taps(tap_a_path: str, tap_b_path: str, *,
     added, removed, changed = _diff_endpoints(before, after)
     # Report basenames only: the full resolved path would leak the server's
     # filesystem layout into results (every other tool returns tap.name).
-    return DiffResult(mode="taps", a_label=Path(tap_a_path).name, b_label=Path(tap_b_path).name,
+    return DiffResult(mode="taps", a_label=a_label or Path(tap_a_path).name,
+                      b_label=b_label or Path(tap_b_path).name,
                       added=added, removed=removed, changed=changed,
                       before_count=len(before), after_count=len(after),
                       classify=classify, budget=budget)
@@ -542,6 +570,10 @@ __all__ = [
     "diff_phases",
     "load_phases",
     "phase_label_for",
+    "phase_labels",
+    "phases_sidecar_for",
+    "load_sidecar_phases",
+    "PHASES_SIDECAR",
     "host_counts_taps",
     "host_counts_phases",
 ]

@@ -28,7 +28,10 @@
         "app_protocol": {"type": ["string", "null"]},
         "filter": {"type": ["string", "null"], "description": "Display-filter expression."},
         "budget_tokens": {"type": "integer", "minimum": 1},
-        "show_values": {"type": "boolean"}
+        "show_values": {"type": "boolean"},
+        "masvs": {"const": true, "description": "Present when MASVS mapping was requested."},
+        "attribute": {"const": true, "description": "Present when first/third-party attribution ran."},
+        "first_party": {"type": "array", "items": {"type": "string"}, "description": "First-party domains used for attribution (with `attribute`)."}
       }
     },
     "notice": {"type": "string", "description": "Fixed prompt-injection notice about `untrusted` values."},
@@ -101,6 +104,17 @@
           "pattern": "^([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)?$",
           "description": "UTC ISO-8601 time of the first flow; empty when unknown."
         },
+        "owner": {"type": ["string", "null"], "description": "Attribution only: company owning the host (bundled tracker map, trusted)."},
+        "category": {"type": ["string", "null"], "description": "Attribution only: tracker category from the bundled map (trusted)."},
+        "party": {"type": "string", "description": "Attribution only: `first`, `third` or `unknown` relative to `params.first_party`.", "examples": ["first", "third", "unknown"]},
+        "sdks": {"$ref": "#/$defs/sdk_list"},
+        "transports": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "description": "Distinct `attribution.transport.kind` values of this host's flows (the TLS stack that carried them), sorted; omitted when none.",
+          "items": {"type": "string"}
+        },
         "untrusted": {
           "type": "object",
           "required": ["host"],
@@ -121,12 +135,17 @@
           "enum": ["json", "form", "grpc", "protobuf", "multipart", "text", "binary"],
           "description": "Omitted when the request had no body (or no URL)."
         },
+        "endpoints_synthetic": {
+          "const": true,
+          "description": "Present (true) when a flow of this cluster has synthetic 198.18.0.0/15 endpoints (fd-less TLS record); omitted otherwise."
+        },
         "status": {
           "type": "object",
           "description": "Response status code -> count; omitted when no status was seen.",
           "propertyNames": {"pattern": "^[0-9]+$"},
           "additionalProperties": {"$ref": "#/$defs/count"}
         },
+        "sdks": {"$ref": "#/$defs/sdk_list"},
         "untrusted": {
           "type": "object",
           "required": ["host", "method", "path"],
@@ -139,6 +158,21 @@
             "body": {"$ref": "#/$defs/shape_list"},
             "headers": {"$ref": "#/$defs/shape_list"}
           }
+        }
+      }
+    },
+    "sdk_list": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Distinct SDKs the row's flows are attributed to (bundled signature table, trusted), ordered by `sdk`; omitted when none.",
+      "items": {
+        "type": "object",
+        "required": ["sdk", "vendor", "category"],
+        "additionalProperties": false,
+        "properties": {
+          "sdk": {"type": "string"},
+          "vendor": {"type": "string"},
+          "category": {"type": "string"}
         }
       }
     },
@@ -202,10 +236,18 @@
           "pattern": "^(f[1-9][0-9]*)?$",
           "description": "Flow of the cluster's first finding; empty when the finding is not tied to a selected flow."
         },
+        "refs": {
+          "type": "array",
+          "maxItems": 10,
+          "items": {"type": "string", "pattern": "^f[1-9][0-9]*$"},
+          "description": "Every distinct flow the cluster covers, first-seen order (starts with `ref`); empty when no finding is tied to a selected flow. Capped at 10; see `refs_more`."
+        },
+        "refs_more": {"type": "integer", "minimum": 1, "description": "Distinct flows beyond the 10 listed in `refs`; omitted when none."},
         "count": {"$ref": "#/$defs/count"},
         "severity": {"$ref": "#/$defs/severity"},
         "category": {"type": "string", "examples": ["secret", "pii", "network", "protocol", "uncategorized"]},
         "source": {"type": "string", "description": "Analyzer name.", "examples": ["credentials", "ioc", "privacy", "protobuf"]},
+        "masvs": {"type": "array", "items": {"type": "string"}, "description": "OWASP MASVS control ids; only with `masvs: true` and when the finding maps to one.", "examples": [["MASVS-PRIVACY-1"]]},
         "untrusted": {
           "type": "object",
           "required": ["title", "description"],

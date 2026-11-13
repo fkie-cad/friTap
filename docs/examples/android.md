@@ -312,7 +312,7 @@ fritap -m --list-libraries com.example.app
 fritap -m --enable_default_fd --pcap traffic.pcap com.example.app
 
 # Enable full capture mode
-fritap -m --full_capture -k keys.log com.example.app
+fritap -m --full_capture -p traffic.pcap -k keys.log com.example.app
 ```
 
 ### Device-Specific Issues
@@ -345,8 +345,9 @@ watch -n 1 "adb shell top -p \$(adb shell pgrep frida-server)"
 
 **Minimize Battery Impact:**
 ```bash
-# Reduce analysis overhead
-fritap -m --timeout 60 -k keys.log com.example.app
+# Limit the capture to 60 seconds (--duration stops it cleanly; -t/--timeout
+# only delays resuming a spawned app)
+fritap -m --duration 60 -k keys.log com.example.app
 
 # Use targeted analysis (attach mode is the default when -s/--spawn is omitted)
 fritap -m -k keys.log com.example.app
@@ -456,7 +457,7 @@ adb shell /data/local/tmp/frida-server --version
 adb shell pm clear com.example.app
 
 # Start fresh analysis
-fritap -m -f -k keys.log com.example.app
+fritap -m -f -p traffic.pcap -k keys.log com.example.app
 ```
 
 ### 3. Comprehensive Logging

@@ -10,6 +10,7 @@ import { isDeepSymbolResolutionEnabled } from "./deep_symbol_resolution.js";
 import { warnAntiTamper } from "../util/anti_tamper.js";
 import { watchFunctionEntries } from "../util/hw_breakpoint.js";
 import { isReadable, resetReadableCache } from "../util/safe_memory.js";
+import { nativeSocketObserver, NativeSocketObserver, CLOSED_FD_CONSUMER, fdCloseFunction } from "./native_socket_observer.js";
 // Pure sockaddr/PRNetAddr decoders live in sockaddr.ts so they can be unit-tested
 // under Node without this module's heavy Frida import graph. Imported for internal
 // use (getPortsAndAddresses) and re-exported below for existing importers.
@@ -200,8 +201,22 @@ function reportHookRow(match: HookRegistration, moduleName: string, protocol: st
         return;
     }
     log(`${moduleName} ${announcement} (${protocol})!`);
-    // Notify host that a library was detected
-    send({contentType: "library_detected", library: moduleName, path: modulePath || "", protocol});
+    // Notify host that a library was detected. modulePath is only resolved by the
+    // loaders when registry filtering needs it (hookDynamicLoader: extractModulePath),
+    // but the host classifies by path (GMS Cronet vs embedded Cronet), so fill it here.
+    send({contentType: "library_detected", library: moduleName, path: modulePath || loadedModulePath(moduleName), protocol});
+}
+
+/**
+ * Filesystem path of the loaded module `moduleName`, or "" when it is not (or no
+ * longer) mapped. Used for host-side reporting only, never for registry filtering.
+ */
+export function loadedModulePath(moduleName: string): string {
+    try {
+        return Process.findModuleByName(moduleName)?.path ?? "";
+    } catch (_) {
+        return "";
+    }
 }
 
 /**
@@ -749,14 +764,50 @@ let _cachedAddrLenBuf: NativePointer | null = null;
 // being permanently dropped. Lives here (not in the fd-recovery tracker) because EVERY caller
 // of getPortsAndAddresses writes the blacklist, but only some install the tracker.
 let _unwantedFdEvictionInstalled = false;
+let _closedFdObserver: NativeSocketObserver | null = null;
 function installUnwantedFdEviction(): void {
     if (_unwantedFdEvictionInstalled) return;
     _unwantedFdEvictionInstalled = true;
-    const closeAddr = Module.findGlobalExportByName("close");
+    const observer = nativeSocketObserver();
+    if (observer !== null && observer.armClosedFdConsumer(CLOSED_FD_CONSUMER.unwantedFds)) {
+        _closedFdObserver = observer;
+        return;
+    }
+    const closeAddr = Module.findGlobalExportByName(fdCloseFunction());
     if (!closeAddr) return;
     Interceptor.attach(closeAddr, {
         onEnter(args) { unwantedFDs.delete(args[0].toInt32()); },
     });
+}
+
+/** Native observer: evict the fds closed since the last call; clear all when the ring overran. */
+function evictClosedUnwantedFds(): void {
+    if (_closedFdObserver === null) return;
+    const closed = _closedFdObserver.drainClosedFds(CLOSED_FD_CONSUMER.unwantedFds);
+    if (closed === "lost") unwantedFDs.clear();
+    else for (const fd of closed) unwantedFDs.delete(fd);
+}
+
+/** --enable_default_fd: the loopback "local" (client) side of the placeholder tuple. */
+export const DEFAULT_FD_LOCAL_PORT = 1234;
+/** --enable_default_fd: the loopback "peer" (server) side of the placeholder tuple. */
+export const DEFAULT_FD_PEER_PORT = 2345;
+const DEFAULT_FD_LOOPBACK_ADDR = 0x7F000001;
+
+/**
+ * The --enable_default_fd placeholder 127.0.0.1:1234 <-> 127.0.0.1:2345, oriented like a real
+ * peer lookup: a write goes local -> peer, a read peer -> local, so direction survives.
+ */
+export function defaultFdPlaceholderTuple(isRead: boolean): { [key: string]: string | number } {
+    const localPort = DEFAULT_FD_LOCAL_PORT;
+    const peerPort = DEFAULT_FD_PEER_PORT;
+    return {
+        src_port: isRead ? peerPort : localPort,
+        src_addr: DEFAULT_FD_LOOPBACK_ADDR,
+        dst_port: isRead ? localPort : peerPort,
+        dst_addr: DEFAULT_FD_LOOPBACK_ADDR,
+        ss_family: "AF_INET",
+    };
 }
 
 /**
@@ -767,22 +818,32 @@ function installUnwantedFdEviction(): void {
 *     false, the context is an SSL_write call.
 * @param {{ [key: string]: NativePointer}} methodAddresses Dictionary containing (at least) addresses for getpeername, getsockname, ntohs and ntohl
 * @return {{ [key: string]: string | number }} Dictionary of sockfd's "src_addr", "src_port", "dst_addr",
-*     and "dst_port".
+*     and "dst_port"; null when the fd is not usable (negative without enable_default_fd,
+*     blacklisted, non-IP, or getsockname/getpeername failed — then the placeholder tuple
+*     under enable_default_fd).
 */
+/**
+ * True when `fd` was marked as a non-IP socket (AF_UNIX etc.) by getPortsAndAddresses:
+ * lets a caller tell "unwanted fd" (drop the record) from a failed lookup (null too).
+ */
+export function isUnwantedFd(fd: number): boolean {
+    evictClosedUnwantedFds();
+    return unwantedFDs.has(fd);
+}
+
 export function getPortsAndAddresses(sockfd: number, isRead: boolean, methodAddresses: { [key: string]: NativePointer }, enable_default_fd : boolean): { [key: string]: string | number } {
 
     if (!_unwantedFdEvictionInstalled) installUnwantedFdEviction();
+    evictClosedUnwantedFds();
 
     var message: { [key: string]: string | number } = {}
     if (enable_default_fd && (sockfd < 0)){
-
-        message["src" + "_port"] = 1234
-        message["src" + "_addr"] = 0x7F000001
-        message["dst" + "_port"] = 2345
-        message["dst" + "_addr"] = 0x7F000001
-        message["ss_family"] = "AF_INET"
-
-        return message
+        return defaultFdPlaceholderTuple(isRead)
+    }
+    // No socket: nothing to query. Never blacklisted (a negative fd is not a socket that
+    // could ever be closed, so its unwantedFDs entry would never be evicted).
+    if (sockfd < 0) {
+        return null;
     }
 
     // Check if this fd is already marked as unwanted
@@ -807,11 +868,14 @@ export function getPortsAndAddresses(sockfd: number, isRead: boolean, methodAddr
     var src_dst = ["src", "dst"]
     for (let i = 0; i < src_dst.length; i++) {
         addrlen.writeU32(128)
-        if ((src_dst[i] == "src") !== isRead) {
-            getsockname(sockfd, addr, addrlen)
-        }
-        else {
-            getpeername(sockfd, addr, addrlen)
+        const status = ((src_dst[i] == "src") !== isRead)
+            ? getsockname(sockfd, addr, addrlen)
+            : getpeername(sockfd, addr, addrlen)
+        if (status !== 0) {
+            // Closed, reused or not-yet-connected fd: `addr` still holds the PREVIOUS call's
+            // sockaddr, so decoding it would stamp another connection's tuple on this record.
+            // Not blacklisted: the failure may be transient (a socket not connected yet).
+            return enable_default_fd ? defaultFdPlaceholderTuple(isRead) : null;
         }
 
         // Byte math by default; flip to `true` to route through the cached ntohs/ntohl.

@@ -31,6 +31,7 @@ export { offsets, pcap_enabled, keylog_enabled, _isShuttingDown, ohttp_enabled, 
 import { maybeRunRegionScan } from "./shared/scan/scan_engine.js";
 import { stopBlink } from "./shared/pairip_blink.js";
 import { restoreAnchorLocatorKeylogFields } from "./shared/boringssl_anchor_locator.js";
+import { installSslLayoutAutoLocate } from "./shared/ssl_layout_autolocate.js";
 import { restoreTrackedKeylogCallbacks } from "./shared/keylog_callback_tracker.js";
 import { runDetachTeardowns } from "./shared/detach_teardown.js";
 
@@ -471,6 +472,10 @@ anti_root = initStage("anti-handshake", () => recvHandshake("anti", anti_root, "
 
 // Initialize the hooking pipeline centrally so it is ready before any library constructor runs.
 initStage("pipeline-init", () => initializePipeline(parsedPatterns ?? undefined, experimental));
+
+// Stripped BoringSSL modules outside the Chromium plaintext path: locate the ssl_st
+// layout once, on the first record that has no client_random (ssl_layout_autolocate.ts).
+initStage("ssl-layout-autolocate", () => installSslLayoutAutoLocate(), false);
 
 
 

@@ -42,6 +42,11 @@ export class LruMap<K, V> {
         return this._map.delete(key);
     }
 
+    /** Drop every entry without calling `onEvict` (a reset, not a capacity eviction). */
+    clear(): void {
+        this._map.clear();
+    }
+
     get size(): number {
         return this._map.size;
     }

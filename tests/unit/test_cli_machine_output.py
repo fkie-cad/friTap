@@ -298,10 +298,12 @@ def test_tap_handler_close_with_mocks_is_idempotent():
     collector = types.SimpleNamespace(
         subscribe=lambda cb: None, flush=lambda: calls.append("flush"),
         get_flows=lambda: [flow], on_data=None, on_ohttp=None,
-        on_library_detected=None, on_session_event=None, on_sdk=None)
+        on_library_detected=None, on_session_event=None, on_sdk=None,
+        on_request_context=None, subscribe_to=lambda bus: None,
+        set_request_context_sink=lambda sink: None)
     writer = types.SimpleNamespace(
         open=lambda path, target="": calls.append("open"), path="x.tap", flow_count=1,
-        written_flow_ids=set(), on_flow_event=None,
+        written_flow_ids=set(), on_flow_event=None, write_request_context=None,
         write_flow=lambda f: calls.append(("write", f.flow_id)),
         close=lambda: calls.append("close"))
     handler = TapOutputHandler("x.tap", collector_factory=lambda: collector,
@@ -321,9 +323,12 @@ def test_tap_handler_still_finalizes_when_flush_raises():
     collector = types.SimpleNamespace(subscribe=lambda cb: None, flush=boom,
                                       get_flows=lambda: [], on_data=None, on_ohttp=None,
                                       on_library_detected=None, on_session_event=None,
-                                      on_sdk=None)
+                                      on_sdk=None, on_request_context=None,
+                                      subscribe_to=lambda bus: None,
+                                      set_request_context_sink=lambda sink: None)
     writer = types.SimpleNamespace(open=lambda path, target="": None, path="x.tap",
                                    flow_count=0, written_flow_ids=set(),
+                                   write_request_context=None,
                                    on_flow_event=None, write_flow=None,
                                    close=lambda: closed.append(True))
     handler = TapOutputHandler("x.tap", collector_factory=lambda: collector,

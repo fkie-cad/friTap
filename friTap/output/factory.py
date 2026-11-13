@@ -178,6 +178,12 @@ def _tap_handler_class(output_config):
     return TapOutputHandler
 
 
+def _log_tap_deferred_to_full_capture(tap_path, logger):
+    """Tell the user that -f --tap builds the .tap after the capture ends."""
+    logger.info("Full capture (-f): %s will be built from the full-capture pcap "
+                "and keylog when the capture ends.", tap_path)
+
+
 class OutputHandlerFactory:
     """Factory that creates output handler instances based on configuration."""
 
@@ -361,6 +367,8 @@ class OutputHandlerFactory:
             # One policy for every JSON output: raw key material only when it
             # was explicitly requested (-k or --json-keys), else redacted.
             include_keys = json_key_material_enabled(config.output)
+            # Agent dev diagnostics reach the JSONL outputs only with -d / -do.
+            include_dev_logs = bool(getattr(config, "debug_output", False))
             if json_cls is JsonOutputHandler:
                 handlers.append(JsonOutputHandler(
                     config.output.json_output,
@@ -370,13 +378,20 @@ class OutputHandlerFactory:
                 ))
             elif json_cls is JsonlOutputHandler:
                 handlers.append(JsonlOutputHandler(
-                    config.output.json_output, include_key_material=include_keys))
+                    config.output.json_output, include_key_material=include_keys,
+                    include_agent_dev_logs=include_dev_logs))
             else:
-                handlers.append(json_cls(include_key_material=include_keys))
+                handlers.append(json_cls(include_key_material=include_keys,
+                                         include_agent_dev_logs=include_dev_logs))
 
         # --tap: write a .tap capture (flows) directly from the CLI session.
+        # Under -f there are no plaintext events; the session builds the .tap
+        # from the finished full capture at teardown instead (offline/auto_tap.py),
+        # so no live handler truncates the user's path up front.
         tap_cls = _tap_handler_class(config.output)
-        if tap_cls is not None:
+        if tap_cls is not None and config.output.full_capture:
+            _log_tap_deferred_to_full_capture(config.output.tap_output, logger)
+        elif tap_cls is not None:
             handlers.append(tap_cls(config.output.tap_output, target=config.target or ""))
 
         # Live Wireshark modes

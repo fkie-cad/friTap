@@ -45,11 +45,11 @@
           "type": "array"
         },
         {
-          "const": "auto",
+          "minLength": 1,
           "type": "string"
         }
       ],
-      "description": "Domains to treat as first-party when attributing hosts (implies attribute), or \"auto\" to infer the app's own non-tracker backend domains from the capture."
+      "description": "Domains to treat as first-party when attributing hosts (implies attribute): a list of domains, a comma-separated string (\"a.com,b.com\"), or \"auto\" to infer the app's own non-tracker backend domains from the capture."
     },
     "focus": {
       "default": "all",

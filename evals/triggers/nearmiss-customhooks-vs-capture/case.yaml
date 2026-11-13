@@ -1,0 +1,25 @@
+schema_version: "1.1"
+name: trigger-nearmiss-customhooks-vs-capture
+description: 'statically linked BoringSSL + offsets: custom hooks'
+tags: [trigger, nearmiss]
+runs: 3
+execution:
+  max_turns: 3
+  timeout_seconds: 120
+  allowed_tools: [Skill]
+  prompt: |
+    The binary statically links BoringSSL so friTap resolves nothing. I know the offset of ssl_log_secret from Ghidra (0x3a4f10). How do I tell friTap to hook that offset?
+graders:
+  - name: fires-fritap-custom-hooks
+    type: tool_used
+    tool: Skill
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?fritap-custom-hooks"'
+    min: 1
+    arm: both
+  - name: not-fritap-capture
+    type: tool_used
+    tool: Skill
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?fritap-capture"'
+    min: 0
+    max: 0
+    arm: both

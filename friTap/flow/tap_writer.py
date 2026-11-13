@@ -19,11 +19,13 @@ from friTap.flow.tap_format import (
     _HEADER_STRUCT,
     FLAG_HAS_FINDINGS,
     FLAG_HAS_INDEX,
+    FLAG_HAS_REQUEST_CONTEXTS,
     REC_FINDING,
     REC_FLOW,
     REC_FLOW_INDEX,
     REC_KEYLOG,
     REC_META,
+    REC_REQUEST_CONTEXT,
     TapMeta,
     encode_finding_record,
     encode_flow,
@@ -33,12 +35,17 @@ from friTap.flow.tap_format import (
     encode_keylog,
     encode_meta,
     encode_record,
+    encode_request_context,
 )
 
 if TYPE_CHECKING:
     from friTap.flow.models import Flow
 
 logger = logging.getLogger(__name__)
+
+#: Most REC_REQUEST_CONTEXT records one .tap may hold; later ones are dropped
+#: (a chatty app must not bloat the capture with unmatched request contexts).
+MAX_REQUEST_CONTEXT_RECORDS = 20_000
 
 
 class TapWriter:
@@ -70,6 +77,8 @@ class TapWriter:
         self._flow_index: dict[str, dict] = {}
         self._defer_flow = defer_flow
         self._wrote_findings: bool = False  # any REC_FINDING written this session
+        self._request_context_count: int = 0  # REC_REQUEST_CONTEXT written this session
+        self._request_context_cap_logged: bool = False
         self._capture_start: float = 0.0
         self._capture_target: str = ""
         self._closed: bool = True
@@ -106,6 +115,8 @@ class TapWriter:
         self._flow_count = 0
         self._flow_index = {}
         self._wrote_findings = False
+        self._request_context_count = 0
+        self._request_context_cap_logged = False
         self._closed = False
 
         self._file = open(self._path, "wb")
@@ -198,6 +209,50 @@ class TapWriter:
             self._file.write(record)
             self._wrote_findings = True
 
+    def write_request_context(self, record: dict) -> bool:
+        """Write one per-request Java context as a REC_REQUEST_CONTEXT record.
+
+        *record* is bounded by ``sanitize_request_context``; one without a
+        ``req_id`` is dropped. At most :data:`MAX_REQUEST_CONTEXT_RECORDS` are
+        written per file (one warning when the cap is first hit). Thread-safe.
+        Returns ``True`` when the record was written. The cap is checked
+        before the (sanitizing) encode so a flood past it costs no encoding.
+        """
+        with self._lock:
+            if not self._accepts_request_context():
+                return False
+        try:
+            payload = encode_request_context(record)
+        except ValueError:
+            logger.debug("Dropping request context without a req_id")
+            return False
+        encoded = encode_record(REC_REQUEST_CONTEXT, payload)
+        with self._lock:
+            if not self._accepts_request_context():
+                return False
+            self._file.write(encoded)
+            self._request_context_count += 1
+            return True
+
+    def _accepts_request_context(self) -> bool:
+        """Whether one more request context may be written; caller holds the lock."""
+        if self._closed or self._file is None:
+            return False
+        if self._request_context_count >= MAX_REQUEST_CONTEXT_RECORDS:
+            self._log_request_context_cap_once()
+            return False
+        return True
+
+    def _log_request_context_cap_once(self) -> None:
+        """Warn once per file that further request contexts are dropped; caller holds the lock."""
+        if self._request_context_cap_logged:
+            return
+        self._request_context_cap_logged = True
+        logger.warning(
+            "TapWriter: request-context cap (%d) reached for %s; dropping further ones",
+            MAX_REQUEST_CONTEXT_RECORDS, self._path,
+        )
+
     def on_flow_event(self, flow: "Flow", event_type: str) -> None:
         """FlowCollector callback — writes COMPLETED flows.
 
@@ -268,6 +323,8 @@ class TapWriter:
             flags = FLAG_HAS_INDEX
             if self._wrote_findings:
                 flags |= FLAG_HAS_FINDINGS
+            if self._request_context_count:
+                flags |= FLAG_HAS_REQUEST_CONTEXTS
             header_bytes = encode_header(
                 capture_start=self._capture_start,
                 flow_count=len(flow_index),

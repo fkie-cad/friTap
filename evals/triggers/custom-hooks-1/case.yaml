@@ -1,0 +1,18 @@
+schema_version: "1.1"
+name: trigger-custom-hooks-1
+description: 'terse: no keys, stripped lib'
+tags: [trigger, positive]
+runs: 3
+execution:
+  max_turns: 3
+  timeout_seconds: 120
+  allowed_tools: [Skill]
+  prompt: |
+    fritap ran fine but keylog.log is 0 bytes. the TLS lib in the binary is stripped, no symbols. how do i hook it anyway?
+graders:
+  - name: fires-fritap-custom-hooks
+    type: tool_used
+    tool: Skill
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?fritap-custom-hooks"'
+    min: 1
+    arm: both

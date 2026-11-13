@@ -5,12 +5,15 @@ import logging
 import re
 import threading
 import time
+import weakref
 from collections import OrderedDict
-from typing import TYPE_CHECKING, Callable, Optional
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Callable, NamedTuple, Optional
 
 if TYPE_CHECKING:
     from .models import FlowSummary
 
+from friTap.caller_stack_shapes import compact_caller_stack
 from friTap.connection_index import ConnectionKeyAliases, resolve_connection_key
 from friTap.constants import direction_for_function
 from friTap.events import (
@@ -19,8 +22,15 @@ from friTap.events import (
     SESSION_ENDED,
     SESSION_RESUMED,
     SESSION_STARTED,
+    CallerStackEvent,
+    DatalogEvent,
     ErrorEvent,
     FlowEvent,
+    KeylogEvent,
+    LibraryDetectedEvent,
+    OhttpEvent,
+    RequestContextEvent,
+    SessionEvent,
 )
 from friTap.parsers.base import (
     MAX_PARSER_RESETS,
@@ -35,10 +45,30 @@ from friTap.parsers.http2 import Http2Parser, is_h2_control_frame_data
 from friTap.parsers.http3 import build_h3_result_from_headers
 from friTap.parsers.registry import get_default_registry
 
+from .attribution import (
+    CHROMIUM_FAMILY_KINDS,
+    SOURCE_NATIVE_STACK,
+    chromium_internal_candidate,
+    chromium_internal_host_update,
+    direct_attribution,
+    inherited_attribution,
+    merge_attribution,
+    module_basename,
+    sdk_name,
+    transport_attribution,
+)
+from .caller_stack_stash import CallerStackStash, StashedCallerStack
 from .h2_flow import Http2StreamFlowMixin
 from .layer_pipeline import MESSAGE_TRANSPORTS, LayerPipeline
 from .models import Flow, FlowChunk, FlowEventType, FlowState
 from .quic_flow import QuicStreamFlowMixin
+from .request_context_join import (
+    MATCH_SLACK_SECONDS,
+    RequestContextStore,
+    absolute_request_url,
+    normalize_request_key,
+)
+from .synthetic_endpoint_upgrade import observed_endpoint_map, upgrade_flow_endpoints
 
 logger = logging.getLogger(__name__)
 
@@ -71,10 +101,70 @@ MAX_SIGNAL_RAW_BYTES = 16 * 1024 * 1024
 # and are emitted).
 MAX_TRACKED_CONNECTIONS = 4096
 MAX_ORPHAN_REQUESTS = 1024
+# Bounds on flows waiting for a request context that arrives after them (oldest dropped first).
+MAX_REQUEST_JOIN_KEYS = 1024
+MAX_REQUEST_JOIN_FLOWS_PER_KEY = 16
+# Cap on the module -> load-path map fed by LibraryDetectedEvent (the agent
+# announces each TLS module once, but the names are target-controlled).
+MAX_MODULE_PATHS = 256
 
 # Decrypted-TL transports (Flow.transport values) whose parser is pinned by the
 # registry instead of byte-sniffed; every event on them is exactly one packet.
 _TRANSPORT_TELEGRAM_E2E = "telegram_e2e"
+
+
+@dataclass(slots=True)
+class _ConnectionAttribution:
+    """What a live connection's originators resolved to (see
+    ``FlowCollector._connection_attributions``).
+
+    ``caller_stack`` is ``None`` until a caller stack is joined (a record may
+    first be created by a per-request originator); ``sdk_names`` gathers the
+    names of every originator seen, caller-stack and per-request alike.
+    """
+
+    sdk: Optional[dict] = None  # first caller stack's {sdk, vendor, category}
+    caller_stack: Optional[dict] = None  # first joined compact caller stack
+    sdk_names: set = field(default_factory=set)
+
+    @property
+    def mixed(self) -> bool:
+        """True when the originators named more than one SDK."""
+        return len(self.sdk_names) > 1
+
+    def add_originator(self, sdk: Optional[dict]) -> None:
+        """Note *sdk*'s name (an unnamed or missing SDK is ignored)."""
+        name = sdk_name(sdk)
+        if name is not None:
+            self.sdk_names.add(name)
+
+
+class _Publication(NamedTuple):
+    """Staged under the lock by ``_stage_publication``, delivered by ``_publish``."""
+
+    events: list
+    request_records: list = []
+    request_sink: Optional[Callable[[dict], object]] = None
+
+
+class _PendingEvents:
+    """A pending ``(event_type, flow)`` list plus the ids of its flows, so each
+    flow gets at most one extra UPDATED."""
+
+    __slots__ = ("events", "_ids")
+
+    def __init__(self, events: list) -> None:
+        self.events = events
+        self._ids = {id(flow) for _, flow in events}
+
+    def flows(self) -> list:
+        """The distinct flows in *events*, in first-seen order."""
+        return list({id(flow): flow for _, flow in self.events}.values())
+
+    def add_updated(self, flow: Flow) -> None:
+        if id(flow) not in self._ids:
+            self.events.append((FlowEventType.UPDATED, flow))
+            self._ids.add(id(flow))
 
 
 class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
@@ -105,6 +195,17 @@ class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
         # and add_synthetic_flow, so those two paths can never collide on the
         # "conn_id:N" namespace. Monotonic per conn_id; only cleared in clear().
         self._flow_seq: dict[str, int] = {}
+        # conn_id -> the first flow sequence of the connection's CURRENT
+        # lifetime, recorded whenever its state is created or rebuilt (new
+        # connection, idle-reset, LRU-eviction or session end then reuse).
+        # _flow_seq is monotonic per conn_id, so "first flow" (the direct-join
+        # rule) and "a flow of this lifetime" (sibling fallback) compare against
+        # this, not against sequence 0. Outlives the state (a late join may
+        # target a finalized connection); only cleared in clear().
+        self._lifetime_first_seq: dict[str, int] = {}
+        # UPDATED events raised where no pending list is threaded (flow birth
+        # inside _make_flow); drained into on_data's pending list. Under _lock.
+        self._staged_updates: list = []
         # conn_id -> state, in least-recently-used order (see
         # MAX_TRACKED_CONNECTIONS / _touch_connection).
         self._connections: OrderedDict[str, _ConnectionState] = OrderedDict()
@@ -135,16 +236,34 @@ class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
         # per matching flow at birth by _stamp_metadata (mirroring _session_tls)
         # and CONSUMED on use so a later connection reusing the same 5-tuple does
         # not inherit a prior connection's SDK.
-        self._sdk_pending: dict[tuple, list[dict]] = {}
-        # Per-connection resolved SDK, keyed by connection_id. One caller_stack
-        # is captured per connection, but a connection carries many flows (HTTP/2
-        # streams, HTTP/1.1 keep-alive exchanges) born over its whole lifetime.
-        # This map holds the connection's SDK so a flow born AFTER the attribution
-        # inherits it at birth (_stamp_metadata) — even in the headless capture
-        # path (retain_completed=False), where an earlier attributed sibling has
-        # already been written and released from _flows. Cleared in
-        # _finalize_connection so it stays bounded by LIVE connections.
-        self._connection_sdks: dict[str, dict] = {}  # conn_id -> {sdk,vendor,category}
+        # Also keyed by ("cr", client_random) -- the strongest key, tried first
+        # -- and bounded: MAX_STASHED entries, STASH_TTL_SECONDS on self._now()
+        # (see caller_stack_stash). Entries are StashedCallerStack, carrying the
+        # SDK (or None for an unclassified stack) and the compact caller stack.
+        self._sdk_pending: CallerStackStash = CallerStackStash()
+        # client_random -> connection_id, set in _record_client_random and popped
+        # in _finalize_connection: the O(1) first-choice caller_stack join.
+        self._conn_by_client_random: dict[str, str] = {}
+        # connection_id -> first SDK / caller stack, so flows born after the join inherit them,
+        # even after a sibling was written and released (headless). Written only by
+        # _remember_connection_attribution, popped in _finalize_connection.
+        self._connection_attributions: dict[str, _ConnectionAttribution] = {}
+        # Request-context join (--attribute-sdk); off until the first RequestContextEvent.
+        self._request_join_enabled = False
+        self._request_contexts = RequestContextStore(self._classify_request_frames)
+        # request key -> [(flow first-request host time, flow_id)] of flows
+        # still waiting for a context (bounded, oldest key dropped first).
+        self._request_join_flows: OrderedDict = OrderedDict()
+        # flow_id -> Flow already tried. Weak values: an entry dies with its flow, so a live
+        # flow is never retried and cannot take a newer flow's context.
+        self._request_join_attempted: weakref.WeakValueDictionary[str, Flow] = (
+            weakref.WeakValueDictionary())
+        # The chromium-internal bucket is skipped until a Chromium-family transport shows up.
+        self._chromium_transport_seen = False
+        # Finished contexts staged under the lock for the sink (see
+        # set_request_context_sink), emitted after the lock is released.
+        self._finished_request_contexts: list = []
+        self._request_context_sink: Optional[Callable[[dict], object]] = None
         # Orphan request index: server_key -> [(timestamp, flow_id), ...], keyed
         # by the REMOTE (server) endpoint of the request (see _orphan_key), in
         # least-recently-appended order; capped at MAX_ORPHAN_REQUESTS entries
@@ -169,6 +288,10 @@ class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
         # -> library). Keyed by protocol so that under --protocol auto an RC4/
         # SSH/... library announcement never re-labels TLS/QUIC flows.
         self._detected_libraries: dict[str, str] = {}
+        # Module basename -> load path from LibraryDetectedEvent, oldest first,
+        # capped at MAX_MODULE_PATHS. Lets the transport classifier see the
+        # path (e.g. a Play-services Cronet) for a flow's producing module.
+        self._module_paths: OrderedDict[str, str] = OrderedDict()
         self._capture_target: str = ""
         self._process_name: str = ""
         self._package_name: str = ""
@@ -296,15 +419,85 @@ class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
 
         Records the detected library under the event's protocol tag so it can
         be stamped onto each new Flow of that same protocol (``tls.library`` /
-        ``quic.library``). Data events carry no library/module of their own, so
-        the protocol tag is the finest attribution available.
+        ``quic.library``). This is only a FALLBACK: data events from the agent's
+        plaintext hooks carry the producing module as ``library`` (TCP-TLS and
+        QUIC alike), and ``_stamp_detected_library`` prefers it. The last
+        announced library is used only for records without one (e.g. hooks
+        that cannot name their module), where it may mislabel the flow.
         """
         library = getattr(event, 'library', '') or ''
-        if not library:
-            return
-        protocol = getattr(event, 'protocol', 'tls') or 'tls'
+        publication = self._record_module_path(event)
+        if library:
+            protocol = getattr(event, 'protocol', 'tls') or 'tls'
+            with self._lock:
+                self._detected_libraries[protocol] = library
+        self._publish(publication)
+
+    def _record_module_path(self, event) -> '_Publication':
+        """Remember the event's load path under its module basename AND its
+        ``library`` name (the name flows carry), case-insensitively, dropping
+        the oldest entry past :data:`MAX_MODULE_PATHS`; then re-classify the
+        present flows of those modules (their UPDATED events are returned for
+        :meth:`_publish`). Takes the lock."""
+        path = str(getattr(event, 'path', '') or '')
+        if not path:
+            return _Publication([])
+        names = (str(getattr(event, 'module', '') or '') or path,
+                 str(getattr(event, 'library', '') or ''))
+        keys = {self._module_key(name) for name in names} - {""}
+        if not keys:
+            return _Publication([])
         with self._lock:
-            self._detected_libraries[protocol] = library
+            for key in keys:
+                self._module_paths.pop(key, None)
+                self._module_paths[key] = path
+            while len(self._module_paths) > MAX_MODULE_PATHS:
+                self._module_paths.popitem(last=False)
+            pending: list = []
+            self._reclassify_transports(keys, pending)
+            return self._stage_publication(pending)
+
+    @staticmethod
+    def _module_key(module: str) -> str:
+        """The ``_module_paths`` key of *module*: its lower-cased basename."""
+        return module_basename(module).lower()
+
+    def _module_path_for(self, library: str) -> str:
+        """The recorded load path of *library*, else ``""``. Under lock."""
+        return self._module_paths.get(self._module_key(library), '')
+
+    def _reclassify_transports(self, modules: Optional[set], pending: list) -> None:
+        """Re-classify the present flows' ``attribution.transport`` with what
+        the collector knows now (module paths, capture target): only flows whose
+        transport module key is in *modules* (every stamped flow when ``None``).
+
+        P2 stamps the transport once, at flow birth; a module path or capture
+        target learned later can change its kind. Only the transport is replaced
+        -- originator and source are kept; a ``native-stack`` claim's confidence,
+        which derives from the kind, is recomputed via
+        :func:`~friTap.flow.attribution.direct_attribution`. Queues one UPDATED
+        per changed flow. Under lock.
+        """
+        for flow in self._flows.values():
+            old = (flow.attribution or {}).get("transport")
+            if not isinstance(old, dict):
+                continue
+            if modules is not None and self._module_key(old.get("module", "")) not in modules:
+                continue
+            layer = flow.layer(flow.transport)
+            library = getattr(layer, 'library', '') if layer is not None else ''
+            new = transport_attribution(library, self._module_path_for(library),
+                                        self._process_name, self._package_name)
+            if not new or new.get("kind") == old.get("kind"):
+                continue
+            attribution = dict(flow.attribution)
+            attribution["transport"] = new
+            self._note_transport(new)
+            if attribution.get("source") == SOURCE_NATIVE_STACK and attribution.get("originator"):
+                attribution["confidence"] = direct_attribution(
+                    attribution["originator"], new.get("kind", ""))["confidence"]
+            flow.attribution = attribution
+            pending.append((FlowEventType.UPDATED, flow))
 
     def on_keylog(self, event) -> None:
         """EventBus subscriber for KeylogEvent — feed Signal keys to the live
@@ -323,21 +516,31 @@ class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
         with self._lock:
             self._signal_decryptor.add_key(payload)
 
-    def set_capture_target(self, target: str) -> None:
+    def set_capture_target(self, target: str, process_name: Optional[str] = None) -> None:
         """Record the capture target and derive process/package names.
 
-        The whole target string is used as ``process_name``. It is ALSO used as
-        ``package_name`` only when it has Android-package shape — dot-separated
+        The whole target string is used as ``process_name`` unless the caller
+        passes the resolved *process_name* (e.g. the target was a numeric PID
+        and the attach already knows the process' name). That name is ALSO used
+        as ``package_name`` only when it has Android-package shape — dot-separated
         identifier segments (``com.example.app``) — and is not an IP address,
         a numeric PID, a path, or a known native/binary file (``.so``/``.exe``/
         etc.). This avoids misclassifying IPs, PIDs, paths and executables.
+
+        Flows already stamped with a transport are re-classified with the new
+        names (see :meth:`_reclassify_transports`).
         """
         target = target or ""
-        looks_like_package = self._looks_like_android_package(target)
+        name = process_name or target
+        looks_like_package = self._looks_like_android_package(name)
+        pending: list = []
         with self._lock:
             self._capture_target = target
-            self._process_name = target
-            self._package_name = target if looks_like_package else ""
+            self._process_name = name
+            self._package_name = name if looks_like_package else ""
+            self._reclassify_transports(None, pending)
+            publication = self._stage_publication(pending)
+        self._publish(publication)
 
     # Android package: dot-separated identifier segments, each starting with a
     # letter (e.g. "com.example.app"). Single-segment names (no dot) are not
@@ -387,6 +590,19 @@ class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
         with self._lock:
             self._callbacks.append(callback)
 
+    def subscribe_to(self, event_bus) -> None:
+        """Subscribe the ``on_*`` handlers to *event_bus*: the one wiring every capture
+        front end (API, CLI, TUI, ``.tap`` output) shares."""
+        event_bus.subscribe(DatalogEvent, self.on_data)
+        # A no-op unless the collector was built with signal_messages=True.
+        event_bus.subscribe(KeylogEvent, self.on_keylog)
+        event_bus.subscribe(OhttpEvent, self.on_ohttp)
+        event_bus.subscribe(LibraryDetectedEvent, self.on_library_detected)
+        event_bus.subscribe(SessionEvent, self.on_session_event)
+        # Opt-in SDK attribution (--attribute-sdk).
+        event_bus.subscribe(CallerStackEvent, self.on_sdk)
+        event_bus.subscribe(RequestContextEvent, self.on_request_context)
+
     def on_data(self, event) -> None:
         """EventBus subscriber for DatalogEvent."""
         # Build connection ID using tiered key resolution (client_random →
@@ -422,11 +638,13 @@ class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
             if self._is_idle_gap(conn, event.timestamp):
                 self._finalize_connection(conn, conn.last_activity, pending)
                 # Reset to fresh state
-                self._connections[conn_id] = self._new_connection_state(conn_id, event)
+                self._connections[conn_id] = self._start_connection_lifetime(conn_id, event)
                 conn = self._connections[conn_id]
 
             conn.last_activity = event.timestamp
             self._observe_event_time(event.timestamp)
+            self._record_client_random(conn, event, pending)
+            self._learn_real_endpoints(conn, event, pending)
 
             # Prefer event.direction; fall back to function-name heuristic
             direction = getattr(event, 'direction', '') or self._get_direction(event.function)
@@ -531,10 +749,11 @@ class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
             if self._event_count % _SWEEP_INTERVAL == 0:
                 self._periodic_sweep(pending)
 
+            self._drain_staged_updates(pending)
+            publication = self._stage_publication(pending)
             errors_to_emit = self._drain_pending_errors()
 
-        for event_type, flow in pending:
-            self._notify(event_type, flow)
+        self._publish(publication)
         self._emit_errors(errors_to_emit)
         self._emit_message_events(signal_events)
 
@@ -599,6 +818,39 @@ class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
         if not flow.detected_protocol:
             flow.detected_protocol = conn.parser.PROTOCOL
         return True
+
+    def _start_connection_lifetime(self, conn_id: str, event) -> '_ConnectionState':
+        """Fresh state for *conn_id*, recording the first flow sequence of this
+        connection-state lifetime (see ``_lifetime_first_seq``). Under lock."""
+        self._lifetime_first_seq[conn_id] = self._flow_seq.get(conn_id, 0)
+        return self._new_connection_state(conn_id, event)
+
+    def _is_current_lifetime_flow(self, flow: Flow) -> bool:
+        """True unless *flow* was minted in an earlier lifetime of its
+        connection id (sequence below the current lifetime's first). Under lock."""
+        seq = self._flow_sequence_of(flow)
+        return seq is None or seq >= self._lifetime_first_seq.get(flow.connection_id, 0)
+
+    @staticmethod
+    def _flow_sequence_of(flow: Flow) -> Optional[int]:
+        """The sequence of *flow*'s id (see :meth:`_flow_id`), else ``None``."""
+        prefix = f"{flow.connection_id}:"
+        if not flow.flow_id.startswith(prefix):
+            return None
+        try:
+            return int(flow.flow_id[len(prefix):])
+        except ValueError:
+            return None
+
+    def _drain_staged_updates(self, pending: list) -> None:
+        """Move ``_staged_updates`` onto *pending*, skipping flows already
+        queued there. Under lock."""
+        queued = {id(flow) for _, flow in pending}
+        for event_type, flow in self._staged_updates:
+            if id(flow) not in queued:
+                pending.append((event_type, flow))
+                queued.add(id(flow))
+        self._staged_updates.clear()
 
     @staticmethod
     def _new_connection_state(conn_id: str, event) -> '_ConnectionState':
@@ -816,9 +1068,9 @@ class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
                 ohttp_layer._parsed_field = inner_field
 
             pending.append((FlowEventType.UPDATED, flow))
+            publication = self._stage_publication(pending)
 
-        for event_type, flow in pending:
-            self._notify(event_type, flow)
+        self._publish(publication)
 
     def on_session_event(self, event) -> None:
         """EventBus subscriber for SessionEvent -- handle connection lifecycle."""
@@ -848,10 +1100,10 @@ class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
 
             # Remove connection state so next data creates fresh state
             del self._connections[conn_id]
+            publication = self._stage_publication(pending)
             errors_to_emit = self._drain_pending_errors()
 
-        for event_type, flow in pending:
-            self._notify(event_type, flow)
+        self._publish(publication)
         self._emit_errors(errors_to_emit)
 
     def _lifecycle_conn_id(self, event, conn_id: str) -> str:
@@ -944,17 +1196,14 @@ class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
             # every flow (which was O(flows) per session event -> O(streams x
             # flows) over an offline conversion). Index order mirrors _flows
             # insertion order, so UPDATED events fire in the same order as before.
-            for flow_id in self._flow_index.get(conn_id, ()):
-                flow = self._flows.get(flow_id)
-                if flow is None:
-                    continue
+            for flow in self._connection_flows(conn_id):
                 # Only notify flows that actually changed — a re-RESUMED
                 # connection whose flows already carry metadata is a no-op.
                 if self._apply_session_metadata(flow, meta):
                     pending.append((FlowEventType.UPDATED, flow))
+            publication = self._stage_publication(pending)
 
-        for event_type, flow in pending:
-            self._notify(event_type, flow)
+        self._publish(publication)
 
     @staticmethod
     def _sdk_tuple_key(src_addr, src_port, dst_addr, dst_port):
@@ -988,75 +1237,437 @@ class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
         return bool(sid) and sid != "0"
 
     def on_sdk(self, event) -> None:
-        """EventBus subscriber for CallerStackEvent -- attach resolved SDK.
+        """EventBus subscriber for CallerStackEvent -- attach the caller stack.
 
-        Joins the backtrace's resolved SDK onto its flow on the connection
-        **5-tuple** (``_sdk_tuple_key``), which the agent resolves exactly as a
-        datalog record's peer and is stable at the first SSL_read/SSL_write. The
-        ``ssl_session_id`` is only a SECONDARY match, and only when it is a real
-        (non-"0") id: at first write ``SSL_get_session`` is still null, so every
-        caller_stack carries ``ssl_session_id == "0"`` and the old id-only join
-        matched nothing.
+        Every caller stack is joined, classified or not: the compact stack is
+        stored as ``flow.caller_stack`` and ``flow.sdk`` is set only when the
+        router's classifier matched (``event.sdk``). The join tries, in order:
 
-        Finds the target flow as the earliest (insertion order) matching flow
-        that does NOT already carry an SDK — so OS fd/port reuse (two
-        connections sharing a 5-tuple over time) attributes each caller_stack to
-        a distinct connection instead of clobbering one — then propagates the
-        SDK to every other flow on that target's connection_id (the connection's
-        caller_stack is captured once, but an HTTP/2 connection carries many
-        stream flows). An existing SDK is never overwritten. When no matching
-        flow exists yet (backtrace before the first data event) the SDK is
-        stashed on the 5-tuple and drained at flow birth by
-        :meth:`_stamp_metadata` (which also lets a later stream inherit its
-        connection's already-joined SDK). No-op when the stack resolved to no SDK
-        or carried neither a usable 5-tuple nor a real session id. Updated flows
-        are notified after the lock.
+        1. the connection's **client_random** (``_conn_by_client_random``,
+           filled by :meth:`_record_client_random`) -- exact and O(1). When
+           no live connection has that client_random (its datalog follows, the
+           connection was already finalized, or its datalogs never carry the
+           cr) the stack falls through to the tuple/sid join -- only when it
+           carries a tuple or real sid, so a cr-only stack never scans flows;
+        2. the connection **4-tuple** (``_sdk_tuple_key``, direction-insensitive),
+           skipping connections known by a different client_random;
+        3. a **real** (non-"0") ``ssl_session_id``: at the first
+           SSL_read/SSL_write ``SSL_get_session`` is still null, so most stacks
+           carry ``"0"``.
+
+        Tuple and session-id matches pick the earliest flow (insertion order)
+        that has no caller stack yet, so OS fd/port reuse attributes each stack
+        to a distinct connection. The stack then covers every flow of the
+        target's connection and is remembered per connection, so flows born
+        later (HTTP/2 streams) inherit it. Existing values are never
+        overwritten. With no matching flow yet the stack is stashed under the
+        first available key and drained at flow birth (or when the
+        connection's client_random is learned). One stashed entry is indexed
+        under every key the stack has (cr, tuple, sid); whichever drains first
+        consumes it. No-op when the event carries
+        none of the three keys. Updated flows are notified after the lock.
         """
-        sdk = getattr(event, 'sdk', None)
-        if not sdk:
-            return
-        sid = str(getattr(event, 'ssl_session_id', '') or '')
-        real_sid = self._real_sid(sid)
-        tkey = self._sdk_tuple_key(
-            getattr(event, 'src_addr', ''), getattr(event, 'src_port', 0),
-            getattr(event, 'dst_addr', ''), getattr(event, 'dst_port', 0))
-        if tkey is None and not real_sid:
+        join_keys = self._caller_stack_join_keys(event)
+        if join_keys is None:
             return
         pending = []
         with self._lock:
-            target = self._first_unattributed_sdk_flow(tkey, sid, real_sid)
-            if target is not None:
-                target.sdk = sdk
-                pending.append((FlowEventType.UPDATED, target))
-                # Remember the connection's SDK so flows of this connection born
-                # LATER inherit it at birth (_stamp_metadata) -- including after
-                # an earlier sibling was written and released (headless path).
-                self._connection_sdks[target.connection_id] = sdk
-                # One caller_stack is captured per TLS connection (per-SSL dedup
-                # in the agent), but an HTTP/2 connection multiplexes many
-                # streams, each recorded as its own flow sharing the target's
-                # connection_id. Propagate the SDK to the sibling flows still
-                # present so every stream of the connection is attributed, not
-                # just the first. Keyed on connection_id (not the 5-tuple), so a
-                # later connection that reuses the 5-tuple -- a distinct
-                # connection_id -- is never touched here.
-                for sibling in self._sibling_flows_without_sdk(
-                        target.connection_id, target):
-                    sibling.sdk = sdk
-                    pending.append((FlowEventType.UPDATED, sibling))
-            else:
-                # Arrival-before-flow: stash on the 5-tuple (preferred) or the
-                # real session id, drained at flow birth by _stamp_metadata.
-                stash_key = tkey if tkey is not None else ("sid", sid)
-                self._sdk_pending.setdefault(stash_key, []).append(sdk)
-        for event_type, flow in pending:
-            self._notify(event_type, flow)
+            attribution = StashedCallerStack(
+                sdk=getattr(event, 'sdk', None) or None,
+                caller_stack=compact_caller_stack(event),
+                stashed_at=self._now(),
+            )
+            if not self._join_caller_stack(join_keys, attribution, pending):
+                self._sdk_pending.put_under(
+                    self._caller_stack_stash_keys(join_keys), attribution, self._now())
+            publication = self._stage_publication(pending)
+        self._publish(publication)
 
-    def _first_unattributed_sdk_flow(self, tkey, sid: str, real_sid: bool):
-        """Earliest flow (insertion order) matching the join keys and lacking an
-        SDK, or ``None``. Must be called under ``self._lock``."""
+    def on_request_context(self, event) -> None:
+        """EventBus subscriber for RequestContextEvent (``--attribute-sdk``).
+
+        Folds the event into the store and retries flows waiting on each key it newly indexes
+        (a context can arrive after its flow). Expiry runs in :meth:`_periodic_sweep`.
+        """
+        pending: list = []
+        with self._lock:
+            now = float(getattr(event, 'timestamp', 0.0) or self._now())
+            if not self._request_join_enabled:
+                self._enable_request_join(now)
+            new_keys, finished = self._request_contexts.ingest(event, now)
+            self._finished_request_contexts.extend(finished)
+            updates = _PendingEvents(pending)
+            for key in new_keys:
+                self._join_waiting_flows(key, now, updates)
+            publication = self._stage_publication(pending)
+        self._publish(publication)
+
+    def _enable_request_join(self, now: float) -> None:
+        """Turn the join on and index the live flows that already carry a request. Under lock."""
+        self._request_join_enabled = True
+        cutoff = now - MATCH_SLACK_SECONDS
+        updates = _PendingEvents([])
         for flow in self._flows.values():
-            if getattr(flow, 'sdk', None):
+            if getattr(flow, 'request', None) is None:
+                continue
+            if flow.started < cutoff:
+                # Every context from now on starts too late to match this flow.
+                self._mark_request_join_attempted(flow)
+            else:
+                self._try_request_join(flow, updates)
+
+    def set_request_context_sink(self, sink: Optional[Callable[[dict], object]]) -> None:
+        """Register *sink* (e.g. ``TapWriter.write_request_context``) for one ``.tap`` record
+        per finished request context, called outside the lock."""
+        with self._lock:
+            self._request_context_sink = sink
+
+    @staticmethod
+    def _classify_request_frames(frames: list) -> Optional[dict]:
+        """Classifier result for Java request frames. Lazy import: friTap.flow must not
+        import friTap.analysis at module level."""
+        key = tuple(frame for frame in frames if isinstance(frame, str) and frame)
+        if not key:
+            return None
+        from friTap.analysis.attribution.sdk import classify_java_frames
+        return classify_java_frames(key)
+
+    def _stage_publication(self, pending: list, finish_contexts: bool = False) -> '_Publication':
+        """Prepare *pending* for :meth:`_publish` and take the finished request contexts;
+        *finish_contexts* finishes the live ones too (flush, clear). Under lock."""
+        self._prepare_for_notify(pending)
+        if finish_contexts:
+            self._finished_request_contexts.extend(self._request_contexts.drain())
+        finished, self._finished_request_contexts = self._finished_request_contexts, []
+        sink = self._request_context_sink
+        records = [context.to_record() for context in finished] if sink is not None else []
+        return _Publication(pending, records, sink)
+
+    def _publish(self, publication: '_Publication') -> None:
+        """Notify the staged flow events, then hand the request records to the sink.
+        Must NOT hold _lock."""
+        for event_type, flow in publication.events:
+            self._notify(event_type, flow)
+        for record in publication.request_records:
+            try:
+                publication.request_sink(record)
+            except Exception:  # noqa: BLE001 - a sink failure must not break capture
+                logger.debug("request-context sink failed", exc_info=True)
+
+    def _prepare_for_notify(self, pending: list) -> None:
+        """Before notifying: request join first, then the chromium-internal bucket, so only
+        flows still without an originator are bucketed. Under lock."""
+        if not (self._request_join_enabled or self._chromium_transport_seen):
+            return
+        updates = _PendingEvents(pending)
+        flows = updates.flows()
+        if self._request_join_enabled:
+            for flow in flows:
+                self._try_request_join(flow, updates)
+        if self._chromium_transport_seen:
+            for flow in flows:
+                self._bucket_chromium_internal(flow)
+
+    def _try_request_join(self, flow: Flow, updates: _PendingEvents) -> None:
+        """Match *flow* to a context once its request is keyable, else index it to wait;
+        tried once per flow. Under lock."""
+        if self._request_join_was_attempted(flow):
+            return
+        key = self._flow_request_key(flow)
+        if key is None:
+            if self._request_is_final(flow):
+                self._mark_request_join_attempted(flow)
+            return
+        self._mark_request_join_attempted(flow)
+        match = self._request_contexts.match(key, flow.started, flow.flow_id)
+        if match is None:
+            self._wait_for_request_context(key, flow)
+        else:
+            self._apply_request_match(flow, match, updates)
+
+    def _flow_request_key(self, flow: Flow):
+        """Request key of *flow* (authority: Host/``:authority``, else SNI; scheme https),
+        else ``None``."""
+        request = getattr(flow, 'request', None)
+        if request is None or not getattr(request, 'is_request', True):
+            return None
+        method, target = getattr(request, 'method', ''), getattr(request, 'url', '')
+        if not method or not target:
+            return None
+        return normalize_request_key(absolute_request_url(target, self._flow_host(flow)), method)
+
+    @staticmethod
+    def _request_is_final(flow: Flow) -> bool:
+        """True once *flow*'s request can no longer change: it is present and
+        complete, or the flow itself completed."""
+        request = getattr(flow, 'request', None)
+        if request is None:
+            return False
+        return flow.state == FlowState.COMPLETE or bool(getattr(request, 'is_complete', False))
+
+    @staticmethod
+    def _flow_sni(flow: Flow) -> str:
+        """SNI of *flow*'s TLS layer, else of its QUIC layer, else ``""``."""
+        for name in ("tls", "quic"):
+            layer = flow.layer(name)
+            sni = getattr(layer, 'sni', '') if layer is not None else ''
+            if sni:
+                return str(sni)
+        return ''
+
+    def _bucket_chromium_internal(self, flow: Flow) -> None:
+        """Set the chromium-internal bucket if *flow* qualifies. Its event is already
+        queued. Under lock."""
+        # Candidate first: once any Chromium transport is seen this runs for every chunk.
+        if not chromium_internal_candidate(flow):
+            return
+        update = chromium_internal_host_update(self._flow_host(flow))
+        if update is not None:
+            self._set_attribution(flow, update)
+
+    def _flow_host(self, flow: Flow) -> str:
+        """*flow*'s request Host/``:authority``, else its SNI, else ``""``."""
+        request = getattr(flow, 'request', None)
+        return str(getattr(request, 'host', '') or '') or self._flow_sni(flow)
+
+    def _request_join_was_attempted(self, flow: Flow) -> bool:
+        return self._request_join_attempted.get(flow.flow_id) is flow
+
+    def _mark_request_join_attempted(self, flow: Flow) -> None:
+        self._request_join_attempted[flow.flow_id] = flow
+
+    def _wait_for_request_context(self, key, flow: Flow) -> None:
+        """Index *flow* under *key* until a context arrives (bounded). Under lock."""
+        waiting = self._request_join_flows.setdefault(key, [])
+        waiting.append((flow.started, flow.flow_id))
+        if len(waiting) > MAX_REQUEST_JOIN_FLOWS_PER_KEY:
+            self._warn_cap_once("flows waiting per request key", MAX_REQUEST_JOIN_FLOWS_PER_KEY)
+            del waiting[:-MAX_REQUEST_JOIN_FLOWS_PER_KEY]
+        self._request_join_flows.move_to_end(key)
+        while len(self._request_join_flows) > MAX_REQUEST_JOIN_KEYS:
+            self._warn_cap_once("request keys waiting for a context", MAX_REQUEST_JOIN_KEYS)
+            self._request_join_flows.popitem(last=False)
+
+    def _join_waiting_flows(self, key, now: float, updates: _PendingEvents) -> None:
+        """Retry the flows waiting under *key* (oldest first) after a context indexed it at
+        host time *now*. Under lock."""
+        waiting = self._request_join_flows.pop(key, None)
+        if not waiting:
+            return
+        # A context indexed at *now* only matches flows that started at most
+        # MATCH_SLACK_SECONDS before it; older ones can never match again.
+        cutoff = now - MATCH_SLACK_SECONDS
+        still_waiting = []
+        for flow_time, flow_id in waiting:
+            flow = self._flows.get(flow_id)
+            if flow is None or flow_time < cutoff:
+                continue  # released (already persisted) or too old to match
+            match = self._request_contexts.match(key, flow_time, flow_id)
+            if match is None:
+                still_waiting.append((flow_time, flow_id))
+            else:
+                self._apply_request_match(flow, match, updates)
+        if still_waiting:
+            self._request_join_flows[key] = still_waiting
+
+    def _apply_request_match(self, flow: Flow, match, updates: _PendingEvents) -> None:
+        """Apply *match*'s claim to *flow* and note its originator on the connection,
+        marking the connection's flows when it turns mixed. Under lock."""
+        if match.claim is None:
+            return
+        if self._set_attribution(flow, match.claim):
+            updates.add_updated(flow)
+        conn_id = flow.connection_id
+        was_mixed = self._connection_is_mixed(conn_id)
+        self._remember_request_originator(conn_id, match.claim["originator"])
+        if not self._connection_is_mixed(conn_id):
+            return
+        # Siblings are marked once, on the turn to mixed; later ones are marked at birth.
+        flows = [] if was_mixed else self._current_lifetime_flows(conn_id)
+        if not any(sibling is flow for sibling in flows):
+            flows.append(flow)
+        self._mark_mixed_flows(conn_id, flows, updates)
+
+    def _remember_request_originator(self, conn_id, sdk: dict) -> None:
+        """Record a per-request originator for the mixed check only; never sets
+        ``sdk``/``caller_stack``. Under lock."""
+        if conn_id not in self._connections:
+            return
+        self._connection_attributions.setdefault(
+            conn_id, _ConnectionAttribution()).add_originator(sdk)
+
+    def _caller_stack_join_keys(self, event):
+        """``(client_random, tuple_key, session_id)`` of a CallerStackEvent, or
+        ``None`` when it carries none of them (the session id is ``""`` unless
+        real)."""
+        client_random = str(getattr(event, 'client_random', '') or '')
+        sid = str(getattr(event, 'ssl_session_id', '') or '')
+        if not self._real_sid(sid):
+            sid = ""
+        tkey = self._sdk_tuple_key(
+            getattr(event, 'src_addr', ''), getattr(event, 'src_port', 0),
+            getattr(event, 'dst_addr', ''), getattr(event, 'dst_port', 0))
+        if not client_random and tkey is None and not sid:
+            return None
+        return client_random, tkey, sid
+
+    @staticmethod
+    def _caller_stack_stash_keys(join_keys) -> list:
+        """Every stash key of a stack: ``("cr", cr)``, the tuple, ``("sid", sid)``."""
+        client_random, tkey, sid = join_keys
+        keys = [("cr", client_random)] if client_random else []
+        if tkey is not None:
+            keys.append(tkey)
+        if sid:
+            keys.append(("sid", sid))
+        return keys
+
+    def _join_caller_stack(self, join_keys, attribution, pending: list) -> bool:
+        """Attach *attribution* by client_random, then tuple, then session id.
+        True when a connection took it. Must be called under ``self._lock``."""
+        client_random, tkey, sid = join_keys
+        if client_random and self._join_by_client_random(
+                client_random, attribution, pending):
+            return True
+        if tkey is None and not sid:
+            return False  # cr-only stack: no O(flows) scan
+        target = self._first_unattributed_sdk_flow(tkey, sid, bool(sid), client_random)
+        if target is None:
+            return False
+        self._attribute_connection(target.connection_id, attribution, pending, first=target)
+        return True
+
+    def _join_by_client_random(self, client_random: str, attribution,
+                               pending: list) -> bool:
+        """Attach *attribution* to the connection known by *client_random*.
+
+        False (so the caller stashes it under ``("cr", cr)``) when no connection
+        has taught that client_random yet: the agent sends a stack before the
+        datalog carrying its cr, and :meth:`_record_client_random` drains the
+        stash then. No O(flows) tuple scan for cr-carrying stacks. Under lock.
+        """
+        conn_id = self._conn_by_client_random.get(client_random)
+        if conn_id is None:
+            return False
+        self._attribute_connection(conn_id, attribution, pending)
+        return True
+
+    def _connection_flows(self, conn_id):
+        """Yield the present flows of connection *conn_id* in index order. Under lock."""
+        for flow_id in self._flow_index.get(conn_id, ()):
+            flow = self._flows.get(flow_id)
+            if flow is not None:
+                yield flow
+
+    def _attribute_connection(self, conn_id, attribution, pending: list,
+                              first: Optional[Flow] = None) -> None:
+        """Remember *attribution* for *conn_id* and apply it to the connection's
+        present flows (*first* included even when unindexed). Under lock.
+
+        Keyed on connection_id, not the 4-tuple, so a later connection reusing
+        the tuple -- a distinct connection_id -- is never touched here. Only
+        the connection's first flow (see :meth:`_is_first_flow_of_connection`)
+        is a direct join -- and only while present: when it was already written
+        and released (headless path) every remaining flow inherits (see
+        :meth:`_apply_attribution`). The per-connection record is written only
+        for a live connection (see :meth:`_remember_connection_attribution`).
+
+        A reused conn_id keeps earlier lifetimes' flows: only the current
+        lifetime's flows are touched (see :meth:`_is_current_lifetime_flow`).
+        When the tuple/sid join picked an earlier lifetime's flow as *first*,
+        the stack belongs to that lifetime, whose bounds are not tracked, so
+        it is applied to *first* alone and not remembered for the live one.
+        """
+        if first is not None and not self._is_current_lifetime_flow(first):
+            if self._apply_attribution(first, attribution, direct=False):
+                pending.append((FlowEventType.UPDATED, first))
+            return
+        flows = [first] if first is not None else []
+        flows += self._current_lifetime_flows(conn_id, exclude=first)
+        # Decided before remembering: the join below counts as "a stack joined".
+        direct = [self._is_first_flow_of_connection(flow) for flow in flows]
+        self._remember_connection_attribution(conn_id, attribution)
+        for flow, is_direct in zip(flows, direct):
+            if self._apply_attribution(flow, attribution, direct=is_direct):
+                pending.append((FlowEventType.UPDATED, flow))
+        self._mark_mixed_flows(conn_id, flows, _PendingEvents(pending))
+
+    def _remember_connection_attribution(self, conn_id, attribution) -> None:
+        """Keep a live connection's first SDK and caller stack for later-born
+        flows, and mark it mixed when a stack resolves to a different SDK.
+
+        The sole writer of ``_connection_attributions``, so it owns the leak guard:
+        a connection no longer in ``_connections`` (session ended, idle-swept,
+        LRU-evicted) was already finalized, and nothing would pop an entry
+        written now. Under lock.
+        """
+        if conn_id not in self._connections:
+            return
+        record = self._connection_attributions.setdefault(conn_id, _ConnectionAttribution())
+        if record.caller_stack is None:
+            record.caller_stack = attribution.caller_stack
+        if attribution.sdk and not record.sdk:
+            record.sdk = attribution.sdk
+        record.add_originator(attribution.sdk)
+
+    def _connection_is_mixed(self, conn_id) -> bool:
+        """True when *conn_id*'s originators (caller stacks and per-request
+        contexts) named more than one SDK."""
+        record = self._connection_attributions.get(conn_id)
+        return record is not None and record.mixed
+
+    def _mark_mixed_flows(self, conn_id, flows, updates: _PendingEvents) -> None:
+        """Set ``attribution.mixed`` on *flows* of a mixed connection, queueing
+        an UPDATED for each changed flow not already queued. Under lock."""
+        if not self._connection_is_mixed(conn_id):
+            return
+        for flow in flows:
+            if self._set_attribution(flow, {"mixed": True}):
+                updates.add_updated(flow)
+
+    @classmethod
+    def _apply_attribution(cls, flow: Flow, attribution, direct: bool = False) -> bool:
+        """Fill *flow*'s empty ``sdk``/``caller_stack`` and, for a classified
+        stack, its originator claim (direct or inherited, see
+        :mod:`friTap.flow.attribution`); True when anything changed."""
+        changed = False
+        if attribution.sdk and not getattr(flow, 'sdk', None):
+            flow.sdk = attribution.sdk
+            changed = True
+        if getattr(flow, 'caller_stack', None) is None:
+            flow.caller_stack = attribution.caller_stack
+            changed = True
+        if attribution.sdk:
+            changed = cls._set_attribution(
+                flow, cls._originator_claim(flow, attribution.sdk, direct)) or changed
+        return changed
+
+    @staticmethod
+    def _originator_claim(flow: Flow, sdk: dict, direct: bool) -> dict:
+        """The direct (per transport kind) or inherited originator claim."""
+        if not direct:
+            return inherited_attribution(sdk)
+        transport = (flow.attribution or {}).get("transport") or {}
+        return direct_attribution(sdk, transport.get("kind", ""))
+
+    @staticmethod
+    def _set_attribution(flow: Flow, update: dict) -> bool:
+        """Merge *update* into ``flow.attribution``; True when it changed."""
+        merged = merge_attribution(flow.attribution, update)
+        if merged == (flow.attribution or {}):
+            return False
+        flow.attribution = merged
+        return True
+
+    def _first_unattributed_sdk_flow(self, tkey, sid: str, real_sid: bool,
+                                     client_random: str = ""):
+        """Earliest flow (insertion order) matching the join keys and lacking a
+        caller stack, or ``None``. A flow known by a client_random other than
+        *client_random* (when given) is skipped. Must be called under ``self._lock``."""
+        for flow in self._flows.values():
+            if getattr(flow, 'caller_stack', None) is not None:
+                continue
+            if client_random and not self._flow_may_have_client_random(flow, client_random):
                 continue
             if tkey is not None and self._flow_tuple_key(flow) == tkey:
                 return flow
@@ -1064,12 +1675,30 @@ class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
                 return flow
         return None
 
+    def _flow_may_have_client_random(self, flow: Flow, client_random: str) -> bool:
+        """False when *flow*'s connection is known by a different client_random.
+        Reads the live connection, else the flow's own ``tls`` layer (without
+        creating one). Under lock."""
+        known = self._connection_client_random(flow.connection_id)
+        if not known:
+            tls = flow.layer("tls")
+            known = getattr(tls, 'client_random', '') if tls is not None else ''
+        return not known or known == client_random
+
     def _sibling_flows_without_sdk(self, conn_id, exclude):
         """Flows on connection *conn_id* that lack an SDK, excluding *exclude*.
 
-        Backs the per-connection SDK propagation in :meth:`on_sdk` (one
-        caller_stack attributes every flow of its connection, e.g. all HTTP/2
-        streams). Must be called under ``self._lock``.
+        Must be called under ``self._lock``.
+        """
+        return self._sibling_flows_missing(conn_id, exclude, 'sdk')
+
+    def _sibling_flows_missing(self, conn_id, exclude, attr: Optional[str]):
+        """Flows on connection *conn_id*, excluding *exclude*, whose *attr* is
+        falsy (every flow when *attr* is ``None``).
+
+        Backs the per-connection propagation in :meth:`on_sdk` (one caller
+        stack covers every flow of its connection, e.g. all HTTP/2 streams).
+        Must be called under ``self._lock``.
         """
         siblings = []
         if not conn_id:
@@ -1078,53 +1707,125 @@ class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
             flow = self._flows.get(fid)
             if flow is None or flow is exclude:
                 continue
-            if not getattr(flow, 'sdk', None):
+            if attr is None or not getattr(flow, attr, None):
                 siblings.append(flow)
         return siblings
+
+    def _current_lifetime_flows(self, conn_id, exclude=None) -> list:
+        """The present flows of *conn_id*'s current lifetime (see
+        :meth:`_is_current_lifetime_flow`) in index order, without *exclude*.
+        Under lock."""
+        return [flow for flow in self._sibling_flows_missing(conn_id, exclude, None)
+                if self._is_current_lifetime_flow(flow)]
 
     def _connection_sdk(self, conn_id):
         """The SDK resolved for connection *conn_id*, else ``None`` -- so a flow
         born after its connection's caller_stack joined inherits that SDK.
 
-        Prefers the persistent per-connection map (survives a sibling being
+        Prefers the persistent per-connection record (survives a sibling being
         written and released in the headless path); falls back to an attributed
         sibling still present in ``_flows``. Must be called under ``self._lock``.
         """
+        return self._connection_attribute(conn_id, 'sdk')
+
+    def _connection_caller_stack(self, conn_id):
+        """The caller stack joined to connection *conn_id*, else ``None``
+        (same lookup order as :meth:`_connection_sdk`). Under lock."""
+        return self._connection_attribute(conn_id, 'caller_stack')
+
+    def _connection_attribute(self, conn_id, attr: str):
+        """*conn_id*'s recorded *attr* (see ``_connection_attributions``), else
+        the first present sibling's *attr* among the connection's
+        current-lifetime flows."""
         if not conn_id:
             return None
-        mapped = self._connection_sdks.get(conn_id)
-        if mapped:
-            return mapped
-        for fid in self._flow_index.get(conn_id, ()):
-            flow = self._flows.get(fid)
-            if flow is not None:
-                sdk = getattr(flow, 'sdk', None)
-                if sdk:
-                    return sdk
+        record = self._connection_attributions.get(conn_id)
+        recorded = getattr(record, attr) if record is not None else None
+        if recorded:
+            return recorded
+        # Only this lifetime's flows: an idle-reset or reused conn_id keeps
+        # the previous lifetime's completed flows in _flows.
+        for flow in self._current_lifetime_flows(conn_id):
+            value = getattr(flow, attr, None)
+            if value:
+                return value
         return None
 
     def _take_pending_sdk(self, flow):
-        """Pop and return one stashed SDK matching *flow*, or ``None``.
+        """Pop and return one stashed :class:`StashedCallerStack` matching
+        *flow*, or ``None``.
 
-        Checks the flow's 5-tuple key first, then its real session id. Consuming
-        the stash entry (FIFO) stops a later connection reusing the same 5-tuple
-        from inheriting this one's SDK. Must be called under ``self._lock``.
+        Checks the connection's client_random key first, then the flow's
+        4-tuple key, then its real session id. Consuming the stash entry (FIFO)
+        stops a later connection reusing the same 4-tuple from inheriting this
+        one's stack; expired entries are dropped on the collector clock. Must be
+        called under ``self._lock``.
         """
         keys = []
+        client_random = self._connection_client_random(flow.connection_id)
+        if client_random:
+            keys.append(("cr", client_random))
         tkey = self._flow_tuple_key(flow)
         if tkey is not None:
             keys.append(tkey)
         sid = str(flow.ssl_session_id or '')
         if self._real_sid(sid):
             keys.append(("sid", sid))
-        for key in keys:
-            queue = self._sdk_pending.get(key)
-            if queue:
-                sdk = queue.pop(0)
-                if not queue:
-                    del self._sdk_pending[key]
-                return sdk
-        return None
+        return self._sdk_pending.take(keys, self._now())
+
+    def _stamp_caller_attribution(self, flow: Flow) -> None:
+        """Give a newborn *flow* its stashed caller stack, else the connection's.
+
+        A stash entry is consumed (so a reused 4-tuple does not inherit it) and
+        seeds the per-connection record for the connection's later flows; it is a
+        direct join only for the connection's first flow (the stack was
+        captured at the connection's first SSL_read/SSL_write), otherwise the
+        claim is inherited. Without one, the flow inherits the stack/SDK of an
+        earlier flow of the same connection -- including one already written
+        and released (headless path), via the persistent maps -- with the
+        ``connection-fallback`` claim. A mixed connection marks the flow
+        ``mixed``. Never clobbers a value already set. Must be called under
+        ``self._lock``.
+        """
+        stashed = self._take_pending_sdk(flow)
+        if stashed is not None:
+            direct = self._is_first_flow_of_connection(flow)
+            was_mixed = self._connection_is_mixed(flow.connection_id)
+            self._remember_connection_attribution(flow.connection_id, stashed)
+            self._apply_attribution(flow, stashed, direct=direct)
+            if not was_mixed:
+                # Turned mixed now: mark the connection's present flows too.
+                siblings = self._current_lifetime_flows(flow.connection_id, exclude=flow)
+                self._mark_mixed_flows(
+                    flow.connection_id, siblings, _PendingEvents(self._staged_updates))
+        else:
+            self._inherit_connection_attribution(flow)
+        if self._connection_is_mixed(flow.connection_id):
+            self._set_attribution(flow, {"mixed": True})
+
+    def _inherit_connection_attribution(self, flow: Flow) -> None:
+        """Give a newborn *flow* its connection's SDK and caller stack, and the
+        inherited (``connection-fallback``) originator claim; never overwrites
+        a value already set. Under lock."""
+        inherited = StashedCallerStack(
+            sdk=self._connection_sdk(flow.connection_id),
+            caller_stack=self._connection_caller_stack(flow.connection_id),
+            stashed_at=self._now(),
+        )
+        self._apply_attribution(flow, inherited, direct=False)
+
+    def _is_first_flow_of_connection(self, flow: Flow) -> bool:
+        """True when *flow* is the first flow minted in its connection's current
+        lifetime (the sequence recorded in ``_lifetime_first_seq``, 0 when none
+        was, see :meth:`_flow_id`) and no caller stack was joined to the
+        connection before -- the one rule for a direct join, at flow birth and
+        at a later join alike. Under lock."""
+        conn_id = flow.connection_id
+        record = self._connection_attributions.get(conn_id)
+        if record is not None and record.caller_stack is not None:
+            return False
+        first_seq = self._lifetime_first_seq.get(conn_id, 0)
+        return flow.flow_id == self._flow_id(conn_id, first_seq)
 
     def get_flow_summaries(self) -> list["FlowSummary"]:
         """Lightweight summaries for all flows (no chunks, no body bytes).
@@ -1171,18 +1872,30 @@ class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
 
     def clear(self) -> None:
         with self._lock:
+            # Live request contexts are finished (persisted) before dropping.
+            publication = self._stage_publication([], finish_contexts=True)
+            self._request_join_enabled = False
+            self._chromium_transport_seen = False
+            self._request_join_flows.clear()
+            self._request_join_attempted.clear()
             self._flows.clear()
             self._flow_index.clear()
             self._flow_seq.clear()
+            self._lifetime_first_seq.clear()
+            self._staged_updates.clear()
             self._connections.clear()
             self._key_aliases.clear()
             self._h2_stream_flows.clear()
             self._clear_orphan_requests()
             self._session_tls.clear()
             self._sdk_pending.clear()
-            self._connection_sdks.clear()
+            self._connection_attributions.clear()
+            self._conn_by_client_random.clear()
+            # _module_paths is process-lifetime state (like _detected_libraries
+            # and _process_name), so it is kept.
             self._flow_retained_bytes.clear()
             self._truncated_flow_ids.clear()
+        self._publish(publication)
 
     def is_flow_truncated(self, flow_id: str) -> bool:
         """True when *flow_id* exceeded :data:`MAX_FLOW_CHUNK_BYTES`.
@@ -1229,8 +1942,7 @@ class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
             # the same conn_id can never mint the same "conn_id:N" (the old
             # len(_flow_index) scheme could: it counts current entries, which
             # diverges from _make_flow's sequence after any reset/unindex).
-            seq = self._next_flow_sequence(conn_id)
-            flow_id = f"{conn_id}:{seq}"
+            flow_id = self._flow_id(conn_id, self._next_flow_sequence(conn_id))
             flow = Flow(
                 flow_id=flow_id,
                 connection_id=conn_id,
@@ -1259,9 +1971,9 @@ class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
             self._index_flow(flow)
             pending.append((FlowEventType.CREATED, flow))
             pending.append((FlowEventType.COMPLETED, flow))
+            publication = self._stage_publication(pending)
 
-        for event_type, f in pending:
-            self._notify(event_type, f)
+        self._publish(publication)
         return flow
 
     def _complete_flow(self, flow: Flow, ended: float, out: list) -> bool:
@@ -1370,14 +2082,16 @@ class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
                 self._complete_flow(flow, ended, completed_events)
 
             self._clear_orphan_requests()
+            # End of capture: every live request context is finished and
+            # handed to the sink (after the join consumed its matches).
+            publication = self._stage_publication(completed_events, finish_contexts=True)
             errors_to_emit = self._drain_pending_errors()
 
         # Notify about removed flows (outside lock)
         for removed_flow in removed_flows:
             self._notify(FlowEventType.REMOVED, removed_flow)
         # Emit COMPLETED for flows this flush finalized (outside lock).
-        for event_type, completed_flow in completed_events:
-            self._notify(event_type, completed_flow)
+        self._publish(publication)
         self._emit_errors(errors_to_emit)
 
     @staticmethod
@@ -1506,10 +2220,11 @@ class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
         for key in stale_streams:
             del self._h2_stream_flows[key]
 
-        # Drop the cached TLS metadata and resolved SDK for this connection to
-        # avoid unbounded growth across many short-lived connections.
+        # Drop the cached TLS metadata and attribution record for this
+        # connection to avoid unbounded growth across many short-lived connections.
         self._session_tls.pop(conn.conn_id, None)
-        self._connection_sdks.pop(conn.conn_id, None)
+        self._connection_attributions.pop(conn.conn_id, None)
+        self._forget_client_random(conn)
 
     def _periodic_sweep(self, pending: list) -> None:
         """Periodic maintenance: clean stale indices, idle connections, body caches.
@@ -1549,7 +2264,10 @@ class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
             self._finalize_connection(conn, conn.last_activity, pending)
             del self._connections[conn_id]
 
-        # 4. Invalidate body caches on completed flows (reconstructed on demand)
+        # 4. Expire finished request contexts (emitted by the entry point)
+        self._finished_request_contexts.extend(self._request_contexts.expire(now))
+
+        # 5. Invalidate body caches on completed flows (reconstructed on demand)
         for flow in self._flows.values():
             if flow.state == FlowState.COMPLETE and flow._body_cache:
                 flow._body_cache.clear()
@@ -2010,7 +2728,7 @@ class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
         if conn is not None:
             self._connections.move_to_end(conn_id)
             return conn
-        conn = self._new_connection_state(conn_id, event)
+        conn = self._start_connection_lifetime(conn_id, event)
         self._connections[conn_id] = conn
         while len(self._connections) > MAX_TRACKED_CONNECTIONS:
             self._evict_oldest_connection(pending)
@@ -2058,6 +2776,11 @@ class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
         self._flow_seq[conn_id] = seq + 1
         return seq
 
+    @staticmethod
+    def _flow_id(conn_id: str, seq: int) -> str:
+        """The id of *conn_id*'s flow number *seq* (see :meth:`_next_flow_sequence`)."""
+        return f"{conn_id}:{seq}"
+
     def _make_flow(self, conn, event, endpoints: Optional[tuple] = None) -> Flow:
         """Create and index a new Flow for *event*.
 
@@ -2066,7 +2789,7 @@ class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
         """
         src_addr, src_port, dst_addr, dst_port = endpoints or (
             event.src_addr, event.src_port, event.dst_addr, event.dst_port)
-        flow_id = f"{conn.conn_id}:{self._next_flow_sequence(conn.conn_id)}"
+        flow_id = self._flow_id(conn.conn_id, self._next_flow_sequence(conn.conn_id))
         flow = Flow(
             flow_id=flow_id,
             connection_id=conn.conn_id,
@@ -2078,6 +2801,7 @@ class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
             started=event.timestamp,
         )
         self._stamp_metadata(flow, event)
+        self._stamp_synthetic_endpoints(flow, conn, event)
         self._flows[flow_id] = flow
         self._index_flow(flow)
         return flow
@@ -2125,6 +2849,110 @@ class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
         if not layer.library:
             layer.library = library
 
+    def _stamp_transport_attribution(self, flow: Flow) -> None:
+        """Stamp ``attribution.transport`` from the flow's TLS/QUIC library.
+
+        Classified with the module's recorded load path and the capture
+        target's process/package names. No-op for other transports and for a
+        flow without a library. Reads the layer without creating it. Under lock.
+        """
+        if flow.transport not in self._LIBRARY_TRANSPORTS:
+            return
+        layer = flow.layer(flow.transport)
+        library = getattr(layer, 'library', '') if layer is not None else ''
+        if not library:
+            return
+        transport = transport_attribution(
+            library, self._module_path_for(library),
+            self._process_name, self._package_name)
+        if transport:
+            self._note_transport(transport)
+            flow.attribution = merge_attribution(flow.attribution, {"transport": transport})
+
+    def _note_transport(self, transport: dict) -> None:
+        if transport.get("kind") in CHROMIUM_FAMILY_KINDS:
+            self._chromium_transport_seen = True
+
+    def _stamp_client_random(self, flow: Flow, event) -> None:
+        """Stamp the connection's client_random onto a TLS flow's ``tls`` layer.
+
+        Uses the record's own ``client_random``, else the one already seen on
+        the flow's connection (records before the agent learned it carry
+        none). Fills an empty value only. TLS flows only: ``flow.tls`` attribute
+        access auto-creates the layer (see :meth:`_stamp_detected_library`).
+        """
+        if flow.transport != "tls" or flow.tls.client_random:
+            return
+        client_random = (getattr(event, 'client_random', '') or ''
+                         or self._connection_client_random(flow.connection_id))
+        if client_random:
+            flow.tls.client_random = client_random
+
+    def _connection_client_random(self, conn_id: str) -> str:
+        """The client_random recorded on *conn_id*'s state, else ``""``."""
+        conn = self._connections.get(conn_id)
+        return conn.client_random if conn is not None else ""
+
+    def _record_client_random(self, conn: '_ConnectionState', event,
+                              pending: Optional[list] = None) -> None:
+        """Remember the first client_random seen on *conn* and backfill it
+        onto the connection's flows born before it was known. Under lock.
+
+        A connection's early records can lack the client_random (agent layout
+        lookup still pending) while later ones carry it; the key aliasing keeps
+        them on one connection, and this keeps every flow of it stamped. The
+        client_random also becomes the connection's caller_stack join key: it is
+        indexed for :meth:`on_sdk` and any stack already stashed under it is
+        applied to the connection now.
+        """
+        client_random = getattr(event, 'client_random', '') or ''
+        if not client_random or conn.client_random:
+            return
+        conn.client_random = client_random
+        for flow in self._connection_flows(conn.conn_id):
+            self._stamp_client_random(flow, event)
+        self._conn_by_client_random[client_random] = conn.conn_id
+        self._drain_client_random_stash(conn.conn_id, client_random, pending)
+
+    def _drain_client_random_stash(self, conn_id: str, client_random: str,
+                                   pending: Optional[list]) -> None:
+        """Apply a caller stack stashed under *client_random* to *conn_id*. Under lock."""
+        stashed = self._sdk_pending.take([("cr", client_random)], self._now())
+        if stashed is None:
+            return
+        updated: list = []
+        self._attribute_connection(conn_id, stashed, updated)
+        if pending is not None:
+            for _, flow in updated:
+                self._append_progress(pending, flow)
+
+    def _forget_client_random(self, conn: '_ConnectionState') -> None:
+        """Drop *conn*'s client_random join entry if it still points at *conn*."""
+        if self._conn_by_client_random.get(conn.client_random) == conn.conn_id:
+            del self._conn_by_client_random[conn.client_random]
+
+    def _learn_real_endpoints(self, conn: '_ConnectionState', event, pending: list) -> None:
+        """Learn the real tuple behind *conn*'s synthetic pin (first one wins)
+        and upgrade the connection's synthetic flows to it. Under lock."""
+        if conn.real_endpoint_map is not None:
+            return
+        mapping = observed_endpoint_map(event)
+        if mapping is None:
+            return
+        conn.real_endpoint_map = mapping
+        for flow in self._connection_flows(conn.conn_id):
+            if upgrade_flow_endpoints(flow, mapping):
+                self._append_progress(pending, flow)
+
+    @staticmethod
+    def _stamp_synthetic_endpoints(flow: Flow, conn: '_ConnectionState', event) -> None:
+        """Flag a flow born on a synthetic pin, upgrading it at once when the
+        connection's real tuple is already known."""
+        flow.endpoints_synthetic = bool(getattr(event, 'endpoints_synthetic', False))
+        mapping = getattr(conn, 'real_endpoint_map', None)
+        if mapping is not None:
+            upgrade_flow_endpoints(flow, mapping)
+
     def _stamp_metadata(self, flow: Flow, event) -> None:
         """Stamp cheaply-available metadata onto a freshly-created Flow.
 
@@ -2138,6 +2966,8 @@ class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
         # QuicLayer and the metadata backfill below targets the right layer.
         flow.transport = getattr(event, 'protocol', 'tls') or 'tls'
         self._stamp_detected_library(flow, event)
+        self._stamp_transport_attribution(flow)
+        self._stamp_client_random(flow, event)
         # Backfill handshake metadata cached from an earlier SESSION_STARTED/
         # RESUMED for this connection (handshake arrives before the first data
         # event, so _stamp_tls_metadata found no flow to stamp at that time).
@@ -2146,26 +2976,10 @@ class FlowCollector(QuicStreamFlowMixin, Http2StreamFlowMixin):
         cached_meta = self._session_tls.get(flow.connection_id)
         if cached_meta:
             self._apply_session_metadata(flow, cached_meta)
-        # Backfill an SDK attribution captured before this flow existed (the
-        # caller_stack backtrace arrives once per connection, possibly ahead of
-        # the first data event). Joined on the connection 5-tuple (see on_sdk),
-        # mirroring the TLS handshake backfill above; never clobbers an SDK
-        # already set, and the stash entry is consumed so a reused 5-tuple does
-        # not inherit it.
-        if not getattr(flow, 'sdk', None):
-            cached_sdk = self._take_pending_sdk(flow)
-            if cached_sdk:
-                flow.sdk = cached_sdk
-                # First flow of a stashed caller_stack: seed the connection map
-                # so this connection's later flows inherit at birth.
-                self._connection_sdks[flow.connection_id] = cached_sdk
-            else:
-                # Inherit the connection's SDK if an earlier flow of this same
-                # connection was already attributed -- including one already
-                # written and released (headless path), via the persistent map.
-                inherited = self._connection_sdk(flow.connection_id)
-                if inherited:
-                    flow.sdk = inherited
+        # Backfill a caller stack (and its SDK, if classified) captured before
+        # this flow existed, or inherit the connection's (see
+        # _stamp_caller_attribution).
+        self._stamp_caller_attribution(flow)
         flow.process_name = self._process_name
         flow.package_name = self._package_name
         # Hook origin: prefer the first chunk's function, fall back to event.
@@ -2239,6 +3053,12 @@ class _ConnectionState:
         self.transport = transport
         self.parser = None  # BaseParser instance
         self.active_flow_id: Optional[str] = None
+        # First client_random seen on this connection's records ("" until the
+        # agent stamps one); stamped onto every TLS flow of the connection.
+        self.client_random: str = ""
+        # Synthetic -> real endpoint map learned from the first record that
+        # carried observed_* under a synthetic pin (option 5); None until then.
+        self.real_endpoint_map: Optional[dict] = None
         # Flow-id sequencing lives on FlowCollector._flow_seq (keyed by conn_id),
         # not here: a per-connection counter resets to 0 when this state object is
         # rebuilt on idle-reset, which would re-mint an existing flow id and

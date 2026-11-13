@@ -83,6 +83,13 @@ def canonical_kind(kind: str) -> str:
 #: Confidence tiers, highest first (used for de-duplication ranking).
 _CONFIDENCE_RANK = {"high": 3, "medium": 2, "low": 1}
 
+#: Kind of a canary given without one (bare-string shorthand, missing ``kind``).
+DEFAULT_CANARY_KIND = "free"
+
+#: Separator of the ``KIND=VALUE`` shorthand. ``=`` (not ``:``) so IPv6
+#: addresses, URLs and ``host:port`` values never parse as a kind prefix.
+CANARY_SHORTHAND_SEP = "="
+
 #: Hard caps so a hostile or careless caller cannot cause an explosion.
 MAX_CANARIES = 64
 MAX_CANDIDATES_PER_CANARY = 512
@@ -172,10 +179,27 @@ def _canary_warning(value: str) -> str:
     return ""
 
 
-def parse_canaries(specs: list[dict]) -> list[Canary]:
+def canary_spec_from_text(text: str, position: int) -> dict:
+    """Expand the string shorthand of a canary into its ``{value, kind, label}`` spec.
+
+    ``"KIND=VALUE"`` (``email=alice@example.com``, alias kinds included) sets
+    the kind; any other string -- including one whose text before the first
+    ``=`` is not a known kind (``token=abc``, ``a=b&c=d``) -- is a whole
+    :data:`DEFAULT_CANARY_KIND` value. The label is ``<kind>-<position>``, so
+    the value itself never appears in results.
+    """
+    prefix, sep, rest = text.partition(CANARY_SHORTHAND_SEP)
+    kind = canonical_kind(prefix) if sep else ""
+    if kind not in CANARY_KINDS or not rest.strip():
+        kind, rest = DEFAULT_CANARY_KIND, text
+    return {"value": rest, "kind": kind, "label": f"{kind}-{position}"}
+
+
+def parse_canaries(specs: list[dict | str]) -> list[Canary]:
     """Validate raw canary specs into :class:`Canary` objects.
 
-    Each spec is a mapping with ``value``, ``kind`` and ``label``. Specs with an
+    Each spec is a mapping with ``value``, ``kind`` and ``label``, or a string
+    in the shorthand of :func:`canary_spec_from_text`. Specs with an
     empty ``value`` or ``label`` are dropped; ``kind`` is normalized through
     :func:`canonical_kind` (so aliases like ``advertising_id`` or ``geo`` resolve
     to ``aaid`` / ``gps``) and an unknown ``kind`` is coerced to ``free``; the
@@ -183,16 +207,18 @@ def parse_canaries(specs: list[dict]) -> list[Canary]:
     flagged via :attr:`Canary.warning`.
     """
     canaries: list[Canary] = []
-    for spec in specs or []:
+    for position, spec in enumerate(specs or [], start=1):
+        if isinstance(spec, str):
+            spec = canary_spec_from_text(spec, position)
         if not isinstance(spec, dict):
             continue
         value = str(spec.get("value", "")).strip()
         label = str(spec.get("label", "")).strip()
         if not value or not label:
             continue
-        kind = canonical_kind(spec.get("kind", "free"))
+        kind = canonical_kind(spec.get("kind", DEFAULT_CANARY_KIND))
         if kind not in CANARY_KINDS:
-            kind = "free"
+            kind = DEFAULT_CANARY_KIND
         canaries.append(Canary(value=value, kind=kind, label=label, warning=_canary_warning(value)))
         if len(canaries) >= MAX_CANARIES:
             break
@@ -558,7 +584,10 @@ __all__ = [
     "CANARY_KINDS",
     "CANARY_KIND_ALIASES",
     "canonical_kind",
+    "DEFAULT_CANARY_KIND",
+    "CANARY_SHORTHAND_SEP",
     "MAX_CANARIES",
+    "canary_spec_from_text",
     "Canary",
     "Candidate",
     "CanaryHit",

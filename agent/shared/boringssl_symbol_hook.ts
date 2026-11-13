@@ -3,6 +3,7 @@ import { sendKeylog } from "./shared_structures.js";
 import { devlog, devlog_debug, devlog_error, log } from "../util/log.js";
 import { safeKeyLenLogged } from "./keylog_length.js";
 import { LruMap } from "./lru.js";
+import { sslIdentity } from "./ssl_identity.js";
 import { callAbiForModule, readSslLogSecretCall } from "./call_abi.js";
 import {
     CLIENT_RANDOM_CACHE_MAX,
@@ -390,6 +391,12 @@ function s3OffsetForArch(): number | null {
 function readClientRandom(sslStructPtr: NativePointer): string {
     if (sslStructPtr.isNull()) return "";
 
+    // Shared per-SSL* identity first (ssl_identity.ts): it is anchor-checked, so
+    // it also notices an SSL* address reused for a new connection. Upper-cased
+    // to keep this function's historical output format.
+    const identityCr = sslIdentity(sslStructPtr)?.cr;
+    if (identityCr) return identityCr.toUpperCase();
+
     const cacheKey = sslStructPtr.toString();
     const cached = clientRandomCache.get(cacheKey);
     if (cached !== undefined) return cached;
@@ -413,6 +420,8 @@ function readClientRandom(sslStructPtr: NativePointer): string {
                     `[boringssl-sym] client_random recovered via fallback s3 offset 0x${off.toString(16)}`
                 );
             }
+            // Not noted here: the only caller, boringSslDumpKeys, passes it to
+            // sendKeylog(line, ssl, module), which notes it for this SSL*.
             clientRandomCache.set(cacheKey, cr);
             return cr;
         }
@@ -459,7 +468,7 @@ export function boringSslDumpKeys(
         `[ssl_log_secret] label=${labelStr} ssl=${sslStructPtr} len=${loggedLen} secret=${secretHex}`
     );
 
-    sendKeylog(`${labelStr} ${clientRandom} ${secretHex}`);
+    sendKeylog(`${labelStr} ${clientRandom} ${secretHex}`, sslStructPtr, moduleName || undefined);
 
     // M2 spike: this SSL*'s keys are now logged the normal way, and (for the
     // traffic-secret labels) this handshake is ground truth for learning where

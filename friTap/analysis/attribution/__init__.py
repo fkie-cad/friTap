@@ -42,6 +42,7 @@ __all__ = [
     "classify",
     "make_classifier",
     "infer_first_party",
+    "normalize_first_party",
     "AUTO_FIRST_PARTY",
     "PARTY_FIRST",
     "PARTY_THIRD",
@@ -49,6 +50,22 @@ __all__ = [
 ]
 
 _default_resolver: Optional[TrackerResolver] = None
+
+
+def normalize_first_party(first_party):
+    """Normalize a ``first_party`` argument to ``None``, ``"auto"`` or a domain list.
+
+    ``"auto"`` (:data:`AUTO_FIRST_PARTY`) and ``None`` are returned unchanged.
+    Any other string is a comma-separated domain list (``"a.com, b.com"`` ->
+    ``["a.com", "b.com"]``) -- never iterated character by character. A list
+    or tuple keeps its domains; in both cases entries are stripped and empties
+    dropped.
+    """
+    if first_party is None or first_party == AUTO_FIRST_PARTY:
+        return first_party
+    if isinstance(first_party, str):
+        first_party = first_party.split(",")
+    return [domain.strip() for domain in first_party if str(domain).strip()]
 
 
 def _resolver() -> TrackerResolver:

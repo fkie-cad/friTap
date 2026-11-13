@@ -28,7 +28,7 @@ import re
 import threading
 from typing import IO, TYPE_CHECKING, Optional
 
-from .jsonl_handler import JsonlOutputHandler, is_internal_event
+from .jsonl_handler import JsonlOutputHandler
 from .stdout_stream import (
     JSON_STREAM_STDOUT,
     envelope,
@@ -82,8 +82,10 @@ class JsonlStdoutHandler(JsonlOutputHandler):
     consumes_plaintext = True
 
     def __init__(self, include_key_material: bool = False,
-                 stream: Optional[IO] = None) -> None:
-        super().__init__(JSON_STREAM_STDOUT, include_key_material=include_key_material)
+                 stream: Optional[IO] = None,
+                 include_agent_dev_logs: bool = False) -> None:
+        super().__init__(JSON_STREAM_STDOUT, include_key_material=include_key_material,
+                         include_agent_dev_logs=include_agent_dev_logs)
         self._stream = stream
         self._write_lock = threading.Lock()
 
@@ -106,7 +108,7 @@ class JsonlStdoutHandler(JsonlOutputHandler):
     def _on_any_event(self, event: "FriTapEvent") -> None:
         if not self._file:
             return
-        if is_internal_event(event):
+        if self._is_excluded(event):
             return
         class_name = type(event).__name__
         # _build_record already applied the key-material policy (redaction).

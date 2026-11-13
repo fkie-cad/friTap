@@ -1,5 +1,6 @@
 import { readAddresses, resolveOffsets, dumpMemory, decodeSockaddr, readSockaddrFamily } from "../../../shared/shared_functions.js";
 import { pointerSize, sendKeylog, sendDatalog } from "../../../shared/shared_structures.js";
+import { stampRecordLibrary } from "../../../shared/record_message.js";
 import { attachPlaintextWriteHook } from "../../../shared/write_hooks.js";
 import { log, devlog, devlog_error } from "../../../util/log.js";
 import { enable_default_fd, pcap_enabled, keylog_enabled } from "../../../fritap_agent.js";
@@ -1527,6 +1528,7 @@ typedef union PRNetAddr PRNetAddr;
                         //devlog("Session ID: " + NSS.getSslSessionIdFromFD(this.fd))
                         message["ssl_session_id"] = NSS.getSslSessionIdFromFD(this.fd)
                         message["function"] = "NSS_read"
+                        stampRecordLibrary(message, current_module_name)
                         this.message = message
 
                         var data = this.buf.readByteArray((new Uint32Array([retval]))[0])
@@ -1573,6 +1575,7 @@ typedef union PRNetAddr PRNetAddr;
             var message = NSS.getPortsAndAddressesFromNSS(fd, false, lib_addesses[current_module_name], enable_default_fd)
             message["ssl_session_id"] = NSS.getSslSessionIdFromFD(fd)
             message["function"] = "NSS_write"
+            stampRecordLibrary(message, current_module_name)
             return message
             // Non-socket fds were once logged as follows (disabled):
             /*

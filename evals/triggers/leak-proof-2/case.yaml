@@ -1,0 +1,18 @@
+schema_version: "1.1"
+name: trigger-leak-proof-2
+description: 'detailed: what changes after consent'
+tags: [trigger, positive]
+runs: 3
+execution:
+  max_turns: 3
+  timeout_seconds: 120
+  allowed_tools: [Skill]
+  prompt: |
+    I captured the app in two phases with friTap: before I tapped 'Accept all' on the consent banner and after. Show me which endpoints only show up after consent.
+graders:
+  - name: fires-fritap-leak-proof
+    type: tool_used
+    tool: Skill
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?fritap-leak-proof"'
+    min: 1
+    arm: both

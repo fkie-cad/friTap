@@ -4,8 +4,8 @@ Tool parameter schemas and a minimal in-house validator.
 Schemas are plain JSON-Schema (draft 2020-12 compatible) dicts so MCP and
 OpenAPI adapters can publish them unchanged. :func:`validate` implements the
 subset the tools use (type, enum, minimum/maximum, minLength/maxLength,
-items, required, default, additionalProperties=false and ``oneOf``/``anyOf``
-groups of ``required`` lists) -- no ``jsonschema`` dependency.
+items, required, default, additionalProperties=false, property-level
+``anyOf`` alternatives and ``oneOf``/``anyOf`` groups of ``required`` lists) -- no ``jsonschema`` dependency.
 
 Property fragments (``TAP_SOURCE_PARAMS`` ...) are ``{name: schema}`` dicts
 meant to be merged into :func:`object_schema`::
@@ -94,6 +94,30 @@ def object_schema(
     return schema
 
 
+#: Top-level keywords LLM tool APIs reject (the Anthropic API refuses the tool,
+#: so Claude clients silently drop it); :func:`split_top_level_groups` moves them.
+TOP_LEVEL_COMBINATORS = ("oneOf", "anyOf", "allOf")
+
+
+def split_top_level_groups(schema: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    """Return ``schema`` without top-level combinators, plus a sentence stating them.
+
+    Only ``required``-list groups (from :func:`object_schema`) are described; the
+    registry's :func:`validate` still enforces the original schema on every call.
+    """
+    flat = {key: value for key, value in schema.items() if key not in TOP_LEVEL_COMBINATORS}
+    notes = [_describe_required_group(word, schema[key])
+             for key, word in (("oneOf", "exactly one"), ("anyOf", "at least one"))
+             if schema.get(key)]
+    return flat, " ".join(notes)
+
+
+def _describe_required_group(word: str, group: list[dict[str, Any]]) -> str:
+    """``"Give exactly one of: tap, session_id."`` for ``[{"required": ["tap"]}, ...]``."""
+    keys = [key for option in group for key in option.get("required", [])]
+    return f"Give {word} of: {', '.join(keys)}."
+
+
 def validate(schema: dict[str, Any], params: dict[str, Any] | None) -> dict[str, Any]:
     """Validate ``params`` against an object ``schema``; return a new dict.
 
@@ -118,12 +142,29 @@ def validate(schema: dict[str, Any], params: dict[str, Any] | None) -> dict[str,
 
 def check_value(name: str, value: Any, prop: dict[str, Any]) -> None:
     """Validate one value against its property schema (raises ``bad_param``)."""
+    _check_any_of(name, value, prop.get("anyOf"))
     _check_type(name, value, prop.get("type"))
     _check_enum(name, value, prop.get("enum"))
     _check_bounds(name, value, prop)
     if isinstance(value, (list, tuple)) and "items" in prop:
         for index, item in enumerate(value):
             check_value(f"{name}[{index}]", item, prop["items"])
+
+
+def _check_any_of(name: str, value: Any, branches: list | None) -> None:
+    """A property-level ``anyOf``: the value must satisfy at least one branch."""
+    if not branches:
+        return
+    for branch in branches:
+        try:
+            check_value(name, value, branch)
+        except ToolError:
+            continue
+        return
+    allowed = " or ".join(base for base in dict.fromkeys(
+        branch.get("type", "any") for branch in branches))
+    raise ToolError(f"{name}: expected {allowed}, got {type(value).__name__}", "bad_param",
+                    param=name)
 
 
 def _check_type(name: str, value: Any, expected: str | None) -> None:

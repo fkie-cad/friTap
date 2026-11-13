@@ -11,22 +11,23 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import "../../../shared/frida-test-stubs.js";
-import { installFakes, call, take, addr, mem, int, SOCKET_FNS } from "../../../shared/write_hook_fakes.js";
+import { installFakes, call, take, takeMessages, addr, mem, int, SOCKET_FNS } from "../../../shared/write_hook_fakes.js";
 
 import { Cronet } from "./cronet.js";
 
 installFakes();
 
 const MOD = "libcronet.so";
-function hooker(fd: number): any {
+function hooker(fd: number, structCr = "", ssl = "ssl"): any {
     const h: any = Object.create(Cronet.prototype);
     h.moduleName = h.module_name = MOD;
     h.do_read_write_hooks = true;
     h.addresses = { [MOD]: { SSL_write: addr(`SSL_write_fd${fd}`), ...SOCKET_FNS } };
     h.SSL_get_fd = () => fd;
     h.getSslSessionId = () => "SID";
+    h.get_client_random_from_ssl_struct = () => structCr;
     h.install_plaintext_write_hook();
-    return (data: any, len: number, ret: number) => call(`SSL_write_fd${fd}`, [addr("ssl"), data, int(len)], ret);
+    return (data: any, len: number, ret: number) => call(`SSL_write_fd${fd}`, [addr(ssl), data, int(len)], ret);
 }
 const write = hooker(9);
 
@@ -54,4 +55,21 @@ test("errors emit nothing; an fd-less SSL is skipped without --enable_default_fd
     write(mem("x"), 1, 0);
     hooker(-1)(mem("unattributed"), 12, 12);
     assert.deepEqual(take(), []);
+});
+
+// I2.1 option 5: before, every fd-less record was dropped without --enable_default_fd. One
+// whose client_random is known is now kept WITHOUT address fields (the host assigns each
+// client_random its own synthetic tuple); the test above still covers the no-cr drop.
+test("an fd-less SSL with a known client_random is emitted without address fields", () => {
+    const cr = "C0FFEE00".repeat(8);
+    hooker(-1, cr, "ssl_with_cr")(mem("endpointless"), 12, 12);
+    const [message, ...rest] = takeMessages();
+    assert.equal(rest.length, 0);
+    assert.equal(message.function, "SSL_write");
+    assert.equal(message.client_random, cr.toLowerCase());
+    assert.equal(message.library, MOD);
+    assert.equal(message.ssl_session_id, "SID");
+    for (const field of ["src_addr", "dst_addr", "src_port", "dst_port", "ss_family"]) {
+        assert.equal(field in message, false, `${field} on an endpointless record`);
+    }
 });

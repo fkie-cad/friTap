@@ -190,3 +190,139 @@ def test_finished_owner_no_longer_captures_its_tuple():
 ])
 def test_has_usable_endpoints(addrs, expected):
     assert has_usable_endpoints(*addrs) is expected
+
+
+# C: client_random (cr:) keys join the 4-tuple aliasing ---------------------- #
+#
+# Chromium records lack the client_random until the agent's SSL layout lookup
+# resolves, so one connection keys first as net:<4tuple> and later as
+# cr:<client_random>. Those must stay ONE connection (one flow stack, one
+# HTTP/2 parser with its HPACK state), while a different client_random on the
+# same 4-tuple is a new connection reusing the port.
+
+CR_A = "a1" * 32
+CR_B = "b2" * 32
+
+
+def _cr_key(client_random: str) -> str:
+    return f"cr:tls:{client_random}"
+
+
+def test_cr_key_aliases_to_live_net_owner_of_its_tuple():
+    aliases = ConnectionKeyAliases()
+    net_key = resolve_connection_key(*CLIENT, *SERVER)
+    live = {net_key}.__contains__
+    assert aliases.resolve(net_key, *CLIENT, *SERVER, "tls", live) == net_key
+    assert aliases.resolve(_cr_key(CR_A), *SERVER, *CLIENT, "tls", live) == net_key
+    # A later address-less record with the same client_random follows the alias.
+    assert aliases.resolve(_cr_key(CR_A), "", 0, "", 0, "tls", live) == net_key
+
+
+def test_cr_key_claims_tuple_for_later_records_without_cr():
+    aliases = ConnectionKeyAliases()
+    cr_key = _cr_key(CR_A)
+    live = {cr_key}.__contains__
+    assert aliases.resolve(cr_key, *CLIENT, *SERVER, "tls", live) == cr_key
+    net_key = resolve_connection_key(*SERVER, *CLIENT)
+    assert aliases.resolve(net_key, *SERVER, *CLIENT, "tls", live) == cr_key
+
+
+def test_different_cr_key_on_live_cr_owner_is_a_new_connection():
+    aliases = ConnectionKeyAliases()
+    live = {_cr_key(CR_A), _cr_key(CR_B)}.__contains__
+    assert aliases.resolve(_cr_key(CR_A), *CLIENT, *SERVER, "tls", live) == _cr_key(CR_A)
+    assert aliases.resolve(_cr_key(CR_B), *CLIENT, *SERVER, "tls", live) == _cr_key(CR_B)
+    # The newer connection now owns the 4-tuple.
+    net_key = resolve_connection_key(*CLIENT, *SERVER)
+    assert aliases.resolve(net_key, *CLIENT, *SERVER, "tls", live) == _cr_key(CR_B)
+
+
+def test_net_owner_absorbs_only_one_client_random():
+    aliases = ConnectionKeyAliases()
+    net_key = resolve_connection_key(*CLIENT, *SERVER)
+    live = {net_key, _cr_key(CR_A), _cr_key(CR_B)}.__contains__
+    aliases.resolve(net_key, *CLIENT, *SERVER, "tls", live)
+    assert aliases.resolve(_cr_key(CR_A), *CLIENT, *SERVER, "tls", live) == net_key
+    assert aliases.resolve(_cr_key(CR_B), *CLIENT, *SERVER, "tls", live) == _cr_key(CR_B)
+
+
+def _cr_datalog(direction, data, client_random="", timestamp=1000.0):
+    event = _datalog(direction, data, timestamp=timestamp)
+    event.client_random = client_random
+    return event
+
+
+def test_net_then_cr_records_are_one_flow():
+    bus, collector = _collector()
+    bus.emit(_cr_datalog("write", REQUEST))
+    bus.emit(_cr_datalog("read", RESPONSE, client_random=CR_A, timestamp=1000.1))
+    collector.flush()
+
+    (flow,) = collector.get_flows()
+    assert flow.connection_id == resolve_connection_key(*CLIENT, *SERVER)
+    assert {c.direction for c in flow.chunks} == {"read", "write"}
+    assert flow.tls.client_random == CR_A
+
+
+def test_cr_then_no_cr_records_are_one_flow():
+    bus, collector = _collector()
+    bus.emit(_cr_datalog("write", REQUEST, client_random=CR_A))
+    bus.emit(_cr_datalog("read", RESPONSE, timestamp=1000.1))
+    collector.flush()
+
+    (flow,) = collector.get_flows()
+    assert flow.connection_id == _cr_key(CR_A)
+    assert {c.direction for c in flow.chunks} == {"read", "write"}
+    assert flow.tls.client_random == CR_A
+
+
+def test_two_client_randoms_on_one_tuple_are_two_flows():
+    bus, collector = _collector()
+    bus.emit(_cr_datalog("write", REQUEST, client_random=CR_A))
+    bus.emit(_cr_datalog("read", RESPONSE, client_random=CR_A, timestamp=1000.1))
+    bus.emit(_cr_datalog("write", REQUEST, client_random=CR_B, timestamp=1000.2))
+    bus.emit(_cr_datalog("read", RESPONSE, client_random=CR_B, timestamp=1000.3))
+    collector.flush()
+
+    flows = collector.get_flows()
+    assert {f.connection_id for f in flows} == {_cr_key(CR_A), _cr_key(CR_B)}
+    assert {f.tls.client_random for f in flows} == {CR_A, CR_B}
+
+
+def _h2_frame(frame_type: int, flags: int, stream_id: int, payload: bytes) -> bytes:
+    import struct
+    return (struct.pack("!I", len(payload))[1:] + bytes([frame_type, flags])
+            + struct.pack("!I", stream_id) + payload)
+
+
+def _h2_get(encoder, stream_id: int, path: str) -> bytes:
+    block = encoder.encode([(":method", "GET"), (":scheme", "https"),
+                            (":authority", "example.com"), (":path", path),
+                            ("user-agent", "fritap-test")])
+    return _h2_frame(0x1, 0x4 | 0x1, stream_id, block)  # END_HEADERS|END_STREAM
+
+
+def test_http2_connection_keeps_one_parser_across_net_to_cr_switch():
+    hpack = pytest.importorskip("hpack")
+    from friTap.parsers.http2 import _CONNECTION_PREFACE
+
+    encoder = hpack.Encoder()
+    settings = _h2_frame(0x4, 0, 0, b"")
+    first = _CONNECTION_PREFACE + settings + _h2_get(encoder, 1, "/one")
+    # Stream 3 reuses HPACK dynamic-table entries from stream 1: a split
+    # connection (fresh parser) could not decode it.
+    second = _h2_get(encoder, 3, "/three")
+
+    bus, collector = _collector()
+    bus.emit(_cr_datalog("write", first))
+    bus.emit(_cr_datalog("write", second, client_random=CR_A, timestamp=1000.1))
+    collector.flush()
+
+    assert len(collector._connections) == 1
+    flows = [f for f in collector.get_flows()
+             if f.request is not None and not f.request.is_control_frame]
+    paths = sorted(f.request.url for f in flows)
+    assert [p.rsplit("/", 1)[-1] for p in paths] == ["one", "three"]
+    assert {f.connection_id for f in collector.get_flows()} == {
+        resolve_connection_key(*CLIENT, *SERVER)}
+    assert {f.tls.client_random for f in flows} == {CR_A}

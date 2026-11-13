@@ -1,0 +1,25 @@
+schema_version: "1.1"
+name: trigger-nearmiss-lsass-vs-wine
+description: 'native Windows lsass Schannel scan: memory scan, not Wine'
+tags: [trigger, nearmiss]
+runs: 3
+execution:
+  max_turns: 3
+  timeout_seconds: 120
+  allowed_tools: [Skill]
+  prompt: |
+    On a native Windows 11 test VM (no Wine involved) friTap's hooks find nothing for our Schannel client app. Can friTap get the TLS keys some other way, e.g. by scanning the process memory instead of hooking?
+graders:
+  - name: fires-fritap-memory-scan
+    type: tool_used
+    tool: Skill
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?fritap-memory-scan"'
+    min: 1
+    arm: both
+  - name: not-fritap-wine-schannel
+    type: tool_used
+    tool: Skill
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?fritap-wine-schannel"'
+    min: 0
+    max: 0
+    arm: both

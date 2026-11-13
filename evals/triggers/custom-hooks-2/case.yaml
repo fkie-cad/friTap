@@ -1,0 +1,18 @@
+schema_version: "1.1"
+name: trigger-custom-hooks-2
+description: 'specific: Flutter libflutter.so patterns'
+tags: [trigger, positive]
+runs: 3
+execution:
+  max_turns: 3
+  timeout_seconds: 120
+  allowed_tools: [Skill]
+  prompt: |
+    Target is a Flutter app (com.acme.flutterapp). friTap says it can't find any SSL library and libflutter.so has no exported ssl_log_secret. I generated patterns with BoringSecretHunter into flutter_patterns.json - how do I feed that into friTap?
+graders:
+  - name: fires-fritap-custom-hooks
+    type: tool_used
+    tool: Skill
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?fritap-custom-hooks"'
+    min: 1
+    arm: both

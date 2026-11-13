@@ -71,7 +71,7 @@ export function tryReadClientRandomAt(
  * Candidate ssl->s3 offsets, in the same probe order used for client_random
  * recovery (arch-primary 0x30 / 0x2c, then nearby fork-observed slots).
  */
-const S3_CANDIDATE_OFFSETS = [0x30, 0x2c, 0x28, 0x38];
+export const S3_CANDIDATE_OFFSETS: readonly number[] = [0x30, 0x2c, 0x28, 0x38];
 
 /*
  * Resolve the live ``ssl->s3`` pointer from an SSL*, validating the candidate

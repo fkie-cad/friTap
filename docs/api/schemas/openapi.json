@@ -278,11 +278,11 @@
                 "type": "array"
               },
               {
-                "const": "auto",
+                "minLength": 1,
                 "type": "string"
               }
             ],
-            "description": "Domains treated as first-party for host attribution, or \"auto\" to infer them from the union of both sides' hosts."
+            "description": "Domains treated as first-party for host attribution: a list of domains, a comma-separated string (\"a.com,b.com\"), or \"auto\" to infer them from the union of both sides' hosts."
           },
           "format": {
             "default": "json",
@@ -305,6 +305,21 @@
           },
           "phases_path": {
             "description": "phases.jsonl sidecar (default: next to the tap).",
+            "minLength": 1,
+            "type": "string"
+          },
+          "session_a": {
+            "description": "Baseline capture session id (tap diff mode; instead of tap_a).",
+            "minLength": 1,
+            "type": "string"
+          },
+          "session_b": {
+            "description": "Comparison capture session id (tap diff mode; instead of tap_b).",
+            "minLength": 1,
+            "type": "string"
+          },
+          "session_id": {
+            "description": "Capture session to diff two phase windows of (phase diff mode; instead of tap).",
             "minLength": 1,
             "type": "string"
           },
@@ -513,48 +528,57 @@
             "type": "string"
           },
           "values": {
-            "description": "Known values (email, ad-id, GPS fix, free string, ...) to search for across decoded traffic.",
+            "description": "Known values (email, ad-id, GPS fix, free string, ...) to search for across decoded traffic: {value, kind, label} objects or VALUE / KIND=VALUE strings.",
             "items": {
-              "additionalProperties": false,
-              "properties": {
-                "kind": {
-                  "description": "How to normalize it before searching. Canonical kinds: aaid, android_id, email, free, gps, imei, ip, phone. Aliases: advertising_id/idfa/gaid/adid/idfv -> aaid; geo/geolocation/location -> gps.",
-                  "enum": [
-                    "aaid",
-                    "adid",
-                    "advertising_id",
-                    "android_id",
-                    "email",
-                    "free",
-                    "gaid",
-                    "geo",
-                    "geolocation",
-                    "gps",
-                    "idfa",
-                    "idfv",
-                    "imei",
-                    "ip",
-                    "location",
-                    "phone"
+              "anyOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "description": "How to normalize it before searching. Canonical kinds: aaid, android_id, email, free, gps, imei, ip, phone. Aliases: advertising_id/idfa/gaid/adid/idfv -> aaid; geo/geolocation/location -> gps.",
+                      "enum": [
+                        "aaid",
+                        "adid",
+                        "advertising_id",
+                        "android_id",
+                        "email",
+                        "free",
+                        "gaid",
+                        "geo",
+                        "geolocation",
+                        "gps",
+                        "idfa",
+                        "idfv",
+                        "imei",
+                        "ip",
+                        "location",
+                        "phone"
+                      ],
+                      "type": "string"
+                    },
+                    "label": {
+                      "description": "A name for this canary in the results.",
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "value": {
+                      "description": "The exact value to trace (never logged).",
+                      "minLength": 1,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "value",
+                    "label"
                   ],
-                  "type": "string"
+                  "type": "object"
                 },
-                "label": {
-                  "description": "A name for this canary in the results.",
-                  "minLength": 1,
-                  "type": "string"
-                },
-                "value": {
-                  "description": "The exact value to trace (never logged).",
+                {
+                  "description": "Shorthand: VALUE (kind free) or KIND=VALUE (e.g. email=alice@example.com), labelled <kind>-<n>.",
                   "minLength": 1,
                   "type": "string"
                 }
-              },
-              "required": [
-                "value",
-                "label"
-              ],
-              "type": "object"
+              ]
             },
             "minItems": 1,
             "type": "array"
@@ -706,11 +730,11 @@
                 "type": "array"
               },
               {
-                "const": "auto",
+                "minLength": 1,
                 "type": "string"
               }
             ],
-            "description": "Domains to treat as first-party when attributing hosts (implies attribute), or \"auto\" to infer the app's own non-tracker backend domains from the capture."
+            "description": "Domains to treat as first-party when attributing hosts (implies attribute): a list of domains, a comma-separated string (\"a.com,b.com\"), or \"auto\" to infer the app's own non-tracker backend domains from the capture."
           },
           "focus": {
             "default": "all",
@@ -1253,6 +1277,15 @@
                 "ref": {
                   "type": "string"
                 },
+                "refs": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "refs_more": {
+                  "type": "integer"
+                },
                 "severity": {
                   "type": "string"
                 },
@@ -1473,6 +1506,7 @@
         "additionalProperties": false,
         "properties": {
           "label": {
+            "description": "Short phase name, lower-case and hyphenated (e.g. consent-declined). diff phase_a/phase_b must match it exactly.",
             "maxLength": 200,
             "minLength": 1,
             "type": "string"
@@ -1491,6 +1525,10 @@
       },
       "mark_phase_result": {
         "properties": {
+          "at": {
+            "description": "ISO-8601 UTC time of the marker (same as t).",
+            "type": "string"
+          },
           "label": {
             "type": "string"
           },
@@ -1517,6 +1555,11 @@
       "start_capture_params": {
         "additionalProperties": false,
         "properties": {
+          "anti_root": {
+            "default": false,
+            "description": "Android only: enable friTap's anti-root-detection hooks (-ar/--anti_root). Changes app behaviour; use only on authorized targets.",
+            "type": "boolean"
+          },
           "args": {
             "description": "Arguments for a spawned executable (spawn=true only).",
             "items": {
@@ -1856,7 +1899,7 @@
   },
   "info": {
     "title": "friTap agent API",
-    "version": "2.6.5"
+    "version": "2.6.7"
   },
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "openapi": "3.1.0",

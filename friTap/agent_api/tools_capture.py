@@ -27,6 +27,9 @@ _SESSION_ID = {"session_id": {"type": "string", "minLength": 1,
                               "description": "Id returned by start_capture."}}
 _DEVICE = {"type": "string", "minLength": 1,
            "description": "'local' (default), 'usb' (first USB device) or a Frida device id."}
+_PHASE_LABEL = {"type": "string", "minLength": 1, "maxLength": 200,
+                "description": "Short phase name, lower-case and hyphenated (e.g. "
+                               "consent-declined). diff phase_a/phase_b must match it exactly."}
 _HOST = {"type": "string", "minLength": 1,
          "description": "Remote frida-server as ip:port (wins over device)."}
 
@@ -70,6 +73,10 @@ def _start_params() -> dict[str, Any]:
                        "description": "The capture stops cleanly after this many seconds."},
         "follow_exec": {"type": "boolean", "default": True,
                         "description": "Spawn mode: follow the target across exec()."},
+        "anti_root": {"type": "boolean", "default": False,
+                      "description": "Android only: enable friTap's anti-root-detection hooks "
+                                     "(-ar/--anti_root). Changes app behaviour; use only on "
+                                     "authorized targets."},
     }, required=("target",))
 
 
@@ -127,6 +134,7 @@ START_RESULT = {"type": "object", "properties": {
 PHASE_RESULT = {"type": "object", "properties": {
     "schema": _STRING, "session_id": _STRING,
     "t": {"type": "number", "description": "Epoch seconds of the marker."},
+    "at": {"type": "string", "description": "ISO-8601 UTC time of the marker (same as t)."},
     "t_rel": {"type": ["number", "null"],
               "description": "Seconds since the capture started (null if not started)."},
     "label": _STRING}}
@@ -161,8 +169,7 @@ def _capture_specs() -> list[ToolSpec]:
                  lambda p, ctx: capture_service.stop_capture(p["session_id"]),
                  kind="capture", mutating=True, result_schema=STATUS_RESULT),
         ToolSpec("mark_phase", "Record a timestamped phase label (e.g. 'login') in a running "
-                 "capture.", object_schema({**_SESSION_ID, "label": {
-                     "type": "string", "minLength": 1, "maxLength": 200}},
+                 "capture.", object_schema({**_SESSION_ID, "label": _PHASE_LABEL},
                      required=("session_id", "label")),
                  lambda p, ctx: capture_service.mark_phase(p["session_id"], p["label"]),
                  kind="capture", mutating=True, result_schema=PHASE_RESULT),

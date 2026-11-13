@@ -18,19 +18,21 @@ import { Cronet } from "./cronet.js";
 installFakes();
 
 const MOD = "libcronet.so";
-function hooker(fd: number): { write: Function; read: Function } {
+/** A plausible client_random as the s3 probe returns it (upper-case hex). */
+const PROBED_CR = "A1B2C3D4".repeat(8);
+function hooker(fd: number, probedCr: string = PROBED_CR, ssl = "ssl"): { write: Function; read: Function } {
     const h: any = Object.create(Cronet.prototype);
     h.module_name = MOD;
     h.do_read_write_hooks = true;
     h.sessionFns = {};
     h.addresses = { [MOD]: { SSL_write: addr(`m_SSL_write_fd${fd}`), SSL_read: addr(`m_SSL_read_fd${fd}`), ...SOCKET_FNS } };
     h.SSL_get_fd = () => fd;
-    h.get_client_random_from_ssl_struct = () => "CR";
+    h.get_client_random_from_ssl_struct = () => probedCr;
     h.install_plaintext_write_hook();
     h.install_plaintext_read_hook();
     return {
-        write: (data: any, len: number, ret: number) => call(`m_SSL_write_fd${fd}`, [addr("ssl"), data, int(len)], ret),
-        read: (data: any, len: number, ret: number) => call(`m_SSL_read_fd${fd}`, [addr("ssl"), data, int(len)], ret),
+        write: (data: any, len: number, ret: number) => call(`m_SSL_write_fd${fd}`, [addr(ssl), data, int(len)], ret),
+        read: (data: any, len: number, ret: number) => call(`m_SSL_read_fd${fd}`, [addr(ssl), data, int(len)], ret),
     };
 }
 const { write, read } = hooker(9);
@@ -39,7 +41,8 @@ test("a full SSL_write emits the whole buffer once, with its record metadata", (
     write(mem("GET /generate_204 HTTP/1.1"), 26, 26);
     const [message] = takeMessages();
     assert.equal(message.function, "SSL_write");
-    assert.equal(message.client_random, "CR");
+    // Routed through the shared identity (ssl_identity.ts): normalized to lower case.
+    assert.equal(message.client_random, PROBED_CR.toLowerCase());
     write(mem("GET / HTTP/1.1"), 14, 14);
     assert.deepEqual(take(), ["GET / HTTP/1.1"]);
 });
@@ -64,7 +67,25 @@ test("SSL_read emits the decrypted byte count from retval; errors emit nothing",
     assert.deepEqual(take(), ["HTTP/1.1 204 No Content."]);
 });
 
-test("an fd-less SSL is skipped without --enable_default_fd", () => {
-    hooker(-1).write(mem("unattributed"), 12, 12);
+// I2.1 option 5: an fd-less record was always dropped without --enable_default_fd. It is now
+// kept WITHOUT address fields when its client_random is known (the host gives each
+// client_random its own synthetic tuple); only a record with no client_random is dropped.
+test("an fd-less SSL with a known client_random is emitted without address fields", () => {
+    const fdless = hooker(-1);
+    fdless.write(mem("endpointless"), 12, 12);
+    fdless.read(mem("reply"), 64, 5);
+    const messages = takeMessages();
+    assert.deepEqual(messages.map((m) => m.function), ["SSL_write", "SSL_read"]);
+    for (const message of messages) {
+        for (const field of ["src_addr", "dst_addr", "src_port", "dst_port", "ss_family"]) {
+            assert.equal(field in message, false, `${field} on an endpointless record`);
+        }
+        assert.equal(message.client_random, PROBED_CR.toLowerCase());
+        assert.equal(message.library, MOD);
+    }
+});
+
+test("an fd-less SSL without a client_random is skipped without --enable_default_fd", () => {
+    hooker(-1, "", "ssl_no_cr").write(mem("unattributed"), 12, 12);
     assert.deepEqual(take(), []);
 });

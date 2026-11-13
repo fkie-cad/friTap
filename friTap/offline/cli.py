@@ -14,6 +14,7 @@ import logging
 import os
 from typing import Optional, Sequence
 
+from ..pcap_utility import MANIFEST_SUFFIX
 from . import keylog_coverage
 from .keylog_paths import is_safe_protocol_name, validate_manifest_path
 from .mtproto.transport import DEFAULT_OBF_ENDPOINT_MATCH_BLOCKS
@@ -75,8 +76,8 @@ def _resync_defaults_text(entries) -> str:
             seen.setdefault(entry_family(entry), f"{entry.protocol_name}: {value}")
     return ", ".join(seen.values())
 
-# Sidecar manifest suffix written by friTap at end-of-capture (see pcap.py).
-MANIFEST_SUFFIX = ".fritap.json"
+# Sidecar manifest suffix written by friTap at end-of-capture (see pcap.py);
+# MANIFEST_SUFFIX is imported from friTap.pcap_utility, shared with the writer.
 
 
 def _iter_decryptor_cli_modules():

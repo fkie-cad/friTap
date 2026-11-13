@@ -52,7 +52,8 @@ class TapOutputHandler(OutputHandler):
         self._writer = self._new_writer()
         self._writer.open(self._path, target=self._target)
         self._collector.subscribe(self._writer.on_flow_event)
-        self._subscribe_collector(event_bus)
+        self._collector.set_request_context_sink(self._writer.write_request_context)
+        self._collector.subscribe_to(event_bus)
         self._logger.info("Writing .tap capture to %s", self._writer.path)
 
     def _new_collector(self):
@@ -65,26 +66,16 @@ class TapOutputHandler(OutputHandler):
         collector.set_capture_target(self._target)
         return collector
 
+    def set_process_name(self, process_name: str) -> None:
+        """Re-target the collector with the name resolved after a PID attach."""
+        if self._collector is not None:
+            self._collector.set_capture_target(self._target, process_name=process_name)
+
     def _new_writer(self):
         if self._writer_factory is not None:
             return self._writer_factory()
         from ..flow.tap_writer import TapWriter
         return TapWriter()
-
-    def _subscribe_collector(self, event_bus: "EventBus") -> None:
-        """Same event wiring as the TUI's live capture (minus FlowEvent re-emit)."""
-        from ..events import (
-            CallerStackEvent,
-            DatalogEvent,
-            LibraryDetectedEvent,
-            OhttpEvent,
-            SessionEvent,
-        )
-        event_bus.subscribe(DatalogEvent, self._collector.on_data)
-        event_bus.subscribe(OhttpEvent, self._collector.on_ohttp)
-        event_bus.subscribe(LibraryDetectedEvent, self._collector.on_library_detected)
-        event_bus.subscribe(SessionEvent, self._collector.on_session_event)
-        event_bus.subscribe(CallerStackEvent, self._collector.on_sdk)
 
     def _write_remaining_flows(self, writer) -> None:
         """flush() completes active flows without notifying; persist the rest."""

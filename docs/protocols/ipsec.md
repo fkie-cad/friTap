@@ -1,18 +1,17 @@
 # IPsec (strongSwan) capture
 
-friTap has **early, experimental** support for IPsec targets built on
-**strongSwan** / **libcharon**. Today this support is limited to **connection
-detection** — friTap can recognise that a strongSwan IPsec stack is loaded on
-both the default legacy agent path and the explicit `--modern` path. **Key extraction (IKEv2 / ESP) is not
-yet functional.**
+friTap supports IPsec targets built on **strongSwan** / **libcharon** on
+**Linux and Android**. It detects a loaded strongSwan stack and extracts IKEv2 SA
+keys and ESP (CHILD_SA) keys, on both the default legacy agent path and the
+explicit `--modern` path. The support is still **experimental**.
 
-!!! note "Not yet selectable as `--protocol ipsec`"
-    The Python-side `IPSecHandler` is not registered yet (it is commented out in
-    `friTap/protocols/registry.py` and `friTap/protocols/__init__.py`), so
-    `--protocol ipsec` is **rejected by the CLI** and does not appear in the TUI.
-    Today the strongSwan hooks install only when you select **`--protocol all`**
-    or **`--protocol auto`**: the agent then hooks every supported protocol,
-    including IPsec, on both the legacy and `--modern` paths.
+!!! note "Selectable as `--protocol ipsec`"
+    `ipsec` is a built-in protocol: the Python-side `IPSecHandler` is registered
+    in `friTap/protocols/registry.py`, so `--protocol ipsec` is accepted by the
+    CLI. It is **exclusive**: only the strongSwan hooks install, not
+    TLS/QUIC/SSH, and it cannot be combined with another protocol (custom
+    ciphers excepted). The strongSwan hooks also run under `--protocol all` and
+    `--protocol auto`.
 
 !!! success "IKEv2 + ESP key extraction works on stock strongSwan"
     friTap extracts IKEv2 SA keys and ESP (CHILD_SA) keys from a **stock,
@@ -58,8 +57,8 @@ sudo fritap --protocol ipsec -k keys.log <charon-pid>
 # then, in another shell: swanctl --initiate --child <name>
 ```
 
-Once the handler is registered, `ipsec` will become a selectable, **exclusive**
-protocol (only the IPsec hooks install, not TLS/QUIC/SSH).
+`ipsec` is an **exclusive** protocol: only the IPsec hooks install, not
+TLS/QUIC/SSH.
 
 !!! info "IPsec does not force the modern agent path"
     The IPsec hooks keep the agent path you choose. On the default legacy

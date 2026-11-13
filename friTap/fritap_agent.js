@@ -1,5 +1,5 @@
 📦
-1782753 /agent/fritap_agent.js
+1882469 /agent/fritap_agent.js
 ✄
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -1853,6 +1853,44 @@ var init_record_protocol = __esm({
   }
 });
 
+// agent/shared/keylog_ssl_observer.ts
+function setKeylogSslObserver(observer) {
+  keylogSslObserver = observer;
+}
+function extractKeylogClientRandom(line) {
+  if (typeof line !== "string")
+    return "";
+  const tokens = line.trim().split(/\s+/);
+  if (tokens.length < 2)
+    return "";
+  const candidate = tokens[1];
+  return CLIENT_RANDOM_TOKEN_RE.test(candidate) ? candidate.toLowerCase() : "";
+}
+function isUsableSslPointer(ssl) {
+  if (!ssl || typeof ssl.isNull !== "function")
+    return false;
+  return !ssl.isNull();
+}
+function observeKeylogSsl(line, ssl, module) {
+  if (!keylogSslObserver || !isUsableSslPointer(ssl))
+    return;
+  try {
+    const clientRandom = extractKeylogClientRandom(line);
+    if (clientRandom)
+      keylogSslObserver(ssl, clientRandom, module);
+  } catch (_) {
+  }
+}
+var CLIENT_RANDOM_TOKEN_RE, keylogSslObserver;
+var init_keylog_ssl_observer = __esm({
+  "agent/shared/keylog_ssl_observer.ts"() {
+    "use strict";
+    init_node_globals();
+    CLIENT_RANDOM_TOKEN_RE = /^[0-9a-fA-F]{64}$/;
+    keylogSslObserver = null;
+  }
+});
+
 // agent/shared/shared_structures.ts
 var shared_structures_exports = {};
 __export(shared_structures_exports, {
@@ -1883,6 +1921,7 @@ __export(shared_structures_exports, {
   sendKeylog: () => sendKeylog,
   sendQuicDatalog: () => sendQuicDatalog,
   sendQuicKeylog: () => sendQuicKeylog,
+  sendRequestContext: () => sendRequestContext,
   sendWithProtocol: () => sendWithProtocol,
   setConfigExtensions: () => setConfigExtensions,
   setIsShuttingDown: () => setIsShuttingDown,
@@ -1946,7 +1985,8 @@ function sendWithProtocolTag(message, protocol, data) {
     send(message);
   }
 }
-function sendKeylog(keylogLine) {
+function sendKeylog(keylogLine, ssl, module) {
+  observeKeylogSsl(keylogLine, ssl, module);
   if (!keylog_enabled)
     return;
   sendWithProtocolTag({ contentType: "keylog", keylog: keylogLine }, "tls");
@@ -1967,14 +2007,20 @@ function sendConnectionLifecycle(event, message) {
   message["event"] = event;
   sendWithProtocol(message);
 }
-function sendCallerStack(join, java_frames, native_frames) {
+function sendCallerStack(join, java_frames, native_frames, meta) {
   const message = {
     contentType: "caller_stack",
     ...join,
     java_frames,
-    native_frames
+    native_frames,
+    ...meta ?? {}
   };
   sendWithProtocol(message);
+}
+function sendRequestContext(payload) {
+  if (_isShuttingDown)
+    return;
+  sendWithProtocol({ ...payload, contentType: "request_context" });
 }
 function sendQuicKeylog(keylogLine) {
   sendKeylog(keylogLine);
@@ -2004,6 +2050,7 @@ var init_shared_structures = __esm({
     "use strict";
     init_node_globals();
     init_record_protocol();
+    init_keylog_ssl_observer();
     offsets = "{OFFSETS}";
     pcap_enabled = false;
     keylog_enabled = true;
@@ -7078,12 +7125,12 @@ var JdwpSession = class {
     this._clientFd = clientPair[0];
     let acceptListener = null;
     acceptListener = Interceptor.attach(acceptImpl, function(args) {
-      const state2 = args[0];
-      const controlSockPtr = Memory.scanSync(state2.add(8252), 256, "00 ff ff ff ff 00")[0].address.add(1);
+      const state3 = args[0];
+      const controlSockPtr = Memory.scanSync(state3.add(8252), 256, "00 ff ff ff ff 00")[0].address.add(1);
       controlSockPtr.writeS32(controlPair[1]);
       acceptListener.detach();
     });
-    Interceptor.replace(receiveClientFdImpl, new NativeCallback(function(state2) {
+    Interceptor.replace(receiveClientFdImpl, new NativeCallback(function(state3) {
       Interceptor.revert(receiveClientFdImpl);
       return clientPair[1];
     }, "int", ["pointer"]));
@@ -14822,6 +14869,694 @@ function safeReadUtf8(ptr2, len) {
   }
 }
 
+// agent/shared/native_socket_observer.ts
+init_node_globals();
+var SOCK_STREAM2 = 1;
+var SOCK_DGRAM = 2;
+var IS_DARWIN = Process.platform === "darwin";
+var SOL_SOCKET = IS_DARWIN ? 65535 : 1;
+var SO_TYPE = IS_DARWIN ? 4104 : 3;
+var ENOTSOCK = IS_DARWIN ? 38 : 88;
+var EBADF = 9;
+var MAX_SCOPE_DEPTH = 16;
+var SOCKET_IO_FUNCTIONS = ["recvfrom", "recv", "recvmsg", "sendto", "send", "sendmsg", "read", "write"];
+var FDSAN_CLOSE = "android_fdsan_close_with_tag";
+function fdCloseFunction() {
+  return Module.findGlobalExportByName(FDSAN_CLOSE) !== null ? FDSAN_CLOSE : "close";
+}
+var CLOSED_FD_CONSUMER = { socketFdTracker: 0, unwantedFds: 1 };
+var CLOSED_FD_CONSUMERS = 2;
+var CLOSED_FD_RING_SIZE = 4096;
+var UDP_PEER_RING_SIZE = 64;
+var SOCKADDR_SLOT_SIZE = 32;
+var FD_CACHE_SIZE = 65536;
+var THREAD_TABLE_SLOTS = 4096;
+var C_SOURCE = `
+#include <glib.h>
+#include <gum/guminterceptor.h>
+
+#define THREAD_PROBES 32
+
+#define KIND_UNKNOWN 0
+#define KIND_STREAM 1
+#define KIND_DGRAM 2
+#define KIND_OTHER_SOCKET 3
+#define KIND_NOT_SOCKET 4
+#define KIND_BAD_FD 5                  /* probe result only, never cached */
+
+typedef int (* GetsockoptFn) (int fd, int level, int name, void * optval, unsigned int * optlen);
+typedef int * (* ErrnoFn) (void);
+
+/* gen: the fd's generation when noted; a close() or dup2() over the fd bumps it. */
+typedef struct { gpointer ssl; gint fd; guint gen; } FtScope;
+typedef struct { gint type; } FtSocketInvocation;
+typedef struct { gint fd; gint kind; gconstpointer addr; guint len; } FtConnectInvocation;
+typedef struct { gint source; gint target; guint8 target_kind; } FtDupInvocation;
+
+/* One JS-allocated block passed in as the ft_state symbol: a CModule's own globals are not
+   writable on every platform (macOS/iOS map the image read-only). */
+typedef struct
+{
+  /* JS reads these without the lock to skip empty drains; keep them first. */
+  volatile guint closed_head;
+  volatile guint closed_tail[CLOSED_CONSUMERS];
+  volatile guint udp_head;
+  volatile guint udp_tail;
+  guint big_fd_gen;                    /* generation shared by all fds >= FD_CACHE_SIZE */
+  GMutex lock;
+  GetsockoptFn getsockopt;
+  ErrnoFn errno_location;
+  gint closed_ring[CLOSED_RING_SIZE];
+  guint8 udp_ring[UDP_RING_SIZE][SOCKADDR_SLOT];
+  volatile guint8 fd_kind[FD_CACHE_SIZE];
+  guint16 fd_gen[FD_CACHE_SIZE];
+  gsize tids[THREAD_SLOTS];            /* 0 = empty slot */
+  gint last_fd[THREAD_SLOTS];          /* -1 = none */
+  guint last_gen[THREAD_SLOTS];
+  gint depth[THREAD_SLOTS];
+  FtScope scopes[THREAD_SLOTS][MAX_SCOPE_DEPTH];
+} FtState;
+
+extern FtState ft_state;
+
+static gint
+ft_int_arg (GumInvocationContext * ic, guint n)
+{
+  return (gint) (gsize) gum_invocation_context_get_nth_argument (ic, n);
+}
+
+static gint
+ft_return_value (GumInvocationContext * ic)
+{
+  return (gint) (gsize) gum_invocation_context_get_return_value (ic);
+}
+
+static guint
+ft_gen (gint fd)
+{
+  return (fd < FD_CACHE_SIZE) ? ft_state.fd_gen[fd] : ft_state.big_fd_gen;
+}
+
+/* fd if it has not been closed since it was noted at gen, else -1. Caller holds the lock. */
+static gint
+ft_valid_fd (gint fd, guint gen)
+{
+  return (fd >= 0 && ft_gen (fd) == gen) ? fd : -1;
+}
+
+static void
+ft_reset_slot (guint slot, gsize tid)
+{
+  ft_state.tids[slot] = tid;
+  ft_state.last_fd[slot] = -1;
+  ft_state.depth[slot] = 0;
+}
+
+/* Caller holds the lock. Returns the slot index, or -1 when absent and !create. Never deletes:
+   a full probe window evicts the home slot (that thread's state is simply forgotten). */
+static gint
+ft_thread_slot (gsize tid, gboolean create)
+{
+  guint home = (guint) ((tid * 2654435761u) % THREAD_SLOTS);
+  guint i;
+
+  for (i = 0; i != THREAD_PROBES; i++)
+  {
+    guint slot = (home + i) % THREAD_SLOTS;
+    if (ft_state.tids[slot] == tid)
+      return (gint) slot;
+    if (ft_state.tids[slot] == 0)
+    {
+      if (!create)
+        return -1;
+      ft_reset_slot (slot, tid);
+      return (gint) slot;
+    }
+  }
+  if (!create)
+    return -1;
+  ft_reset_slot (home, tid);
+  return (gint) home;
+}
+
+static guint8
+ft_kind_from_type (gint type)
+{
+  if (type == FT_SOCK_STREAM)
+    return KIND_STREAM;
+  if (type == FT_SOCK_DGRAM)
+    return KIND_DGRAM;
+  return KIND_OTHER_SOCKET;
+}
+
+/* getsockopt(SO_TYPE), without the lock. ENOTSOCK is definitive; EBADF only says the fd is not
+   open right now. */
+static guint8
+ft_probe_kind (gint fd)
+{
+  gint type = 0;
+  unsigned int len = sizeof (type);
+
+  if (ft_state.getsockopt == NULL)
+    return KIND_UNKNOWN;
+  if (ft_state.getsockopt (fd, FT_SOL_SOCKET, FT_SO_TYPE, &type, &len) == 0)
+    return ft_kind_from_type (type);
+  if (ft_state.errno_location != NULL && *ft_state.errno_location () == FT_ENOTSOCK)
+    return KIND_NOT_SOCKET;
+  if (ft_state.errno_location != NULL && *ft_state.errno_location () == FT_EBADF)
+    return KIND_BAD_FD;
+  return KIND_UNKNOWN;
+}
+
+/* Cached kinds are read without the lock (one byte). A probed kind is cached unless the fd was
+   closed while probing. */
+static guint8
+ft_kind (gint fd)
+{
+  guint8 kind;
+  guint gen;
+
+  if (fd < FD_CACHE_SIZE && (kind = ft_state.fd_kind[fd]) != KIND_UNKNOWN)
+    return kind;
+  gen = ft_gen (fd);
+  kind = ft_probe_kind (fd);
+  if (kind != KIND_UNKNOWN && kind != KIND_BAD_FD && fd < FD_CACHE_SIZE)
+  {
+    g_mutex_lock (&ft_state.lock);
+    if (ft_state.fd_gen[fd] == gen)
+      ft_state.fd_kind[fd] = kind;
+    g_mutex_unlock (&ft_state.lock);
+  }
+  return kind;
+}
+
+static void
+ft_note_stream_io (gsize tid, gint fd, gboolean scoped)
+{
+  gint slot;
+  guint gen;
+
+  g_mutex_lock (&ft_state.lock);
+  gen = ft_gen (fd);
+  slot = ft_thread_slot (tid, TRUE);
+  ft_state.last_fd[slot] = fd;
+  ft_state.last_gen[slot] = gen;
+  if (scoped && ft_state.depth[slot] > 0)
+  {
+    FtScope * scope = &ft_state.scopes[slot][ft_state.depth[slot] - 1];
+    scope->fd = fd;
+    scope->gen = gen;
+  }
+  g_mutex_unlock (&ft_state.lock);
+}
+
+/* Kind of an fd about to be closed, probed while it is still open. Not cached: it is forgotten
+   right after. Without this every file close would be pushed and overrun the ring. */
+static guint8
+ft_closing_kind (gint fd)
+{
+  guint8 kind;
+
+  if (fd < FD_CACHE_SIZE && (kind = ft_state.fd_kind[fd]) != KIND_UNKNOWN)
+    return kind;
+  return ft_probe_kind (fd);
+}
+
+/* Caller holds the lock; kind is ft_closing_kind (fd). The fd number may now name another file:
+   new generation, unknown kind, and every possibly-socket fd is reported to the closed-fd
+   consumers. */
+static void
+ft_forget_fd (gint fd, guint8 kind)
+{
+  if (fd < FD_CACHE_SIZE)
+  {
+    ft_state.fd_kind[fd] = KIND_UNKNOWN;
+    ft_state.fd_gen[fd]++;
+  }
+  else
+  {
+    ft_state.big_fd_gen++;
+  }
+  if (kind == KIND_NOT_SOCKET || kind == KIND_BAD_FD)
+    return;
+  ft_state.closed_ring[ft_state.closed_head % CLOSED_RING_SIZE] = fd;
+  ft_state.closed_head++;
+}
+
+static void
+ft_push_udp_peer (const guint8 * addr, guint len)
+{
+  guint8 * slot;
+  guint i;
+
+  if (len > SOCKADDR_SLOT)
+    len = SOCKADDR_SLOT;
+  g_mutex_lock (&ft_state.lock);
+  slot = ft_state.udp_ring[ft_state.udp_head % UDP_RING_SIZE];
+  for (i = 0; i != len; i++)
+    slot[i] = addr[i];
+  for (; i != SOCKADDR_SLOT; i++)
+    slot[i] = 0;
+  ft_state.udp_head++;
+  g_mutex_unlock (&ft_state.lock);
+}
+
+/* \u2500\u2500 libc listeners \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
+
+void
+ft_socket_on_enter (GumInvocationContext * ic)
+{
+  FtSocketInvocation * inv = GUM_IC_GET_INVOCATION_DATA (ic, FtSocketInvocation);
+  inv->type = ft_int_arg (ic, 1);
+}
+
+void
+ft_socket_on_leave (GumInvocationContext * ic)
+{
+  FtSocketInvocation * inv = GUM_IC_GET_INVOCATION_DATA (ic, FtSocketInvocation);
+  gint fd = ft_return_value (ic);
+
+  if (fd < 0 || fd >= FD_CACHE_SIZE)
+    return;
+  g_mutex_lock (&ft_state.lock);
+  ft_state.fd_kind[fd] = ft_kind_from_type (inv->type & 0x7f);
+  g_mutex_unlock (&ft_state.lock);
+}
+
+void
+ft_connect_on_enter (GumInvocationContext * ic)
+{
+  FtConnectInvocation * inv = GUM_IC_GET_INVOCATION_DATA (ic, FtConnectInvocation);
+
+  inv->fd = ft_int_arg (ic, 0);
+  inv->addr = gum_invocation_context_get_nth_argument (ic, 1);
+  inv->len = (guint) ft_int_arg (ic, 2);
+  inv->kind = (inv->fd >= 0) ? ft_kind (inv->fd) : KIND_UNKNOWN;
+  if (inv->kind == KIND_STREAM)
+    ft_note_stream_io (gum_invocation_context_get_thread_id (ic), inv->fd, FALSE);
+}
+
+void
+ft_connect_on_leave (GumInvocationContext * ic)
+{
+  FtConnectInvocation * inv = GUM_IC_GET_INVOCATION_DATA (ic, FtConnectInvocation);
+
+  /* The kernel read len bytes at addr for a successful connect(), so they are mapped. */
+  if (inv->kind != KIND_DGRAM || inv->addr == NULL || ft_return_value (ic) != 0)
+    return;
+  ft_push_udp_peer ((const guint8 *) inv->addr, inv->len);
+}
+
+void
+ft_close_on_enter (GumInvocationContext * ic)
+{
+  gint fd = ft_int_arg (ic, 0);
+  guint8 kind;
+
+  if (fd < 0)
+    return;
+  kind = ft_closing_kind (fd);
+  g_mutex_lock (&ft_state.lock);
+  ft_forget_fd (fd, kind);
+  g_mutex_unlock (&ft_state.lock);
+}
+
+void
+ft_dup_on_enter (GumInvocationContext * ic)
+{
+  FtDupInvocation * inv = GUM_IC_GET_INVOCATION_DATA (ic, FtDupInvocation);
+  inv->source = ft_int_arg (ic, 0);
+  inv->target = ft_int_arg (ic, 1);
+  inv->target_kind = (inv->target >= 0) ? ft_closing_kind (inv->target) : KIND_UNKNOWN;
+}
+
+/* dup2/dup3 close the target fd without calling close(). */
+void
+ft_dup_on_leave (GumInvocationContext * ic)
+{
+  FtDupInvocation * inv = GUM_IC_GET_INVOCATION_DATA (ic, FtDupInvocation);
+
+  if (ft_return_value (ic) < 0 || inv->target < 0 || inv->source == inv->target)
+    return;
+  g_mutex_lock (&ft_state.lock);
+  ft_forget_fd (inv->target, inv->target_kind);
+  g_mutex_unlock (&ft_state.lock);
+}
+
+void
+ft_io_on_enter (GumInvocationContext * ic)
+{
+  gint fd = ft_int_arg (ic, 0);
+
+  if (fd < 0 || ft_kind (fd) != KIND_STREAM)
+    return;
+  ft_note_stream_io (gum_invocation_context_get_thread_id (ic), fd, TRUE);
+}
+
+/* \u2500\u2500 exported to JS (NativeFunction, scheduling: exclusive) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
+
+gsize
+ft_state_size (void)
+{
+  return sizeof (FtState);
+}
+
+/* Zeroes the state block (a zeroed GMutex is a valid unlocked mutex); runs before any attach. */
+void
+ft_init (gpointer getsockopt_impl, gpointer errno_impl)
+{
+  guint8 * bytes = (guint8 *) &ft_state;
+  gsize i;
+
+  for (i = 0; i != sizeof (FtState); i++)
+    bytes[i] = 0;
+  ft_state.getsockopt = (GetsockoptFn) getsockopt_impl;
+  ft_state.errno_location = (ErrnoFn) errno_impl;
+}
+
+void
+ft_scope_push (gsize tid, gpointer ssl)
+{
+  gint slot, i;
+
+  g_mutex_lock (&ft_state.lock);
+  slot = ft_thread_slot (tid, TRUE);
+  if (ft_state.depth[slot] >= MAX_SCOPE_DEPTH)
+  {
+    for (i = 1; i < ft_state.depth[slot]; i++)        /* drop a stale frame whose onLeave never ran */
+      ft_state.scopes[slot][i - 1] = ft_state.scopes[slot][i];
+    ft_state.depth[slot]--;
+  }
+  ft_state.scopes[slot][ft_state.depth[slot]].ssl = ssl;
+  ft_state.scopes[slot][ft_state.depth[slot]].fd = -1;
+  ft_state.depth[slot]++;
+  g_mutex_unlock (&ft_state.lock);
+}
+
+/* Pops ssl's scope (and any stale frames above it); returns its fd, or -1 (no I/O, no scope, or
+   the fd was closed since). */
+gint
+ft_scope_pop (gsize tid, gpointer ssl)
+{
+  gint slot, i, fd = -1;
+
+  g_mutex_lock (&ft_state.lock);
+  slot = ft_thread_slot (tid, FALSE);
+  if (slot >= 0)
+  {
+    for (i = ft_state.depth[slot] - 1; i >= 0; i--)
+    {
+      if (ft_state.scopes[slot][i].ssl == ssl)
+        break;
+    }
+    if (i >= 0)
+    {
+      fd = ft_valid_fd (ft_state.scopes[slot][i].fd, ft_state.scopes[slot][i].gen);
+      ft_state.depth[slot] = i;
+    }
+  }
+  g_mutex_unlock (&ft_state.lock);
+  return fd;
+}
+
+gint
+ft_recover (gsize tid)
+{
+  gint slot, fd = -1;
+
+  g_mutex_lock (&ft_state.lock);
+  slot = ft_thread_slot (tid, FALSE);
+  if (slot >= 0)
+    fd = ft_valid_fd (ft_state.last_fd[slot], ft_state.last_gen[slot]);
+  g_mutex_unlock (&ft_state.lock);
+  return fd;
+}
+
+void
+ft_closed_skip (guint consumer)
+{
+  g_mutex_lock (&ft_state.lock);
+  ft_state.closed_tail[consumer] = ft_state.closed_head;
+  g_mutex_unlock (&ft_state.lock);
+}
+
+/* Copies the consumer's pending closed fds into out (CLOSED_RING_SIZE entries). Returns the count,
+   or -1 when the ring overran the consumer (it must then forget every fd it caches). */
+gint
+ft_drain_closed (guint consumer, gint * out)
+{
+  guint pending, n;
+
+  g_mutex_lock (&ft_state.lock);
+  pending = ft_state.closed_head - ft_state.closed_tail[consumer];
+  if (pending > CLOSED_RING_SIZE)
+  {
+    ft_state.closed_tail[consumer] = ft_state.closed_head;
+    g_mutex_unlock (&ft_state.lock);
+    return -1;
+  }
+  for (n = 0; n != pending; n++)
+    out[n] = ft_state.closed_ring[(ft_state.closed_tail[consumer] + n) % CLOSED_RING_SIZE];
+  ft_state.closed_tail[consumer] = ft_state.closed_head;
+  g_mutex_unlock (&ft_state.lock);
+  return (gint) pending;
+}
+
+void
+ft_udp_skip (void)
+{
+  g_mutex_lock (&ft_state.lock);
+  ft_state.udp_tail = ft_state.udp_head;
+  g_mutex_unlock (&ft_state.lock);
+}
+
+/* Copies the sockaddrs of successful UDP connect()s since the last drain into out
+   (UDP_RING_SIZE slots), oldest first; on overrun only the newest UDP_RING_SIZE. */
+gint
+ft_drain_udp_peers (guint8 * out)
+{
+  guint pending, n, i;
+
+  g_mutex_lock (&ft_state.lock);
+  pending = ft_state.udp_head - ft_state.udp_tail;
+  if (pending > UDP_RING_SIZE)
+    pending = UDP_RING_SIZE;
+  for (n = 0; n != pending; n++)
+  {
+    const guint8 * slot = ft_state.udp_ring[(ft_state.udp_head - pending + n) % UDP_RING_SIZE];
+    for (i = 0; i != SOCKADDR_SLOT; i++)
+      out[n * SOCKADDR_SLOT + i] = slot[i];
+  }
+  ft_state.udp_tail = ft_state.udp_head;
+  g_mutex_unlock (&ft_state.lock);
+  return (gint) pending;
+}
+`;
+function buildCSource() {
+  const defines = [
+    ["FT_SOL_SOCKET", SOL_SOCKET],
+    ["FT_SO_TYPE", SO_TYPE],
+    ["FT_ENOTSOCK", ENOTSOCK],
+    ["FT_EBADF", EBADF],
+    ["FT_SOCK_STREAM", SOCK_STREAM2],
+    ["FT_SOCK_DGRAM", SOCK_DGRAM],
+    ["MAX_SCOPE_DEPTH", MAX_SCOPE_DEPTH],
+    ["CLOSED_CONSUMERS", CLOSED_FD_CONSUMERS],
+    ["CLOSED_RING_SIZE", CLOSED_FD_RING_SIZE],
+    ["UDP_RING_SIZE", UDP_PEER_RING_SIZE],
+    ["SOCKADDR_SLOT", SOCKADDR_SLOT_SIZE],
+    ["FD_CACHE_SIZE", FD_CACHE_SIZE],
+    ["THREAD_SLOTS", THREAD_TABLE_SLOTS]
+  ];
+  return defines.map(([name, value]) => `#define ${name} ${value}`).join("\n") + C_SOURCE;
+}
+var STATE_BYTES = 256 + // cursors, GMutex, function pointers
+CLOSED_FD_RING_SIZE * 4 + UDP_PEER_RING_SIZE * SOCKADDR_SLOT_SIZE + FD_CACHE_SIZE * 3 + // fd_kind + fd_gen
+THREAD_TABLE_SLOTS * (8 + 4 + 4 + 4) + // tids, last_fd, last_gen, depth
+THREAD_TABLE_SLOTS * MAX_SCOPE_DEPTH * 16 + // scopes
+4096;
+var CLOSED_HEAD_OFFSET = 0;
+var CLOSED_TAIL_OFFSET = 4;
+var UDP_HEAD_OFFSET = CLOSED_TAIL_OFFSET + 4 * CLOSED_FD_CONSUMERS;
+var UDP_TAIL_OFFSET = UDP_HEAD_OFFSET + 4;
+var ERRNO_LOCATION_EXPORTS = ["__errno_location", "__errno", "__error"];
+function findErrnoLocation() {
+  for (const name of ERRNO_LOCATION_EXPORTS) {
+    const address = Module.findGlobalExportByName(name);
+    if (address !== null)
+      return address;
+  }
+  return NULL;
+}
+var NativeSocketObserver = class {
+  cm;
+  state;
+  attachedGroups = /* @__PURE__ */ new Map();
+  closedFdBuffer = Memory.alloc(CLOSED_FD_RING_SIZE * 4);
+  udpPeerBuffer = Memory.alloc(UDP_PEER_RING_SIZE * SOCKADDR_SLOT_SIZE);
+  scopePush;
+  scopePop;
+  recoverFd;
+  closedSkip;
+  drainClosed;
+  udpSkip;
+  drainUdp;
+  /** Kept alive for the process lifetime: the listeners point into this module and its state. */
+  constructor(cm2, state3) {
+    this.cm = cm2;
+    this.state = state3;
+    const exclusive = { scheduling: "exclusive" };
+    this.scopePush = new NativeFunction(cm2.ft_scope_push, "void", ["size_t", "pointer"], exclusive);
+    this.scopePop = new NativeFunction(cm2.ft_scope_pop, "int", ["size_t", "pointer"], exclusive);
+    this.recoverFd = new NativeFunction(cm2.ft_recover, "int", ["size_t"], exclusive);
+    this.closedSkip = new NativeFunction(cm2.ft_closed_skip, "void", ["uint"], exclusive);
+    this.drainClosed = new NativeFunction(cm2.ft_drain_closed, "int", ["uint", "pointer"], exclusive);
+    this.udpSkip = new NativeFunction(cm2.ft_udp_skip, "void", [], exclusive);
+    this.drainUdp = new NativeFunction(cm2.ft_drain_udp_peers, "int", ["pointer"], exclusive);
+  }
+  /** libc functions with a native listener attached (for the debug log). */
+  get hookedFunctions() {
+    return [...this.attachedGroups.values()].flatMap((group) => group.names);
+  }
+  /** close()/dup2() reporting for `consumer`, from now on. */
+  armClosedFdConsumer(consumer) {
+    if (!this.attachGroups(["close"]))
+      return false;
+    this.closedSkip(consumer);
+    return true;
+  }
+  /** Thread/SSL-scope -> stream fd tracking plus the tracker's closed-fd reporting. */
+  armSocketFdTracking() {
+    return this.attachGroups(["close", "socket", "io"]) && this.armClosedFdConsumer(CLOSED_FD_CONSUMER.socketFdTracker);
+  }
+  /** Recording of successful UDP connect() peers, from now on. */
+  armUdpPeerRecording() {
+    if (!this.attachGroups(["close", "socket"]))
+      return false;
+    this.udpSkip();
+    return true;
+  }
+  enterScope(tid, ssl) {
+    this.scopePush(tid, ssl);
+  }
+  leaveScope(tid, ssl) {
+    return this.scopePop(tid, ssl);
+  }
+  recover(tid) {
+    return this.recoverFd(tid);
+  }
+  drainClosedFds(consumer) {
+    const tail = this.state.add(CLOSED_TAIL_OFFSET + 4 * consumer).readU32();
+    if (tail === this.state.add(CLOSED_HEAD_OFFSET).readU32())
+      return [];
+    const count = this.drainClosed(consumer, this.closedFdBuffer);
+    if (count < 0)
+      return "lost";
+    if (count === 0)
+      return [];
+    return Array.from(new Int32Array(this.closedFdBuffer.readByteArray(count * 4)));
+  }
+  /** sockaddrs of the UDP connect()s since the last drain, oldest first; valid until the next drain. */
+  drainUdpPeers() {
+    if (this.state.add(UDP_TAIL_OFFSET).readU32() === this.state.add(UDP_HEAD_OFFSET).readU32())
+      return [];
+    const count = this.drainUdp(this.udpPeerBuffer);
+    const peers = [];
+    for (let i = 0; i < count; i++)
+      peers.push(this.udpPeerBuffer.add(i * SOCKADDR_SLOT_SIZE));
+    return peers;
+  }
+  /** All or nothing: on failure, detaches the groups this call attached (not ones armed before). */
+  attachGroups(groups) {
+    const attachedNow = [];
+    for (const group of groups) {
+      if (this.attachedGroups.has(group))
+        continue;
+      try {
+        this.attachedGroups.set(group, attachAll(listenerPlan(this.cm, group)));
+        attachedNow.push(group);
+      } catch (e) {
+        warnJsFallback(`attaching the ${group} listeners failed: ${e}`);
+        for (const done of attachedNow)
+          this.detachGroup(done);
+        return false;
+      }
+    }
+    return true;
+  }
+  detachGroup(group) {
+    for (const listener of this.attachedGroups.get(group)?.listeners ?? [])
+      listener.detach();
+    this.attachedGroups.delete(group);
+  }
+};
+function listenerPlan(cm2, group) {
+  switch (group) {
+    case "close":
+      return [
+        [fdCloseFunction(), { onEnter: cm2.ft_close_on_enter }],
+        ["dup2", { onEnter: cm2.ft_dup_on_enter, onLeave: cm2.ft_dup_on_leave }],
+        ["dup3", { onEnter: cm2.ft_dup_on_enter, onLeave: cm2.ft_dup_on_leave }]
+      ];
+    case "socket":
+      return [
+        ["socket", { onEnter: cm2.ft_socket_on_enter, onLeave: cm2.ft_socket_on_leave }],
+        ["connect", { onEnter: cm2.ft_connect_on_enter, onLeave: cm2.ft_connect_on_leave }]
+      ];
+    case "io":
+      return SOCKET_IO_FUNCTIONS.map((name) => [name, { onEnter: cm2.ft_io_on_enter }]);
+  }
+}
+function attachAll(plan) {
+  const attached = { listeners: [], names: [] };
+  try {
+    for (const [name, callbacks] of plan) {
+      const address = Module.findGlobalExportByName(name);
+      if (address === null)
+        continue;
+      attached.listeners.push(Interceptor.attach(address, callbacks));
+      attached.names.push(name);
+    }
+  } catch (e) {
+    for (const listener of attached.listeners)
+      listener.detach();
+    throw e;
+  }
+  return attached;
+}
+function createObserver() {
+  if (typeof CModule === "undefined")
+    throw new Error("CModule is not available in this runtime");
+  const state3 = Memory.alloc(STATE_BYTES);
+  const cm2 = new CModule(buildCSource(), { ft_state: state3 });
+  const exclusive = { scheduling: "exclusive" };
+  const stateSize = Number(new NativeFunction(cm2.ft_state_size, "size_t", [], exclusive)());
+  if (stateSize > STATE_BYTES)
+    throw new Error(`native state needs ${stateSize} bytes, only ${STATE_BYTES} reserved`);
+  new NativeFunction(cm2.ft_init, "void", ["pointer", "pointer"], exclusive)(Module.findGlobalExportByName("getsockopt") ?? NULL, findErrnoLocation());
+  return new NativeSocketObserver(cm2, state3);
+}
+var _observer;
+var _fallbackWarned = false;
+function warnJsFallback(reason) {
+  devlog(`[native-socket-observer] ${reason}`);
+  if (_fallbackWarned)
+    return;
+  _fallbackWarned = true;
+  log("[!] friTap: Frida CModule is unavailable in this process; falling back to JavaScript libc hooks for socket tracking. With Java hooks active (--attribute-sdk) these can occasionally freeze the app; if it hangs, rerun without --attribute-sdk.");
+}
+function nativeSocketObserver() {
+  if (_observer === void 0) {
+    try {
+      _observer = createObserver();
+    } catch (e) {
+      _observer = null;
+      warnJsFallback(`CModule unusable: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  return _observer;
+}
+
 // agent/shared/sockaddr.ts
 init_node_globals();
 init_shared_structures();
@@ -14939,7 +15674,14 @@ function reportHookRow(match, moduleName, protocol, modulePath, announcement, ou
     return;
   }
   log(`${moduleName} ${announcement} (${protocol})!`);
-  send({ contentType: "library_detected", library: moduleName, path: modulePath || "", protocol });
+  send({ contentType: "library_detected", library: moduleName, path: modulePath || loadedModulePath(moduleName), protocol });
+}
+function loadedModulePath(moduleName) {
+  try {
+    return Process.findModuleByName(moduleName)?.path ?? "";
+  } catch (_) {
+    return "";
+  }
 }
 function installPairipSafeWatcher(platform, hookRegistry2, getFreshModuleNames, protocol, isTarget, firstDelayMs, pollIntervalMs) {
   let scanScheduled = false;
@@ -15249,11 +15991,17 @@ var _cachedSocketFns = null;
 var _cachedAddrBuf = null;
 var _cachedAddrLenBuf = null;
 var _unwantedFdEvictionInstalled = false;
+var _closedFdObserver = null;
 function installUnwantedFdEviction() {
   if (_unwantedFdEvictionInstalled)
     return;
   _unwantedFdEvictionInstalled = true;
-  const closeAddr = Module.findGlobalExportByName("close");
+  const observer = nativeSocketObserver();
+  if (observer !== null && observer.armClosedFdConsumer(CLOSED_FD_CONSUMER.unwantedFds)) {
+    _closedFdObserver = observer;
+    return;
+  }
+  const closeAddr = Module.findGlobalExportByName(fdCloseFunction());
   if (!closeAddr)
     return;
   Interceptor.attach(closeAddr, {
@@ -15262,17 +16010,44 @@ function installUnwantedFdEviction() {
     }
   });
 }
+function evictClosedUnwantedFds() {
+  if (_closedFdObserver === null)
+    return;
+  const closed = _closedFdObserver.drainClosedFds(CLOSED_FD_CONSUMER.unwantedFds);
+  if (closed === "lost")
+    unwantedFDs.clear();
+  else
+    for (const fd of closed)
+      unwantedFDs.delete(fd);
+}
+var DEFAULT_FD_LOCAL_PORT = 1234;
+var DEFAULT_FD_PEER_PORT = 2345;
+var DEFAULT_FD_LOOPBACK_ADDR = 2130706433;
+function defaultFdPlaceholderTuple(isRead) {
+  const localPort = DEFAULT_FD_LOCAL_PORT;
+  const peerPort = DEFAULT_FD_PEER_PORT;
+  return {
+    src_port: isRead ? peerPort : localPort,
+    src_addr: DEFAULT_FD_LOOPBACK_ADDR,
+    dst_port: isRead ? localPort : peerPort,
+    dst_addr: DEFAULT_FD_LOOPBACK_ADDR,
+    ss_family: "AF_INET"
+  };
+}
+function isUnwantedFd(fd) {
+  evictClosedUnwantedFds();
+  return unwantedFDs.has(fd);
+}
 function getPortsAndAddresses(sockfd, isRead, methodAddresses, enable_default_fd2) {
   if (!_unwantedFdEvictionInstalled)
     installUnwantedFdEviction();
+  evictClosedUnwantedFds();
   var message = {};
   if (enable_default_fd2 && sockfd < 0) {
-    message["src_port"] = 1234;
-    message["src_addr"] = 2130706433;
-    message["dst_port"] = 2345;
-    message["dst_addr"] = 2130706433;
-    message["ss_family"] = "AF_INET";
-    return message;
+    return defaultFdPlaceholderTuple(isRead);
+  }
+  if (sockfd < 0) {
+    return null;
   }
   if (unwantedFDs.has(sockfd)) {
     return null;
@@ -15294,10 +16069,9 @@ function getPortsAndAddresses(sockfd, isRead, methodAddresses, enable_default_fd
   var src_dst = ["src", "dst"];
   for (let i = 0; i < src_dst.length; i++) {
     addrlen.writeU32(128);
-    if (src_dst[i] == "src" !== isRead) {
-      getsockname(sockfd, addr, addrlen);
-    } else {
-      getpeername(sockfd, addr, addrlen);
+    const status = src_dst[i] == "src" !== isRead ? getsockname(sockfd, addr, addrlen) : getpeername(sockfd, addr, addrlen);
+    if (status !== 0) {
+      return enable_default_fd2 ? defaultFdPlaceholderTuple(isRead) : null;
     }
     const decoded = decodeSockaddr(addr, false, _cachedSocketFns, true);
     if (!decoded) {
@@ -19153,438 +19927,78 @@ init_shared_structures();
 // agent/shared/sdk_backtrace.ts
 init_node_globals();
 init_shared_structures();
-var MAX_FRAMES = 32;
-var seenSsl = /* @__PURE__ */ new Set();
-function symbolizeNativeFrames(addrs, max = MAX_FRAMES) {
-  const frames = [];
-  for (const addr of addrs.slice(0, max)) {
-    try {
-      const sym = DebugSymbol.fromAddress(addr);
-      frames.push({
-        module: sym.moduleName || "",
-        symbol: sym.name || null,
-        address: addr.toString()
-      });
-    } catch (_e) {
-      frames.push({ module: "", symbol: null, address: addr.toString() });
-    }
+
+// agent/shared/ssl_identity.ts
+init_node_globals();
+
+// agent/shared/lru.ts
+init_node_globals();
+var LruMap = class {
+  _max;
+  _onEvict;
+  _map = /* @__PURE__ */ new Map();
+  /** `onEvict` is told about every entry dropped for capacity (not delete()/overwrite). */
+  constructor(_max, _onEvict) {
+    this._max = _max;
+    this._onEvict = _onEvict;
   }
-  return frames;
-}
-function captureNativeFrames(context) {
-  let addrs;
-  try {
-    addrs = Thread.backtrace(context, Backtracer.ACCURATE);
-  } catch (_e) {
-    try {
-      addrs = Thread.backtrace(context, Backtracer.FUZZY);
-    } catch (_e2) {
-      return [];
+  get(key) {
+    const val = this._map.get(key);
+    if (val !== void 0) {
+      this._map.delete(key);
+      this._map.set(key, val);
     }
+    return val;
   }
-  return symbolizeNativeFrames(addrs);
-}
-function captureJavaFrames() {
-  if (typeof Java === "undefined" || !Java.available)
-    return [];
-  const out = [];
-  try {
-    Java.perform(() => {
-      try {
-        const JavaThread = Java.use("java.lang.Thread");
-        const elems = JavaThread.currentThread().getStackTrace();
-        for (let i = 0; i < elems.length && out.length < MAX_FRAMES; i++) {
-          try {
-            out.push(elems[i].getClassName());
-          } catch (_e) {
-          }
-        }
-      } catch (_e) {
+  set(key, value) {
+    this._map.delete(key);
+    if (this._map.size >= this._max) {
+      const oldest = this._map.keys().next().value;
+      if (oldest !== void 0) {
+        const evicted = this._map.get(oldest);
+        this._map.delete(oldest);
+        this._onEvict?.(oldest, evicted);
       }
-    });
-  } catch (_e) {
+    }
+    this._map.set(key, value);
   }
-  return out;
-}
-function maybeCaptureCallerStack(ssl, context, join) {
-  if (!attribute_sdk)
-    return;
-  const key = ssl.toString();
-  if (seenSsl.has(key))
-    return;
-  seenSsl.add(key);
-  let joinFields;
-  try {
-    joinFields = join();
-  } catch (_e) {
-    joinFields = {};
+  delete(key) {
+    return this._map.delete(key);
   }
-  const nativeFrames = captureNativeFrames(context);
-  const javaFrames = captureJavaFrames();
-  sendCallerStack(joinFields, javaFrames, nativeFrames);
-}
-function forgetSsl(key) {
-  seenSsl.delete(key);
-}
-
-// agent/shared/socket_fd_tracker.ts
-init_node_globals();
-
-// agent/shared/ssl_fd_cache.ts
-init_node_globals();
-var SslFdCache = class {
-  maxEntries;
-  /** SSL object (pointer string) -> fd. Map order doubles as LRU order. */
-  fdBySsl = /* @__PURE__ */ new Map();
-  /** fd -> the SSL objects currently cached with it (kept in sync with fdBySsl). */
-  sslsByFd = /* @__PURE__ */ new Map();
-  constructor(maxEntries) {
-    this.maxEntries = maxEntries;
+  /** Drop every entry without calling `onEvict` (a reset, not a capacity eviction). */
+  clear() {
+    this._map.clear();
   }
   get size() {
-    return this.fdBySsl.size;
+    return this._map.size;
   }
-  get(ssl) {
-    return this.fdBySsl.get(ssl);
+};
+var FifoSet = class {
+  _max;
+  _set = /* @__PURE__ */ new Set();
+  constructor(_max) {
+    this._max = _max;
   }
-  /** Cache ssl -> fd as the most recently used entry, evicting the oldest past the bound. */
-  set(ssl, fd) {
-    this.deleteSsl(ssl);
-    this.fdBySsl.set(ssl, fd);
-    let ssls = this.sslsByFd.get(fd);
-    if (ssls === void 0) {
-      ssls = /* @__PURE__ */ new Set();
-      this.sslsByFd.set(fd, ssls);
+  has(value) {
+    return this._set.has(value);
+  }
+  add(value) {
+    if (this._set.has(value))
+      return;
+    if (this._set.size >= this._max) {
+      const oldest = this._set.values().next().value;
+      if (oldest !== void 0)
+        this._set.delete(oldest);
     }
-    ssls.add(ssl);
-    if (this.fdBySsl.size > this.maxEntries) {
-      this.deleteSsl(this.fdBySsl.keys().next().value);
-    }
+    this._set.add(value);
   }
-  /** SSL_free(ssl): drop its entry. */
-  deleteSsl(ssl) {
-    const fd = this.fdBySsl.get(ssl);
-    if (fd === void 0)
-      return;
-    this.fdBySsl.delete(ssl);
-    const ssls = this.sslsByFd.get(fd);
-    if (ssls === void 0)
-      return;
-    ssls.delete(ssl);
-    if (ssls.size === 0)
-      this.sslsByFd.delete(fd);
-  }
-  /** close(fd): drop every SSL object cached with fd (the number may be reused). */
-  deleteFd(fd) {
-    const ssls = this.sslsByFd.get(fd);
-    if (ssls === void 0)
-      return;
-    this.sslsByFd.delete(fd);
-    for (const ssl of ssls)
-      this.fdBySsl.delete(ssl);
-  }
-  /** Number of fds in the reverse index (test hook for index consistency). */
-  get indexedFdCount() {
-    return this.sslsByFd.size;
+  get size() {
+    return this._set.size;
   }
 };
 
-// agent/shared/socket_fd_tracker.ts
-var SOCK_STREAM2 = 1;
-var IS_DARWIN = Process.platform === "darwin";
-var SOL_SOCKET = IS_DARWIN ? 65535 : 1;
-var SO_TYPE = IS_DARWIN ? 4104 : 3;
-var streamFds = /* @__PURE__ */ new Set();
-var nonStreamFds = /* @__PURE__ */ new Set();
-var threadToFd = /* @__PURE__ */ new Map();
-var _installed = false;
-var _getsockopt = null;
-var _optvalBuf = null;
-var _optlenBuf = null;
-function classifyStream(fd) {
-  if (streamFds.has(fd))
-    return true;
-  if (nonStreamFds.has(fd))
-    return false;
-  if (_getsockopt && _optvalBuf && _optlenBuf) {
-    try {
-      _optlenBuf.writeU32(4);
-      const ret = _getsockopt(fd, SOL_SOCKET, SO_TYPE, _optvalBuf, _optlenBuf);
-      if (ret === 0) {
-        const sockType = _optvalBuf.readU32();
-        if (sockType === SOCK_STREAM2) {
-          streamFds.add(fd);
-          return true;
-        }
-        nonStreamFds.add(fd);
-        return false;
-      }
-    } catch (e) {
-    }
-    return false;
-  }
-  return false;
-}
-function installSocketFdTracker() {
-  if (_installed)
-    return;
-  _installed = true;
-  const getsockoptAddr = Module.findGlobalExportByName("getsockopt");
-  if (getsockoptAddr) {
-    _getsockopt = new NativeFunction(getsockoptAddr, "int", ["int", "int", "int", "pointer", "pointer"]);
-    _optvalBuf = Memory.alloc(8);
-    _optlenBuf = Memory.alloc(4);
-  }
-  const socketAddr = Module.findGlobalExportByName("socket");
-  const connectAddr = Module.findGlobalExportByName("connect");
-  const closeAddr = Module.findGlobalExportByName("close");
-  const ioFns = ["recvfrom", "recv", "recvmsg", "sendto", "send", "sendmsg", "read", "write"];
-  if (socketAddr) {
-    Interceptor.attach(socketAddr, {
-      onEnter(args) {
-        this.sockType = args[1].toInt32();
-      },
-      onLeave(retval) {
-        const fd = retval.toInt32();
-        if (fd < 0)
-          return;
-        if ((this.sockType & 127) === SOCK_STREAM2)
-          streamFds.add(fd);
-        else
-          nonStreamFds.add(fd);
-      }
-    });
-  }
-  if (connectAddr) {
-    Interceptor.attach(connectAddr, {
-      onEnter(args) {
-        const fd = args[0].toInt32();
-        if (fd >= 0 && classifyStream(fd)) {
-          threadToFd.set(Process.getCurrentThreadId(), fd);
-        }
-      }
-    });
-  }
-  if (closeAddr) {
-    Interceptor.attach(closeAddr, {
-      onEnter(args) {
-        const fd = args[0].toInt32();
-        const wasStream = streamFds.delete(fd);
-        nonStreamFds.delete(fd);
-        if (wasStream) {
-          for (const [tid, mapped] of threadToFd) {
-            if (mapped === fd)
-              threadToFd.delete(tid);
-          }
-          forgetFd(fd);
-        }
-      }
-    });
-  }
-  for (const name of ioFns) {
-    const addr = Module.findGlobalExportByName(name);
-    if (!addr)
-      continue;
-    Interceptor.attach(addr, {
-      onEnter(args) {
-        const fd = args[0].toInt32();
-        if (fd < 0 || !classifyStream(fd))
-          return;
-        noteStreamIo(Process.getCurrentThreadId(), fd);
-      }
-    });
-  }
-  devlog("[socket-fd-tracker] armed lazily on first SSL_get_fd()<0 (thread->stream-socket-fd correlation for fd-less peer recovery; the triggering record may be unattributed).");
-}
-function recoverSocketFd() {
-  const fd = threadToFd.get(Process.getCurrentThreadId());
-  return fd === void 0 ? -1 : fd;
-}
-var MAX_SCOPE_DEPTH = 16;
-var MAX_SSL_FD_ENTRIES = 1024;
-var threadScopes = /* @__PURE__ */ new Map();
-var activeScopes = 0;
-var sslToFd = new SslFdCache(MAX_SSL_FD_ENTRIES);
-function noteStreamIo(tid, fd) {
-  threadToFd.set(tid, fd);
-  if (activeScopes === 0)
-    return;
-  const stack = threadScopes.get(tid);
-  if (stack !== void 0 && stack.length > 0)
-    stack[stack.length - 1].fd = fd;
-}
-function cacheSslFd(ssl, fd) {
-  sslToFd.set(ssl, fd);
-}
-function forgetFd(fd) {
-  sslToFd.deleteFd(fd);
-  if (activeScopes === 0)
-    return;
-  const stack = threadScopes.get(Process.getCurrentThreadId());
-  if (stack === void 0)
-    return;
-  for (const scope of stack) {
-    if (scope.fd === fd)
-      scope.fd = -1;
-  }
-}
-function cachedSslFd(ssl) {
-  if (sslToFd.size === 0)
-    return -1;
-  return sslToFd.get(ssl.toString()) ?? -1;
-}
-function forgetSsl2(ssl) {
-  if (sslToFd.size === 0)
-    return;
-  sslToFd.deleteSsl(ssl.toString());
-}
-function enterSslScope(ssl) {
-  const tid = Process.getCurrentThreadId();
-  let stack = threadScopes.get(tid);
-  if (stack === void 0) {
-    stack = [];
-    threadScopes.set(tid, stack);
-  }
-  if (stack.length >= MAX_SCOPE_DEPTH) {
-    stack.shift();
-    activeScopes--;
-  }
-  stack.push({ ssl: ssl.toString(), fd: -1 });
-  activeScopes++;
-}
-function leaveSslScope(ssl) {
-  const stack = threadScopes.get(Process.getCurrentThreadId());
-  if (stack === void 0 || !stack.some((scope2) => scope2.ssl === ssl))
-    return -1;
-  let scope;
-  do {
-    scope = stack.pop();
-    activeScopes--;
-  } while (scope.ssl !== ssl);
-  if (scope.fd >= 0)
-    cacheSslFd(ssl, scope.fd);
-  return scope.fd;
-}
-var _recoveryLogged = false;
-function fdOrDeferred(fd, ssl) {
-  if (fd >= 0)
-    return fd;
-  installSocketFdTracker();
-  enterSslScope(ssl);
-  return null;
-}
-function recoveredFd(ssl) {
-  const key = ssl.toString();
-  let recovered = leaveSslScope(key);
-  if (recovered < 0)
-    recovered = sslToFd.get(key) ?? recoverSocketFd();
-  if (recovered >= 0 && !_recoveryLogged) {
-    _recoveryLogged = true;
-    devlog("[fd-recovery] SSL object exposed no socket fd (SSL_get_fd<0); recovered peer via SSL-scoped socket-fd correlation \u2014 BIO-path active (e.g. curl connection filters, Conscrypt SSLEngine).");
-  }
-  return recovered;
-}
-var HANDSHAKE_SYMBOLS = ["SSL_do_handshake", "SSL_connect", "SSL_accept"];
-var _scopeHookedAddresses = /* @__PURE__ */ new Set();
-function findModuleExport(moduleName, symbol) {
-  try {
-    const module = Process.findModuleByName(moduleName);
-    const address = module ? module.findExportByName(symbol) : null;
-    return address && !address.isNull() ? address : null;
-  } catch (e) {
-    return null;
-  }
-}
-function attachOnce(address, callbacks) {
-  if (address === null || _scopeHookedAddresses.has(address.toString()))
-    return;
-  _scopeHookedAddresses.add(address.toString());
-  Interceptor.attach(address, callbacks);
-}
-function installSslScopeHooks(moduleName, getFd) {
-  for (const symbol of HANDSHAKE_SYMBOLS) {
-    attachOnce(findModuleExport(moduleName, symbol), {
-      onEnter(args) {
-        const ssl = args[0];
-        if (ssl.isNull() || fdOrDeferred(getFd(ssl), ssl) !== null)
-          return;
-        this.scopedSsl = ssl;
-      },
-      onLeave() {
-        const ssl = this.scopedSsl;
-        if (ssl)
-          leaveSslScope(ssl.toString());
-      }
-    });
-  }
-  attachOnce(findModuleExport(moduleName, "SSL_free"), {
-    onEnter(args) {
-      forgetSsl2(args[0]);
-      forgetSsl(args[0].toString());
-    }
-  });
-}
-
-// agent/shared/record_message.ts
-init_node_globals();
-function buildRecordMessage(ctx, sessionFields) {
-  const message = ctx.resolvePeer ? ctx.resolvePeer() : getPortsAndAddresses(ctx.fd, ctx.isRead, ctx.methodAddresses, ctx.enableDefaultFd);
-  if (message === null)
-    return null;
-  Object.assign(message, sessionFields());
-  message["function"] = ctx.functionName;
-  return message;
-}
-function buildCallerStackJoin(ssl, fdFn, isRead, methodAddresses, enableDefaultFd, sessionIdFn, resolvePeer) {
-  const join = {};
-  try {
-    join.ssl_session_id = sessionIdFn();
-  } catch (_e) {
-  }
-  let peer = null;
-  if (resolvePeer) {
-    try {
-      peer = resolvePeer();
-    } catch (_e) {
-      peer = null;
-    }
-  } else {
-    let fd = -1;
-    try {
-      fd = fdFn();
-    } catch (_e) {
-      fd = -1;
-    }
-    if (fd < 0)
-      fd = cachedSslFd(ssl);
-    if (fd < 0)
-      fd = recoverSocketFd();
-    if (fd >= 0 || enableDefaultFd) {
-      try {
-        peer = getPortsAndAddresses(fd, isRead, methodAddresses, enableDefaultFd);
-      } catch (_e) {
-        peer = null;
-      }
-    }
-  }
-  if (peer) {
-    if (peer["src_addr"] !== void 0)
-      join.src_addr = peer["src_addr"];
-    if (peer["dst_addr"] !== void 0)
-      join.dst_addr = peer["dst_addr"];
-    if (peer["src_port"] !== void 0)
-      join.src_port = peer["src_port"];
-    if (peer["dst_port"] !== void 0)
-      join.dst_port = peer["dst_port"];
-    if (peer["ss_family"] !== void 0)
-      join.ss_family = peer["ss_family"];
-  }
-  return join;
-}
-
-// agent/shared/tls13_secret_recovery.ts
-init_node_globals();
-init_shared_structures();
+// agent/shared/ssl_identity.ts
+init_keylog_ssl_observer();
 
 // agent/shared/ssl_struct_walk.ts
 init_node_globals();
@@ -19648,69 +20062,1196 @@ function readClientRandomHex(s3Ptr) {
   }
 }
 
-// agent/shared/lru.ts
-init_node_globals();
-var LruMap = class {
-  _max;
-  _onEvict;
-  _map = /* @__PURE__ */ new Map();
-  /** `onEvict` is told about every entry dropped for capacity (not delete()/overwrite). */
-  constructor(_max, _onEvict) {
-    this._max = _max;
-    this._onEvict = _onEvict;
-  }
-  get(key) {
-    const val = this._map.get(key);
-    if (val !== void 0) {
-      this._map.delete(key);
-      this._map.set(key, val);
+// agent/shared/ssl_identity.ts
+var SSL_IDENTITY_MAX = 4096;
+var RETIRED_GENERATION_MAX = 256;
+var LAYOUT_USABLE_AFTER_DISTINCT_SSL = 3;
+var OVERLAP_S3_OFFSETS = S3_CANDIDATE_OFFSETS;
+var OVERLAP_CR_OFFSET_MIN = 16;
+var OVERLAP_CR_OFFSET_MAX = 256;
+var OVERLAP_CR_OFFSET_STEP = 8;
+var MAX_FAILED_OVERLAP_ATTEMPTS_PER_MODULE = 16;
+var MIN_DISTINCT_CR_BYTE_VALUES = 16;
+var CLIENT_RANDOM_HEX_RE = /^[0-9a-f]{64}$/;
+var fridaSslMemoryReader = {
+  readPointer(base, offset) {
+    try {
+      const value = base.add(offset).readPointer();
+      if (value.isNull() || value.compare(MIN_VALID_S3_PTR) < 0)
+        return null;
+      return value;
+    } catch (_) {
+      return null;
     }
-    return val;
-  }
-  set(key, value) {
-    this._map.delete(key);
-    if (this._map.size >= this._max) {
-      const oldest = this._map.keys().next().value;
-      if (oldest !== void 0) {
-        const evicted = this._map.get(oldest);
-        this._map.delete(oldest);
-        this._onEvict?.(oldest, evicted);
-      }
+  },
+  readBytes(base, offset, length) {
+    try {
+      const buf = base.add(offset).readByteArray(length);
+      return buf ? new Uint8Array(buf) : null;
+    } catch (_) {
+      return null;
     }
-    this._map.set(key, value);
-  }
-  delete(key) {
-    return this._map.delete(key);
-  }
-  get size() {
-    return this._map.size;
+  },
+  readU64(base, offset) {
+    try {
+      return base.add(offset).readU64();
+    } catch (_) {
+      return null;
+    }
   }
 };
-var FifoSet = class {
-  _max;
-  _set = /* @__PURE__ */ new Set();
-  constructor(_max) {
-    this._max = _max;
+var memoryReader = fridaSslMemoryReader;
+var entryBySsl = new LruMap(SSL_IDENTITY_MAX);
+var retiredGenerationBySsl = new LruMap(RETIRED_GENERATION_MAX);
+var layoutByModule = /* @__PURE__ */ new Map();
+var failedOverlapAttempts = /* @__PURE__ */ new Map();
+var layoutLocatorByModule = /* @__PURE__ */ new Map();
+var missReportedModules = /* @__PURE__ */ new Set();
+var clientRandomMissObserver = null;
+var generationCounter = 0;
+function sslKey(ssl) {
+  return ssl.toString();
+}
+function normalizeClientRandom(crHex) {
+  if (!crHex)
+    return "";
+  const cr = crHex.trim().toLowerCase();
+  if (!CLIENT_RANDOM_HEX_RE.test(cr))
+    return "";
+  return rejectMostlyZeroClientRandom(cr);
+}
+function rejectMostlyZeroClientRandom(cr) {
+  return isMostlyZero(hexToBytes(cr)) ? "" : cr;
+}
+function hexToBytes(hex2) {
+  const out = new Uint8Array(hex2.length / 2);
+  for (let i = 0; i < out.length; i++)
+    out[i] = parseInt(hex2.slice(i * 2, i * 2 + 2), 16);
+  return out;
+}
+function distinctByteValues(bytes) {
+  const seen = /* @__PURE__ */ new Set();
+  for (let i = 0; i < bytes.length; i++)
+    seen.add(bytes[i]);
+  return seen.size;
+}
+function looksLikeRandomBytes(bytes) {
+  return distinctByteValues(bytes) >= MIN_DISTINCT_CR_BYTE_VALUES;
+}
+function isPlausibleCrBytes(bytes) {
+  return bytes !== null && bytes.length === SSL3_RANDOM_SIZE && !isMostlyZero(bytes) && looksLikeRandomBytes(bytes);
+}
+function sameOffsets(a, b) {
+  return a.s3Off === b.s3Off && a.crOff === b.crOff;
+}
+function setSslLayout(module, layout) {
+  const current = layoutByModule.get(module);
+  if (current && current.layout.validated && !layout.validated && !sameOffsets(current.layout, layout)) {
+    devlog_debug(`[ssl-identity] kept validated layout for ${module}; ignored ${layout.source}`);
+    return false;
   }
-  has(value) {
-    return this._set.has(value);
+  const keepsValidation = current !== void 0 && current.layout.validated && sameOffsets(current.layout, layout);
+  layoutByModule.set(module, { layout: { ...layout, validated: layout.validated || keepsValidation }, plausibleSsl: /* @__PURE__ */ new Set() });
+  devlog_debug(`[ssl-identity] layout ${module}: s3=0x${layout.s3Off.toString(16)} cr=0x${layout.crOff.toString(16)} (${layout.source}${layout.validated ? ", validated" : ""})`);
+  return true;
+}
+function sslLayoutFor(module) {
+  return layoutByModule.get(module)?.layout ?? null;
+}
+function clearSslLayout(module) {
+  layoutByModule.delete(module);
+}
+function markLayoutLocatorStarted(module) {
+  layoutLocatorByModule.set(module, "pending");
+}
+function hasLayoutLocatorStarted(module) {
+  return layoutLocatorByModule.has(module);
+}
+function markLayoutLocatorSettled(module) {
+  if (layoutLocatorByModule.has(module))
+    layoutLocatorByModule.set(module, "settled");
+}
+function isLayoutLocatorSettled(module) {
+  return layoutLocatorByModule.get(module) !== "pending";
+}
+function isSslLayoutUsable(module) {
+  const state3 = layoutByModule.get(module);
+  if (!state3)
+    return false;
+  if (state3.layout.validated || isTrustedWithoutConfirmation(state3.layout))
+    return true;
+  return state3.plausibleSsl.size >= LAYOUT_USABLE_AFTER_DISTINCT_SSL;
+}
+function isTrustedWithoutConfirmation(layout) {
+  return layout.source === "decoded";
+}
+function countPlausibleRead(state3, ssl) {
+  if (state3.plausibleSsl.size < LAYOUT_USABLE_AFTER_DISTINCT_SSL)
+    state3.plausibleSsl.add(sslKey(ssl));
+}
+function markLayoutValidated(module) {
+  const state3 = layoutByModule.get(module);
+  if (state3 && !state3.layout.validated) {
+    state3.layout.validated = true;
+    devlog_debug(`[ssl-identity] layout ${module} validated by keylog`);
   }
-  add(value) {
-    if (this._set.has(value))
-      return;
-    if (this._set.size >= this._max) {
-      const oldest = this._set.values().next().value;
-      if (oldest !== void 0)
-        this._set.delete(oldest);
+}
+function readPlausibleCrBytes(ssl, s3Off, crOff) {
+  const s3 = memoryReader.readPointer(ssl, s3Off);
+  if (!s3)
+    return null;
+  const bytes = memoryReader.readBytes(s3, crOff, SSL3_RANDOM_SIZE);
+  return isPlausibleCrBytes(bytes) ? { s3Off, crOff, s3, bytes } : null;
+}
+function identityFromRead(read2) {
+  const head = memoryReader.readU64(read2.s3, read2.crOff);
+  if (head === null)
+    return null;
+  return { cr: toHexString(read2.bytes), anchor: { s3Off: read2.s3Off, crOff: read2.crOff, s3: read2.s3, head } };
+}
+function readThroughLayout(ssl, s3Off, crOff) {
+  const read2 = readPlausibleCrBytes(ssl, s3Off, crOff);
+  return read2 ? identityFromRead(read2) : null;
+}
+function anchorStillHolds(ssl, anchor) {
+  const s3 = memoryReader.readPointer(ssl, anchor.s3Off);
+  if (!s3 || !s3.equals(anchor.s3))
+    return false;
+  const head = memoryReader.readU64(s3, anchor.crOff);
+  return head !== null && head.equals(anchor.head);
+}
+function sameBytes(a, b) {
+  if (a.length !== b.length)
+    return false;
+  for (let i = 0; i < a.length; i++)
+    if (a[i] !== b[i])
+      return false;
+  return true;
+}
+function nextGeneration() {
+  generationCounter += 1;
+  return generationCounter;
+}
+function recordIdentity(ssl, cr, anchor, source) {
+  const key = sslKey(ssl);
+  const entry = entryBySsl.get(key);
+  if (!entry) {
+    entryBySsl.set(key, { generation: nextGeneration(), cr, anchor, source });
+  } else if (entry.cr !== "" && entry.cr !== cr) {
+    entryBySsl.set(key, { generation: nextGeneration(), cr, anchor, source });
+    devlog_debug(`[ssl-identity] ${key} reused for a new connection (generation ${generationCounter})`);
+  } else {
+    entry.cr = cr;
+    entry.anchor = anchor;
+    entry.source = source;
+  }
+}
+function verifiedCachedCr(ssl) {
+  return cachedCr(ssl, true);
+}
+function cachedCr(ssl, allowAnchorlessNote) {
+  const key = sslKey(ssl);
+  const entry = entryBySsl.get(key);
+  if (!entry || entry.cr === "")
+    return "";
+  if (entry.anchor === null)
+    return allowAnchorlessNote && entry.source === "note" ? entry.cr : "";
+  if (anchorStillHolds(ssl, entry.anchor))
+    return entry.cr;
+  startNewGeneration(key);
+  return "";
+}
+function startNewGeneration(key) {
+  entryBySsl.set(key, { generation: nextGeneration(), cr: "", anchor: null });
+  devlog_debug(`[ssl-identity] ${key} anchor changed (generation ${generationCounter})`);
+}
+function sslIdentity(ssl) {
+  if (!ssl || ssl.isNull())
+    return null;
+  const cr = verifiedCachedCr(ssl);
+  if (!cr)
+    return null;
+  return { cr, generation: sslGeneration(ssl) };
+}
+function sslGeneration(ssl) {
+  const key = sslKey(ssl);
+  const entry = entryBySsl.get(key);
+  if (entry)
+    return entry.generation;
+  const generation = nextGeneration();
+  entryBySsl.set(key, { generation, cr: "", anchor: null });
+  return generation;
+}
+function peekSslGeneration(ssl) {
+  const key = sslKey(ssl);
+  return entryBySsl.get(key)?.generation ?? retiredGenerationBySsl.get(key) ?? null;
+}
+function forgetSslIdentity(ssl) {
+  const key = sslKey(ssl);
+  const entry = entryBySsl.get(key);
+  if (entry)
+    retiredGenerationBySsl.set(key, entry.generation);
+  entryBySsl.delete(key);
+}
+function readViaModuleLayout(ssl, module) {
+  const state3 = layoutByModule.get(module);
+  if (!state3)
+    return "";
+  const read2 = readPlausibleCrBytes(ssl, state3.layout.s3Off, state3.layout.crOff);
+  if (!read2)
+    return "";
+  countPlausibleRead(state3, ssl);
+  if (!isSslLayoutUsable(module))
+    return "";
+  const identity2 = identityFromRead(read2);
+  if (!identity2)
+    return "";
+  recordIdentity(ssl, identity2.cr, identity2.anchor, "layout");
+  return identity2.cr;
+}
+function readViaExport(ssl, exportFn) {
+  if (!exportFn)
+    return "";
+  let cr = "";
+  try {
+    cr = normalizeClientRandom(exportFn(ssl));
+  } catch (_) {
+    return "";
+  }
+  if (cr && entryBySsl.get(sslKey(ssl))?.cr !== cr)
+    recordIdentity(ssl, cr, null, "export");
+  return cr;
+}
+function readSslClientRandom(ssl, module, exportFn) {
+  if (!ssl || ssl.isNull())
+    return "";
+  const hasExport = exportFn !== void 0;
+  const cr = cachedCr(ssl, !hasExport) || readViaModuleLayout(ssl, module) || readViaExport(ssl, exportFn) || (hasExport ? cachedCr(ssl, true) : "");
+  if (!cr)
+    notifyClientRandomMiss(module);
+  return cr;
+}
+function setClientRandomMissObserver(observer) {
+  clientRandomMissObserver = observer;
+}
+function notifyClientRandomMiss(module) {
+  if (!clientRandomMissObserver || !module || missReportedModules.has(module))
+    return;
+  missReportedModules.add(module);
+  if (layoutLocatorByModule.has(module))
+    return;
+  try {
+    clientRandomMissObserver(module);
+  } catch (e) {
+    devlog_debug(`[ssl-identity] client_random miss observer failed: ${e}`);
+  }
+}
+function learnLayoutByOverlap(ssl, crHex, probe2 = memoryReader) {
+  const cr = normalizeClientRandom(crHex);
+  if (!cr || !ssl || ssl.isNull())
+    return null;
+  const matches = findOverlapMatches(ssl, cr, probe2);
+  if (matches.length !== 1)
+    return null;
+  return { ...matches[0], source: "learned", validated: true };
+}
+function findOverlapMatches(ssl, cr, probe2) {
+  const crBytes = hexToBytes(cr);
+  const matches = [];
+  for (const s3Off of OVERLAP_S3_OFFSETS) {
+    const s3 = probe2.readPointer(ssl, s3Off);
+    if (!s3)
+      continue;
+    for (let crOff = OVERLAP_CR_OFFSET_MIN; crOff <= OVERLAP_CR_OFFSET_MAX; crOff += OVERLAP_CR_OFFSET_STEP) {
+      const bytes = probe2.readBytes(s3, crOff, SSL3_RANDOM_SIZE);
+      if (bytes && sameBytes(bytes, crBytes))
+        matches.push({ s3Off, crOff });
     }
-    this._set.add(value);
+  }
+  return matches;
+}
+function tryLearnLayout(ssl, cr, module) {
+  const failures = failedOverlapAttempts.get(module) ?? 0;
+  if (failures >= MAX_FAILED_OVERLAP_ATTEMPTS_PER_MODULE)
+    return;
+  const learned = learnLayoutByOverlap(ssl, cr);
+  if (learned) {
+    failedOverlapAttempts.delete(module);
+    setSslLayout(module, learned);
+  } else {
+    failedOverlapAttempts.set(module, failures + 1);
+  }
+}
+function reconcileLayoutWithNote(ssl, cr, module) {
+  const layout = sslLayoutFor(module);
+  if (layout) {
+    const read2 = readThroughLayout(ssl, layout.s3Off, layout.crOff);
+    if (read2 && read2.cr === cr) {
+      markLayoutValidated(module);
+      return read2.anchor;
+    }
+    devlog_debug(`[ssl-identity] keylog refuted ${layout.source} layout for ${module}; re-learning`);
+    clearSslLayout(module);
+  }
+  tryLearnLayout(ssl, cr, module);
+  const learned = sslLayoutFor(module);
+  return learned ? readThroughLayout(ssl, learned.s3Off, learned.crOff)?.anchor ?? null : null;
+}
+function noteSslClientRandom(ssl, crHex, module) {
+  noteClientRandom(ssl, crHex, module, normalizeClientRandom);
+}
+function noteKeylogClientRandom(ssl, crHex, module) {
+  noteClientRandom(ssl, crHex, module, rejectMostlyZeroClientRandom);
+}
+function noteClientRandom(ssl, crHex, module, normalize) {
+  try {
+    if (!ssl || ssl.isNull() || isAlreadyNotedOnValidatedLayout(ssl, crHex, module))
+      return;
+    const cr = normalize(crHex);
+    if (!cr)
+      return;
+    const anchor = module ? reconcileLayoutWithNote(ssl, cr, module) : null;
+    recordIdentity(ssl, cr, anchor, "note");
+  } catch (e) {
+    devlog_debug(`[ssl-identity] noteSslClientRandom failed: ${e}`);
+  }
+}
+function isAlreadyNotedOnValidatedLayout(ssl, crHex, module) {
+  if (!module)
+    return false;
+  const entry = entryBySsl.get(sslKey(ssl));
+  if (!entry || entry.anchor === null || entry.cr !== crHex)
+    return false;
+  return sslLayoutFor(module)?.validated === true;
+}
+setKeylogSslObserver(noteKeylogClientRandom);
+
+// agent/shared/caller_stack_cache.ts
+init_node_globals();
+var CALLER_STACK_CACHE_MAX = 1024;
+var TUPLE_FALLBACK_AFTER_OFFERS = 8;
+var THREAD_NAME_CACHE_MAX = 256;
+var RECORD_JOIN_FIELDS = ["ssl_session_id", "src_addr", "dst_addr", "src_port", "dst_port", "ss_family"];
+function callerStackKey(sslKey2, generation) {
+  return `${sslKey2}#${generation}`;
+}
+function joinHasClientRandom(join) {
+  return typeof join.client_random === "string" && join.client_random.length > 0;
+}
+function joinHasTuple(join) {
+  return typeof join.dst_port === "number" && join.dst_port > 0;
+}
+function recordJoinFields(record) {
+  const join = {};
+  for (const field of RECORD_JOIN_FIELDS) {
+    if (record[field] !== void 0)
+      join[field] = record[field];
+  }
+  if (record["client_random"])
+    join["client_random"] = record["client_random"];
+  return join;
+}
+var CallerStackCache = class {
+  deps;
+  entries;
+  threadNames = new LruMap(THREAD_NAME_CACHE_MAX);
+  droppedUnsent = 0;
+  /** Entries captured but not sent yet (lets callers skip per-record work when zero). */
+  heldCount = 0;
+  constructor(deps, capacity = CALLER_STACK_CACHE_MAX) {
+    this.deps = deps;
+    this.entries = new LruMap(capacity, (_key, entry) => this.noteDropped(entry, "evicted"));
+  }
+  /** Capture (once per sslKey+generation) and send when the policy allows. True when newly captured. */
+  capture(request) {
+    const key = callerStackKey(request.sslKey, request.generation);
+    if (this.entries.get(key) !== void 0)
+      return false;
+    const entry = this.newEntry(request);
+    this.entries.set(key, entry);
+    this.heldCount++;
+    this.sendIfAllowed(entry, entry.join);
+    return true;
+  }
+  /** A record of (sslKey, generation) carries join fields: send a held entry with them. True when sent. */
+  offer(sslKey2, generation, recordJoin) {
+    const entry = this.entries.get(callerStackKey(sslKey2, generation));
+    if (entry === void 0 || entry.sent)
+      return false;
+    const join = { ...entry.join, ...recordJoin };
+    if (!joinHasClientRandom(join))
+      entry.offersWithoutClientRandom++;
+    entry.join = join;
+    return this.sendIfAllowed(entry, join);
+  }
+  /**
+   * SSL_free: remove the entry of (sslKey, generation). A held entry whose join
+   * is usable (client_random or 5-tuple) is sent first -- no later record can
+   * improve it -- and only one with nothing joinable is counted as dropped.
+   */
+  forget(sslKey2, generation) {
+    const key = callerStackKey(sslKey2, generation);
+    const entry = this.entries.get(key);
+    if (entry === void 0)
+      return;
+    this.sendIfJoinable(entry);
+    this.entries.delete(key);
+    this.noteDropped(entry, "forgotten");
+  }
+  /** True when any captured entry is still waiting to be sent. */
+  get hasHeldEntries() {
+    return this.heldCount > 0;
+  }
+  /** True when (sslKey, generation) has a captured entry that was not sent yet. */
+  isHeld(sslKey2, generation) {
+    const entry = this.entries.get(callerStackKey(sslKey2, generation));
+    return entry !== void 0 && !entry.sent;
   }
   get size() {
-    return this._set.size;
+    return this.entries.size;
+  }
+  get droppedUnsentCount() {
+    return this.droppedUnsent;
+  }
+  /**
+   * Send policy: a client_random always; a 5-tuple once no client_random can
+   * arrive, or after TUPLE_FALLBACK_AFTER_OFFERS cr-less offers.
+   */
+  shouldSend(join, module, offersWithoutClientRandom = 0) {
+    if (joinHasClientRandom(join))
+      return true;
+    if (!joinHasTuple(join))
+      return false;
+    return offersWithoutClientRandom >= TUPLE_FALLBACK_AFTER_OFFERS || !this.deps.clientRandomMayArrive(module);
+  }
+  newEntry(request) {
+    const tid = this.deps.currentThreadId();
+    return {
+      module: request.module,
+      join: safeJoin(request.join),
+      frames: this.deps.capture(request.context),
+      meta: { tid, thread_name: this.threadName(tid), pid: this.deps.pid(), transport_module: request.module },
+      capturedAtMs: this.deps.now(),
+      sent: false,
+      offersWithoutClientRandom: 0
+    };
+  }
+  sendIfAllowed(entry, join) {
+    if (!this.shouldSend(join, entry.module, entry.offersWithoutClientRandom))
+      return false;
+    this.send(entry, join);
+    return true;
+  }
+  /** Send a held entry now if its join can be joined at all (forget-time: no policy wait). */
+  sendIfJoinable(entry) {
+    if (entry.sent)
+      return;
+    if (!joinHasClientRandom(entry.join) && !joinHasTuple(entry.join))
+      return;
+    this.send(entry, entry.join);
+  }
+  /** The one place an entry is sent: marks it sent (at most once) and releases its held slot. */
+  send(entry, join) {
+    entry.sent = true;
+    this.heldCount--;
+    this.deps.send(join, entry.frames.java, entry.frames.native, entry.meta);
+  }
+  threadName(tid) {
+    const cached = this.threadNames.get(tid);
+    if (cached !== void 0)
+      return cached;
+    let name = "";
+    try {
+      name = (this.deps.readThreadName(tid) || "").trim();
+    } catch (_e) {
+      name = "";
+    }
+    this.threadNames.set(tid, name);
+    return name;
+  }
+  noteDropped(entry, reason) {
+    if (entry.sent)
+      return;
+    this.heldCount--;
+    this.droppedUnsent++;
+    this.deps.onDroppedUnsent?.(this.droppedUnsent, reason, this.deps.now() - entry.capturedAtMs);
+  }
+};
+function safeJoin(join) {
+  try {
+    return join() ?? {};
+  } catch (_e) {
+    return {};
+  }
+}
+
+// agent/shared/sdk_backtrace.ts
+var MAX_FRAMES = 32;
+var seenSsl = /* @__PURE__ */ new Set();
+function symbolizeNativeFrames(addrs, max = MAX_FRAMES) {
+  const frames = [];
+  for (const addr of addrs.slice(0, max)) {
+    try {
+      const sym = DebugSymbol.fromAddress(addr);
+      frames.push({
+        module: sym.moduleName || "",
+        symbol: sym.name || null,
+        address: addr.toString()
+      });
+    } catch (_e) {
+      frames.push({ module: "", symbol: null, address: addr.toString() });
+    }
+  }
+  return frames;
+}
+function captureNativeFrames(context) {
+  let addrs;
+  try {
+    addrs = Thread.backtrace(context, Backtracer.ACCURATE);
+  } catch (_e) {
+    try {
+      addrs = Thread.backtrace(context, Backtracer.FUZZY);
+    } catch (_e2) {
+      return [];
+    }
+  }
+  return symbolizeNativeFrames(addrs);
+}
+function currentThreadHasJavaEnv(bridge = Java) {
+  try {
+    if (typeof bridge === "undefined" || !bridge || !bridge.available || !bridge.vm)
+      return false;
+    return bridge.vm.tryGetEnv() != null;
+  } catch (_e) {
+    return false;
+  }
+}
+function captureJavaFrames(bridge = Java) {
+  if (!currentThreadHasJavaEnv(bridge))
+    return [];
+  const out = [];
+  try {
+    bridge.perform(() => {
+      try {
+        const JavaThread = bridge.use("java.lang.Thread");
+        const elems = JavaThread.currentThread().getStackTrace();
+        for (let i = 0; i < elems.length && out.length < MAX_FRAMES; i++) {
+          try {
+            out.push(elems[i].getClassName());
+          } catch (_e) {
+          }
+        }
+      } catch (_e) {
+      }
+    });
+  } catch (_e) {
+  }
+  return out;
+}
+function readProcThreadName(tid) {
+  if (Process.platform !== "linux")
+    return "";
+  try {
+    return File.readAllText(`/proc/self/task/${tid}/comm`).trim();
+  } catch (_e) {
+    return "";
+  }
+}
+function clientRandomMayArrive(module) {
+  if (!isLayoutLocatorSettled(module))
+    return true;
+  return isSslLayoutUsable(module);
+}
+var fridaCallerStackDeps = {
+  send: (join, javaFrames, nativeFrames, meta) => sendCallerStack(join, javaFrames, nativeFrames, meta),
+  capture: (context) => ({
+    native: captureNativeFrames(context),
+    java: captureJavaFrames()
+  }),
+  now: () => Date.now(),
+  currentThreadId: () => Process.getCurrentThreadId(),
+  pid: () => Process.id,
+  readThreadName: readProcThreadName,
+  clientRandomMayArrive,
+  onDroppedUnsent: (total, reason, ageMs) => devlog(`[sdk-attribution] dropped an unsent caller_stack (${reason}, held ${ageMs} ms; ${total} total)`)
+};
+var callerStacks = new CallerStackCache(fridaCallerStackDeps);
+function joinWithClientRandom(ssl, join, module) {
+  const fields = safeJoin(join);
+  if (!joinHasClientRandom(fields)) {
+    try {
+      const cr = readSslClientRandom(ssl, module);
+      if (cr)
+        fields.client_random = cr;
+    } catch (_e) {
+    }
+  }
+  return fields;
+}
+function maybeCaptureCallerStack(ssl, context, join, opts) {
+  if (!attribute_sdk)
+    return;
+  const module = opts?.transportModule ?? "";
+  callerStacks.capture({
+    sslKey: ssl.toString(),
+    generation: sslGeneration(ssl),
+    module,
+    context,
+    join: () => joinWithClientRandom(ssl, join, module)
+  });
+}
+function offerCallerStackJoin(ssl, recordMessage) {
+  if (!attribute_sdk || !ssl || !callerStacks.hasHeldEntries)
+    return;
+  try {
+    const sslKey2 = ssl.toString();
+    const generation = sslGeneration(ssl);
+    if (!callerStacks.isHeld(sslKey2, generation))
+      return;
+    const join = recordJoinFields(recordMessage);
+    if (!joinHasClientRandom(join) && !joinHasTuple(join))
+      return;
+    callerStacks.offer(sslKey2, generation, join);
+  } catch (_e) {
+  }
+}
+function forgetSsl(key) {
+  seenSsl.delete(key);
+  try {
+    const ssl = ptr(key);
+    const generation = peekSslGeneration(ssl);
+    if (generation !== null)
+      callerStacks.forget(key, generation);
+    forgetSslIdentity(ssl);
+  } catch (_e) {
+  }
+}
+
+// agent/shared/socket_fd_tracker.ts
+init_node_globals();
+
+// agent/shared/ssl_fd_cache.ts
+init_node_globals();
+var SslFdCache = class {
+  maxEntries;
+  /** SSL object (pointer string) -> fd. Map order doubles as LRU order. */
+  fdBySsl = /* @__PURE__ */ new Map();
+  /** fd -> the SSL objects currently cached with it (kept in sync with fdBySsl). */
+  sslsByFd = /* @__PURE__ */ new Map();
+  constructor(maxEntries) {
+    this.maxEntries = maxEntries;
+  }
+  get size() {
+    return this.fdBySsl.size;
+  }
+  get(ssl) {
+    return this.fdBySsl.get(ssl);
+  }
+  /** Cache ssl -> fd as the most recently used entry, evicting the oldest past the bound. */
+  set(ssl, fd) {
+    this.deleteSsl(ssl);
+    this.fdBySsl.set(ssl, fd);
+    let ssls = this.sslsByFd.get(fd);
+    if (ssls === void 0) {
+      ssls = /* @__PURE__ */ new Set();
+      this.sslsByFd.set(fd, ssls);
+    }
+    ssls.add(ssl);
+    if (this.fdBySsl.size > this.maxEntries) {
+      this.deleteSsl(this.fdBySsl.keys().next().value);
+    }
+  }
+  /** SSL_free(ssl): drop its entry. */
+  deleteSsl(ssl) {
+    const fd = this.fdBySsl.get(ssl);
+    if (fd === void 0)
+      return;
+    this.fdBySsl.delete(ssl);
+    const ssls = this.sslsByFd.get(fd);
+    if (ssls === void 0)
+      return;
+    ssls.delete(ssl);
+    if (ssls.size === 0)
+      this.sslsByFd.delete(fd);
+  }
+  /** close(fd): drop every SSL object cached with fd (the number may be reused). */
+  deleteFd(fd) {
+    const ssls = this.sslsByFd.get(fd);
+    if (ssls === void 0)
+      return;
+    this.sslsByFd.delete(fd);
+    for (const ssl of ssls)
+      this.fdBySsl.delete(ssl);
+  }
+  /** Forget everything (closed-fd notifications were lost; no cached fd is trustworthy). */
+  clear() {
+    this.fdBySsl.clear();
+    this.sslsByFd.clear();
+  }
+  /** Number of fds in the reverse index (test hook for index consistency). */
+  get indexedFdCount() {
+    return this.sslsByFd.size;
   }
 };
 
+// agent/shared/socket_fd_tracker.ts
+var streamFds = /* @__PURE__ */ new Set();
+var nonStreamFds = /* @__PURE__ */ new Set();
+var threadToFd = /* @__PURE__ */ new Map();
+var _installed = false;
+var _backend = null;
+var _getsockopt = null;
+var _optvalBuf = null;
+var _optlenBuf = null;
+function classifyStream(fd) {
+  if (streamFds.has(fd))
+    return true;
+  if (nonStreamFds.has(fd))
+    return false;
+  if (_getsockopt && _optvalBuf && _optlenBuf) {
+    try {
+      _optlenBuf.writeU32(4);
+      const ret = _getsockopt(fd, SOL_SOCKET, SO_TYPE, _optvalBuf, _optlenBuf);
+      if (ret === 0) {
+        const sockType = _optvalBuf.readU32();
+        if (sockType === SOCK_STREAM2) {
+          streamFds.add(fd);
+          return true;
+        }
+        nonStreamFds.add(fd);
+        return false;
+      }
+    } catch (e) {
+    }
+    return false;
+  }
+  return false;
+}
+function installSocketFdTracker(armedBy = "lazily on first SSL_get_fd()<0") {
+  if (_installed)
+    return;
+  _installed = true;
+  const backend = _nativeBackendFactory() ?? createJsBackend();
+  _backend = backend;
+  devlog(`[socket-fd-tracker] armed ${armedBy} (thread->stream-socket-fd correlation for fd-less peer recovery; the triggering record may be unattributed); backend=${backend.name}; hooked: ${backend.hookedFunctions.join(",") || "none"}.`);
+}
+function createNativeBackend() {
+  const observer = nativeSocketObserver();
+  if (observer === null || !observer.armSocketFdTracking())
+    return null;
+  return {
+    name: "native",
+    get hookedFunctions() {
+      return observer.hookedFunctions;
+    },
+    enterScope: (tid, ssl) => observer.enterScope(tid, ssl),
+    leaveScope: (tid, ssl) => observer.leaveScope(tid, ssl),
+    recover: (tid) => observer.recover(tid),
+    drainClosedFds: () => observer.drainClosedFds(CLOSED_FD_CONSUMER.socketFdTracker)
+  };
+}
+var _nativeBackendFactory = createNativeBackend;
+function createJsBackend() {
+  return {
+    name: "js",
+    hookedFunctions: installJsLibcHooks(),
+    enterScope: (tid, ssl) => enterJsScope(tid, ssl),
+    leaveScope: (tid, ssl) => leaveJsScope(tid, ssl.toString()),
+    recover: (tid) => threadToFd.get(tid) ?? -1,
+    drainClosedFds: () => []
+    // its close() hook calls forgetFd() inline
+  };
+}
+function installJsLibcHooks() {
+  const hooked = [];
+  const getsockoptAddr = Module.findGlobalExportByName("getsockopt");
+  if (getsockoptAddr) {
+    _getsockopt = new NativeFunction(getsockoptAddr, "int", ["int", "int", "int", "pointer", "pointer"]);
+    _optvalBuf = Memory.alloc(8);
+    _optlenBuf = Memory.alloc(4);
+  }
+  const socketAddr = Module.findGlobalExportByName("socket");
+  const connectAddr = Module.findGlobalExportByName("connect");
+  const closeName = fdCloseFunction();
+  const closeAddr = Module.findGlobalExportByName(closeName);
+  if (socketAddr) {
+    hooked.push("socket");
+    Interceptor.attach(socketAddr, {
+      onEnter(args) {
+        this.sockType = args[1].toInt32();
+      },
+      onLeave(retval) {
+        const fd = retval.toInt32();
+        if (fd < 0)
+          return;
+        if ((this.sockType & 127) === SOCK_STREAM2)
+          streamFds.add(fd);
+        else
+          nonStreamFds.add(fd);
+      }
+    });
+  }
+  if (connectAddr) {
+    hooked.push("connect");
+    Interceptor.attach(connectAddr, {
+      onEnter(args) {
+        const fd = args[0].toInt32();
+        if (fd >= 0 && classifyStream(fd)) {
+          threadToFd.set(Process.getCurrentThreadId(), fd);
+        }
+      }
+    });
+  }
+  if (closeAddr) {
+    hooked.push(closeName);
+    Interceptor.attach(closeAddr, {
+      onEnter(args) {
+        const fd = args[0].toInt32();
+        const wasStream = streamFds.delete(fd);
+        nonStreamFds.delete(fd);
+        if (wasStream) {
+          for (const [tid, mapped] of threadToFd) {
+            if (mapped === fd)
+              threadToFd.delete(tid);
+          }
+          forgetFd(fd);
+        }
+      }
+    });
+  }
+  for (const name of SOCKET_IO_FUNCTIONS) {
+    const addr = Module.findGlobalExportByName(name);
+    if (!addr)
+      continue;
+    hooked.push(name);
+    Interceptor.attach(addr, {
+      onEnter(args) {
+        const fd = args[0].toInt32();
+        if (fd < 0 || !classifyStream(fd))
+          return;
+        noteStreamIo(Process.getCurrentThreadId(), fd);
+      }
+    });
+  }
+  return hooked;
+}
+function recoverSocketFd() {
+  if (_backend === null)
+    return -1;
+  return _backend.recover(Process.getCurrentThreadId());
+}
+var MAX_SSL_FD_ENTRIES = 1024;
+var threadScopes = /* @__PURE__ */ new Map();
+var activeScopes = 0;
+var sslToFd = new SslFdCache(MAX_SSL_FD_ENTRIES);
+function noteStreamIo(tid, fd) {
+  threadToFd.set(tid, fd);
+  if (activeScopes === 0)
+    return;
+  const stack = threadScopes.get(tid);
+  if (stack !== void 0 && stack.length > 0)
+    stack[stack.length - 1].fd = fd;
+}
+function cacheSslFd(ssl, fd) {
+  sslToFd.set(ssl, fd);
+}
+var _lostClosedFdsLogged = false;
+function drainClosedFds() {
+  if (_backend === null)
+    return;
+  const closed = _backend.drainClosedFds();
+  if (closed === "lost") {
+    sslToFd.clear();
+    if (!_lostClosedFdsLogged) {
+      _lostClosedFdsLogged = true;
+      devlog("[socket-fd-tracker] closed-fd ring overflowed; cleared the SSL->fd cache.");
+    }
+    return;
+  }
+  for (const fd of closed)
+    forgetFd(fd);
+}
+function forgetFd(fd) {
+  sslToFd.deleteFd(fd);
+  if (activeScopes === 0)
+    return;
+  const stack = threadScopes.get(Process.getCurrentThreadId());
+  if (stack === void 0)
+    return;
+  for (const scope of stack) {
+    if (scope.fd === fd)
+      scope.fd = -1;
+  }
+}
+function cachedSslFd(ssl) {
+  if (sslToFd.size === 0)
+    return -1;
+  drainClosedFds();
+  return sslToFd.get(ssl.toString()) ?? -1;
+}
+function forgetSsl2(ssl) {
+  if (sslToFd.size === 0)
+    return;
+  sslToFd.deleteSsl(ssl.toString());
+}
+function enterSslScope(ssl) {
+  if (_backend === null)
+    return;
+  _backend.enterScope(Process.getCurrentThreadId(), ssl);
+}
+function closeSslScope(ssl) {
+  if (_backend === null)
+    return -1;
+  drainClosedFds();
+  const fd = _backend.leaveScope(Process.getCurrentThreadId(), ssl);
+  if (fd >= 0)
+    cacheSslFd(ssl.toString(), fd);
+  return fd;
+}
+function enterJsScope(tid, ssl) {
+  let stack = threadScopes.get(tid);
+  if (stack === void 0) {
+    stack = [];
+    threadScopes.set(tid, stack);
+  }
+  if (stack.length >= MAX_SCOPE_DEPTH) {
+    stack.shift();
+    activeScopes--;
+  }
+  stack.push({ ssl: ssl.toString(), fd: -1 });
+  activeScopes++;
+}
+function leaveJsScope(tid, ssl) {
+  const stack = threadScopes.get(tid);
+  if (stack === void 0 || !stack.some((scope2) => scope2.ssl === ssl))
+    return -1;
+  let scope;
+  do {
+    scope = stack.pop();
+    activeScopes--;
+  } while (scope.ssl !== ssl);
+  return scope.fd;
+}
+var _recoveryLogged = false;
+function fdOrDeferred(fd, ssl) {
+  if (fd >= 0)
+    return fd;
+  installSocketFdTracker();
+  enterSslScope(ssl);
+  return null;
+}
+function recoveredFd(ssl) {
+  let recovered = closeSslScope(ssl);
+  if (recovered < 0)
+    recovered = sslToFd.get(ssl.toString()) ?? recoverSocketFd();
+  if (recovered >= 0 && !_recoveryLogged) {
+    _recoveryLogged = true;
+    devlog("[fd-recovery] SSL object exposed no socket fd (SSL_get_fd<0); recovered peer via SSL-scoped socket-fd correlation \u2014 BIO-path active (e.g. curl connection filters, Conscrypt SSLEngine).");
+  }
+  return recovered;
+}
+var HANDSHAKE_SYMBOLS = ["SSL_do_handshake", "SSL_connect", "SSL_accept"];
+var _scopeHookedAddresses = /* @__PURE__ */ new Set();
+function findModuleExport(moduleName, symbol) {
+  try {
+    const module = Process.findModuleByName(moduleName);
+    const address = module ? module.findExportByName(symbol) : null;
+    return address && !address.isNull() ? address : null;
+  } catch (e) {
+    return null;
+  }
+}
+function attachOnce(address, callbacks) {
+  if (address === null || _scopeHookedAddresses.has(address.toString()))
+    return;
+  _scopeHookedAddresses.add(address.toString());
+  Interceptor.attach(address, callbacks);
+}
+function installSslScopeHooks(moduleName, getFd, extra) {
+  for (const symbol of HANDSHAKE_SYMBOLS) {
+    attachOnce(findModuleExport(moduleName, symbol), {
+      onEnter(args) {
+        const ssl = args[0];
+        if (ssl.isNull() || fdOrDeferred(getFd(ssl), ssl) !== null)
+          return;
+        this.scopedSsl = ssl;
+      },
+      onLeave() {
+        const ssl = this.scopedSsl;
+        if (ssl)
+          closeSslScope(ssl);
+      }
+    });
+  }
+  attachOnce(findModuleExport(moduleName, "SSL_free"), {
+    onEnter(args) {
+      forgetSsl2(args[0]);
+      forgetSsl(args[0].toString());
+      forgetSslIdentity(args[0]);
+    }
+  });
+}
+
+// agent/shared/record_message.ts
+init_node_globals();
+function stampRecordLibrary(message, library) {
+  if (library)
+    message["library"] = library;
+}
+function stampRecordClientRandom(message, clientRandom) {
+  if (!clientRandom || message["client_random"])
+    return;
+  message["client_random"] = clientRandom;
+}
+function lookupRecordClientRandom(ctx) {
+  try {
+    if (ctx.clientRandom)
+      return ctx.clientRandom();
+    if (ctx.ssl)
+      return readSslClientRandom(ctx.ssl, ctx.library ?? "");
+  } catch (_e) {
+  }
+  return "";
+}
+function hasNoSocketFd(ctx) {
+  return ctx.fd < 0 && !ctx.resolvePeer;
+}
+function stampRecordIdentity(message, ctx) {
+  message["function"] = ctx.functionName;
+  stampRecordLibrary(message, ctx.library);
+  if (!message["client_random"])
+    stampRecordClientRandom(message, lookupRecordClientRandom(ctx));
+}
+function offerRecordToCallerStack(message, ctx) {
+  if (attribute_sdk && ctx.ssl)
+    offerCallerStackJoin(ctx.ssl, message);
+}
+function finishRecord(message, ctx) {
+  stampRecordIdentity(message, ctx);
+  offerRecordToCallerStack(message, ctx);
+}
+function once(fn) {
+  let evaluated = false;
+  let value;
+  return () => {
+    if (!evaluated) {
+      value = fn();
+      evaluated = true;
+    }
+    return value;
+  };
+}
+function buildEndpointlessRecord(ctx, sessionFields) {
+  if (ctx.fd >= 0)
+    return null;
+  return buildRecordWithoutPeer(ctx, sessionFields);
+}
+function buildRecordWithoutPeer(ctx, sessionFields) {
+  const message = { ...sessionFields() };
+  stampRecordIdentity(message, ctx);
+  if (!message["client_random"])
+    return null;
+  offerRecordToCallerStack(message, ctx);
+  return message;
+}
+function resolveRecordPeer(ctx) {
+  return ctx.resolvePeer ? ctx.resolvePeer() : getPortsAndAddresses(ctx.fd, ctx.isRead, ctx.methodAddresses, ctx.enableDefaultFd);
+}
+function isUnwantedRecordFd(ctx) {
+  return !ctx.resolvePeer && ctx.fd >= 0 && isUnwantedFd(ctx.fd);
+}
+function buildRecordMessage(ctx, sessionFields) {
+  const sessionFieldsOnce = once(sessionFields);
+  if (hasNoSocketFd(ctx)) {
+    const endpointless = buildEndpointlessRecord(ctx, sessionFieldsOnce);
+    if (endpointless !== null || !ctx.enableDefaultFd)
+      return endpointless;
+  }
+  const message = resolveRecordPeer(ctx);
+  if (message === null) {
+    return isUnwantedRecordFd(ctx) ? null : buildRecordWithoutPeer(ctx, sessionFieldsOnce);
+  }
+  Object.assign(message, sessionFieldsOnce());
+  finishRecord(message, ctx);
+  return message;
+}
+function sslRecordClientRandom(source, ssl) {
+  return readSslClientRandom(ssl, source.library, (s) => probeAndNoteClientRandom(source, s));
+}
+function probeAndNoteClientRandom(source, ssl) {
+  const clientRandom = source.probeClientRandom(ssl);
+  if (clientRandom)
+    noteSslClientRandom(ssl, clientRandom, source.library);
+  return clientRandom;
+}
+function sslRecordContext(source, ssl, functionName, isRead, fd) {
+  return {
+    fd,
+    isRead,
+    functionName,
+    methodAddresses: source.methodAddresses,
+    enableDefaultFd: source.enableDefaultFd,
+    library: source.library,
+    ssl,
+    clientRandom: () => sslRecordClientRandom(source, ssl)
+  };
+}
+function buildEndpointlessSslRecord(source, ssl, functionName, isRead) {
+  return buildEndpointlessRecord(sslRecordContext(source, ssl, functionName, isRead, -1), () => source.sessionFields(ssl));
+}
+function finishSslRecord(message, source, ssl, functionName, isRead) {
+  finishRecord(message, sslRecordContext(source, ssl, functionName, isRead, -1));
+}
+function buildCallerStackJoin(ssl, fdFn, isRead, methodAddresses, enableDefaultFd, sessionIdFn, resolvePeer) {
+  const join = {};
+  try {
+    join.ssl_session_id = sessionIdFn();
+  } catch (_e) {
+  }
+  let peer = null;
+  if (resolvePeer) {
+    try {
+      peer = resolvePeer();
+    } catch (_e) {
+      peer = null;
+    }
+  } else {
+    let fd = -1;
+    try {
+      fd = fdFn();
+    } catch (_e) {
+      fd = -1;
+    }
+    if (fd < 0)
+      fd = cachedSslFd(ssl);
+    if (fd < 0)
+      fd = recoverSocketFd();
+    if (fd >= 0 || enableDefaultFd) {
+      try {
+        peer = getPortsAndAddresses(fd, isRead, methodAddresses, enableDefaultFd);
+      } catch (_e) {
+        peer = null;
+      }
+    }
+  }
+  if (peer) {
+    if (peer["src_addr"] !== void 0)
+      join.src_addr = peer["src_addr"];
+    if (peer["dst_addr"] !== void 0)
+      join.dst_addr = peer["dst_addr"];
+    if (peer["src_port"] !== void 0)
+      join.src_port = peer["src_port"];
+    if (peer["dst_port"] !== void 0)
+      join.dst_port = peer["dst_port"];
+    if (peer["ss_family"] !== void 0)
+      join.ss_family = peer["ss_family"];
+  }
+  return join;
+}
+
 // agent/shared/tls13_secret_recovery.ts
+init_node_globals();
+init_shared_structures();
 var LABEL_CLIENT = "CLIENT_TRAFFIC_SECRET_0";
 var LABEL_SERVER = "SERVER_TRAFFIC_SECRET_0";
 var recoveryEnabled = false;
@@ -19796,7 +21337,7 @@ function learnSecretOffset(moduleName, sslPtr, label, isClient, secret) {
   discovery.module = moduleName;
   log(`[*] TLS1.3 attach-recovery: learned ${label} at s3+0x${off.toString(16)} (len ${secret.length}) in ${moduleName}`);
 }
-function emitSecret(label, clientRandom, s3, off, len) {
+function emitSecret(label, clientRandom, s3, off, len, origin) {
   try {
     const buf = s3.add(off).readByteArray(len);
     if (!buf)
@@ -19804,7 +21345,7 @@ function emitSecret(label, clientRandom, s3, off, len) {
     const u8 = new Uint8Array(buf);
     if (isMostlyZero(u8))
       return false;
-    sendKeylog(`${label} ${clientRandom} ${get_hex_string_from_byte_array(u8)}`);
+    sendKeylog(`${label} ${clientRandom} ${get_hex_string_from_byte_array(u8)}`, origin?.ssl, origin?.module);
     return true;
   } catch (e) {
     devlog_debug(`[tls13-recover] emit ${label} failed: ${e}`);
@@ -19828,8 +21369,9 @@ function recoverTls13Secrets(moduleName, sslPtr) {
   const clientRandom = readClientRandomHex(s3);
   if (!clientRandom)
     return;
-  const okC = emitSecret(LABEL_CLIENT, clientRandom, s3, discovery.clientOff, discovery.clientLen);
-  const okS = emitSecret(LABEL_SERVER, clientRandom, s3, discovery.serverOff, discovery.serverLen);
+  const origin = { ssl: sslPtr, module: moduleName };
+  const okC = emitSecret(LABEL_CLIENT, clientRandom, s3, discovery.clientOff, discovery.clientLen, origin);
+  const okS = emitSecret(LABEL_SERVER, clientRandom, s3, discovery.serverOff, discovery.serverLen, origin);
   if (okC || okS) {
     log(`[*] TLS1.3 attach-recovery: recovered keys for un-witnessed connection (cr=${clientRandom.substring(0, 16)}\u2026)`);
   }
@@ -19905,6 +21447,2218 @@ function readWritten(buf, count) {
   return buf.readByteArray(count);
 }
 
+// agent/shared/ssl_layout_autolocate.ts
+init_node_globals();
+
+// agent/shared/module_exports.ts
+init_node_globals();
+var exportTables = /* @__PURE__ */ new Map();
+function exportTableOf(module) {
+  const key = `${module.path}@${module.base}`;
+  let table = exportTables.get(key);
+  if (table === void 0) {
+    table = /* @__PURE__ */ new Map();
+    try {
+      for (const exp of module.enumerateExports())
+        table.set(exp.name, exp.address);
+    } catch (_) {
+    }
+    exportTables.set(key, table);
+  }
+  return table;
+}
+function findModuleExport2(moduleName, symbol) {
+  const module = Process.findModuleByName?.(moduleName);
+  if (module && typeof module.findExportByName === "function") {
+    return module.findExportByName(symbol) ?? (typeof module.enumerateExports === "function" ? exportTableOf(module).get(symbol) ?? null : null);
+  }
+  const legacyFind = Module.findExportByName;
+  return typeof legacyFind === "function" ? legacyFind(moduleName, symbol) ?? null : null;
+}
+
+// agent/shared/boringssl_anchor_locator.ts
+init_node_globals();
+init_shared_structures();
+
+// agent/shared/arm64.ts
+init_node_globals();
+function maskEq(insn, mask, op) {
+  return (insn & mask) >>> 0 === op >>> 0;
+}
+function regRd(insn) {
+  return insn & 31;
+}
+function regRn(insn) {
+  return insn >>> 5 & 31;
+}
+function regRt2(insn) {
+  return insn >>> 10 & 31;
+}
+function regRs(insn) {
+  return insn >>> 16 & 31;
+}
+function isADRP(insn) {
+  return maskEq(insn, 2667577344, 2415919104);
+}
+function isADDimm64(insn) {
+  return maskEq(insn, 4278190080, 2432696320);
+}
+function isLDRimmU64(insn) {
+  return maskEq(insn, 4290772992, 4181721088);
+}
+function isSTRimmU64(insn) {
+  return maskEq(insn, 4290772992, 4177526784);
+}
+function isRET(insn) {
+  return insn >>> 0 === 3596551104;
+}
+function isBL(insn) {
+  return maskEq(insn, 4227858432, 2483027968);
+}
+function isBLR(insn) {
+  return maskEq(insn, 4294966303, 3594452992);
+}
+function isADR(insn) {
+  return maskEq(insn, 2667577344, 268435456);
+}
+function isUnconditionalB(insn) {
+  return maskEq(insn, 4227858432, 335544320);
+}
+function isAnyReturn(insn) {
+  const w = insn >>> 0;
+  return maskEq(insn, 4294966303, 3596550144) || w === 3596553215 || w === 3596554239;
+}
+function isIndirectBranch(insn) {
+  return maskEq(insn, 4294966303, 3592355840) || maskEq(insn, 4294965279, 3592357919) || maskEq(insn, 4294965248, 3609135104);
+}
+function isBLRAuth(insn) {
+  return maskEq(insn, 4294965279, 3594455071) || maskEq(insn, 4294965248, 3611232256);
+}
+function isTrap(insn) {
+  return maskEq(insn, 4292870175, 3558866944) || maskEq(insn, 4294901760, 0);
+}
+function endsFallThrough(insn) {
+  return isUnconditionalB(insn) || isAnyReturn(insn) || isIndirectBranch(insn) || isTrap(insn);
+}
+function isCBZ64(insn) {
+  return maskEq(insn, 4278190080, 3019898880);
+}
+function isCBNZ64(insn) {
+  return maskEq(insn, 4278190080, 3036676096);
+}
+function isFunctionPrologueWord(insn) {
+  if (insn >>> 0 === 3573752639)
+    return true;
+  if (insn >>> 0 === 3573752703)
+    return true;
+  if (maskEq(insn, 4294967071, 3573752863))
+    return true;
+  if (maskEq(insn, 4290805759, 2835381245))
+    return true;
+  if (maskEq(insn, 4290772992, 2843738112))
+    return true;
+  if (maskEq(insn, 4278190080, 3506438144) && regRd(insn) === 31 && regRn(insn) === 31)
+    return true;
+  return false;
+}
+var PACIASP = 3573752639;
+var BTI_C = 3573752927;
+function isLandingPadWord(insn) {
+  const word = insn >>> 0;
+  return word === PACIASP || word === BTI_C;
+}
+function isBranchOrSystemGroup(insn) {
+  return maskEq(insn, 469762048, 335544320);
+}
+function isLoadStoreGroup(insn) {
+  return maskEq(insn, 167772160, 134217728);
+}
+function branchOrSystemWritesReg(insn, reg) {
+  if (isBL(insn) || isBLR(insn) || isBLRAuth(insn))
+    return reg === 30;
+  if (maskEq(insn, 4293918720, 3576692736))
+    return regRd(insn) === reg;
+  if (maskEq(insn, 4294443008, 3576168448))
+    return regRd(insn) === reg;
+  return false;
+}
+function anyLoadStoreField(insn, reg) {
+  const rt = regRd(insn), rs = regRs(insn);
+  return [rt, rt + 1 & 31, regRt2(insn), regRn(insn), rs, rs + 1 & 31].includes(reg);
+}
+function pairWritesReg(insn, reg) {
+  const index = insn >>> 23 & 3;
+  if ((index === 1 || index === 3) && regRn(insn) === reg)
+    return true;
+  if (isSimdFpTransfer(insn))
+    return false;
+  const isLoad = (insn >>> 22 & 1) === 1;
+  return isLoad && (regRd(insn) === reg || regRt2(insn) === reg);
+}
+function isSimdFpTransfer(insn) {
+  return (insn >>> 26 & 1) === 1;
+}
+function singleRegisterWritesReg(insn, reg) {
+  if (isSimdFpTransfer(insn))
+    return simdFpSingleRegisterWritesReg(insn, reg);
+  const rt = regRd(insn);
+  const isLoad = (insn >>> 22 & 3) !== 0;
+  const mode = insn >>> 10 & 3;
+  if ((insn >>> 24 & 1) === 1)
+    return isLoad && rt === reg;
+  if ((insn >>> 21 & 1) === 0) {
+    if ((mode === 1 || mode === 3) && regRn(insn) === reg)
+      return true;
+    return isLoad && rt === reg;
+  }
+  if (mode === 0)
+    return rt === reg;
+  if (mode === 2)
+    return isLoad && rt === reg;
+  return rt === reg || (insn >>> 11 & 1) === 1 && regRn(insn) === reg;
+}
+function simdFpSingleRegisterWritesReg(insn, reg) {
+  const mode = insn >>> 10 & 3;
+  if ((insn >>> 24 & 1) === 1)
+    return false;
+  if ((insn >>> 21 & 1) === 0)
+    return (mode === 1 || mode === 3) && regRn(insn) === reg;
+  if (mode === 2)
+    return false;
+  return anyLoadStoreField(insn, reg);
+}
+function loadStoreWritesReg(insn, reg) {
+  const cls = insn >>> 27 & 7;
+  const simd = (insn >>> 26 & 1) === 1;
+  if (cls === 5)
+    return pairWritesReg(insn, reg);
+  if (cls === 7)
+    return singleRegisterWritesReg(insn, reg);
+  if (cls === 3 && (insn >>> 24 & 1) === 0) {
+    return !isSimdFpTransfer(insn) && regRd(insn) === reg;
+  }
+  if (cls === 1 && simd && insn >>> 31 === 0) {
+    return (insn >>> 23 & 1) === 1 && regRn(insn) === reg;
+  }
+  return anyLoadStoreField(insn, reg);
+}
+function isSimdFpDataProcessingGroup(insn) {
+  return maskEq(insn, 234881024, 234881024);
+}
+function isAdvSimdCopy(insn) {
+  return maskEq(insn, 2682291200, 234882048);
+}
+function isFpIntegerConversion(insn) {
+  return maskEq(insn, 1595997184, 505413632);
+}
+function fpIntegerConversionWritesGpr(insn) {
+  const opcode = insn >>> 16 & 7;
+  return opcode !== 2 && opcode !== 3 && opcode !== 7;
+}
+function simdFpWritesReg(insn, reg) {
+  if (isAdvSimdCopy(insn))
+    return regRd(insn) === reg;
+  if (isFpIntegerConversion(insn))
+    return fpIntegerConversionWritesGpr(insn) && regRd(insn) === reg;
+  return false;
+}
+function writesReg(insn, reg) {
+  if (isBranchOrSystemGroup(insn))
+    return branchOrSystemWritesReg(insn, reg);
+  if (isLoadStoreGroup(insn))
+    return loadStoreWritesReg(insn, reg);
+  if (isSimdFpDataProcessingGroup(insn))
+    return simdFpWritesReg(insn, reg);
+  return regRd(insn) === reg;
+}
+function decodeADRPImm(insn) {
+  const immlo = insn >>> 29 & 3;
+  const immhi = insn >>> 5 & 524287;
+  let imm = immhi << 2 | immlo;
+  if (imm & 1048576)
+    imm -= 2097152;
+  return imm * 4096;
+}
+function decodeADDImm12(insn) {
+  const imm12 = insn >>> 10 & 4095;
+  const shift = insn >>> 22 & 3;
+  return shift === 1 ? imm12 << 12 : imm12;
+}
+function decodeLDRU64Imm(insn) {
+  return (insn >>> 10 & 4095) * 8;
+}
+function decodeSTRU64Imm(insn) {
+  return decodeLDRU64Imm(insn);
+}
+function decodeADRImm(insn) {
+  const immlo = insn >>> 29 & 3;
+  const immhi = insn >>> 5 & 524287;
+  let imm = immhi << 2 | immlo;
+  if (imm & 1048576)
+    imm -= 2097152;
+  return imm;
+}
+function decodeBLImm(insn) {
+  let imm26 = insn & 67108863;
+  if (imm26 & 33554432)
+    imm26 -= 67108864;
+  return imm26 * 4;
+}
+function blTargetOffset(pc, insn) {
+  return isBL(insn) ? pc + decodeBLImm(insn) : null;
+}
+function movzW(insn, reg) {
+  return maskEq(insn, 4292870175, 1384120320 | reg) ? insn >>> 5 & 65535 : null;
+}
+function signExtend(value, bits) {
+  const sign = 2 ** (bits - 1);
+  return value >= sign ? value - 2 * sign : value;
+}
+function isBCond(insn) {
+  return maskEq(insn, 4278190096, 1409286144);
+}
+function isCompareAndBranch(insn) {
+  return maskEq(insn, 2113929216, 872415232);
+}
+function isTestAndBranch(insn) {
+  return maskEq(insn, 2113929216, 905969664);
+}
+function directBranchOffset(insn) {
+  if (isUnconditionalB(insn))
+    return decodeBLImm(insn);
+  if (isBCond(insn) || isCompareAndBranch(insn))
+    return signExtend(insn >>> 5 & 524287, 19) * 4;
+  if (isTestAndBranch(insn))
+    return signExtend(insn >>> 5 & 16383, 14) * 4;
+  return null;
+}
+function isMovReg64(insn) {
+  return maskEq(insn, 4292935648, 2852127712);
+}
+function movRegSource(insn) {
+  return isMovReg64(insn) ? regRs(insn) : null;
+}
+function movRegDest(insn) {
+  return isMovReg64(insn) ? regRd(insn) : null;
+}
+var IMM12_OPERAND_MASK = 4294966272;
+function addImm64WordForImm12(imm12) {
+  return (2432696320 | (imm12 & 4095) << 10) >>> 0;
+}
+function ldrU64WordForImm12(imm12) {
+  return (4181721088 | (imm12 & 4095) << 10) >>> 0;
+}
+function wordToLEHex(word) {
+  const bytes = [];
+  for (let i = 0; i < 4; i++)
+    bytes.push((word >>> 8 * i & 255).toString(16).padStart(2, "0"));
+  return bytes.join(" ");
+}
+function maskedWordScanPattern(word, mask) {
+  return `${wordToLEHex((word & mask) >>> 0)} : ${wordToLEHex(mask >>> 0)}`;
+}
+function adrTopByteForTarget(targetLow2) {
+  return 16 | (targetLow2 & 3) << 5;
+}
+function addImm64ScanPattern(imm12) {
+  return maskedWordScanPattern(addImm64WordForImm12(imm12), IMM12_OPERAND_MASK);
+}
+function ldrU64ScanPattern(imm12) {
+  return maskedWordScanPattern(ldrU64WordForImm12(imm12), IMM12_OPERAND_MASK);
+}
+
+// agent/shared/arm64_xref.ts
+init_node_globals();
+function adrpTarget(pc, insn) {
+  const pageImm = decodeADRPImm(insn);
+  const pcPage = pc.and(ptr("0xfff").not());
+  return pageImm >= 0 ? pcPage.add(pageImm) : pcPage.sub(-pageImm);
+}
+function adrTarget(pc, insn) {
+  const offset = decodeADRImm(insn);
+  return offset >= 0 ? pc.add(offset) : pc.sub(-offset);
+}
+function blTarget(pc, insn) {
+  const offset = decodeBLImm(insn);
+  return offset >= 0 ? pc.add(offset) : pc.sub(-offset);
+}
+function inModule(addr, start, end) {
+  return addr.compare(start) >= 0 && addr.compare(end) < 0;
+}
+function findAnchorString(mod, ascii) {
+  const pattern = toHexPattern(ascii);
+  const ranges = mod.enumerateRanges("r--");
+  for (const range of ranges) {
+    try {
+      const hits = Memory.scanSync(range.base, range.size, pattern);
+      if (hits.length > 0)
+        return hits[0].address;
+    } catch (_e) {
+    }
+  }
+  const rx = mod.enumerateRanges("r-x");
+  for (const range of rx) {
+    try {
+      const hits = Memory.scanSync(range.base, range.size, pattern);
+      if (hits.length > 0)
+        return hits[0].address;
+    } catch (_e) {
+    }
+  }
+  return null;
+}
+var LOAD_SITE_WINDOW = 8;
+var MAX_LOAD_SITES = 8;
+var XREF_SCAN_CHUNK_BYTES = 2 * 1024 * 1024;
+var XrefScanAborted = class extends Error {
+  constructor() {
+    super("xref scan aborted: agent is shutting down");
+  }
+};
+function yieldToEventLoop() {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+function patternByteLength(pattern) {
+  return pattern.split(":")[0].trim().split(/\s+/).filter((t) => t.length > 0).length;
+}
+function withoutLeadingWildcards(pattern) {
+  const [needleHalf, maskHalf] = pattern.split(":");
+  const tokens = (half) => half.trim().split(/\s+/).filter((t) => t.length > 0);
+  const needle = tokens(needleHalf);
+  const mask = maskHalf === void 0 ? null : tokens(maskHalf);
+  const isWildcard = (i) => needle[i] === "??" || mask !== null && /^0+$/.test(mask[i] ?? "");
+  let skipped = 0;
+  while (skipped < needle.length && isWildcard(skipped))
+    skipped++;
+  if (skipped === 0 || skipped === needle.length)
+    return { pattern, skipped: 0 };
+  const rest = needle.slice(skipped).join(" ");
+  return { pattern: mask === null ? rest : `${rest} : ${mask.slice(skipped).join(" ")}`, skipped };
+}
+function compilePattern(pattern) {
+  try {
+    if (typeof MatchPattern !== "undefined")
+      return new MatchPattern(pattern);
+  } catch (_e) {
+  }
+  return pattern;
+}
+async function scanRangesChunked(ranges, jobs, chunkBytes = XREF_SCAN_CHUNK_BYTES, yieldFn = yieldToEventLoop) {
+  if (jobs.length === 0)
+    return;
+  const shapes = jobs.map((j) => withoutLeadingWildcards(j.pattern));
+  const compiled = shapes.map((shape) => compilePattern(shape.pattern));
+  const overlap = Math.max(...jobs.map((j) => patternByteLength(j.pattern))) - 1;
+  for (const range of ranges) {
+    for (let off = 0; off < range.size; off += chunkBytes) {
+      if (_isShuttingDownNow())
+        throw new XrefScanAborted();
+      const chunkStart = range.base.add(off);
+      const chunkEnd = range.base.add(Math.min(off + chunkBytes, range.size));
+      const scanSize = Math.min(chunkBytes + overlap, range.size - off);
+      for (let i = 0; i < jobs.length; i++) {
+        let hits = [];
+        try {
+          hits = Memory.scanSync(chunkStart, scanSize, compiled[i]);
+        } catch (_e) {
+          continue;
+        }
+        const skipped = shapes[i].skipped;
+        for (const hit of hits) {
+          const start = skipped === 0 ? hit.address : hit.address.sub(skipped);
+          if (skipped > 0 && start.compare(chunkStart) < 0)
+            continue;
+          if (start.compare(chunkEnd) < 0)
+            jobs[i].onMatch(start);
+        }
+      }
+      await yieldFn();
+    }
+  }
+}
+function findOpeningAdrp(at, reg, page, rangeStart) {
+  for (let j = 1; j <= LOAD_SITE_WINDOW; j++) {
+    const p = at.sub(j * 4);
+    if (p.compare(rangeStart) < 0)
+      return null;
+    let insn = 0;
+    try {
+      insn = p.readU32();
+    } catch (_e) {
+      return null;
+    }
+    if (isADRP(insn) && regRd(insn) === reg) {
+      return adrpTarget(p, insn).equals(page) ? p : null;
+    }
+    if (isADDimm64(insn) && regRd(insn) === reg)
+      return null;
+    if (isLDRimmU64(insn) && regRn(insn) === reg)
+      return null;
+    if (writesReg(insn, reg))
+      return null;
+  }
+  return null;
+}
+function splitPage(addr) {
+  const page = addr.and(ptr("0xfff").not());
+  return { page, lo12: addr.sub(page).toInt32() };
+}
+function pointerScanPattern(value) {
+  const hex2 = value.toString().replace(/^0x/i, "").padStart(16, "0");
+  const bytes = [];
+  for (let i = 14; i >= 0; i -= 2)
+    bytes.push(hex2.substring(i, i + 2));
+  return bytes.join(" ");
+}
+function dataRanges(mod) {
+  return mod.enumerateRanges("r--").filter((r) => !r.protection.includes("x"));
+}
+function addJob(jobs, pattern, h) {
+  const list = jobs.get(pattern);
+  if (list)
+    list.push(h);
+  else
+    jobs.set(pattern, [h]);
+}
+function toJobs(jobs) {
+  return [...jobs].map(([pattern, handlers]) => ({
+    pattern,
+    onMatch: (a) => {
+      for (const h of handlers)
+        h(a);
+    }
+  }));
+}
+function isAligned(addr, align3) {
+  return addr.and(ptr(align3 - 1)).toInt32() === 0;
+}
+async function findPointerSlots(mod, targets2, chunkBytes, yieldFn) {
+  const slots = targets2.map(() => []);
+  const jobs = /* @__PURE__ */ new Map();
+  targets2.forEach((t, i) => addJob(jobs, pointerScanPattern(t), (a) => {
+    if (isAligned(a, 8) && slots[i].length < MAX_LOAD_SITES)
+      slots[i].push(a);
+  }));
+  await scanRangesChunked(dataRanges(mod), toJobs(jobs), chunkBytes, yieldFn);
+  return slots;
+}
+async function findStringLoadSitesAsync(mod, targets2, chunkBytes = XREF_SCAN_CHUNK_BYTES, yieldFn = yieldToEventLoop, maxSites = MAX_LOAD_SITES) {
+  const sites = targets2.map(() => []);
+  const slots = await findPointerSlots(mod, targets2, chunkBytes, yieldFn);
+  const jobs = /* @__PURE__ */ new Map();
+  let rangeStart = mod.base;
+  const verifyAt = (i, page, isShape) => (at) => {
+    if (!isAligned(at, 4))
+      return;
+    let insn = 0;
+    try {
+      insn = at.readU32();
+    } catch (_e) {
+      return;
+    }
+    if (!isShape(insn))
+      return;
+    const adrp = findOpeningAdrp(at, regRn(insn), page, rangeStart);
+    if (adrp !== null)
+      sites[i].push(adrp);
+  };
+  targets2.forEach((t, i) => {
+    const { page, lo12 } = splitPage(t);
+    addJob(jobs, addImm64ScanPattern(lo12), verifyAt(i, page, (w) => isADDimm64(w) && regRd(w) === regRn(w)));
+    for (const slot of slots[i]) {
+      const s = splitPage(slot);
+      addJob(jobs, ldrU64ScanPattern(s.lo12 / 8), verifyAt(i, s.page, (w) => isLDRimmU64(w)));
+    }
+  });
+  const codeJobs = toJobs(jobs);
+  for (const range of mod.enumerateRanges("r-x")) {
+    rangeStart = range.base;
+    await scanRangesChunked([range], codeJobs, chunkBytes, yieldFn);
+  }
+  await findAdrSites(mod, targets2, sites, chunkBytes, yieldFn);
+  return sites.map((list) => dedupeSorted(list).slice(0, maxSites));
+}
+var ADR_REACH_BYTES = 1024 * 1024;
+var ADR_WINDOW_SLACK = 8;
+function clipRange(range, lo, hi) {
+  const end = range.base.add(range.size);
+  const base = range.base.compare(lo) > 0 ? range.base : lo;
+  const top = end.compare(hi) < 0 ? end : hi;
+  return base.compare(top) < 0 ? { base, size: top.sub(base).toInt32() } : null;
+}
+function mergeRanges(list) {
+  const sorted = [...list].sort((a, b) => a.base.compare(b.base));
+  const out = [];
+  for (const r of sorted) {
+    const last = out[out.length - 1];
+    if (last && r.base.compare(last.base.add(last.size)) <= 0) {
+      const end = r.base.add(r.size);
+      if (end.compare(last.base.add(last.size)) > 0)
+        last.size = end.sub(last.base).toInt32();
+    } else {
+      out.push({ base: r.base, size: r.size });
+    }
+  }
+  return out;
+}
+function adrScanWindows(codeRanges2, targets2) {
+  const reach = ptr(ADR_REACH_BYTES);
+  const windows = [];
+  for (const t of targets2) {
+    const lo = t.compare(reach) >= 0 ? t.sub(reach) : ptr(0);
+    const hi = t.add(ADR_REACH_BYTES + ADR_WINDOW_SLACK);
+    for (const r of codeRanges2) {
+      const w = clipRange(r, lo, hi);
+      if (w !== null)
+        windows.push(w);
+    }
+  }
+  return mergeRanges(windows);
+}
+function wordInRanges(addr, ranges) {
+  return ranges.some((r) => addr.compare(r.base) >= 0 && addr.add(4).compare(r.base.add(r.size)) <= 0);
+}
+async function findAdrSites(mod, targets2, sites, chunkBytes, yieldFn) {
+  const code4 = mod.enumerateRanges("r-x");
+  for (let low2 = 0; low2 < 4; low2++) {
+    const group = targets2.filter((t) => t.and(ptr(3)).toInt32() === low2);
+    if (group.length === 0)
+      continue;
+    const byAddress = /* @__PURE__ */ new Map();
+    targets2.forEach((t, i) => {
+      if (t.and(ptr(3)).toInt32() === low2)
+        byAddress.set(t.toString(), [...byAddress.get(t.toString()) ?? [], i]);
+    });
+    const onTopByte = (hit) => {
+      const at = hit.sub(3);
+      if (!isAligned(at, 4) || !wordInRanges(at, code4))
+        return;
+      let insn = 0;
+      try {
+        insn = at.readU32();
+      } catch (_e) {
+        return;
+      }
+      if (!isADR(insn))
+        return;
+      for (const i of byAddress.get(adrTarget(at, insn).toString()) ?? [])
+        sites[i].push(at);
+    };
+    const needle = adrTopByteForTarget(low2).toString(16).padStart(2, "0");
+    await scanRangesChunked(adrScanWindows(code4, group), [{ pattern: needle, onMatch: onTopByte }], chunkBytes, yieldFn);
+  }
+}
+function dedupeSorted(list) {
+  const sorted = [...list].sort((a, b) => a.compare(b));
+  return sorted.filter((p, k) => k === 0 || !p.equals(sorted[k - 1]));
+}
+async function findAnchorStringsAsync(mod, asciis, chunkBytes = XREF_SCAN_CHUNK_BYTES, yieldFn = yieldToEventLoop) {
+  const found = asciis.map(() => null);
+  for (const ranges of [dataRanges(mod), mod.enumerateRanges("r-x")]) {
+    const jobs = /* @__PURE__ */ new Map();
+    asciis.forEach((s, i) => {
+      if (found[i] === null)
+        addJob(jobs, toHexPattern(s), (a) => {
+          if (found[i] === null)
+            found[i] = a;
+        });
+    });
+    if (jobs.size === 0)
+      break;
+    await scanRangesChunked(ranges, toJobs(jobs), chunkBytes, yieldFn);
+  }
+  return found;
+}
+function literalStart(inside, maxBack = 512) {
+  let p = inside;
+  for (let i = 0; i < maxBack; i++) {
+    try {
+      if (p.sub(1).readU8() === 0)
+        return p;
+    } catch (_e) {
+      return p;
+    }
+    p = p.sub(1);
+  }
+  return p;
+}
+async function anchorSiteFunctions(mod, functions, anchors) {
+  const hits = await findAnchorStringsAsync(mod, anchors.map((a) => a.text + "\0"));
+  const found = anchors.map((a, i) => ({ a, hit: hits[i] })).filter((x) => x.hit !== null);
+  const targets2 = found.map(({ a, hit }) => a.literalSuffix ? literalStart(hit) : hit);
+  const maxSites = Math.max(MAX_LOAD_SITES, ...anchors.map((a) => a.maxSites ?? MAX_LOAD_SITES));
+  const loads = targets2.length > 0 ? await findStringLoadSitesAsync(mod, targets2, XREF_SCAN_CHUNK_BYTES, yieldToEventLoop, maxSites) : [];
+  const sitesByAnchor = /* @__PURE__ */ new Map();
+  found.forEach(({ a }, k) => sitesByAnchor.set(a, loads[k].slice(0, a.maxSites ?? MAX_LOAD_SITES).map((at) => ({ at, fn: functions.bounds(at) }))));
+  return anchors.map((a) => sitesByAnchor.get(a) ?? []);
+}
+function moduleOffsetLabel(mod, p, missing = "?") {
+  return p === null ? missing : "+0x" + p.sub(mod.base).toString(16);
+}
+function firstCallTargetForward(from2, limit, modStart, modEnd) {
+  let cursor = from2.add(4);
+  const maxWalk = 1024;
+  let walked = 0;
+  while (cursor.compare(limit) < 0 && walked < maxWalk) {
+    let insn = 0;
+    try {
+      insn = cursor.readU32();
+    } catch (_e) {
+      return null;
+    }
+    if (isBL(insn)) {
+      const tgt = blTarget(cursor, insn);
+      if (inModule(tgt, modStart, modEnd))
+        return tgt;
+    }
+    if (isBLR(insn) || isBLRAuth(insn)) {
+      devlog(`[arm64-xref] forward walk hit unresolvable BLR @ ${cursor}`);
+      return null;
+    }
+    if (endsFallThrough(insn)) {
+      devlog(`[arm64-xref] forward walk hit a non-fall-through instruction @ ${cursor} before any BL`);
+      return null;
+    }
+    cursor = cursor.add(4);
+    walked += 4;
+  }
+  return null;
+}
+
+// agent/shared/boringssl_keylog_outcome.ts
+init_node_globals();
+var ALL_KEYLOG_TIERS_MISSED_MSG = (moduleName, detail) => `[!] ${moduleName}: no BoringSSL keylog hook could be installed (callback, symbol and pattern tiers all missed${detail ? `; ${detail}` : ""})`;
+var reportedModules = /* @__PURE__ */ new Set();
+var warnedModules = /* @__PURE__ */ new Set();
+var keylogHookOwners = /* @__PURE__ */ new Map();
+function keylogHookOwner(moduleName) {
+  return keylogHookOwners.get(moduleName);
+}
+function claimKeylogHook(moduleName, tier) {
+  const owner2 = keylogHookOwners.get(moduleName);
+  if (owner2 !== void 0)
+    return owner2 === tier;
+  keylogHookOwners.set(moduleName, tier);
+  if (warnedModules.has(moduleName)) {
+    log(`[*] ${moduleName}: the ${tier} tier installed a keylog hook after all (supersedes the earlier "no BoringSSL keylog hook" warning)`);
+  }
+  return true;
+}
+function guardKeylogDumpKeys(moduleName, tier, dumpKeys) {
+  let dropLogged = false;
+  return (label, ssl, data, len) => {
+    if (claimKeylogHook(moduleName, tier)) {
+      dumpKeys(label, ssl, data, len);
+      return;
+    }
+    if (!dropLogged) {
+      dropLogged = true;
+      devlog(`[bssl-keylog] ${moduleName}: ${tier} hook fired but the ${keylogHookOwner(moduleName)} tier owns this module; dropping its duplicate secrets`);
+    }
+  };
+}
+var tier4Runner = null;
+function registerBoringSSLTier4(runner) {
+  tier4Runner = runner;
+}
+function isThenable(v) {
+  return typeof v === "object" && v !== null && typeof v.then === "function";
+}
+function warnTotalMiss(moduleName, detail, tier4Ran) {
+  const finalDetail = tier4Ran ? detail ? `${detail}; anchor-locator (tier 4) also missed` : "anchor-locator (tier 4) also missed" : detail;
+  warnedModules.add(moduleName);
+  log(ALL_KEYLOG_TIERS_MISSED_MSG(moduleName, finalDetail));
+}
+function claimForTier4Install(moduleName) {
+  if (!claimKeylogHook(moduleName, "anchor")) {
+    devlog(`[bssl-keylog] ${moduleName}: tier 4 installed, but the ${keylogHookOwner(moduleName)} tier already owns this module`);
+  }
+}
+function reportTier4Outcome(moduleName, detail, installed) {
+  if (!installed)
+    warnTotalMiss(moduleName, detail, true);
+}
+var tier4Runs = /* @__PURE__ */ new Map();
+function invokeTier4Runner(runner, moduleName, dumpKeys, detail) {
+  let result;
+  try {
+    result = runner(moduleName, guardKeylogDumpKeys(moduleName, "anchor", dumpKeys), detail);
+  } catch (e) {
+    log(`[!] ${moduleName}: tier-4 anchor locator threw: ${e}`);
+    return false;
+  }
+  const settle = (installed) => {
+    if (installed)
+      claimForTier4Install(moduleName);
+    return installed;
+  };
+  if (!isThenable(result))
+    return settle(result === true);
+  return result.then((installed) => settle(installed === true), (e) => {
+    log(`[!] ${moduleName}: tier-4 anchor locator threw: ${e}`);
+    return false;
+  });
+}
+function startTier4Once(moduleName, dumpKeys, detail) {
+  const existing = tier4Runs.get(moduleName);
+  if (existing !== void 0)
+    return existing;
+  if (tier4Runner === null)
+    return null;
+  const run = invokeTier4Runner(tier4Runner, moduleName, dumpKeys, detail);
+  tier4Runs.set(moduleName, run);
+  return run;
+}
+function startTier4InParallelWithPattern(moduleName, hooker, dumpKeys) {
+  if (hooker.found_ssl_log_secret !== false)
+    return false;
+  if (keylogHookOwners.has(moduleName))
+    return false;
+  if (tier4Runner === null)
+    return false;
+  devlog(`[bssl] ${moduleName}: symbol tier missed; starting anchor-locator in parallel with the running pattern scan`);
+  const run = startTier4Once(moduleName, dumpKeys);
+  if (isThenable(run)) {
+    run.then((installed) => {
+      if (!installed)
+        devlog(`[bssl] ${moduleName}: parallel anchor-locator missed; waiting for the pattern scan to settle`);
+    });
+  }
+  return true;
+}
+function onAllKeylogTiersMissed(moduleName, dumpKeys, report) {
+  if (reportedModules.has(moduleName))
+    return;
+  reportedModules.add(moduleName);
+  if (keylogHookOwners.has(moduleName))
+    return;
+  const { detail, pairipDisabled } = report;
+  const run = pairipDisabled ? null : startTier4Once(moduleName, dumpKeys, detail);
+  if (run === null) {
+    warnTotalMiss(moduleName, detail, false);
+    return;
+  }
+  if (!isThenable(run)) {
+    reportTier4Outcome(moduleName, detail, run);
+    return;
+  }
+  return run.then((installed) => reportTier4Outcome(moduleName, detail, installed));
+}
+var FORCED_ANCHOR_ONLY_DETAIL = "forced by --boringssl-anchor-only";
+function runForcedAnchorTier(moduleName, dumpKeys, trySymbolTier) {
+  let symbolInstalled = false;
+  try {
+    symbolInstalled = trySymbolTier();
+  } catch (e) {
+    log(`[!] ${moduleName}: symbol tier threw under --boringssl-anchor-only: ${e}`);
+  }
+  if (!symbolInstalled)
+    return onAllKeylogTiersMissed(moduleName, dumpKeys, { detail: FORCED_ANCHOR_ONLY_DETAIL, pairipDisabled: false });
+}
+
+// agent/shared/call_abi.ts
+init_node_globals();
+var moduleAbi = /* @__PURE__ */ new Map();
+function setModuleCallAbi(moduleName, abi) {
+  moduleAbi.set(moduleName.toLowerCase(), abi);
+}
+function hostCallAbi() {
+  if (Process.arch === "arm64")
+    return "aarch64";
+  if (Process.arch === "x64")
+    return Process.platform === "windows" ? "win64" : "sysv";
+  return null;
+}
+function callAbiForModule(moduleName) {
+  return moduleAbi.get(moduleName.toLowerCase()) ?? hostCallAbi();
+}
+function argAt(ctx, abi, idx) {
+  if (abi === "aarch64") {
+    const c = ctx;
+    if (idx < 8)
+      return [c.x0, c.x1, c.x2, c.x3, c.x4, c.x5, c.x6, c.x7][idx];
+    return c.sp.add((idx - 8) * 8).readPointer();
+  } else if (abi === "win64") {
+    const c = ctx;
+    if (idx < 4)
+      return [c.rcx, c.rdx, c.r8, c.r9][idx];
+    return c.rsp.add(40 + (idx - 4) * 8).readPointer();
+  } else {
+    const c = ctx;
+    if (idx < 6)
+      return [c.rdi, c.rsi, c.rdx, c.rcx, c.r8, c.r9][idx];
+    return c.rsp.add(8 + (idx - 6) * 8).readPointer();
+  }
+}
+var MAX_SECRET_LEN2 = 64;
+function win64SpanIsByReference(spanSize) {
+  return spanSize !== null && spanSize > 0 && spanSize <= MAX_SECRET_LEN2;
+}
+function readSslLogSecretCall(args, ctx, abi) {
+  if (abi === null) {
+    return { ssl: args[0], label: args[1], data: args[2], len: args[3].toUInt32() };
+  }
+  const ssl = argAt(ctx, abi, 0);
+  const label = argAt(ctx, abi, 1);
+  const a2 = argAt(ctx, abi, 2);
+  if (abi !== "win64") {
+    return { ssl, label, data: a2, len: argAt(ctx, abi, 3).toUInt32() };
+  }
+  let spanSize = null;
+  try {
+    spanSize = a2.add(8).readU64().toNumber();
+  } catch (_e) {
+  }
+  if (win64SpanIsByReference(spanSize)) {
+    return { ssl, label, data: a2.readPointer(), len: spanSize };
+  }
+  return { ssl, label, data: a2, len: argAt(ctx, abi, 3).toUInt32() };
+}
+
+// agent/shared/x64_xref.ts
+init_node_globals();
+var LEA_ARG1_PREFIX = {
+  win64: "48 8d 15",
+  sysv: "48 8d 35"
+};
+var CALL_SEARCH_WINDOW = 64;
+var LEA_RIP_LEN = 7;
+function findRipLeaRefs(code4, codeVa, targets2, scanEnd = code4.length) {
+  const out = [];
+  const end = Math.min(scanEnd, code4.length - LEA_RIP_LEN + 1);
+  for (let k = code4.indexOf(141, 1); k !== -1 && k - 1 < end; k = code4.indexOf(141, k + 1)) {
+    const i = k - 1;
+    const rex = code4[i];
+    if (rex !== 72 && rex !== 76)
+      continue;
+    const modrm = code4[i + 2];
+    if ((modrm & 199) !== 5)
+      continue;
+    const disp = code4[i + 3] | code4[i + 4] << 8 | code4[i + 5] << 16 | code4[i + 6] << 24;
+    const site = codeVa + i;
+    const target = site + LEA_RIP_LEN + disp;
+    if (!targets2.has(target))
+      continue;
+    const reg = (modrm >> 3 & 7) + (rex === 76 ? 8 : 0);
+    out.push({ site, target, reg });
+  }
+  return out;
+}
+function firstCallAfter(code4, codeVa, leaOff, lo, hi, window = CALL_SEARCH_WINDOW) {
+  const start = leaOff + LEA_RIP_LEN;
+  const end = Math.min(start + window, code4.length - 5);
+  for (let j = start; j < end; j++) {
+    if (code4[j] !== 232)
+      continue;
+    const rel = code4[j + 1] | code4[j + 2] << 8 | code4[j + 3] << 16 | code4[j + 4] << 24;
+    const callee = codeVa + j + 5 + rel;
+    if (callee >= lo && callee < hi)
+      return callee;
+  }
+  return null;
+}
+var X64_REG = { rax: 0, rcx: 1, rdx: 2, rbx: 3, rsp: 4, rbp: 5, rsi: 6, rdi: 7 };
+var MIN_FIELD_OFFSET = 8;
+var MAX_CTX_OFFSET = 1024;
+var MAX_CB_OFFSET = 16384;
+function decodeMemOperand(code4, i, opcode) {
+  if (i + 3 > code4.length)
+    return null;
+  const rex = code4[i];
+  if ((rex & 248) !== 72 || (rex & 2) !== 0)
+    return null;
+  if (code4[i + 1] !== opcode)
+    return null;
+  const modrm = code4[i + 2];
+  const mod = modrm >> 6;
+  const rm = modrm & 7;
+  if (mod === 0 || mod === 3 || rm === 4)
+    return null;
+  const reg = (modrm >> 3 & 7) + (rex & 4 ? 8 : 0);
+  const base = rm + (rex & 1 ? 8 : 0);
+  let disp;
+  let len;
+  if (mod === 1) {
+    if (i + 4 > code4.length)
+      return null;
+    disp = code4[i + 3] << 24 >> 24;
+    len = 4;
+  } else {
+    if (i + 7 > code4.length)
+      return null;
+    disp = code4[i + 3] | code4[i + 4] << 8 | code4[i + 5] << 16 | code4[i + 6] << 24;
+    len = 7;
+  }
+  return { reg, base, disp, len };
+}
+function decodeMovRegReg(code4, i) {
+  if (i + 3 > code4.length)
+    return null;
+  const rex = code4[i];
+  if ((rex & 248) !== 72)
+    return null;
+  const op = code4[i + 1];
+  const modrm = code4[i + 2];
+  if (modrm >> 6 !== 3 || op !== 137 && op !== 139)
+    return null;
+  const r = (modrm >> 3 & 7) + (rex & 4 ? 8 : 0);
+  const m2 = (modrm & 7) + (rex & 1 ? 8 : 0);
+  return op === 137 ? [m2, r, 3] : [r, m2, 3];
+}
+function decodeX64CtxKeylogOffsets(code4, sslReg) {
+  const sslRegs = /* @__PURE__ */ new Set([sslReg]);
+  for (let i = 0; i + 3 <= code4.length; i++) {
+    const mv = decodeMovRegReg(code4, i);
+    if (mv !== null && sslRegs.has(mv[1]))
+      sslRegs.add(mv[0]);
+    const load = decodeMemOperand(code4, i, 139);
+    if (load === null || !sslRegs.has(load.base))
+      continue;
+    if (load.disp < MIN_FIELD_OFFSET || load.disp > MAX_CTX_OFFSET)
+      continue;
+    const ctxReg = load.reg;
+    const from2 = i + load.len;
+    for (let j = from2; j < Math.min(from2 + 24, code4.length); j++) {
+      const cmp = decodeMemOperand(code4, j, 131);
+      if (cmp !== null && cmp.reg % 8 === 7 && cmp.base === ctxReg && j + cmp.len < code4.length && code4[j + cmp.len] === 0) {
+        if (cmp.disp >= MIN_FIELD_OFFSET && cmp.disp <= MAX_CB_OFFSET) {
+          return { ctxOff: load.disp, cbOff: cmp.disp };
+        }
+      }
+      const ld2 = decodeMemOperand(code4, j, 139);
+      if (ld2 !== null && ld2.base === ctxReg && ld2.disp >= MIN_FIELD_OFFSET && ld2.disp <= MAX_CB_OFFSET) {
+        const t = j + ld2.len;
+        if (t + 3 <= code4.length && (code4[t] & 248) === 72 && code4[t + 1] === 133) {
+          const m2 = code4[t + 2];
+          const rexT = code4[t];
+          const r1 = (m2 >> 3 & 7) + (rexT & 4 ? 8 : 0);
+          const r2 = (m2 & 7) + (rexT & 1 ? 8 : 0);
+          if (m2 >> 6 === 3 && r1 === ld2.reg && r2 === ld2.reg) {
+            return { ctxOff: load.disp, cbOff: ld2.disp };
+          }
+        }
+      }
+    }
+  }
+  return null;
+}
+
+// agent/util/proc_maps.ts
+init_node_globals();
+function tryGlobalExport(name) {
+  try {
+    return Module.getGlobalExportByName(name);
+  } catch (_e) {
+    return null;
+  }
+}
+function readProcSelfMaps() {
+  try {
+    const openPtr = tryGlobalExport("open");
+    const readPtr = tryGlobalExport("read");
+    const closePtr = tryGlobalExport("close");
+    if (!openPtr || !readPtr || !closePtr)
+      return null;
+    const open = new NativeFunction(openPtr, "int", ["pointer", "int"]);
+    const read2 = new NativeFunction(readPtr, "long", ["int", "pointer", "ulong"]);
+    const close = new NativeFunction(closePtr, "int", ["int"]);
+    const path = Memory.allocUtf8String("/proc/self/maps");
+    const fd = open(
+      path,
+      0
+      /* O_RDONLY */
+    );
+    if (fd < 0)
+      return null;
+    const chunkSize = 65536;
+    const buf = Memory.alloc(chunkSize);
+    const chunks = [];
+    let total = 0;
+    const cap = 4 * 1024 * 1024;
+    while (total < cap) {
+      const n = read2(fd, buf, chunkSize).valueOf();
+      if (n <= 0)
+        break;
+      const chunk = buf.readUtf8String(n);
+      if (chunk === null)
+        break;
+      chunks.push(chunk);
+      total += n;
+    }
+    close(fd);
+    return chunks.join("");
+  } catch (e) {
+    devlog(`[maps] readProcSelfMaps error: ${e}`);
+    return null;
+  }
+}
+function parseMapsPeImages(maps) {
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const line of maps.split("\n")) {
+    const parts = line.trim().split(/\s+/);
+    if (parts.length < 6)
+      continue;
+    const [range, perms, offset] = parts;
+    if (!perms.startsWith("r"))
+      continue;
+    if (!/^0+$/.test(offset))
+      continue;
+    const path = parts.slice(5).join(" ");
+    if (!/\.(dll|exe)$/i.test(path))
+      continue;
+    if (seen.has(path))
+      continue;
+    seen.add(path);
+    const name = path.split(/[\\/]/).pop() ?? path;
+    out.push({ base: "0x" + range.split("-")[0], path, name });
+  }
+  return out;
+}
+function peSizeOfImage(base) {
+  try {
+    if (base.readU16() !== 23117)
+      return null;
+    const nt = base.add(base.add(60).readU32());
+    if (nt.readU32() !== 17744)
+      return null;
+    return nt.add(24 + 56).readU32();
+  } catch (_e) {
+    return null;
+  }
+}
+function peModuleLike(name, base, path) {
+  const size = peSizeOfImage(base);
+  if (size === null || size === 0)
+    return null;
+  const end = base.add(size);
+  return {
+    name,
+    base,
+    size,
+    path,
+    enumerateRanges(protection) {
+      const out = [];
+      for (const r of Process.enumerateRanges(protection)) {
+        const rEnd = r.base.add(r.size);
+        if (rEnd.compare(base) <= 0 || r.base.compare(end) >= 0)
+          continue;
+        const lo = r.base.compare(base) < 0 ? base : r.base;
+        const hi = rEnd.compare(end) > 0 ? end : rEnd;
+        out.push({ ...r, base: lo, size: hi.sub(lo).toInt32() });
+      }
+      return out;
+    }
+  };
+}
+function listPeImages() {
+  const maps = readProcSelfMaps();
+  if (!maps)
+    return [];
+  const out = [];
+  for (const e of parseMapsPeImages(maps)) {
+    const m2 = peModuleLike(e.name, ptr(e.base), e.path);
+    if (m2)
+      out.push(m2);
+  }
+  return out;
+}
+function findModuleOrPeImage(moduleName) {
+  try {
+    const m2 = Process.findModuleByName(moduleName);
+    if (m2 !== null)
+      return m2;
+  } catch (_e) {
+  }
+  const maps = readProcSelfMaps();
+  if (!maps)
+    return null;
+  const wanted = moduleName.toLowerCase();
+  for (const e of parseMapsPeImages(maps)) {
+    if (e.name.toLowerCase() === wanted)
+      return peModuleLike(e.name, ptr(e.base), e.path);
+  }
+  return null;
+}
+
+// agent/shared/win64_thunk.ts
+init_node_globals();
+var XMM_SAVE_BYTES = 10 * 16;
+var FRAME_BYTES = XMM_SAVE_BYTES + 8;
+function u32le(v) {
+  return [v & 255, v >>> 8 & 255, v >>> 16 & 255, v >>> 24 & 255];
+}
+function movdquRsp(n, off, store) {
+  const modrm = 132 | (n & 7) << 3;
+  const rex = n >= 8 ? [68] : [];
+  return [243, ...rex, 15, store ? 127 : 111, modrm, 36, ...u32le(off)];
+}
+function win64ToSysvThunkBytes(target, nargs) {
+  if (nargs < 0 || nargs > 4)
+    throw new Error(`win64 thunk supports 0..4 args, got ${nargs}`);
+  const out = [];
+  out.push(87, 86);
+  out.push(72, 129, 236, ...u32le(FRAME_BYTES));
+  for (let n = 6; n <= 15; n++)
+    out.push(...movdquRsp(n, (n - 6) * 16, true));
+  if (nargs > 0)
+    out.push(72, 137, 207);
+  if (nargs > 1)
+    out.push(72, 137, 214);
+  if (nargs > 2)
+    out.push(76, 137, 194);
+  if (nargs > 3)
+    out.push(76, 137, 201);
+  let t = BigInt(target);
+  const imm = [];
+  for (let i = 0; i < 8; i++) {
+    imm.push(Number(t & 0xffn));
+    t >>= 8n;
+  }
+  out.push(72, 184, ...imm);
+  out.push(255, 208);
+  for (let n = 6; n <= 15; n++)
+    out.push(...movdquRsp(n, (n - 6) * 16, false));
+  out.push(72, 129, 196, ...u32le(FRAME_BYTES));
+  out.push(94, 95, 195);
+  return out;
+}
+var rootedThunks = [];
+function makeWin64ToSysvThunk(target, nargs) {
+  const bytes = win64ToSysvThunkBytes(target.toString(), nargs);
+  const mem = Memory.alloc(Process.pageSize);
+  Memory.patchCode(mem, bytes.length, (code4) => {
+    code4.writeByteArray(bytes);
+  });
+  rootedThunks.push(mem);
+  return mem;
+}
+
+// agent/shared/eh_frame.ts
+init_node_globals();
+var PT_LOAD = 1;
+var PT_GNU_EH_FRAME = 1685382480;
+var DW_EH_PE_udata4 = 3;
+var DW_EH_PE_datarel_sdata4 = 59;
+function searchSortedStarts(count, startAt, addr) {
+  let lo = 0, hi = count - 1, found = -1;
+  while (lo <= hi) {
+    const mid = lo + hi >>> 1;
+    if (startAt(mid) <= addr) {
+      found = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return found;
+}
+var EhFrameFunctionTable = class _EhFrameFunctionTable {
+  hdr;
+  count;
+  constructor(hdr, count) {
+    this.hdr = hdr;
+    this.count = count;
+  }
+  static fromModule(mod) {
+    try {
+      const hdr = ehFrameHdrOf(mod.base);
+      if (hdr === null)
+        return null;
+      const [version, countEnc, tableEnc] = [hdr.readU8(), hdr.add(2).readU8(), hdr.add(3).readU8()];
+      if (version !== 1 || countEnc !== DW_EH_PE_udata4 || tableEnc !== DW_EH_PE_datarel_sdata4)
+        return null;
+      const count = hdr.add(8).readU32();
+      return count > 0 ? new _EhFrameFunctionTable(hdr, count) : null;
+    } catch (_e) {
+      return null;
+    }
+  }
+  entryStart(i) {
+    return this.hdr.add(12 + i * 8).readS32();
+  }
+  /** Bounds of the function containing `addr`, or null when no FDE covers it. */
+  bounds(addr) {
+    try {
+      const rel = addr.sub(this.hdr).toInt32();
+      const i = searchSortedStarts(this.count, (k) => this.entryStart(k), rel);
+      if (i < 0)
+        return null;
+      const start = this.hdr.add(this.entryStart(i));
+      const end = this.fdeEnd(i, start);
+      if (end !== null && addr.compare(end) >= 0)
+        return null;
+      return { start, end };
+    } catch (_e) {
+      return null;
+    }
+  }
+  /** FDE: u32 length, s32 CIE pointer, pc_begin (pcrel sdata4), pc_range. */
+  fdeEnd(i, start) {
+    const fde = this.hdr.add(this.hdr.add(12 + i * 8 + 4).readS32());
+    const pcBeginField = fde.add(8);
+    if (fde.readU32() === 4294967295 || !pcBeginField.add(pcBeginField.readS32()).equals(start))
+      return null;
+    return start.add(fde.add(12).readU32());
+  }
+};
+function ehFrameHdrOf(base) {
+  if (base.readU32() !== 1179403647)
+    return null;
+  const phoff = base.add(32).readU64().toNumber();
+  const phentsize = base.add(54).readU16();
+  const phnum = base.add(56).readU16();
+  let ehVaddr = -1, minLoad = Number.MAX_SAFE_INTEGER;
+  for (let i = 0; i < phnum; i++) {
+    const ph = base.add(phoff + i * phentsize);
+    const type = ph.readU32();
+    const vaddr = ph.add(16).readU64().toNumber();
+    if (type === PT_LOAD)
+      minLoad = Math.min(minLoad, vaddr);
+    if (type === PT_GNU_EH_FRAME)
+      ehVaddr = vaddr;
+  }
+  if (ehVaddr < 0 || minLoad === Number.MAX_SAFE_INTEGER)
+    return null;
+  return base.add(ehVaddr - (minLoad - minLoad % 4096));
+}
+var moduleKey = (mod) => `${mod.name}@${mod.base}+${mod.size}`;
+var tablesByModule = /* @__PURE__ */ new Map();
+function ehFrameTableFor(mod) {
+  const key = moduleKey(mod);
+  if (!tablesByModule.has(key))
+    tablesByModule.set(key, EhFrameFunctionTable.fromModule(mod));
+  return tablesByModule.get(key);
+}
+var LANDING_PAD_MAX_SCAN_BYTES = 65536;
+var LANDING_PAD_FIRST_CHUNK_BYTES = 4096;
+var BTI_BEFORE_PACIASP_MAX_WORDS = 16;
+var alignDown4 = (x) => Math.floor(x / 4) * 4;
+var alignUp4 = (x) => Math.ceil(x / 4) * 4;
+function scanLandingPadStart(readU324, addr, lowerBound, maxBack) {
+  const floor = alignUp4(Math.max(lowerBound, addr - maxBack));
+  for (let at = alignDown4(addr); at >= floor; at -= 4) {
+    const w = readU324(at);
+    if (w === null)
+      return null;
+    if (w >>> 0 === BTI_C)
+      return { entry: at, pad: at };
+    if (w >>> 0 === PACIASP)
+      return { entry: btiEntryBeforePaciasp(readU324, at, floor) ?? at, pad: at };
+  }
+  return null;
+}
+function btiEntryBeforePaciasp(readU324, paciasp, floor) {
+  for (let at = paciasp - 4; at >= floor && at >= paciasp - 4 * BTI_BEFORE_PACIASP_MAX_WORDS; at -= 4) {
+    const w = readU324(at);
+    if (w === null || endsFallThrough(w))
+      return null;
+    if (w >>> 0 === BTI_C)
+      return at;
+  }
+  return null;
+}
+function findLandingPadEnd(readU324, addr, upperBound, maxForward = LANDING_PAD_MAX_SCAN_BYTES) {
+  const limit = Math.min(upperBound, addr + maxForward);
+  for (let at = alignDown4(addr) + 4; at + 4 <= limit; at += 4) {
+    const w = readU324(at);
+    if (w === null)
+      return null;
+    if (isLandingPadWord(w))
+      return at;
+  }
+  return null;
+}
+var ChunkedWordReader = class {
+  readBytes;
+  length;
+  lo;
+  hi;
+  backChunk;
+  forwardChunk;
+  chunks = [];
+  constructor(readBytes4, length, origin, firstChunk = LANDING_PAD_FIRST_CHUNK_BYTES) {
+    this.readBytes = readBytes4;
+    this.length = length;
+    this.lo = this.hi = origin;
+    this.backChunk = this.forwardChunk = firstChunk;
+  }
+  read = (at) => {
+    if (at < 0 || at + 4 > this.length)
+      return null;
+    while (at < this.lo)
+      if (!this.load(Math.max(0, this.lo - this.nextBackChunk()), this.lo))
+        return null;
+    while (at + 4 > this.hi)
+      if (!this.load(this.hi, Math.min(this.length, this.hi + this.nextForwardChunk())))
+        return null;
+    const chunk = this.chunks.find((c) => at >= c.from && at + 4 <= c.from + c.view.byteLength);
+    return chunk.view.getUint32(at - chunk.from, true);
+  };
+  nextBackChunk() {
+    const size = this.backChunk;
+    this.backChunk *= 2;
+    return size;
+  }
+  nextForwardChunk() {
+    const size = this.forwardChunk;
+    this.forwardChunk *= 2;
+    return size;
+  }
+  /** Load [from, to) (adjacent to the loaded span) and widen the span; false when unreadable. */
+  load(from2, to) {
+    const buf = this.readBytes(from2, to - from2);
+    if (buf === null)
+      return false;
+    this.chunks.push({ from: from2, view: new DataView(buf) });
+    this.lo = Math.min(this.lo, from2);
+    this.hi = Math.max(this.hi, to);
+    return true;
+  }
+};
+var IntervalCache = class {
+  entries = [];
+  get size() {
+    return this.entries.length;
+  }
+  find(x) {
+    const i = searchSortedStarts(this.entries.length, (k) => this.entries[k].lo, x);
+    return i >= 0 && x < this.entries[i].hi ? this.entries[i].value : null;
+  }
+  /** Insert [lo, hi); ignored when empty or overlapping a cached interval. */
+  add(lo, hi, value) {
+    if (hi <= lo)
+      return;
+    const i = searchSortedStarts(this.entries.length, (k) => this.entries[k].lo, lo);
+    const prev = this.entries[i], next = this.entries[i + 1];
+    if (prev && prev.hi > lo || next && next.lo < hi)
+      return;
+    this.entries.splice(i + 1, 0, { lo, hi, value });
+  }
+};
+var LandingPadScanner = class {
+  readBytes;
+  found = new IntervalCache();
+  constructor(readBytes4) {
+    this.readBytes = readBytes4;
+  }
+  bounds(off, execSpan) {
+    const cached = this.found.find(off);
+    if (cached !== null)
+      return cached;
+    const span = execSpan();
+    if (span === null)
+      return null;
+    const aligned = alignDown4(off);
+    const low = Math.max(span.lo, aligned - LANDING_PAD_MAX_SCAN_BYTES);
+    const high = Math.min(span.hi, aligned + LANDING_PAD_MAX_SCAN_BYTES + 4);
+    if (aligned < low || aligned >= high)
+      return null;
+    const length = high - low, site = aligned - low;
+    const reader = new ChunkedWordReader((from2, len) => this.readBytes(low + from2, len), length, site);
+    const start = scanLandingPadStart(reader.read, site, 0, LANDING_PAD_MAX_SCAN_BYTES);
+    if (start === null)
+      return null;
+    const end = findLandingPadEnd(reader.read, site, length);
+    const bounds = { start: low + start.entry, end: end === null ? null : low + end };
+    if (end !== null)
+      this.found.add(low + start.pad, low + end, bounds);
+    return bounds;
+  }
+};
+var LandingPadFunctionBounds = class {
+  mod;
+  scanner;
+  execRanges = null;
+  constructor(mod) {
+    this.mod = mod;
+    this.scanner = new LandingPadScanner((from2, len) => mod.base.add(from2).readByteArray(len));
+  }
+  bounds(addr) {
+    try {
+      const base = this.mod.base;
+      if (addr.compare(base) < 0 || addr.compare(base.add(this.mod.size)) >= 0)
+        return null;
+      const found = this.scanner.bounds(addr.sub(base).toUInt32(), () => this.execSpan(addr));
+      if (found === null)
+        return null;
+      return { start: base.add(found.start), end: found.end === null ? null : base.add(found.end) };
+    } catch (_e) {
+      return null;
+    }
+  }
+  /** The r-x range holding `addr` as module offsets clipped to the module, or null. */
+  execSpan(addr) {
+    this.execRanges ??= this.mod.enumerateRanges("r-x");
+    const range = this.execRanges.find((r) => addr.compare(r.base) >= 0 && addr.compare(r.base.add(r.size)) < 0);
+    if (range === void 0)
+      return null;
+    const base = this.mod.base, rangeEnd = range.base.add(range.size);
+    const lo = range.base.compare(base) > 0 ? range.base.sub(base).toUInt32() : 0;
+    const hi = rangeEnd.compare(base.add(this.mod.size)) < 0 ? rangeEnd.sub(base).toUInt32() : this.mod.size;
+    return { lo, hi };
+  }
+};
+var FallbackFunctionBounds = class {
+  primary;
+  fallback;
+  constructor(primary, fallback) {
+    this.primary = primary;
+    this.fallback = fallback;
+  }
+  bounds(addr) {
+    const primary = this.primary.bounds(addr);
+    if (primary !== null && primary.end !== null)
+      return primary;
+    const fallback = this.fallback.bounds(addr);
+    if (primary === null)
+      return fallback;
+    return fallback !== null && fallback.end !== null ? { start: primary.start, end: fallback.end } : primary;
+  }
+};
+function composeFunctionBounds(table, fallback) {
+  return table === null ? fallback : new FallbackFunctionBounds(table, fallback);
+}
+var functionBoundsByModule = /* @__PURE__ */ new Map();
+var NO_FUNCTION_BOUNDS = { bounds: () => null };
+function functionBoundsFor(mod) {
+  const key = moduleKey(mod);
+  let source = functionBoundsByModule.get(key);
+  if (source === void 0) {
+    source = Process.arch === "arm64" ? composeFunctionBounds(ehFrameTableFor(mod), new LandingPadFunctionBounds(mod)) : ehFrameTableFor(mod) ?? NO_FUNCTION_BOUNDS;
+    functionBoundsByModule.set(key, source);
+  }
+  return source;
+}
+
+// agent/shared/boringssl_anchor_locator.ts
+var BORINGSSL_KEYLOG_LABELS = [
+  "CLIENT_RANDOM",
+  "CLIENT_HANDSHAKE_TRAFFIC_SECRET",
+  "SERVER_HANDSHAKE_TRAFFIC_SECRET",
+  "CLIENT_TRAFFIC_SECRET_0",
+  "SERVER_TRAFFIC_SECRET_0",
+  "EXPORTER_SECRET"
+];
+var MIN_CTX_FIELD_OFFSET = 8;
+var MAX_CTX_FIELD_OFFSET = 16384;
+var PROLOGUE_WORDS = 12;
+function decodeCtxKeylogOffsets(words) {
+  let ctxOff = null;
+  let reg1 = -1;
+  let i1 = -1;
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i] >>> 0;
+    if (isLDRimmU64(w) && regRn(w) === 0) {
+      ctxOff = decodeLDRU64Imm(w);
+      reg1 = regRd(w);
+      i1 = i;
+      break;
+    }
+  }
+  if (ctxOff === null || reg1 === 0)
+    return null;
+  if (ctxOff < MIN_CTX_FIELD_OFFSET || ctxOff > MAX_CTX_FIELD_OFFSET)
+    return null;
+  let cbOff = null;
+  let reg2 = -1;
+  let i2 = -1;
+  for (let i = i1 + 1; i < words.length; i++) {
+    const w = words[i] >>> 0;
+    if (isLDRimmU64(w) && regRn(w) === reg1) {
+      cbOff = decodeLDRU64Imm(w);
+      reg2 = regRd(w);
+      i2 = i;
+      break;
+    }
+  }
+  if (cbOff === null)
+    return null;
+  if (cbOff < MIN_CTX_FIELD_OFFSET || cbOff > MAX_CTX_FIELD_OFFSET)
+    return null;
+  for (let i = i2 + 1; i < words.length; i++) {
+    const w = words[i] >>> 0;
+    if ((isCBZ64(w) || isCBNZ64(w)) && regRd(w) === reg2) {
+      return { ctxOff, cbOff };
+    }
+  }
+  return null;
+}
+var SSL_LOG_SECRET_MAX_WORDS = 256;
+var MIN_S3_OFFSET = 8;
+var MAX_S3_OFFSET = 1024;
+var MIN_CLIENT_RANDOM_OFFSET = 16;
+var MAX_CLIENT_RANDOM_OFFSET = 512;
+var CLIENT_RANDOM_ADD_WINDOW = 16;
+var LENGTH_ARG_WINDOW = 4;
+var LENGTH_ARG_REG = 2;
+var SSL3_RANDOM_SIZE2 = 32;
+var LAST_CALLER_SAVED_REG = 18;
+function isCallWord(w) {
+  return isBL(w) || isBLR(w) || isBLRAuth(w);
+}
+function clobbersCallerSavedReg(w, reg) {
+  return isCallWord(w) && reg <= LAST_CALLER_SAVED_REG;
+}
+var SSL_ARG_MASK = 1;
+var XZR = 31;
+function holdsSsl(aliasMask, reg) {
+  return reg < XZR && (aliasMask >>> reg & 1) === 1;
+}
+function sslAliasesAfter(aliasMask, w) {
+  const source = movRegSource(w);
+  const dest = movRegDest(w);
+  let next = aliasMask;
+  for (let reg = 0; reg < XZR; reg++) {
+    if (holdsSsl(next, reg) && (writesReg(w, reg) || clobbersCallerSavedReg(w, reg)))
+      next &= ~(1 << reg);
+  }
+  if (source !== null && dest !== null && dest !== XZR && holdsSsl(aliasMask, source))
+    next |= 1 << dest;
+  return next >>> 0;
+}
+function successorIndices(words, i) {
+  const w = words[i] >>> 0;
+  const successors = endsFallThrough(w) ? [] : [i + 1];
+  const branch = directBranchOffset(w);
+  if (branch !== null)
+    successors.push(i + branch / 4);
+  return successors.filter((s) => s >= 0 && s < words.length);
+}
+function sslAliasesAtEachWord(words) {
+  const before = new Array(words.length).fill(null);
+  if (words.length === 0)
+    return before;
+  before[0] = SSL_ARG_MASK;
+  const worklist = [0];
+  while (worklist.length > 0) {
+    const i = worklist.pop();
+    const after = sslAliasesAfter(before[i], words[i] >>> 0);
+    for (const s of successorIndices(words, i)) {
+      const merged = before[s] === null ? after : (before[s] & after) >>> 0;
+      if (merged !== before[s]) {
+        before[s] = merged;
+        worklist.push(s);
+      }
+    }
+  }
+  return before;
+}
+function s3LoadOffset(w, aliasMask, ctxOff) {
+  if (!isLDRimmU64(w) || !holdsSsl(aliasMask, regRn(w)))
+    return null;
+  const off = decodeLDRU64Imm(w);
+  if (off === ctxOff || off < MIN_S3_OFFSET || off > MAX_S3_OFFSET)
+    return null;
+  return off;
+}
+function findClientRandomAdd(words, loadIndex, s3Reg) {
+  const last = Math.min(words.length - 1, loadIndex + CLIENT_RANDOM_ADD_WINDOW);
+  for (let i = loadIndex + 1; i <= last; i++) {
+    const w = words[i] >>> 0;
+    if (isADDimm64(w) && regRn(w) === s3Reg) {
+      const crOff = decodeADDImm12(w);
+      if (crOff >= MIN_CLIENT_RANDOM_OFFSET && crOff <= MAX_CLIENT_RANDOM_OFFSET)
+        return { crOff, addIndex: i };
+    }
+    if (writesReg(w, s3Reg) || clobbersCallerSavedReg(w, s3Reg) || endsFallThrough(w))
+      return null;
+  }
+  return null;
+}
+function lengthArgBetween(words, from2, to) {
+  for (let i = from2; i <= Math.min(to, words.length - 1); i++) {
+    if (movzW(words[i] >>> 0, LENGTH_ARG_REG) === SSL3_RANDOM_SIZE2)
+      return true;
+  }
+  return false;
+}
+function collectSslLayoutCandidates(words, ctxOff) {
+  const window = words.slice(0, SSL_LOG_SECRET_MAX_WORDS);
+  const aliasesAt = sslAliasesAtEachWord(window);
+  const found = [];
+  for (let i = 0; i < window.length; i++) {
+    const w = window[i] >>> 0;
+    const s3Off = aliasesAt[i] === null ? null : s3LoadOffset(w, aliasesAt[i], ctxOff);
+    const add = s3Off === null ? null : findClientRandomAdd(window, i, regRd(w));
+    if (s3Off !== null && add !== null) {
+      const lengthArgSeen = lengthArgBetween(window, i, add.addIndex + LENGTH_ARG_WINDOW);
+      found.push({ s3Off, crOff: add.crOff, lengthArgSeen });
+    }
+  }
+  return found;
+}
+function decodeSslLogSecretLayout(words, ctxOff) {
+  const candidates = collectSslLayoutCandidates(words, ctxOff);
+  if (candidates.length === 0)
+    return null;
+  const { s3Off, crOff } = candidates[0];
+  if (candidates.some((c) => c.s3Off !== s3Off || c.crOff !== crOff))
+    return null;
+  return { s3Off, crOff, lengthArgSeen: candidates.some((c) => c.lengthArgSeen) };
+}
+function pickAgreedCallee(pairs) {
+  const perLabel = /* @__PURE__ */ new Map();
+  for (const { label, callee } of pairs) {
+    if (!perLabel.has(label))
+      perLabel.set(label, callee);
+  }
+  const votes = /* @__PURE__ */ new Map();
+  for (const callee of perLabel.values()) {
+    votes.set(callee, (votes.get(callee) ?? 0) + 1);
+  }
+  let best = null;
+  let bestCount = 0;
+  let tied = false;
+  for (const [callee, count] of votes) {
+    if (count > bestCount) {
+      best = callee;
+      bestCount = count;
+      tied = false;
+    } else if (count === bestCount) {
+      tied = true;
+    }
+  }
+  return bestCount >= 2 && !tied ? best : null;
+}
+var rootedCallbacks = [];
+var writtenKeylogFields = /* @__PURE__ */ new Map();
+function restoreAnchorLocatorKeylogFields() {
+  let restored = 0;
+  for (const { field, cb } of writtenKeylogFields.values()) {
+    try {
+      if (!isWritable(field, Process.pointerSize))
+        continue;
+      const current = safeReadPointer(field);
+      if (current === null || !current.equals(cb))
+        continue;
+      field.writePointer(NULL);
+      restored++;
+    } catch (_e) {
+    }
+  }
+  writtenKeylogFields.clear();
+  return restored;
+}
+var loggedNonArm64 = false;
+function deriveOffsetsAt(addr) {
+  try {
+    const words = [];
+    for (let i = 0; i < PROLOGUE_WORDS; i++) {
+      const at = addr.add(i * 4);
+      if (!isReadable(at, 4))
+        return null;
+      words.push(at.readU32());
+    }
+    return decodeCtxKeylogOffsets(words);
+  } catch (e) {
+    devlog(`[anchor-locator] prologue decode failed: ${e}`);
+    return null;
+  }
+}
+function installViaCtxWrite(moduleName, fnAddr, offs, abi = null) {
+  const { ctxOff, cbOff } = offs;
+  let dropLogged = false;
+  const emitKeylogLine = (linePtr, ssl) => {
+    try {
+      if (linePtr.isNull())
+        return;
+      if (!claimKeylogHook(moduleName, "anchor")) {
+        if (!dropLogged) {
+          dropLogged = true;
+          devlog(`[anchor-locator] ${moduleName}: the ${keylogHookOwner(moduleName)} tier owns this module; dropping duplicate keylog lines`);
+        }
+        return;
+      }
+      const line = linePtr.readCString();
+      if (line)
+        sendKeylog(line, ssl, moduleName);
+    } catch (e) {
+      devlog(`[anchor-locator] ${moduleName}: keylog callback error: ${e}`);
+    }
+  };
+  const keylogCb = new NativeCallback(function(ssl, linePtr) {
+    emitKeylogLine(linePtr, ssl);
+  }, "void", ["pointer", "pointer"]);
+  rootedCallbacks.push(keylogCb);
+  const cbEntry = abi === "win64" && Process.platform !== "windows" ? makeWin64ToSysvThunk(keylogCb, 2) : keylogCb;
+  let installedOnce = false;
+  let vetoedOnce = false;
+  const hookedExisting = /* @__PURE__ */ new Set();
+  const hookExistingKeylogCallback = (fn) => {
+    const key = fn.toString();
+    if (hookedExisting.has(key))
+      return;
+    hookedExisting.add(key);
+    const range = Process.findRangeByAddress(fn);
+    if (range === null || !range.protection.includes("x")) {
+      log(`[-] ${moduleName}: ctx+0x${cbOff.toString(16)} holds ${fn}, which is not code; leaving it alone.`);
+      return;
+    }
+    try {
+      Interceptor.attach(fn, {
+        onEnter(args) {
+          emitKeylogLine(abi === null ? args[1] : argAt(this.context, abi, 1), abi === null ? args[0] : argAt(this.context, abi, 0));
+        }
+      });
+      log(`[*] ${moduleName}: the app already sets a keylog callback (${fn}); hooked it instead of replacing it`);
+    } catch (e) {
+      log(`[-] ${moduleName}: could not hook the app's keylog callback at ${fn}: ${e}`);
+    }
+  };
+  try {
+    Interceptor.attach(fnAddr, {
+      onEnter(args) {
+        try {
+          const ssl = abi === null ? args[0] : argAt(this.context, abi, 0);
+          if (ssl.isNull())
+            return;
+          const ctx = safeReadPointer(ssl.add(ctxOff));
+          if (ctx === null || ctx.isNull())
+            return;
+          const field = ctx.add(cbOff);
+          const current = safeReadPointer(field);
+          if (current !== null && current.equals(cbEntry))
+            return;
+          if (!isWritable(field, Process.pointerSize)) {
+            if (!vetoedOnce) {
+              vetoedOnce = true;
+              log(`[-] ${moduleName}: anchor-locator refused the keylog write \u2014 ctx+0x${cbOff.toString(16)} is not writable (offset likely wrong).`);
+            }
+            return;
+          }
+          if (current === null)
+            return;
+          if (!current.isNull()) {
+            hookExistingKeylogCallback(current);
+            return;
+          }
+          if (_isShuttingDownNow())
+            return;
+          field.writePointer(cbEntry);
+          writtenKeylogFields.set(field.toString(), { field, cb: cbEntry });
+          if (!installedOnce) {
+            installedOnce = true;
+            devlog(`[anchor-locator] ${moduleName}: wrote keylog_callback at ctx+0x${cbOff.toString(16)}`);
+          }
+        } catch (e) {
+          if (!vetoedOnce) {
+            vetoedOnce = true;
+            log(`[-] ${moduleName}: anchor-locator keylog install failed: ${e}`);
+          }
+        }
+      }
+    });
+  } catch (e) {
+    devlog(`[anchor-locator] ${moduleName}: Interceptor.attach (ctx-write) failed: ${e}`);
+    return false;
+  }
+  log(`[*] ${moduleName}: keylog hooks installed via anchor-locator (derived ctx offsets 0x${ctxOff.toString(16)}/0x${cbOff.toString(16)})`);
+  return true;
+}
+function installViaFieldDump(moduleName, fnAddr, dumpKeys, abi = null) {
+  try {
+    Interceptor.attach(fnAddr, {
+      onEnter(args) {
+        const c = readSslLogSecretCall(args, this.context, abi);
+        dumpKeys(c.label, c.ssl, c.data, c.len);
+      }
+    });
+  } catch (e) {
+    devlog(`[anchor-locator] ${moduleName}: Interceptor.attach (field dump) failed: ${e}`);
+    return false;
+  }
+  log(`[*] ${moduleName}: keylog hooks installed via anchor-locator (field dump)`);
+  return true;
+}
+function collectLabelVotes(labels, sitesPerLabel, firstCallee) {
+  const pairs = [];
+  labels.forEach((label, i) => {
+    for (const site of sitesPerLabel[i] ?? []) {
+      const callee = firstCallee(site);
+      if (callee !== null) {
+        pairs.push({ label, callee: callee.toString() });
+        break;
+      }
+    }
+  });
+  return pairs;
+}
+function codeMegabytes(mod) {
+  let bytes = 0;
+  for (const r of mod.enumerateRanges("r-x"))
+    bytes += r.size;
+  return (bytes / (1024 * 1024)).toFixed(1);
+}
+async function locateSslLogSecret(mod, moduleName) {
+  const modStart = mod.base;
+  const modEnd = mod.base.add(mod.size);
+  const started2 = Date.now();
+  devlog(`[anchor-locator] ${moduleName}: scanning ${codeMegabytes(mod)} MB of code for ${BORINGSSL_KEYLOG_LABELS.length} keylog label xrefs (background, non-blocking)`);
+  const strAddrs = await findAnchorStringsAsync(mod, BORINGSSL_KEYLOG_LABELS.map((l) => l + "\0"));
+  const labels = [];
+  const targets2 = [];
+  strAddrs.forEach((a, i) => {
+    if (a !== null) {
+      labels.push(BORINGSSL_KEYLOG_LABELS[i]);
+      targets2.push(a);
+    }
+  });
+  const sites = targets2.length > 0 ? await findStringLoadSitesAsync(mod, targets2) : [];
+  const pairs = collectLabelVotes(labels, sites, (site) => firstCallTargetForward(site, modEnd, modStart, modEnd));
+  devlog(`[anchor-locator] ${moduleName}: xref scan finished in ${Date.now() - started2} ms (${targets2.length} label string(s), ${pairs.length} resolved a call)`);
+  devlog(`[anchor-locator] ${moduleName}: votes ` + (pairs.map((p) => `${p.label}->${p.callee}`).join(", ") || "(none)"));
+  const agreed = pickAgreedCallee(pairs);
+  if (agreed === null) {
+    devlog(`[anchor-locator] ${moduleName}: no ssl_log_secret candidate agreed across >=2 labels (${pairs.length} label(s) resolved a call)`);
+    return null;
+  }
+  devlog(`[anchor-locator] ${moduleName}: ssl_log_secret candidate @ ${agreed} (agreed by ${pairs.filter((p) => p.callee === agreed).length}/${pairs.length} label xref(s))`);
+  return ptr(agreed);
+}
+var sslLogSecretByModule = /* @__PURE__ */ new Map();
+function locateSslLogSecretCached(mod, moduleName) {
+  const key = `${mod.name}@${mod.base}`;
+  let pending = sslLogSecretByModule.get(key);
+  if (pending === void 0) {
+    pending = locateSslLogSecret(mod, moduleName);
+    sslLogSecretByModule.set(key, pending);
+  }
+  return pending;
+}
+function sslLogSecretWordCount(mod, fnAddr) {
+  const bounds = ehFrameTableFor(mod)?.bounds(fnAddr) ?? null;
+  if (bounds === null || bounds.end === null || !bounds.start.equals(fnAddr))
+    return SSL_LOG_SECRET_MAX_WORDS;
+  const words = bounds.end.sub(fnAddr).toInt32() / 4;
+  return Math.max(1, Math.min(SSL_LOG_SECRET_MAX_WORDS, Math.floor(words)));
+}
+function readableByteCount(addr, maxBytes) {
+  let covered = 0;
+  try {
+    while (covered < maxBytes) {
+      const cursor = addr.add(covered);
+      const range = Process.findRangeByAddress(cursor);
+      if (range === null || range.protection[0] !== "r")
+        break;
+      const leftInRange = range.base.add(range.size).sub(cursor);
+      const wanted = maxBytes - covered;
+      if (leftInRange.compare(ptr(wanted)) >= 0)
+        return maxBytes;
+      const left = leftInRange.toUInt32();
+      if (left === 0)
+        break;
+      covered += left;
+    }
+  } catch (_e) {
+  }
+  return covered;
+}
+function readInstructionWords(addr, count) {
+  const wordCount = Math.floor(readableByteCount(addr, count * 4) / 4);
+  if (wordCount === 0)
+    return [];
+  try {
+    const bytes = addr.readByteArray(wordCount * 4);
+    return bytes === null ? [] : Array.from(new Uint32Array(bytes));
+  } catch (_e) {
+    return [];
+  }
+}
+function decodeSslLayoutAt(mod, moduleName, fnAddr) {
+  const words = readInstructionWords(fnAddr, sslLogSecretWordCount(mod, fnAddr));
+  const ctx = decodeCtxKeylogOffsets(words.slice(0, PROLOGUE_WORDS));
+  const layout = ctx === null ? null : decodeSslLogSecretLayout(words, ctx.ctxOff);
+  if (ctx === null || layout === null) {
+    devlog(`[anchor-locator] ${moduleName}: ssl layout not decoded at ${fnAddr} (${words.length} words, ctx ${ctx === null ? "missing" : "ok"})`);
+    return null;
+  }
+  devlog(`[anchor-locator] ${moduleName}: ssl layout at ${fnAddr}: s3Off=0x${layout.s3Off.toString(16)} crOff=0x${layout.crOff.toString(16)} ctxOff=0x${ctx.ctxOff.toString(16)} lengthArg=${layout.lengthArgSeen}`);
+  return { s3Off: layout.s3Off, crOff: layout.crOff, ctxOff: ctx.ctxOff };
+}
+async function locateSslLayout(moduleName) {
+  if (Process.arch !== "arm64")
+    return null;
+  try {
+    const mod = Process.findModuleByName(moduleName);
+    if (mod === null)
+      return null;
+    const fnAddr = await locateSslLogSecretCached(mod, moduleName);
+    if (fnAddr === null || _isShuttingDownNow())
+      return null;
+    return decodeSslLayoutAt(mod, moduleName, fnAddr);
+  } catch (e) {
+    devlog(`[anchor-locator] ${moduleName}: ssl layout locate failed: ${e}`);
+    return null;
+  }
+}
+async function runAnchorLocatorTier4(moduleName, dumpKeys, _detail) {
+  if (Process.arch === "x64") {
+    const xmod = findModuleOrPeImage(moduleName);
+    if (xmod === null) {
+      devlog(`[anchor-locator] ${moduleName}: not loaded`);
+      return false;
+    }
+    return runAnchorLocatorX64(xmod, dumpKeys, callAbiForModule(moduleName) ?? "sysv");
+  }
+  if (Process.arch !== "arm64") {
+    if (!loggedNonArm64) {
+      loggedNonArm64 = true;
+      log(`[*] anchor-locator (tier 4) skipped: only implemented for arm64 and x64 (arch=${Process.arch})`);
+    }
+    return false;
+  }
+  let mod;
+  try {
+    mod = Process.findModuleByName(moduleName);
+  } catch (e) {
+    devlog(`[anchor-locator] ${moduleName}: findModuleByName threw: ${e}`);
+    return false;
+  }
+  if (mod === null) {
+    devlog(`[anchor-locator] ${moduleName}: not loaded`);
+    return false;
+  }
+  const sslLogSecret = await locateSslLogSecretCached(mod, moduleName);
+  if (sslLogSecret === null)
+    return false;
+  if (_isShuttingDownNow()) {
+    devlog(`[anchor-locator] ${moduleName}: shutdown during ssl_log_secret scan; not installing`);
+    return false;
+  }
+  resetReadableCache();
+  const offs = deriveOffsetsAt(sslLogSecret);
+  if (offs !== null) {
+    return installViaCtxWrite(moduleName, sslLogSecret, offs);
+  }
+  devlog(`[anchor-locator] ${moduleName}: ctx-offset decode failed; using field-dump fallback`);
+  return installViaFieldDump(moduleName, sslLogSecret, dumpKeys);
+}
+var X64_CHUNK_OVERLAP = 7 + CALL_SEARCH_WINDOW + 5;
+async function findLabelStringsX64(mod) {
+  const found = /* @__PURE__ */ new Map();
+  const have = /* @__PURE__ */ new Set();
+  const data = mod.enumerateRanges("r--");
+  await scanRangesChunked(data, BORINGSSL_KEYLOG_LABELS.map((label) => ({
+    pattern: toHexPattern("\0" + label + "\0"),
+    onMatch: (a) => {
+      if (have.has(label))
+        return;
+      have.add(label);
+      found.set(Number(a.add(1).toString()), label);
+    }
+  })));
+  return found;
+}
+async function collectLabelVotesX64Fast(mod, labelAt, abi) {
+  const prefix = LEA_ARG1_PREFIX[abi];
+  if (prefix === void 0)
+    return [];
+  const lo = Number(mod.base.toString());
+  const hi = lo + mod.size;
+  const targets2 = new Set([...labelAt.keys()].map((a) => ptr(a).toString()));
+  const voted = /* @__PURE__ */ new Map();
+  await scanRangesChunked(mod.enumerateRanges("r-x"), [{
+    pattern: prefix,
+    onMatch: (site) => {
+      try {
+        const target = site.add(7 + site.add(3).readS32()).toString();
+        if (!targets2.has(target))
+          return;
+        const label = labelAt.get(Number(target));
+        if (voted.has(label))
+          return;
+        const code4 = new Uint8Array(site.readByteArray(7 + CALL_SEARCH_WINDOW + 5));
+        const callee = firstCallAfter(code4, Number(site.toString()), 0, lo, hi);
+        if (callee !== null)
+          voted.set(label, ptr(callee).toString());
+      } catch (_e) {
+      }
+    }
+  }]);
+  return [...voted].map(([label, callee]) => ({ label, callee }));
+}
+async function collectLabelVotesX64(mod, labelAt) {
+  const lo = Number(mod.base.toString());
+  const hi = lo + mod.size;
+  const targets2 = new Set(labelAt.keys());
+  const voted = /* @__PURE__ */ new Map();
+  for (const range of mod.enumerateRanges("r-x")) {
+    for (let off = 0; off < range.size; off += XREF_SCAN_CHUNK_BYTES) {
+      if (_isShuttingDownNow())
+        return [];
+      const len = Math.min(XREF_SCAN_CHUNK_BYTES + X64_CHUNK_OVERLAP, range.size - off);
+      const at = range.base.add(off);
+      let buf = null;
+      try {
+        buf = at.readByteArray(len);
+      } catch (_e) {
+        buf = null;
+      }
+      if (buf !== null) {
+        const code4 = new Uint8Array(buf);
+        const va = Number(at.toString());
+        const own = Math.min(XREF_SCAN_CHUNK_BYTES, range.size - off);
+        for (const ref of findRipLeaRefs(code4, va, targets2, own)) {
+          const label = labelAt.get(ref.target);
+          if (voted.has(label))
+            continue;
+          const callee = firstCallAfter(code4, va, ref.site - va, lo, hi);
+          if (callee !== null)
+            voted.set(label, ptr(callee).toString());
+        }
+      }
+      await yieldToEventLoop();
+    }
+  }
+  return [...voted].map(([label, callee]) => ({ label, callee }));
+}
+function decodeCtxOffsetsX64At(fn, sslReg, moduleName) {
+  try {
+    if (!isReadable(fn, 96))
+      return null;
+    return decodeX64CtxKeylogOffsets(new Uint8Array(fn.readByteArray(96)), sslReg);
+  } catch (e) {
+    devlog(`[anchor-locator] ${moduleName}: x64 prologue read failed: ${e}`);
+    return null;
+  }
+}
+function pinnedSslLogSecret(mod) {
+  try {
+    const all = offsets;
+    if (!all || typeof all !== "object")
+      return null;
+    const key = Object.keys(all).find((k) => k.toLowerCase() === mod.name.toLowerCase());
+    const v = key === void 0 ? void 0 : all[key]?.["ssl_log_secret"];
+    if (!v || typeof v.address !== "string")
+      return null;
+    const addr = v.absolute ? ptr(v.address) : mod.base.add(ptr(v.address));
+    return addr.isNull() ? null : addr;
+  } catch (_e) {
+    return null;
+  }
+}
+async function runAnchorLocatorX64(mod, dumpKeys, abi) {
+  const moduleName = mod.name;
+  const sslReg = abi === "win64" ? X64_REG.rcx : X64_REG.rdi;
+  const pinned = pinnedSslLogSecret(mod);
+  if (pinned !== null) {
+    const offs2 = decodeCtxOffsetsX64At(pinned, sslReg, moduleName);
+    if (offs2 !== null) {
+      devlog(`[anchor-locator] ${moduleName}: ssl_log_secret @ ${pinned} from --offsets (rva 0x${pinned.sub(mod.base).toString(16)}); no scan needed`);
+      return installViaCtxWrite(moduleName, pinned, offs2, abi);
+    }
+    devlog(`[anchor-locator] ${moduleName}: --offsets ssl_log_secret @ ${pinned} does not decode; scanning instead`);
+  }
+  const started2 = Date.now();
+  devlog(`[anchor-locator] ${moduleName}: x64 label-xref scan of ${(mod.size / (1024 * 1024)).toFixed(1)} MB (abi=${abi}, background, non-blocking)`);
+  const labelAt = await findLabelStringsX64(mod);
+  if (labelAt.size < 2) {
+    devlog(`[anchor-locator] ${moduleName}: only ${labelAt.size} keylog label string(s) present; not BoringSSL`);
+    return false;
+  }
+  let pairs = await collectLabelVotesX64Fast(mod, labelAt, abi);
+  if (pickAgreedCallee(pairs) === null) {
+    devlog(`[anchor-locator] ${moduleName}: arg-register LEA scan inconclusive after ${Date.now() - started2} ms; walking all LEAs`);
+    pairs = await collectLabelVotesX64(mod, labelAt);
+  }
+  devlog(`[anchor-locator] ${moduleName}: x64 xref scan finished in ${Date.now() - started2} ms; votes ` + (pairs.map((p) => `${p.label}->${p.callee}`).join(", ") || "(none)"));
+  const agreed = pickAgreedCallee(pairs);
+  if (agreed === null) {
+    devlog(`[anchor-locator] ${moduleName}: no ssl_log_secret candidate agreed across >=2 labels`);
+    return false;
+  }
+  if (_isShuttingDownNow())
+    return false;
+  const fn = ptr(agreed);
+  devlog(`[anchor-locator] ${moduleName}: ssl_log_secret @ ${fn} (rva 0x${fn.sub(mod.base).toString(16)}, agreed by ${pairs.filter((p) => p.callee === agreed).length}/${pairs.length} labels)`);
+  resetReadableCache();
+  const offs = decodeCtxOffsetsX64At(fn, sslReg, moduleName);
+  if (offs !== null)
+    return installViaCtxWrite(moduleName, fn, offs, abi);
+  devlog(`[anchor-locator] ${moduleName}: x64 ctx-offset decode failed; using field-dump fallback`);
+  return installViaFieldDump(moduleName, fn, dumpKeys, abi);
+}
+registerBoringSSLTier4(runAnchorLocatorTier4);
+
+// agent/shared/ssl_layout_autolocate.ts
+var NON_BORINGSSL_MODULE_PATTERNS = [
+  /^libssl[.-]/i,
+  /^libcrypto[.-]/i,
+  /gnutls/i,
+  /nss3/i,
+  /wolfssl/i,
+  /mbedtls/i,
+  /^libs2n/i,
+  /matrixssl/i,
+  /rustls/i,
+  /schannel/i
+];
+function isKnownNonBoringSslModule(module) {
+  return NON_BORINGSSL_MODULE_PATTERNS.some((pattern) => pattern.test(module));
+}
+function shouldLocateLayoutFor(module, deps) {
+  if (!module || !deps.isArm64() || !deps.scansAllowed() || isKnownNonBoringSslModule(module))
+    return false;
+  try {
+    return !deps.hasClientRandomExport(module);
+  } catch (_e) {
+    return false;
+  }
+}
+var TRIGGER_DESCRIPTIONS = {
+  "client-random-miss": "record without client_random",
+  "hook-install": "plaintext hooks installed",
+  "chromium-install": "Chromium BoringSSL plaintext hooks installed"
+};
+function startLayoutLookup(module, deps, trigger) {
+  markLayoutLocatorStarted(module);
+  deps.log(`[ssl-layout] ${module}: ${TRIGGER_DESCRIPTIONS[trigger]}; locating ssl_st layout`);
+  return deps.locate(module).then((layout) => {
+    if (layout)
+      setSslLayout(module, { s3Off: layout.s3Off, crOff: layout.crOff, source: "decoded", validated: false });
+    else
+      deps.log(`[ssl-layout] ${module}: ssl_st layout not decoded`);
+  }).catch((e) => deps.log(`[ssl-layout] ${module}: ssl_st layout lookup failed: ${e}`)).finally(() => markLayoutLocatorSettled(module));
+}
+function createSslLayoutAutoLocator(deps) {
+  const consideredModules = /* @__PURE__ */ new Set();
+  return (module, trigger = "client-random-miss") => {
+    if (consideredModules.has(module))
+      return null;
+    consideredModules.add(module);
+    if (hasLayoutLocatorStarted(module) || !shouldLocateLayoutFor(module, deps))
+      return null;
+    return startLayoutLookup(module, deps, trigger);
+  };
+}
+var fridaAutoLocateDeps = {
+  isArm64: () => Process.arch === "arm64",
+  scansAllowed: () => !pairip_safe,
+  hasClientRandomExport: (module) => findModuleExport2(module, "SSL_get_client_random") !== null,
+  locate: (module) => locateSslLayout(module),
+  log: (message) => devlog(message)
+};
+var fridaAutoLocator = null;
+function sharedFridaAutoLocator() {
+  if (!fridaAutoLocator)
+    fridaAutoLocator = createSslLayoutAutoLocator(fridaAutoLocateDeps);
+  return fridaAutoLocator;
+}
+function installSslLayoutAutoLocate() {
+  const autoLocate = sharedFridaAutoLocator();
+  setClientRandomMissObserver((module) => {
+    autoLocate(module, "client-random-miss");
+  });
+}
+function prefetchSslLayout(moduleName, trigger = "hook-install") {
+  try {
+    sharedFridaAutoLocator()(moduleName, trigger);
+  } catch (e) {
+    devlog(`[ssl-layout] ${moduleName}: layout prefetch failed: ${e}`);
+  }
+}
+
 // agent/core/executors/read_write.ts
 function sslFdOrDeferred(sslCtx, def, resolvedFns) {
   const fd = def.fdDecoder(sslCtx, resolvedFns);
@@ -19912,7 +23666,7 @@ function sslFdOrDeferred(sslCtx, def, resolvedFns) {
     return fd;
   return fdOrDeferred(fd, sslCtx);
 }
-function recordMessageBuilder(def, resolvedFns, methodAddresses, enableDefaultFd, isRead, label) {
+function recordMessageBuilder(def, resolvedFns, methodAddresses, enableDefaultFd, isRead, label, moduleName) {
   const extractor = def.customAddressExtractor;
   return (sslCtx, fd) => buildRecordMessage({
     fd,
@@ -19920,6 +23674,10 @@ function recordMessageBuilder(def, resolvedFns, methodAddresses, enableDefaultFd
     functionName: label,
     methodAddresses,
     enableDefaultFd,
+    library: moduleName,
+    // client_random fallback (shared per-SSL* identity) when the decoder below
+    // is missing or returns "": stamped by buildRecordMessage, never overwrites.
+    ssl: sslCtx,
     resolvePeer: extractor ? () => extractor(sslCtx, isRead, resolvedFns, enableDefaultFd) : void 0
   }, () => {
     const fields = { ssl_session_id: def.sessionIdDecoder(sslCtx, resolvedFns) };
@@ -19937,7 +23695,7 @@ function installReadHook(def, addresses, moduleName, resolvedFns, enableDefaultF
   const label = hook.functionLabel || "SSL_read";
   const methodAddresses = addresses[moduleName];
   const breadcrumb = `${label} (${moduleName})`;
-  const buildMessage = recordMessageBuilder(def, resolvedFns, methodAddresses, enableDefaultFd, true, label);
+  const buildMessage = recordMessageBuilder(def, resolvedFns, methodAddresses, enableDefaultFd, true, label, moduleName);
   const hookAddr = addresses[moduleName][hook.symbol];
   if (!hookAddr || hookAddr.isNull())
     return;
@@ -19946,7 +23704,7 @@ function installReadHook(def, addresses, moduleName, resolvedFns, enableDefaultF
       hookBreadcrumb(breadcrumb);
       const sslCtx = args[hook.args.sslCtxArgIndex];
       if (attribute_sdk)
-        maybeCaptureCallerStack(sslCtx, this.context, () => buildCallerStackJoin(sslCtx, () => def.fdDecoder(sslCtx, resolvedFns), true, methodAddresses, enableDefaultFd, () => def.sessionIdDecoder(sslCtx, resolvedFns), def.customAddressExtractor ? () => def.customAddressExtractor(sslCtx, true, resolvedFns, enableDefaultFd) : void 0));
+        maybeCaptureCallerStack(sslCtx, this.context, () => buildCallerStackJoin(sslCtx, () => def.fdDecoder(sslCtx, resolvedFns), true, methodAddresses, enableDefaultFd, () => def.sessionIdDecoder(sslCtx, resolvedFns), def.customAddressExtractor ? () => def.customAddressExtractor(sslCtx, true, resolvedFns, enableDefaultFd) : void 0), { transportModule: moduleName });
       this.buf = args[hook.args.bufferArgIndex];
       const fd = sslFdOrDeferred(sslCtx, def, resolvedFns);
       if (fd === null) {
@@ -19971,6 +23729,7 @@ function installReadHook(def, addresses, moduleName, resolvedFns, enableDefaultF
       sendDatalog(this.message, this.buf.readByteArray(retval));
     }
   });
+  prefetchSslLayout(moduleName);
 }
 function installWriteHook(def, addresses, moduleName, resolvedFns, enableDefaultFd) {
   if (!pcap_enabled)
@@ -19981,7 +23740,7 @@ function installWriteHook(def, addresses, moduleName, resolvedFns, enableDefault
   const label = hook.functionLabel || "SSL_write";
   const methodAddresses = addresses[moduleName];
   const breadcrumb = `${label} (${moduleName})`;
-  const buildMessage = recordMessageBuilder(def, resolvedFns, methodAddresses, enableDefaultFd, false, label);
+  const buildMessage = recordMessageBuilder(def, resolvedFns, methodAddresses, enableDefaultFd, false, label, moduleName);
   const hookAddr = addresses[moduleName][hook.symbol];
   if (!hookAddr || hookAddr.isNull())
     return;
@@ -19992,7 +23751,7 @@ function installWriteHook(def, addresses, moduleName, resolvedFns, enableDefault
       hookBreadcrumb(breadcrumb);
       const sslCtx = args[hook.args.sslCtxArgIndex];
       if (attribute_sdk)
-        maybeCaptureCallerStack(sslCtx, this.context, () => buildCallerStackJoin(sslCtx, () => def.fdDecoder(sslCtx, resolvedFns), false, methodAddresses, enableDefaultFd, () => def.sessionIdDecoder(sslCtx, resolvedFns), def.customAddressExtractor ? () => def.customAddressExtractor(sslCtx, false, resolvedFns, enableDefaultFd) : void 0));
+        maybeCaptureCallerStack(sslCtx, this.context, () => buildCallerStackJoin(sslCtx, () => def.fdDecoder(sslCtx, resolvedFns), false, methodAddresses, enableDefaultFd, () => def.sessionIdDecoder(sslCtx, resolvedFns), def.customAddressExtractor ? () => def.customAddressExtractor(sslCtx, false, resolvedFns, enableDefaultFd) : void 0), { transportModule: moduleName });
       recoverTls13Secrets(moduleName, sslCtx);
       this.buf = args[hook.args.bufferArgIndex];
       if (lengthArgIndex !== void 0)
@@ -20203,406 +23962,11 @@ function lenArg(a) {
   return a ? a.toUInt32() : void 0;
 }
 
-// agent/shared/call_abi.ts
-init_node_globals();
-var moduleAbi = /* @__PURE__ */ new Map();
-function setModuleCallAbi(moduleName, abi) {
-  moduleAbi.set(moduleName.toLowerCase(), abi);
-}
-function hostCallAbi() {
-  if (Process.arch === "arm64")
-    return "aarch64";
-  if (Process.arch === "x64")
-    return Process.platform === "windows" ? "win64" : "sysv";
-  return null;
-}
-function callAbiForModule(moduleName) {
-  return moduleAbi.get(moduleName.toLowerCase()) ?? hostCallAbi();
-}
-function argAt(ctx, abi, idx) {
-  if (abi === "aarch64") {
-    const c = ctx;
-    if (idx < 8)
-      return [c.x0, c.x1, c.x2, c.x3, c.x4, c.x5, c.x6, c.x7][idx];
-    return c.sp.add((idx - 8) * 8).readPointer();
-  } else if (abi === "win64") {
-    const c = ctx;
-    if (idx < 4)
-      return [c.rcx, c.rdx, c.r8, c.r9][idx];
-    return c.rsp.add(40 + (idx - 4) * 8).readPointer();
-  } else {
-    const c = ctx;
-    if (idx < 6)
-      return [c.rdi, c.rsi, c.rdx, c.rcx, c.r8, c.r9][idx];
-    return c.rsp.add(8 + (idx - 6) * 8).readPointer();
-  }
-}
-var MAX_SECRET_LEN2 = 64;
-function win64SpanIsByReference(spanSize) {
-  return spanSize !== null && spanSize > 0 && spanSize <= MAX_SECRET_LEN2;
-}
-function readSslLogSecretCall(args, ctx, abi) {
-  if (abi === null) {
-    return { ssl: args[0], label: args[1], data: args[2], len: args[3].toUInt32() };
-  }
-  const ssl = argAt(ctx, abi, 0);
-  const label = argAt(ctx, abi, 1);
-  const a2 = argAt(ctx, abi, 2);
-  if (abi !== "win64") {
-    return { ssl, label, data: a2, len: argAt(ctx, abi, 3).toUInt32() };
-  }
-  let spanSize = null;
-  try {
-    spanSize = a2.add(8).readU64().toNumber();
-  } catch (_e) {
-  }
-  if (win64SpanIsByReference(spanSize)) {
-    return { ssl, label, data: a2.readPointer(), len: spanSize };
-  }
-  return { ssl, label, data: a2, len: argAt(ctx, abi, 3).toUInt32() };
-}
-
-// agent/shared/boringssl_keylog_outcome.ts
-init_node_globals();
-var ALL_KEYLOG_TIERS_MISSED_MSG = (moduleName, detail) => `[!] ${moduleName}: no BoringSSL keylog hook could be installed (callback, symbol and pattern tiers all missed${detail ? `; ${detail}` : ""})`;
-var reportedModules = /* @__PURE__ */ new Set();
-var warnedModules = /* @__PURE__ */ new Set();
-var keylogHookOwners = /* @__PURE__ */ new Map();
-function keylogHookOwner(moduleName) {
-  return keylogHookOwners.get(moduleName);
-}
-function claimKeylogHook(moduleName, tier) {
-  const owner2 = keylogHookOwners.get(moduleName);
-  if (owner2 !== void 0)
-    return owner2 === tier;
-  keylogHookOwners.set(moduleName, tier);
-  if (warnedModules.has(moduleName)) {
-    log(`[*] ${moduleName}: the ${tier} tier installed a keylog hook after all (supersedes the earlier "no BoringSSL keylog hook" warning)`);
-  }
-  return true;
-}
-function guardKeylogDumpKeys(moduleName, tier, dumpKeys) {
-  let dropLogged = false;
-  return (label, ssl, data, len) => {
-    if (claimKeylogHook(moduleName, tier)) {
-      dumpKeys(label, ssl, data, len);
-      return;
-    }
-    if (!dropLogged) {
-      dropLogged = true;
-      devlog(`[bssl-keylog] ${moduleName}: ${tier} hook fired but the ${keylogHookOwner(moduleName)} tier owns this module; dropping its duplicate secrets`);
-    }
-  };
-}
-var tier4Runner = null;
-function registerBoringSSLTier4(runner) {
-  tier4Runner = runner;
-}
-function isThenable(v) {
-  return typeof v === "object" && v !== null && typeof v.then === "function";
-}
-function warnTotalMiss(moduleName, detail, tier4Ran) {
-  const finalDetail = tier4Ran ? detail ? `${detail}; anchor-locator (tier 4) also missed` : "anchor-locator (tier 4) also missed" : detail;
-  warnedModules.add(moduleName);
-  log(ALL_KEYLOG_TIERS_MISSED_MSG(moduleName, finalDetail));
-}
-function claimForTier4Install(moduleName) {
-  if (!claimKeylogHook(moduleName, "anchor")) {
-    devlog(`[bssl-keylog] ${moduleName}: tier 4 installed, but the ${keylogHookOwner(moduleName)} tier already owns this module`);
-  }
-}
-function reportTier4Outcome(moduleName, detail, installed) {
-  if (!installed)
-    warnTotalMiss(moduleName, detail, true);
-}
-var tier4Runs = /* @__PURE__ */ new Map();
-function invokeTier4Runner(runner, moduleName, dumpKeys, detail) {
-  let result;
-  try {
-    result = runner(moduleName, guardKeylogDumpKeys(moduleName, "anchor", dumpKeys), detail);
-  } catch (e) {
-    log(`[!] ${moduleName}: tier-4 anchor locator threw: ${e}`);
-    return false;
-  }
-  const settle = (installed) => {
-    if (installed)
-      claimForTier4Install(moduleName);
-    return installed;
-  };
-  if (!isThenable(result))
-    return settle(result === true);
-  return result.then((installed) => settle(installed === true), (e) => {
-    log(`[!] ${moduleName}: tier-4 anchor locator threw: ${e}`);
-    return false;
-  });
-}
-function startTier4Once(moduleName, dumpKeys, detail) {
-  const existing = tier4Runs.get(moduleName);
-  if (existing !== void 0)
-    return existing;
-  if (tier4Runner === null)
-    return null;
-  const run = invokeTier4Runner(tier4Runner, moduleName, dumpKeys, detail);
-  tier4Runs.set(moduleName, run);
-  return run;
-}
-function startTier4InParallelWithPattern(moduleName, hooker, dumpKeys) {
-  if (hooker.found_ssl_log_secret !== false)
-    return false;
-  if (keylogHookOwners.has(moduleName))
-    return false;
-  if (tier4Runner === null)
-    return false;
-  devlog(`[bssl] ${moduleName}: symbol tier missed; starting anchor-locator in parallel with the running pattern scan`);
-  const run = startTier4Once(moduleName, dumpKeys);
-  if (isThenable(run)) {
-    run.then((installed) => {
-      if (!installed)
-        devlog(`[bssl] ${moduleName}: parallel anchor-locator missed; waiting for the pattern scan to settle`);
-    });
-  }
-  return true;
-}
-function onAllKeylogTiersMissed(moduleName, dumpKeys, report) {
-  if (reportedModules.has(moduleName))
-    return;
-  reportedModules.add(moduleName);
-  if (keylogHookOwners.has(moduleName))
-    return;
-  const { detail, pairipDisabled } = report;
-  const run = pairipDisabled ? null : startTier4Once(moduleName, dumpKeys, detail);
-  if (run === null) {
-    warnTotalMiss(moduleName, detail, false);
-    return;
-  }
-  if (!isThenable(run)) {
-    reportTier4Outcome(moduleName, detail, run);
-    return;
-  }
-  return run.then((installed) => reportTier4Outcome(moduleName, detail, installed));
-}
-var FORCED_ANCHOR_ONLY_DETAIL = "forced by --boringssl-anchor-only";
-function runForcedAnchorTier(moduleName, dumpKeys, trySymbolTier) {
-  let symbolInstalled = false;
-  try {
-    symbolInstalled = trySymbolTier();
-  } catch (e) {
-    log(`[!] ${moduleName}: symbol tier threw under --boringssl-anchor-only: ${e}`);
-  }
-  if (!symbolInstalled)
-    return onAllKeylogTiersMissed(moduleName, dumpKeys, { detail: FORCED_ANCHOR_ONLY_DETAIL, pairipDisabled: false });
-}
-
 // agent/shared/boringssl_pattern_hook.ts
 init_node_globals();
 
 // agent/tls/shared/pattern_based_hooking.ts
 init_node_globals();
-
-// agent/shared/arm64.ts
-init_node_globals();
-function maskEq(insn, mask, op) {
-  return (insn & mask) >>> 0 === op >>> 0;
-}
-function regRd(insn) {
-  return insn & 31;
-}
-function regRn(insn) {
-  return insn >>> 5 & 31;
-}
-function regRt2(insn) {
-  return insn >>> 10 & 31;
-}
-function regRs(insn) {
-  return insn >>> 16 & 31;
-}
-function isADRP(insn) {
-  return maskEq(insn, 2667577344, 2415919104);
-}
-function isADDimm64(insn) {
-  return maskEq(insn, 4278190080, 2432696320);
-}
-function isLDRimmU64(insn) {
-  return maskEq(insn, 4290772992, 4181721088);
-}
-function isSTRimmU64(insn) {
-  return maskEq(insn, 4290772992, 4177526784);
-}
-function isRET(insn) {
-  return insn >>> 0 === 3596551104;
-}
-function isBL(insn) {
-  return maskEq(insn, 4227858432, 2483027968);
-}
-function isBLR(insn) {
-  return maskEq(insn, 4294966303, 3594452992);
-}
-function isADR(insn) {
-  return maskEq(insn, 2667577344, 268435456);
-}
-function isUnconditionalB(insn) {
-  return maskEq(insn, 4227858432, 335544320);
-}
-function isAnyReturn(insn) {
-  const w = insn >>> 0;
-  return maskEq(insn, 4294966303, 3596550144) || w === 3596553215 || w === 3596554239;
-}
-function isIndirectBranch(insn) {
-  return maskEq(insn, 4294966303, 3592355840) || maskEq(insn, 4294965279, 3592357919) || maskEq(insn, 4294965248, 3609135104);
-}
-function isBLRAuth(insn) {
-  return maskEq(insn, 4294965279, 3594455071) || maskEq(insn, 4294965248, 3611232256);
-}
-function isTrap(insn) {
-  return maskEq(insn, 4292870175, 3558866944) || maskEq(insn, 4294901760, 0);
-}
-function endsFallThrough(insn) {
-  return isUnconditionalB(insn) || isAnyReturn(insn) || isIndirectBranch(insn) || isTrap(insn);
-}
-function isCBZ64(insn) {
-  return maskEq(insn, 4278190080, 3019898880);
-}
-function isCBNZ64(insn) {
-  return maskEq(insn, 4278190080, 3036676096);
-}
-function isFunctionPrologueWord(insn) {
-  if (insn >>> 0 === 3573752639)
-    return true;
-  if (insn >>> 0 === 3573752703)
-    return true;
-  if (maskEq(insn, 4294967071, 3573752863))
-    return true;
-  if (maskEq(insn, 4290805759, 2835381245))
-    return true;
-  if (maskEq(insn, 4290772992, 2843738112))
-    return true;
-  if (maskEq(insn, 4278190080, 3506438144) && regRd(insn) === 31 && regRn(insn) === 31)
-    return true;
-  return false;
-}
-function isBranchOrSystemGroup(insn) {
-  return maskEq(insn, 469762048, 335544320);
-}
-function isLoadStoreGroup(insn) {
-  return maskEq(insn, 167772160, 134217728);
-}
-function branchOrSystemWritesReg(insn, reg) {
-  if (isBL(insn) || isBLR(insn) || isBLRAuth(insn))
-    return reg === 30;
-  if (maskEq(insn, 4293918720, 3576692736))
-    return regRd(insn) === reg;
-  if (maskEq(insn, 4294443008, 3576168448))
-    return regRd(insn) === reg;
-  return false;
-}
-function anyLoadStoreField(insn, reg) {
-  const rt = regRd(insn), rs = regRs(insn);
-  return [rt, rt + 1 & 31, regRt2(insn), regRn(insn), rs, rs + 1 & 31].includes(reg);
-}
-function pairWritesReg(insn, reg) {
-  const index = insn >>> 23 & 3;
-  if ((index === 1 || index === 3) && regRn(insn) === reg)
-    return true;
-  const isLoad = (insn >>> 22 & 1) === 1;
-  return isLoad && (regRd(insn) === reg || regRt2(insn) === reg);
-}
-function singleRegisterWritesReg(insn, reg) {
-  const rt = regRd(insn);
-  const isLoad = (insn >>> 22 & 3) !== 0;
-  const mode = insn >>> 10 & 3;
-  if ((insn >>> 24 & 1) === 1)
-    return isLoad && rt === reg;
-  if ((insn >>> 21 & 1) === 0) {
-    if ((mode === 1 || mode === 3) && regRn(insn) === reg)
-      return true;
-    return isLoad && rt === reg;
-  }
-  if (mode === 0)
-    return rt === reg;
-  if (mode === 2)
-    return isLoad && rt === reg;
-  return rt === reg || (insn >>> 11 & 1) === 1 && regRn(insn) === reg;
-}
-function loadStoreWritesReg(insn, reg) {
-  const cls = insn >>> 27 & 7;
-  const simd = (insn >>> 26 & 1) === 1;
-  if (cls === 5)
-    return pairWritesReg(insn, reg);
-  if (cls === 7)
-    return singleRegisterWritesReg(insn, reg);
-  if (cls === 3 && (insn >>> 24 & 1) === 0)
-    return regRd(insn) === reg;
-  if (cls === 1 && simd && insn >>> 31 === 0) {
-    return (insn >>> 23 & 1) === 1 && regRn(insn) === reg;
-  }
-  return anyLoadStoreField(insn, reg);
-}
-function writesReg(insn, reg) {
-  if (isBranchOrSystemGroup(insn))
-    return branchOrSystemWritesReg(insn, reg);
-  if (isLoadStoreGroup(insn))
-    return loadStoreWritesReg(insn, reg);
-  return regRd(insn) === reg;
-}
-function decodeADRPImm(insn) {
-  const immlo = insn >>> 29 & 3;
-  const immhi = insn >>> 5 & 524287;
-  let imm = immhi << 2 | immlo;
-  if (imm & 1048576)
-    imm -= 2097152;
-  return imm * 4096;
-}
-function decodeLDRU64Imm(insn) {
-  return (insn >>> 10 & 4095) * 8;
-}
-function decodeSTRU64Imm(insn) {
-  return decodeLDRU64Imm(insn);
-}
-function decodeADRImm(insn) {
-  const immlo = insn >>> 29 & 3;
-  const immhi = insn >>> 5 & 524287;
-  let imm = immhi << 2 | immlo;
-  if (imm & 1048576)
-    imm -= 2097152;
-  return imm;
-}
-function decodeBLImm(insn) {
-  let imm26 = insn & 67108863;
-  if (imm26 & 33554432)
-    imm26 -= 67108864;
-  return imm26 * 4;
-}
-function blTargetOffset(pc, insn) {
-  return isBL(insn) ? pc + decodeBLImm(insn) : null;
-}
-function movzW(insn, reg) {
-  return maskEq(insn, 4292870175, 1384120320 | reg) ? insn >>> 5 & 65535 : null;
-}
-var IMM12_OPERAND_MASK = 4294966272;
-function addImm64WordForImm12(imm12) {
-  return (2432696320 | (imm12 & 4095) << 10) >>> 0;
-}
-function ldrU64WordForImm12(imm12) {
-  return (4181721088 | (imm12 & 4095) << 10) >>> 0;
-}
-function wordToLEHex(word) {
-  const bytes = [];
-  for (let i = 0; i < 4; i++)
-    bytes.push((word >>> 8 * i & 255).toString(16).padStart(2, "0"));
-  return bytes.join(" ");
-}
-function maskedWordScanPattern(word, mask) {
-  return `${wordToLEHex((word & mask) >>> 0)} : ${wordToLEHex(mask >>> 0)}`;
-}
-function adrTopByteForTarget(targetLow2) {
-  return 16 | (targetLow2 & 3) << 5;
-}
-function addImm64ScanPattern(imm12) {
-  return maskedWordScanPattern(addImm64WordForImm12(imm12), IMM12_OPERAND_MASK);
-}
-function ldrU64ScanPattern(imm12) {
-  return maskedWordScanPattern(ldrU64WordForImm12(imm12), IMM12_OPERAND_MASK);
-}
 
 // agent/shared/go_attach.ts
 init_node_globals();
@@ -21783,1148 +25147,6 @@ function pollPatternOutcome(hooker, moduleName, timing = DEFAULT_POLL_TIMING) {
   });
 }
 
-// agent/shared/boringssl_anchor_locator.ts
-init_node_globals();
-init_shared_structures();
-
-// agent/shared/arm64_xref.ts
-init_node_globals();
-function adrpTarget(pc, insn) {
-  const pageImm = decodeADRPImm(insn);
-  const pcPage = pc.and(ptr("0xfff").not());
-  return pageImm >= 0 ? pcPage.add(pageImm) : pcPage.sub(-pageImm);
-}
-function adrTarget(pc, insn) {
-  const offset = decodeADRImm(insn);
-  return offset >= 0 ? pc.add(offset) : pc.sub(-offset);
-}
-function blTarget(pc, insn) {
-  const offset = decodeBLImm(insn);
-  return offset >= 0 ? pc.add(offset) : pc.sub(-offset);
-}
-function inModule(addr, start, end) {
-  return addr.compare(start) >= 0 && addr.compare(end) < 0;
-}
-function findAnchorString(mod, ascii) {
-  const pattern = toHexPattern(ascii);
-  const ranges = mod.enumerateRanges("r--");
-  for (const range of ranges) {
-    try {
-      const hits = Memory.scanSync(range.base, range.size, pattern);
-      if (hits.length > 0)
-        return hits[0].address;
-    } catch (_e) {
-    }
-  }
-  const rx = mod.enumerateRanges("r-x");
-  for (const range of rx) {
-    try {
-      const hits = Memory.scanSync(range.base, range.size, pattern);
-      if (hits.length > 0)
-        return hits[0].address;
-    } catch (_e) {
-    }
-  }
-  return null;
-}
-var LOAD_SITE_WINDOW = 8;
-var MAX_LOAD_SITES = 8;
-var XREF_SCAN_CHUNK_BYTES = 2 * 1024 * 1024;
-var XrefScanAborted = class extends Error {
-  constructor() {
-    super("xref scan aborted: agent is shutting down");
-  }
-};
-function yieldToEventLoop() {
-  return new Promise((resolve) => setTimeout(resolve, 0));
-}
-function patternByteLength(pattern) {
-  return pattern.split(":")[0].trim().split(/\s+/).filter((t) => t.length > 0).length;
-}
-function withoutLeadingWildcards(pattern) {
-  const [needleHalf, maskHalf] = pattern.split(":");
-  const tokens = (half) => half.trim().split(/\s+/).filter((t) => t.length > 0);
-  const needle = tokens(needleHalf);
-  const mask = maskHalf === void 0 ? null : tokens(maskHalf);
-  const isWildcard = (i) => needle[i] === "??" || mask !== null && /^0+$/.test(mask[i] ?? "");
-  let skipped = 0;
-  while (skipped < needle.length && isWildcard(skipped))
-    skipped++;
-  if (skipped === 0 || skipped === needle.length)
-    return { pattern, skipped: 0 };
-  const rest = needle.slice(skipped).join(" ");
-  return { pattern: mask === null ? rest : `${rest} : ${mask.slice(skipped).join(" ")}`, skipped };
-}
-function compilePattern(pattern) {
-  try {
-    if (typeof MatchPattern !== "undefined")
-      return new MatchPattern(pattern);
-  } catch (_e) {
-  }
-  return pattern;
-}
-async function scanRangesChunked(ranges, jobs, chunkBytes = XREF_SCAN_CHUNK_BYTES, yieldFn = yieldToEventLoop) {
-  if (jobs.length === 0)
-    return;
-  const shapes = jobs.map((j) => withoutLeadingWildcards(j.pattern));
-  const compiled = shapes.map((shape) => compilePattern(shape.pattern));
-  const overlap = Math.max(...jobs.map((j) => patternByteLength(j.pattern))) - 1;
-  for (const range of ranges) {
-    for (let off = 0; off < range.size; off += chunkBytes) {
-      if (_isShuttingDownNow())
-        throw new XrefScanAborted();
-      const chunkStart = range.base.add(off);
-      const chunkEnd = range.base.add(Math.min(off + chunkBytes, range.size));
-      const scanSize = Math.min(chunkBytes + overlap, range.size - off);
-      for (let i = 0; i < jobs.length; i++) {
-        let hits = [];
-        try {
-          hits = Memory.scanSync(chunkStart, scanSize, compiled[i]);
-        } catch (_e) {
-          continue;
-        }
-        const skipped = shapes[i].skipped;
-        for (const hit of hits) {
-          const start = skipped === 0 ? hit.address : hit.address.sub(skipped);
-          if (skipped > 0 && start.compare(chunkStart) < 0)
-            continue;
-          if (start.compare(chunkEnd) < 0)
-            jobs[i].onMatch(start);
-        }
-      }
-      await yieldFn();
-    }
-  }
-}
-function findOpeningAdrp(at, reg, page, rangeStart) {
-  for (let j = 1; j <= LOAD_SITE_WINDOW; j++) {
-    const p = at.sub(j * 4);
-    if (p.compare(rangeStart) < 0)
-      return null;
-    let insn = 0;
-    try {
-      insn = p.readU32();
-    } catch (_e) {
-      return null;
-    }
-    if (isADRP(insn) && regRd(insn) === reg) {
-      return adrpTarget(p, insn).equals(page) ? p : null;
-    }
-    if (isADDimm64(insn) && regRd(insn) === reg)
-      return null;
-    if (isLDRimmU64(insn) && regRn(insn) === reg)
-      return null;
-    if (writesReg(insn, reg))
-      return null;
-  }
-  return null;
-}
-function splitPage(addr) {
-  const page = addr.and(ptr("0xfff").not());
-  return { page, lo12: addr.sub(page).toInt32() };
-}
-function pointerScanPattern(value) {
-  const hex2 = value.toString().replace(/^0x/i, "").padStart(16, "0");
-  const bytes = [];
-  for (let i = 14; i >= 0; i -= 2)
-    bytes.push(hex2.substring(i, i + 2));
-  return bytes.join(" ");
-}
-function dataRanges(mod) {
-  return mod.enumerateRanges("r--").filter((r) => !r.protection.includes("x"));
-}
-function addJob(jobs, pattern, h) {
-  const list = jobs.get(pattern);
-  if (list)
-    list.push(h);
-  else
-    jobs.set(pattern, [h]);
-}
-function toJobs(jobs) {
-  return [...jobs].map(([pattern, handlers]) => ({
-    pattern,
-    onMatch: (a) => {
-      for (const h of handlers)
-        h(a);
-    }
-  }));
-}
-function isAligned(addr, align3) {
-  return addr.and(ptr(align3 - 1)).toInt32() === 0;
-}
-async function findPointerSlots(mod, targets2, chunkBytes, yieldFn) {
-  const slots = targets2.map(() => []);
-  const jobs = /* @__PURE__ */ new Map();
-  targets2.forEach((t, i) => addJob(jobs, pointerScanPattern(t), (a) => {
-    if (isAligned(a, 8) && slots[i].length < MAX_LOAD_SITES)
-      slots[i].push(a);
-  }));
-  await scanRangesChunked(dataRanges(mod), toJobs(jobs), chunkBytes, yieldFn);
-  return slots;
-}
-async function findStringLoadSitesAsync(mod, targets2, chunkBytes = XREF_SCAN_CHUNK_BYTES, yieldFn = yieldToEventLoop, maxSites = MAX_LOAD_SITES) {
-  const sites = targets2.map(() => []);
-  const slots = await findPointerSlots(mod, targets2, chunkBytes, yieldFn);
-  const jobs = /* @__PURE__ */ new Map();
-  let rangeStart = mod.base;
-  const verifyAt = (i, page, isShape) => (at) => {
-    if (!isAligned(at, 4))
-      return;
-    let insn = 0;
-    try {
-      insn = at.readU32();
-    } catch (_e) {
-      return;
-    }
-    if (!isShape(insn))
-      return;
-    const adrp = findOpeningAdrp(at, regRn(insn), page, rangeStart);
-    if (adrp !== null)
-      sites[i].push(adrp);
-  };
-  targets2.forEach((t, i) => {
-    const { page, lo12 } = splitPage(t);
-    addJob(jobs, addImm64ScanPattern(lo12), verifyAt(i, page, (w) => isADDimm64(w) && regRd(w) === regRn(w)));
-    for (const slot of slots[i]) {
-      const s = splitPage(slot);
-      addJob(jobs, ldrU64ScanPattern(s.lo12 / 8), verifyAt(i, s.page, (w) => isLDRimmU64(w)));
-    }
-  });
-  const codeJobs = toJobs(jobs);
-  for (const range of mod.enumerateRanges("r-x")) {
-    rangeStart = range.base;
-    await scanRangesChunked([range], codeJobs, chunkBytes, yieldFn);
-  }
-  await findAdrSites(mod, targets2, sites, chunkBytes, yieldFn);
-  return sites.map((list) => dedupeSorted(list).slice(0, maxSites));
-}
-var ADR_REACH_BYTES = 1024 * 1024;
-var ADR_WINDOW_SLACK = 8;
-function clipRange(range, lo, hi) {
-  const end = range.base.add(range.size);
-  const base = range.base.compare(lo) > 0 ? range.base : lo;
-  const top = end.compare(hi) < 0 ? end : hi;
-  return base.compare(top) < 0 ? { base, size: top.sub(base).toInt32() } : null;
-}
-function mergeRanges(list) {
-  const sorted = [...list].sort((a, b) => a.base.compare(b.base));
-  const out = [];
-  for (const r of sorted) {
-    const last = out[out.length - 1];
-    if (last && r.base.compare(last.base.add(last.size)) <= 0) {
-      const end = r.base.add(r.size);
-      if (end.compare(last.base.add(last.size)) > 0)
-        last.size = end.sub(last.base).toInt32();
-    } else {
-      out.push({ base: r.base, size: r.size });
-    }
-  }
-  return out;
-}
-function adrScanWindows(codeRanges2, targets2) {
-  const reach = ptr(ADR_REACH_BYTES);
-  const windows = [];
-  for (const t of targets2) {
-    const lo = t.compare(reach) >= 0 ? t.sub(reach) : ptr(0);
-    const hi = t.add(ADR_REACH_BYTES + ADR_WINDOW_SLACK);
-    for (const r of codeRanges2) {
-      const w = clipRange(r, lo, hi);
-      if (w !== null)
-        windows.push(w);
-    }
-  }
-  return mergeRanges(windows);
-}
-function wordInRanges(addr, ranges) {
-  return ranges.some((r) => addr.compare(r.base) >= 0 && addr.add(4).compare(r.base.add(r.size)) <= 0);
-}
-async function findAdrSites(mod, targets2, sites, chunkBytes, yieldFn) {
-  const code4 = mod.enumerateRanges("r-x");
-  for (let low2 = 0; low2 < 4; low2++) {
-    const group = targets2.filter((t) => t.and(ptr(3)).toInt32() === low2);
-    if (group.length === 0)
-      continue;
-    const byAddress = /* @__PURE__ */ new Map();
-    targets2.forEach((t, i) => {
-      if (t.and(ptr(3)).toInt32() === low2)
-        byAddress.set(t.toString(), [...byAddress.get(t.toString()) ?? [], i]);
-    });
-    const onTopByte = (hit) => {
-      const at = hit.sub(3);
-      if (!isAligned(at, 4) || !wordInRanges(at, code4))
-        return;
-      let insn = 0;
-      try {
-        insn = at.readU32();
-      } catch (_e) {
-        return;
-      }
-      if (!isADR(insn))
-        return;
-      for (const i of byAddress.get(adrTarget(at, insn).toString()) ?? [])
-        sites[i].push(at);
-    };
-    const needle = adrTopByteForTarget(low2).toString(16).padStart(2, "0");
-    await scanRangesChunked(adrScanWindows(code4, group), [{ pattern: needle, onMatch: onTopByte }], chunkBytes, yieldFn);
-  }
-}
-function dedupeSorted(list) {
-  const sorted = [...list].sort((a, b) => a.compare(b));
-  return sorted.filter((p, k) => k === 0 || !p.equals(sorted[k - 1]));
-}
-async function findAnchorStringsAsync(mod, asciis, chunkBytes = XREF_SCAN_CHUNK_BYTES, yieldFn = yieldToEventLoop) {
-  const found = asciis.map(() => null);
-  for (const ranges of [dataRanges(mod), mod.enumerateRanges("r-x")]) {
-    const jobs = /* @__PURE__ */ new Map();
-    asciis.forEach((s, i) => {
-      if (found[i] === null)
-        addJob(jobs, toHexPattern(s), (a) => {
-          if (found[i] === null)
-            found[i] = a;
-        });
-    });
-    if (jobs.size === 0)
-      break;
-    await scanRangesChunked(ranges, toJobs(jobs), chunkBytes, yieldFn);
-  }
-  return found;
-}
-function literalStart(inside, maxBack = 512) {
-  let p = inside;
-  for (let i = 0; i < maxBack; i++) {
-    try {
-      if (p.sub(1).readU8() === 0)
-        return p;
-    } catch (_e) {
-      return p;
-    }
-    p = p.sub(1);
-  }
-  return p;
-}
-async function anchorSiteFunctions(mod, functions, anchors) {
-  const hits = await findAnchorStringsAsync(mod, anchors.map((a) => a.text + "\0"));
-  const found = anchors.map((a, i) => ({ a, hit: hits[i] })).filter((x) => x.hit !== null);
-  const targets2 = found.map(({ a, hit }) => a.literalSuffix ? literalStart(hit) : hit);
-  const maxSites = Math.max(MAX_LOAD_SITES, ...anchors.map((a) => a.maxSites ?? MAX_LOAD_SITES));
-  const loads = targets2.length > 0 ? await findStringLoadSitesAsync(mod, targets2, XREF_SCAN_CHUNK_BYTES, yieldToEventLoop, maxSites) : [];
-  const sitesByAnchor = /* @__PURE__ */ new Map();
-  found.forEach(({ a }, k) => sitesByAnchor.set(a, loads[k].slice(0, a.maxSites ?? MAX_LOAD_SITES).map((at) => ({ at, fn: functions.bounds(at) }))));
-  return anchors.map((a) => sitesByAnchor.get(a) ?? []);
-}
-function moduleOffsetLabel(mod, p, missing = "?") {
-  return p === null ? missing : "+0x" + p.sub(mod.base).toString(16);
-}
-function firstCallTargetForward(from2, limit, modStart, modEnd) {
-  let cursor = from2.add(4);
-  const maxWalk = 1024;
-  let walked = 0;
-  while (cursor.compare(limit) < 0 && walked < maxWalk) {
-    let insn = 0;
-    try {
-      insn = cursor.readU32();
-    } catch (_e) {
-      return null;
-    }
-    if (isBL(insn)) {
-      const tgt = blTarget(cursor, insn);
-      if (inModule(tgt, modStart, modEnd))
-        return tgt;
-    }
-    if (isBLR(insn) || isBLRAuth(insn)) {
-      devlog(`[arm64-xref] forward walk hit unresolvable BLR @ ${cursor}`);
-      return null;
-    }
-    if (endsFallThrough(insn)) {
-      devlog(`[arm64-xref] forward walk hit a non-fall-through instruction @ ${cursor} before any BL`);
-      return null;
-    }
-    cursor = cursor.add(4);
-    walked += 4;
-  }
-  return null;
-}
-
-// agent/shared/x64_xref.ts
-init_node_globals();
-var LEA_ARG1_PREFIX = {
-  win64: "48 8d 15",
-  sysv: "48 8d 35"
-};
-var CALL_SEARCH_WINDOW = 64;
-var LEA_RIP_LEN = 7;
-function findRipLeaRefs(code4, codeVa, targets2, scanEnd = code4.length) {
-  const out = [];
-  const end = Math.min(scanEnd, code4.length - LEA_RIP_LEN + 1);
-  for (let k = code4.indexOf(141, 1); k !== -1 && k - 1 < end; k = code4.indexOf(141, k + 1)) {
-    const i = k - 1;
-    const rex = code4[i];
-    if (rex !== 72 && rex !== 76)
-      continue;
-    const modrm = code4[i + 2];
-    if ((modrm & 199) !== 5)
-      continue;
-    const disp = code4[i + 3] | code4[i + 4] << 8 | code4[i + 5] << 16 | code4[i + 6] << 24;
-    const site = codeVa + i;
-    const target = site + LEA_RIP_LEN + disp;
-    if (!targets2.has(target))
-      continue;
-    const reg = (modrm >> 3 & 7) + (rex === 76 ? 8 : 0);
-    out.push({ site, target, reg });
-  }
-  return out;
-}
-function firstCallAfter(code4, codeVa, leaOff, lo, hi, window = CALL_SEARCH_WINDOW) {
-  const start = leaOff + LEA_RIP_LEN;
-  const end = Math.min(start + window, code4.length - 5);
-  for (let j = start; j < end; j++) {
-    if (code4[j] !== 232)
-      continue;
-    const rel = code4[j + 1] | code4[j + 2] << 8 | code4[j + 3] << 16 | code4[j + 4] << 24;
-    const callee = codeVa + j + 5 + rel;
-    if (callee >= lo && callee < hi)
-      return callee;
-  }
-  return null;
-}
-var X64_REG = { rax: 0, rcx: 1, rdx: 2, rbx: 3, rsp: 4, rbp: 5, rsi: 6, rdi: 7 };
-var MIN_FIELD_OFFSET = 8;
-var MAX_CTX_OFFSET = 1024;
-var MAX_CB_OFFSET = 16384;
-function decodeMemOperand(code4, i, opcode) {
-  if (i + 3 > code4.length)
-    return null;
-  const rex = code4[i];
-  if ((rex & 248) !== 72 || (rex & 2) !== 0)
-    return null;
-  if (code4[i + 1] !== opcode)
-    return null;
-  const modrm = code4[i + 2];
-  const mod = modrm >> 6;
-  const rm = modrm & 7;
-  if (mod === 0 || mod === 3 || rm === 4)
-    return null;
-  const reg = (modrm >> 3 & 7) + (rex & 4 ? 8 : 0);
-  const base = rm + (rex & 1 ? 8 : 0);
-  let disp;
-  let len;
-  if (mod === 1) {
-    if (i + 4 > code4.length)
-      return null;
-    disp = code4[i + 3] << 24 >> 24;
-    len = 4;
-  } else {
-    if (i + 7 > code4.length)
-      return null;
-    disp = code4[i + 3] | code4[i + 4] << 8 | code4[i + 5] << 16 | code4[i + 6] << 24;
-    len = 7;
-  }
-  return { reg, base, disp, len };
-}
-function decodeMovRegReg(code4, i) {
-  if (i + 3 > code4.length)
-    return null;
-  const rex = code4[i];
-  if ((rex & 248) !== 72)
-    return null;
-  const op = code4[i + 1];
-  const modrm = code4[i + 2];
-  if (modrm >> 6 !== 3 || op !== 137 && op !== 139)
-    return null;
-  const r = (modrm >> 3 & 7) + (rex & 4 ? 8 : 0);
-  const m2 = (modrm & 7) + (rex & 1 ? 8 : 0);
-  return op === 137 ? [m2, r, 3] : [r, m2, 3];
-}
-function decodeX64CtxKeylogOffsets(code4, sslReg) {
-  const sslRegs = /* @__PURE__ */ new Set([sslReg]);
-  for (let i = 0; i + 3 <= code4.length; i++) {
-    const mv = decodeMovRegReg(code4, i);
-    if (mv !== null && sslRegs.has(mv[1]))
-      sslRegs.add(mv[0]);
-    const load = decodeMemOperand(code4, i, 139);
-    if (load === null || !sslRegs.has(load.base))
-      continue;
-    if (load.disp < MIN_FIELD_OFFSET || load.disp > MAX_CTX_OFFSET)
-      continue;
-    const ctxReg = load.reg;
-    const from2 = i + load.len;
-    for (let j = from2; j < Math.min(from2 + 24, code4.length); j++) {
-      const cmp = decodeMemOperand(code4, j, 131);
-      if (cmp !== null && cmp.reg % 8 === 7 && cmp.base === ctxReg && j + cmp.len < code4.length && code4[j + cmp.len] === 0) {
-        if (cmp.disp >= MIN_FIELD_OFFSET && cmp.disp <= MAX_CB_OFFSET) {
-          return { ctxOff: load.disp, cbOff: cmp.disp };
-        }
-      }
-      const ld2 = decodeMemOperand(code4, j, 139);
-      if (ld2 !== null && ld2.base === ctxReg && ld2.disp >= MIN_FIELD_OFFSET && ld2.disp <= MAX_CB_OFFSET) {
-        const t = j + ld2.len;
-        if (t + 3 <= code4.length && (code4[t] & 248) === 72 && code4[t + 1] === 133) {
-          const m2 = code4[t + 2];
-          const rexT = code4[t];
-          const r1 = (m2 >> 3 & 7) + (rexT & 4 ? 8 : 0);
-          const r2 = (m2 & 7) + (rexT & 1 ? 8 : 0);
-          if (m2 >> 6 === 3 && r1 === ld2.reg && r2 === ld2.reg) {
-            return { ctxOff: load.disp, cbOff: ld2.disp };
-          }
-        }
-      }
-    }
-  }
-  return null;
-}
-
-// agent/util/proc_maps.ts
-init_node_globals();
-function tryGlobalExport(name) {
-  try {
-    return Module.getGlobalExportByName(name);
-  } catch (_e) {
-    return null;
-  }
-}
-function readProcSelfMaps() {
-  try {
-    const openPtr = tryGlobalExport("open");
-    const readPtr = tryGlobalExport("read");
-    const closePtr = tryGlobalExport("close");
-    if (!openPtr || !readPtr || !closePtr)
-      return null;
-    const open = new NativeFunction(openPtr, "int", ["pointer", "int"]);
-    const read2 = new NativeFunction(readPtr, "long", ["int", "pointer", "ulong"]);
-    const close = new NativeFunction(closePtr, "int", ["int"]);
-    const path = Memory.allocUtf8String("/proc/self/maps");
-    const fd = open(
-      path,
-      0
-      /* O_RDONLY */
-    );
-    if (fd < 0)
-      return null;
-    const chunkSize = 65536;
-    const buf = Memory.alloc(chunkSize);
-    const chunks = [];
-    let total = 0;
-    const cap = 4 * 1024 * 1024;
-    while (total < cap) {
-      const n = read2(fd, buf, chunkSize).valueOf();
-      if (n <= 0)
-        break;
-      const chunk = buf.readUtf8String(n);
-      if (chunk === null)
-        break;
-      chunks.push(chunk);
-      total += n;
-    }
-    close(fd);
-    return chunks.join("");
-  } catch (e) {
-    devlog(`[maps] readProcSelfMaps error: ${e}`);
-    return null;
-  }
-}
-function parseMapsPeImages(maps) {
-  const out = [];
-  const seen = /* @__PURE__ */ new Set();
-  for (const line of maps.split("\n")) {
-    const parts = line.trim().split(/\s+/);
-    if (parts.length < 6)
-      continue;
-    const [range, perms, offset] = parts;
-    if (!perms.startsWith("r"))
-      continue;
-    if (!/^0+$/.test(offset))
-      continue;
-    const path = parts.slice(5).join(" ");
-    if (!/\.(dll|exe)$/i.test(path))
-      continue;
-    if (seen.has(path))
-      continue;
-    seen.add(path);
-    const name = path.split(/[\\/]/).pop() ?? path;
-    out.push({ base: "0x" + range.split("-")[0], path, name });
-  }
-  return out;
-}
-function peSizeOfImage(base) {
-  try {
-    if (base.readU16() !== 23117)
-      return null;
-    const nt = base.add(base.add(60).readU32());
-    if (nt.readU32() !== 17744)
-      return null;
-    return nt.add(24 + 56).readU32();
-  } catch (_e) {
-    return null;
-  }
-}
-function peModuleLike(name, base, path) {
-  const size = peSizeOfImage(base);
-  if (size === null || size === 0)
-    return null;
-  const end = base.add(size);
-  return {
-    name,
-    base,
-    size,
-    path,
-    enumerateRanges(protection) {
-      const out = [];
-      for (const r of Process.enumerateRanges(protection)) {
-        const rEnd = r.base.add(r.size);
-        if (rEnd.compare(base) <= 0 || r.base.compare(end) >= 0)
-          continue;
-        const lo = r.base.compare(base) < 0 ? base : r.base;
-        const hi = rEnd.compare(end) > 0 ? end : rEnd;
-        out.push({ ...r, base: lo, size: hi.sub(lo).toInt32() });
-      }
-      return out;
-    }
-  };
-}
-function listPeImages() {
-  const maps = readProcSelfMaps();
-  if (!maps)
-    return [];
-  const out = [];
-  for (const e of parseMapsPeImages(maps)) {
-    const m2 = peModuleLike(e.name, ptr(e.base), e.path);
-    if (m2)
-      out.push(m2);
-  }
-  return out;
-}
-function findModuleOrPeImage(moduleName) {
-  try {
-    const m2 = Process.findModuleByName(moduleName);
-    if (m2 !== null)
-      return m2;
-  } catch (_e) {
-  }
-  const maps = readProcSelfMaps();
-  if (!maps)
-    return null;
-  const wanted = moduleName.toLowerCase();
-  for (const e of parseMapsPeImages(maps)) {
-    if (e.name.toLowerCase() === wanted)
-      return peModuleLike(e.name, ptr(e.base), e.path);
-  }
-  return null;
-}
-
-// agent/shared/win64_thunk.ts
-init_node_globals();
-var XMM_SAVE_BYTES = 10 * 16;
-var FRAME_BYTES = XMM_SAVE_BYTES + 8;
-function u32le(v) {
-  return [v & 255, v >>> 8 & 255, v >>> 16 & 255, v >>> 24 & 255];
-}
-function movdquRsp(n, off, store) {
-  const modrm = 132 | (n & 7) << 3;
-  const rex = n >= 8 ? [68] : [];
-  return [243, ...rex, 15, store ? 127 : 111, modrm, 36, ...u32le(off)];
-}
-function win64ToSysvThunkBytes(target, nargs) {
-  if (nargs < 0 || nargs > 4)
-    throw new Error(`win64 thunk supports 0..4 args, got ${nargs}`);
-  const out = [];
-  out.push(87, 86);
-  out.push(72, 129, 236, ...u32le(FRAME_BYTES));
-  for (let n = 6; n <= 15; n++)
-    out.push(...movdquRsp(n, (n - 6) * 16, true));
-  if (nargs > 0)
-    out.push(72, 137, 207);
-  if (nargs > 1)
-    out.push(72, 137, 214);
-  if (nargs > 2)
-    out.push(76, 137, 194);
-  if (nargs > 3)
-    out.push(76, 137, 201);
-  let t = BigInt(target);
-  const imm = [];
-  for (let i = 0; i < 8; i++) {
-    imm.push(Number(t & 0xffn));
-    t >>= 8n;
-  }
-  out.push(72, 184, ...imm);
-  out.push(255, 208);
-  for (let n = 6; n <= 15; n++)
-    out.push(...movdquRsp(n, (n - 6) * 16, false));
-  out.push(72, 129, 196, ...u32le(FRAME_BYTES));
-  out.push(94, 95, 195);
-  return out;
-}
-var rootedThunks = [];
-function makeWin64ToSysvThunk(target, nargs) {
-  const bytes = win64ToSysvThunkBytes(target.toString(), nargs);
-  const mem = Memory.alloc(Process.pageSize);
-  Memory.patchCode(mem, bytes.length, (code4) => {
-    code4.writeByteArray(bytes);
-  });
-  rootedThunks.push(mem);
-  return mem;
-}
-
-// agent/shared/boringssl_anchor_locator.ts
-var BORINGSSL_KEYLOG_LABELS = [
-  "CLIENT_RANDOM",
-  "CLIENT_HANDSHAKE_TRAFFIC_SECRET",
-  "SERVER_HANDSHAKE_TRAFFIC_SECRET",
-  "CLIENT_TRAFFIC_SECRET_0",
-  "SERVER_TRAFFIC_SECRET_0",
-  "EXPORTER_SECRET"
-];
-var MIN_CTX_FIELD_OFFSET = 8;
-var MAX_CTX_FIELD_OFFSET = 16384;
-var PROLOGUE_WORDS = 12;
-function decodeCtxKeylogOffsets(words) {
-  let ctxOff = null;
-  let reg1 = -1;
-  let i1 = -1;
-  for (let i = 0; i < words.length; i++) {
-    const w = words[i] >>> 0;
-    if (isLDRimmU64(w) && regRn(w) === 0) {
-      ctxOff = decodeLDRU64Imm(w);
-      reg1 = regRd(w);
-      i1 = i;
-      break;
-    }
-  }
-  if (ctxOff === null || reg1 === 0)
-    return null;
-  if (ctxOff < MIN_CTX_FIELD_OFFSET || ctxOff > MAX_CTX_FIELD_OFFSET)
-    return null;
-  let cbOff = null;
-  let reg2 = -1;
-  let i2 = -1;
-  for (let i = i1 + 1; i < words.length; i++) {
-    const w = words[i] >>> 0;
-    if (isLDRimmU64(w) && regRn(w) === reg1) {
-      cbOff = decodeLDRU64Imm(w);
-      reg2 = regRd(w);
-      i2 = i;
-      break;
-    }
-  }
-  if (cbOff === null)
-    return null;
-  if (cbOff < MIN_CTX_FIELD_OFFSET || cbOff > MAX_CTX_FIELD_OFFSET)
-    return null;
-  for (let i = i2 + 1; i < words.length; i++) {
-    const w = words[i] >>> 0;
-    if ((isCBZ64(w) || isCBNZ64(w)) && regRd(w) === reg2) {
-      return { ctxOff, cbOff };
-    }
-  }
-  return null;
-}
-function pickAgreedCallee(pairs) {
-  const perLabel = /* @__PURE__ */ new Map();
-  for (const { label, callee } of pairs) {
-    if (!perLabel.has(label))
-      perLabel.set(label, callee);
-  }
-  const votes = /* @__PURE__ */ new Map();
-  for (const callee of perLabel.values()) {
-    votes.set(callee, (votes.get(callee) ?? 0) + 1);
-  }
-  let best = null;
-  let bestCount = 0;
-  let tied = false;
-  for (const [callee, count] of votes) {
-    if (count > bestCount) {
-      best = callee;
-      bestCount = count;
-      tied = false;
-    } else if (count === bestCount) {
-      tied = true;
-    }
-  }
-  return bestCount >= 2 && !tied ? best : null;
-}
-var rootedCallbacks = [];
-var writtenKeylogFields = /* @__PURE__ */ new Map();
-function restoreAnchorLocatorKeylogFields() {
-  let restored = 0;
-  for (const { field, cb } of writtenKeylogFields.values()) {
-    try {
-      if (!isWritable(field, Process.pointerSize))
-        continue;
-      const current = safeReadPointer(field);
-      if (current === null || !current.equals(cb))
-        continue;
-      field.writePointer(NULL);
-      restored++;
-    } catch (_e) {
-    }
-  }
-  writtenKeylogFields.clear();
-  return restored;
-}
-var loggedNonArm64 = false;
-function deriveOffsetsAt(addr) {
-  try {
-    const words = [];
-    for (let i = 0; i < PROLOGUE_WORDS; i++) {
-      const at = addr.add(i * 4);
-      if (!isReadable(at, 4))
-        return null;
-      words.push(at.readU32());
-    }
-    return decodeCtxKeylogOffsets(words);
-  } catch (e) {
-    devlog(`[anchor-locator] prologue decode failed: ${e}`);
-    return null;
-  }
-}
-function installViaCtxWrite(moduleName, fnAddr, offs, abi = null) {
-  const { ctxOff, cbOff } = offs;
-  let dropLogged = false;
-  const emitKeylogLine = (linePtr) => {
-    try {
-      if (linePtr.isNull())
-        return;
-      if (!claimKeylogHook(moduleName, "anchor")) {
-        if (!dropLogged) {
-          dropLogged = true;
-          devlog(`[anchor-locator] ${moduleName}: the ${keylogHookOwner(moduleName)} tier owns this module; dropping duplicate keylog lines`);
-        }
-        return;
-      }
-      const line = linePtr.readCString();
-      if (line)
-        sendKeylog(line);
-    } catch (e) {
-      devlog(`[anchor-locator] ${moduleName}: keylog callback error: ${e}`);
-    }
-  };
-  const keylogCb = new NativeCallback(function(_ssl, linePtr) {
-    emitKeylogLine(linePtr);
-  }, "void", ["pointer", "pointer"]);
-  rootedCallbacks.push(keylogCb);
-  const cbEntry = abi === "win64" && Process.platform !== "windows" ? makeWin64ToSysvThunk(keylogCb, 2) : keylogCb;
-  let installedOnce = false;
-  let vetoedOnce = false;
-  const hookedExisting = /* @__PURE__ */ new Set();
-  const hookExistingKeylogCallback = (fn) => {
-    const key = fn.toString();
-    if (hookedExisting.has(key))
-      return;
-    hookedExisting.add(key);
-    const range = Process.findRangeByAddress(fn);
-    if (range === null || !range.protection.includes("x")) {
-      log(`[-] ${moduleName}: ctx+0x${cbOff.toString(16)} holds ${fn}, which is not code; leaving it alone.`);
-      return;
-    }
-    try {
-      Interceptor.attach(fn, {
-        onEnter(args) {
-          emitKeylogLine(abi === null ? args[1] : argAt(this.context, abi, 1));
-        }
-      });
-      log(`[*] ${moduleName}: the app already sets a keylog callback (${fn}); hooked it instead of replacing it`);
-    } catch (e) {
-      log(`[-] ${moduleName}: could not hook the app's keylog callback at ${fn}: ${e}`);
-    }
-  };
-  try {
-    Interceptor.attach(fnAddr, {
-      onEnter(args) {
-        try {
-          const ssl = abi === null ? args[0] : argAt(this.context, abi, 0);
-          if (ssl.isNull())
-            return;
-          const ctx = safeReadPointer(ssl.add(ctxOff));
-          if (ctx === null || ctx.isNull())
-            return;
-          const field = ctx.add(cbOff);
-          const current = safeReadPointer(field);
-          if (current !== null && current.equals(cbEntry))
-            return;
-          if (!isWritable(field, Process.pointerSize)) {
-            if (!vetoedOnce) {
-              vetoedOnce = true;
-              log(`[-] ${moduleName}: anchor-locator refused the keylog write \u2014 ctx+0x${cbOff.toString(16)} is not writable (offset likely wrong).`);
-            }
-            return;
-          }
-          if (current === null)
-            return;
-          if (!current.isNull()) {
-            hookExistingKeylogCallback(current);
-            return;
-          }
-          if (_isShuttingDownNow())
-            return;
-          field.writePointer(cbEntry);
-          writtenKeylogFields.set(field.toString(), { field, cb: cbEntry });
-          if (!installedOnce) {
-            installedOnce = true;
-            devlog(`[anchor-locator] ${moduleName}: wrote keylog_callback at ctx+0x${cbOff.toString(16)}`);
-          }
-        } catch (e) {
-          if (!vetoedOnce) {
-            vetoedOnce = true;
-            log(`[-] ${moduleName}: anchor-locator keylog install failed: ${e}`);
-          }
-        }
-      }
-    });
-  } catch (e) {
-    devlog(`[anchor-locator] ${moduleName}: Interceptor.attach (ctx-write) failed: ${e}`);
-    return false;
-  }
-  log(`[*] ${moduleName}: keylog hooks installed via anchor-locator (derived ctx offsets 0x${ctxOff.toString(16)}/0x${cbOff.toString(16)})`);
-  return true;
-}
-function installViaFieldDump(moduleName, fnAddr, dumpKeys, abi = null) {
-  try {
-    Interceptor.attach(fnAddr, {
-      onEnter(args) {
-        const c = readSslLogSecretCall(args, this.context, abi);
-        dumpKeys(c.label, c.ssl, c.data, c.len);
-      }
-    });
-  } catch (e) {
-    devlog(`[anchor-locator] ${moduleName}: Interceptor.attach (field dump) failed: ${e}`);
-    return false;
-  }
-  log(`[*] ${moduleName}: keylog hooks installed via anchor-locator (field dump)`);
-  return true;
-}
-function collectLabelVotes(labels, sitesPerLabel, firstCallee) {
-  const pairs = [];
-  labels.forEach((label, i) => {
-    for (const site of sitesPerLabel[i] ?? []) {
-      const callee = firstCallee(site);
-      if (callee !== null) {
-        pairs.push({ label, callee: callee.toString() });
-        break;
-      }
-    }
-  });
-  return pairs;
-}
-function codeMegabytes(mod) {
-  let bytes = 0;
-  for (const r of mod.enumerateRanges("r-x"))
-    bytes += r.size;
-  return (bytes / (1024 * 1024)).toFixed(1);
-}
-async function locateSslLogSecret(mod, moduleName) {
-  const modStart = mod.base;
-  const modEnd = mod.base.add(mod.size);
-  const started2 = Date.now();
-  devlog(`[anchor-locator] ${moduleName}: scanning ${codeMegabytes(mod)} MB of code for ${BORINGSSL_KEYLOG_LABELS.length} keylog label xrefs (background, non-blocking)`);
-  const strAddrs = await findAnchorStringsAsync(mod, BORINGSSL_KEYLOG_LABELS.map((l) => l + "\0"));
-  const labels = [];
-  const targets2 = [];
-  strAddrs.forEach((a, i) => {
-    if (a !== null) {
-      labels.push(BORINGSSL_KEYLOG_LABELS[i]);
-      targets2.push(a);
-    }
-  });
-  const sites = targets2.length > 0 ? await findStringLoadSitesAsync(mod, targets2) : [];
-  const pairs = collectLabelVotes(labels, sites, (site) => firstCallTargetForward(site, modEnd, modStart, modEnd));
-  devlog(`[anchor-locator] ${moduleName}: xref scan finished in ${Date.now() - started2} ms (${targets2.length} label string(s), ${pairs.length} resolved a call)`);
-  devlog(`[anchor-locator] ${moduleName}: votes ` + (pairs.map((p) => `${p.label}->${p.callee}`).join(", ") || "(none)"));
-  const agreed = pickAgreedCallee(pairs);
-  if (agreed === null) {
-    devlog(`[anchor-locator] ${moduleName}: no ssl_log_secret candidate agreed across >=2 labels (${pairs.length} label(s) resolved a call)`);
-    return null;
-  }
-  devlog(`[anchor-locator] ${moduleName}: ssl_log_secret candidate @ ${agreed} (agreed by ${pairs.filter((p) => p.callee === agreed).length}/${pairs.length} label xref(s))`);
-  return ptr(agreed);
-}
-async function runAnchorLocatorTier4(moduleName, dumpKeys, _detail) {
-  if (Process.arch === "x64") {
-    const xmod = findModuleOrPeImage(moduleName);
-    if (xmod === null) {
-      devlog(`[anchor-locator] ${moduleName}: not loaded`);
-      return false;
-    }
-    return runAnchorLocatorX64(xmod, dumpKeys, callAbiForModule(moduleName) ?? "sysv");
-  }
-  if (Process.arch !== "arm64") {
-    if (!loggedNonArm64) {
-      loggedNonArm64 = true;
-      log(`[*] anchor-locator (tier 4) skipped: only implemented for arm64 and x64 (arch=${Process.arch})`);
-    }
-    return false;
-  }
-  let mod;
-  try {
-    mod = Process.findModuleByName(moduleName);
-  } catch (e) {
-    devlog(`[anchor-locator] ${moduleName}: findModuleByName threw: ${e}`);
-    return false;
-  }
-  if (mod === null) {
-    devlog(`[anchor-locator] ${moduleName}: not loaded`);
-    return false;
-  }
-  const sslLogSecret = await locateSslLogSecret(mod, moduleName);
-  if (sslLogSecret === null)
-    return false;
-  if (_isShuttingDownNow()) {
-    devlog(`[anchor-locator] ${moduleName}: shutdown during ssl_log_secret scan; not installing`);
-    return false;
-  }
-  resetReadableCache();
-  const offs = deriveOffsetsAt(sslLogSecret);
-  if (offs !== null) {
-    return installViaCtxWrite(moduleName, sslLogSecret, offs);
-  }
-  devlog(`[anchor-locator] ${moduleName}: ctx-offset decode failed; using field-dump fallback`);
-  return installViaFieldDump(moduleName, sslLogSecret, dumpKeys);
-}
-var X64_CHUNK_OVERLAP = 7 + CALL_SEARCH_WINDOW + 5;
-async function findLabelStringsX64(mod) {
-  const found = /* @__PURE__ */ new Map();
-  const have = /* @__PURE__ */ new Set();
-  const data = mod.enumerateRanges("r--");
-  await scanRangesChunked(data, BORINGSSL_KEYLOG_LABELS.map((label) => ({
-    pattern: toHexPattern("\0" + label + "\0"),
-    onMatch: (a) => {
-      if (have.has(label))
-        return;
-      have.add(label);
-      found.set(Number(a.add(1).toString()), label);
-    }
-  })));
-  return found;
-}
-async function collectLabelVotesX64Fast(mod, labelAt, abi) {
-  const prefix = LEA_ARG1_PREFIX[abi];
-  if (prefix === void 0)
-    return [];
-  const lo = Number(mod.base.toString());
-  const hi = lo + mod.size;
-  const targets2 = new Set([...labelAt.keys()].map((a) => ptr(a).toString()));
-  const voted = /* @__PURE__ */ new Map();
-  await scanRangesChunked(mod.enumerateRanges("r-x"), [{
-    pattern: prefix,
-    onMatch: (site) => {
-      try {
-        const target = site.add(7 + site.add(3).readS32()).toString();
-        if (!targets2.has(target))
-          return;
-        const label = labelAt.get(Number(target));
-        if (voted.has(label))
-          return;
-        const code4 = new Uint8Array(site.readByteArray(7 + CALL_SEARCH_WINDOW + 5));
-        const callee = firstCallAfter(code4, Number(site.toString()), 0, lo, hi);
-        if (callee !== null)
-          voted.set(label, ptr(callee).toString());
-      } catch (_e) {
-      }
-    }
-  }]);
-  return [...voted].map(([label, callee]) => ({ label, callee }));
-}
-async function collectLabelVotesX64(mod, labelAt) {
-  const lo = Number(mod.base.toString());
-  const hi = lo + mod.size;
-  const targets2 = new Set(labelAt.keys());
-  const voted = /* @__PURE__ */ new Map();
-  for (const range of mod.enumerateRanges("r-x")) {
-    for (let off = 0; off < range.size; off += XREF_SCAN_CHUNK_BYTES) {
-      if (_isShuttingDownNow())
-        return [];
-      const len = Math.min(XREF_SCAN_CHUNK_BYTES + X64_CHUNK_OVERLAP, range.size - off);
-      const at = range.base.add(off);
-      let buf = null;
-      try {
-        buf = at.readByteArray(len);
-      } catch (_e) {
-        buf = null;
-      }
-      if (buf !== null) {
-        const code4 = new Uint8Array(buf);
-        const va = Number(at.toString());
-        const own = Math.min(XREF_SCAN_CHUNK_BYTES, range.size - off);
-        for (const ref of findRipLeaRefs(code4, va, targets2, own)) {
-          const label = labelAt.get(ref.target);
-          if (voted.has(label))
-            continue;
-          const callee = firstCallAfter(code4, va, ref.site - va, lo, hi);
-          if (callee !== null)
-            voted.set(label, ptr(callee).toString());
-        }
-      }
-      await yieldToEventLoop();
-    }
-  }
-  return [...voted].map(([label, callee]) => ({ label, callee }));
-}
-function decodeCtxOffsetsX64At(fn, sslReg, moduleName) {
-  try {
-    if (!isReadable(fn, 96))
-      return null;
-    return decodeX64CtxKeylogOffsets(new Uint8Array(fn.readByteArray(96)), sslReg);
-  } catch (e) {
-    devlog(`[anchor-locator] ${moduleName}: x64 prologue read failed: ${e}`);
-    return null;
-  }
-}
-function pinnedSslLogSecret(mod) {
-  try {
-    const all = offsets;
-    if (!all || typeof all !== "object")
-      return null;
-    const key = Object.keys(all).find((k) => k.toLowerCase() === mod.name.toLowerCase());
-    const v = key === void 0 ? void 0 : all[key]?.["ssl_log_secret"];
-    if (!v || typeof v.address !== "string")
-      return null;
-    const addr = v.absolute ? ptr(v.address) : mod.base.add(ptr(v.address));
-    return addr.isNull() ? null : addr;
-  } catch (_e) {
-    return null;
-  }
-}
-async function runAnchorLocatorX64(mod, dumpKeys, abi) {
-  const moduleName = mod.name;
-  const sslReg = abi === "win64" ? X64_REG.rcx : X64_REG.rdi;
-  const pinned = pinnedSslLogSecret(mod);
-  if (pinned !== null) {
-    const offs2 = decodeCtxOffsetsX64At(pinned, sslReg, moduleName);
-    if (offs2 !== null) {
-      devlog(`[anchor-locator] ${moduleName}: ssl_log_secret @ ${pinned} from --offsets (rva 0x${pinned.sub(mod.base).toString(16)}); no scan needed`);
-      return installViaCtxWrite(moduleName, pinned, offs2, abi);
-    }
-    devlog(`[anchor-locator] ${moduleName}: --offsets ssl_log_secret @ ${pinned} does not decode; scanning instead`);
-  }
-  const started2 = Date.now();
-  devlog(`[anchor-locator] ${moduleName}: x64 label-xref scan of ${(mod.size / (1024 * 1024)).toFixed(1)} MB (abi=${abi}, background, non-blocking)`);
-  const labelAt = await findLabelStringsX64(mod);
-  if (labelAt.size < 2) {
-    devlog(`[anchor-locator] ${moduleName}: only ${labelAt.size} keylog label string(s) present; not BoringSSL`);
-    return false;
-  }
-  let pairs = await collectLabelVotesX64Fast(mod, labelAt, abi);
-  if (pickAgreedCallee(pairs) === null) {
-    devlog(`[anchor-locator] ${moduleName}: arg-register LEA scan inconclusive after ${Date.now() - started2} ms; walking all LEAs`);
-    pairs = await collectLabelVotesX64(mod, labelAt);
-  }
-  devlog(`[anchor-locator] ${moduleName}: x64 xref scan finished in ${Date.now() - started2} ms; votes ` + (pairs.map((p) => `${p.label}->${p.callee}`).join(", ") || "(none)"));
-  const agreed = pickAgreedCallee(pairs);
-  if (agreed === null) {
-    devlog(`[anchor-locator] ${moduleName}: no ssl_log_secret candidate agreed across >=2 labels`);
-    return false;
-  }
-  if (_isShuttingDownNow())
-    return false;
-  const fn = ptr(agreed);
-  devlog(`[anchor-locator] ${moduleName}: ssl_log_secret @ ${fn} (rva 0x${fn.sub(mod.base).toString(16)}, agreed by ${pairs.filter((p) => p.callee === agreed).length}/${pairs.length} labels)`);
-  resetReadableCache();
-  const offs = decodeCtxOffsetsX64At(fn, sslReg, moduleName);
-  if (offs !== null)
-    return installViaCtxWrite(moduleName, fn, offs, abi);
-  devlog(`[anchor-locator] ${moduleName}: x64 ctx-offset decode failed; using field-dump fallback`);
-  return installViaFieldDump(moduleName, fn, dumpKeys, abi);
-}
-registerBoringSSLTier4(runAnchorLocatorTier4);
-
 // agent/shared/boringssl_symbol_hook.ts
 var BORINGSSL_SSL_LOG_SECRET_MANGLED = [
   // Span<const uint8_t> form (newer BoringSSL, observed in libwarp_mobile.so)
@@ -23116,6 +25338,9 @@ function s3OffsetForArch() {
 function readClientRandom(sslStructPtr) {
   if (sslStructPtr.isNull())
     return "";
+  const identityCr = sslIdentity(sslStructPtr)?.cr;
+  if (identityCr)
+    return identityCr.toUpperCase();
   const cacheKey = sslStructPtr.toString();
   const cached = clientRandomCache.get(cacheKey);
   if (cached !== void 0)
@@ -23161,7 +25386,7 @@ function boringSslDumpKeys(labelPtr, sslStructPtr, keyPtr, keyLen, moduleName = 
     }
   }
   devlog_debug(`[ssl_log_secret] label=${labelStr} ssl=${sslStructPtr} len=${loggedLen} secret=${secretHex}`);
-  sendKeylog(`${labelStr} ${clientRandom} ${secretHex}`);
+  sendKeylog(`${labelStr} ${clientRandom} ${secretHex}`, sslStructPtr, moduleName || void 0);
   if (!sslStructPtr.isNull()) {
     noteHandshakeLogged(sslStructPtr);
     if (secretU8) {
@@ -23378,7 +25603,7 @@ var TLS13_LABEL_MAP = {
 // agent/tls/definitions/shared_factories.ts
 init_node_globals();
 init_shared_structures();
-function createLifecycleHook(freeSymbol, fdDecoder, sessionIdDecoder, clientRandomDecoder) {
+function createLifecycleHook(freeSymbol, fdDecoder, sessionIdDecoder, clientRandomDecoder, onFreed) {
   return {
     install: (addresses, modName, resolvedFns, enableDefaultFd) => {
       const freeAddr = addresses[modName]?.[freeSymbol];
@@ -23399,11 +25624,22 @@ function createLifecycleHook(freeSymbol, fdDecoder, sessionIdDecoder, clientRand
             sendConnectionLifecycle("destroyed", message);
           } catch (e) {
             devlog(`${freeSymbol} lifecycle hook: context partially torn down: ${e}`);
+          } finally {
+            runFreedCallback(freeSymbol, ctx, onFreed);
           }
         }
       });
     }
   };
+}
+function runFreedCallback(freeSymbol, ctx, onFreed) {
+  if (!onFreed)
+    return;
+  try {
+    onFreed(ctx);
+  } catch (e) {
+    devlog(`${freeSymbol} lifecycle hook: onFreed failed: ${e}`);
+  }
 }
 var noOpClientRandomDecoder = () => "";
 function createBufferedClientRandomDecoder(fnName) {
@@ -24812,6 +27048,7 @@ var NSS = class _NSS {
           var message = _NSS.getPortsAndAddressesFromNSS(this.fd, true, lib_addesses[current_module_name], enable_default_fd);
           message["ssl_session_id"] = _NSS.getSslSessionIdFromFD(this.fd);
           message["function"] = "NSS_read";
+          stampRecordLibrary(message, current_module_name);
           message["client_random"] = _NSS.extractClientRandom(this.fd);
           this.message = message;
           var data = this.buf.readByteArray(new Uint32Array([retval])[0]);
@@ -24837,6 +27074,7 @@ var NSS = class _NSS {
       var message = _NSS.getPortsAndAddressesFromNSS(fd, false, lib_addesses[current_module_name], enable_default_fd);
       message["ssl_session_id"] = _NSS.getSslSessionIdFromFD(fd);
       message["function"] = "NSS_write";
+      stampRecordLibrary(message, current_module_name);
       message["client_random"] = _NSS.extractClientRandom(fd);
       return message;
     });
@@ -25546,7 +27784,7 @@ function createOpenSslDefinition(options) {
   }
   def.extraHooks = [
     ...def.extraHooks || [],
-    createLifecycleHook("SSL_free", openSslFdDecoder, openSslSessionIdDecoder, openSslClientRandomDecoder),
+    createLifecycleHook("SSL_free", openSslFdDecoder, openSslSessionIdDecoder, openSslClientRandomDecoder, forgetSslIdentity),
     ...skipRW ? [] : [createSslFdScopeHooks()]
   ];
   return def;
@@ -25560,9 +27798,9 @@ function createBoringSSLKeylogApproach() {
         devlog_debug(`[boringssl-cb] ${modName}: SSL_CTX_set_keylog_callback unresolved, skipping callback tier`);
         return false;
       }
-      const keylogCb = new NativeCallback(function(_ssl, line) {
+      const keylogCb = new NativeCallback(function(ssl, line) {
         devlog(`invoking keylog_callback from OpenSSL_BoringSSL (${modName})`);
-        sendKeylog(line.readCString());
+        sendKeylog(line.readCString(), ssl, modName);
       }, "void", ["pointer", "pointer"]);
       const setKeylogOn = resolvedFns["SSL_CTX_set_keylog_callback"];
       const sslNewAddr = addresses[modName]?.["SSL_new"];
@@ -25573,7 +27811,7 @@ function createBoringSSLKeylogApproach() {
         return false;
       const blinking = pairip_safe && PAIRIP_BLINK_ENABLED;
       const tracker = createKeylogCallbackTracker(modName, setKeylogAddr, keylogCb, !blinking);
-      const attachAll = () => {
+      const attachAll2 = () => {
         const ls = [];
         if (canSslNew) {
           ls.push(Interceptor.attach(sslNewAddr, {
@@ -25609,7 +27847,7 @@ function createBoringSSLKeylogApproach() {
               Interceptor.attach(userCb, {
                 onEnter: function(innerArgs) {
                   devlog(`invoking user-installed keylog_callback from OpenSSL_BoringSSL (${modName})`);
-                  sendKeylog(innerArgs[1].readCString());
+                  sendKeylog(innerArgs[1].readCString(), innerArgs[0], modName);
                 }
               });
             }
@@ -25618,9 +27856,9 @@ function createBoringSSLKeylogApproach() {
         return ls;
       };
       if (blinking) {
-        registerBlinkTarget(modName, keylogCb, attachAll);
+        registerBlinkTarget(modName, keylogCb, attachAll2);
       } else {
-        attachAll();
+        attachAll2();
       }
       log(`[*] ${modName}: keylog hooks installed via SSL_CTX_set_keylog_callback (SSL_new=${canSslNew}, SSL_CTX_new=${canCtxNew})`);
       return true;
@@ -25636,8 +27874,8 @@ function createSslFdScopeHooks() {
     }
   };
 }
-function buildExMessage(fd, isRead, ssl, functionName, methodAddresses, resolvedFns, enableDefaultFd) {
-  return buildRecordMessage({ fd, isRead, functionName, methodAddresses, enableDefaultFd }, () => ({
+function buildExMessage(fd, isRead, ssl, functionName, methodAddresses, resolvedFns, enableDefaultFd, library) {
+  return buildRecordMessage({ fd, isRead, functionName, methodAddresses, enableDefaultFd, library, ssl }, () => ({
     ssl_session_id: openSslSessionIdDecoder(ssl, resolvedFns),
     client_random: openSslClientRandomDecoder(ssl, resolvedFns)
   }));
@@ -25662,7 +27900,7 @@ function createSslReadWriteExHooks() {
                 this.deferredSsl = ssl;
                 return;
               }
-              const message = buildExMessage(fd, true, ssl, "SSL_read_ex", addresses[modName], resolvedFns, enableDefaultFd);
+              const message = buildExMessage(fd, true, ssl, "SSL_read_ex", addresses[modName], resolvedFns, enableDefaultFd, modName);
               if (message === null)
                 return;
               this.message = message;
@@ -25672,7 +27910,7 @@ function createSslReadWriteExHooks() {
               if ((retval | 0) <= 0)
                 return;
               if (this.deferredSsl) {
-                this.message = buildExMessage(recovered, true, this.deferredSsl, "SSL_read_ex", addresses[modName], resolvedFns, enableDefaultFd);
+                this.message = buildExMessage(recovered, true, this.deferredSsl, "SSL_read_ex", addresses[modName], resolvedFns, enableDefaultFd, modName);
               }
               if (!this.message)
                 return;
@@ -25696,7 +27934,7 @@ function createSslReadWriteExHooks() {
                 this.deferredSsl = ssl;
                 return;
               }
-              const message = buildExMessage(fd, false, ssl, "SSL_write_ex", addresses[modName], resolvedFns, enableDefaultFd);
+              const message = buildExMessage(fd, false, ssl, "SSL_write_ex", addresses[modName], resolvedFns, enableDefaultFd, modName);
               if (message === null)
                 return;
               this.message = message;
@@ -25707,7 +27945,7 @@ function createSslReadWriteExHooks() {
               if (count <= 0)
                 return;
               if (this.deferredSsl) {
-                this.message = buildExMessage(recovered, false, this.deferredSsl, "SSL_write_ex", addresses[modName], resolvedFns, enableDefaultFd);
+                this.message = buildExMessage(recovered, false, this.deferredSsl, "SSL_write_ex", addresses[modName], resolvedFns, enableDefaultFd, modName);
               }
               if (!this.message)
                 return;
@@ -25795,10 +28033,28 @@ init_shared_structures();
 // agent/shared/ssl_plaintext_hooks.ts
 init_node_globals();
 init_shared_structures();
+var SSL_GET_CLIENT_RANDOM = "SSL_get_client_random";
+function resolveSslGetClientRandomExport(moduleName) {
+  let address = null;
+  try {
+    address = findModuleExport2(moduleName, SSL_GET_CLIENT_RANDOM);
+  } catch (_e) {
+    address = null;
+  }
+  if (!address)
+    return null;
+  const exportedFunctions = {
+    [SSL_GET_CLIENT_RANDOM]: new NativeFunction(address, "int", ["pointer", "pointer", "int"])
+  };
+  const decodeClientRandom = createBufferedClientRandomDecoder(SSL_GET_CLIENT_RANDOM);
+  return (ssl) => decodeClientRandom(ssl, exportedFunctions);
+}
 var SslPlaintextHooks = class {
   host;
   modifications;
   useBioGetFd;
+  /** undefined = not resolved yet; null = the module exports no client_random API. */
+  clientRandomExport = void 0;
   /**
    * @param useBioGetFd rebind SSL_get_fd to BIO_get_fd when falling back to the
    *                    init_addresses module (Apple's libboringssl only).
@@ -25810,13 +28066,56 @@ var SslPlaintextHooks = class {
   }
   /**
    * Peer/session metadata for one plaintext record, or null when it cannot be
-   * attributed (no usable fd and no --enable_default_fd, or a non-IP socket).
+   * attributed (a non-IP socket, or no usable fd with neither a known client_random
+   * nor --enable_default_fd). An fd-less record whose client_random is known is
+   * emitted without address fields (buildRecordMessage -> buildEndpointlessRecord).
    */
   buildMessage(fd, isRead, ssl, functionName) {
-    if (fd < 0 && !enable_default_fd)
-      return null;
     const host = this.host;
-    return buildRecordMessage({ fd, isRead, functionName, methodAddresses: host.addresses[host.module_name], enableDefaultFd: enable_default_fd }, () => ({ ssl_session_id: host.getSslSessionId(ssl) }));
+    return buildRecordMessage({
+      fd,
+      isRead,
+      functionName,
+      methodAddresses: host.addresses[host.module_name],
+      enableDefaultFd: enable_default_fd,
+      library: host.moduleName,
+      // `clientRandom` takes precedence for the stamp; `ssl` lets a held
+      // caller_stack be joined to this record (sdk_backtrace.ts).
+      ssl,
+      clientRandom: () => this.clientRandomFor(ssl)
+    }, () => ({ ssl_session_id: host.getSslSessionId(ssl) }));
+  }
+  /**
+   * client_random of `ssl` (lower-case hex, "" when unknown). Lookup order (design
+   * B4): the shared per-SSL* identity cache -> this module's ssl_st layout ->
+   * SSL_get_client_random -> nothing. A cache hit costs two reads, no hex encode.
+   */
+  clientRandomFor(ssl) {
+    return readSslClientRandom(ssl, this.host.moduleName, this.exportedClientRandom() ?? void 0);
+  }
+  /**
+   * Start the module's ssl_st layout lookup at hook-install time so early records
+   * carry client_random. Gated and once per module (ssl_layout_autolocate.ts), so
+   * calling it from both attachRead and attachWrite costs nothing extra.
+   */
+  prefetchModuleSslLayout() {
+    prefetchSslLayout(this.host.moduleName);
+  }
+  /**
+   * An fd-less host has only fd-less records: arm the socket fd tracker at install time
+   * so the first record's socket I/O is observed. Idempotent (installSocketFdTracker).
+   */
+  armFdTrackerIfFdLess() {
+    if (!this.host.fdLess)
+      return;
+    installSocketFdTracker(`early at plaintext hook install (${this.host.moduleName} has no SSL_get_fd)`);
+  }
+  /** The module's client_random export, resolved once. */
+  exportedClientRandom() {
+    if (this.clientRandomExport === void 0) {
+      this.clientRandomExport = this.host.clientRandomViaExport ?? resolveSslGetClientRandomExport(this.host.moduleName);
+    }
+    return this.clientRandomExport;
   }
   /**
    * SSL_get_fd for the write hooks, or -1 if the call threw. On a throw outside the
@@ -25871,11 +28170,13 @@ var SslPlaintextHooks = class {
   }
   /** SSL_read(ssl, buf, num) -> bytes read. */
   attachRead(address, functionName = "SSL_read") {
+    this.armFdTrackerIfFdLess();
+    this.prefetchModuleSslLayout();
     const hooks = this;
     Interceptor.attach(address, {
       onEnter(args) {
         if (attribute_sdk)
-          maybeCaptureCallerStack(args[0], this.context, () => buildCallerStackJoin(args[0], () => hooks.host.SSL_get_fd(args[0]), true, hooks.host.addresses[hooks.host.module_name], enable_default_fd, () => hooks.host.getSslSessionId(args[0])));
+          maybeCaptureCallerStack(args[0], this.context, () => buildCallerStackJoin(args[0], () => hooks.host.SSL_get_fd(args[0]), true, hooks.host.addresses[hooks.host.module_name], enable_default_fd, () => hooks.host.getSslSessionId(args[0])), { transportModule: hooks.host.moduleName });
         this.bufLen = args[2].toInt32();
         this.buf = args[1];
         const fd = fdOrDeferred(hooks.host.SSL_get_fd(args[0]), args[0]);
@@ -25911,6 +28212,8 @@ var SslPlaintextHooks = class {
    * retries with the remainder). The caller owns `buf` for the whole synchronous call.
    */
   attachWrite(address, functionName = "SSL_write") {
+    this.armFdTrackerIfFdLess();
+    this.prefetchModuleSslLayout();
     const hooks = this;
     Interceptor.attach(address, {
       onEnter(args) {
@@ -25929,7 +28232,7 @@ var SslPlaintextHooks = class {
     Interceptor.attach(address, {
       onEnter(args) {
         if (attribute_sdk)
-          maybeCaptureCallerStack(args[0], this.context, () => buildCallerStackJoin(args[0], () => hooks.host.SSL_get_fd(args[0]), true, hooks.host.addresses[hooks.host.module_name], enable_default_fd, () => hooks.host.getSslSessionId(args[0])));
+          maybeCaptureCallerStack(args[0], this.context, () => buildCallerStackJoin(args[0], () => hooks.host.SSL_get_fd(args[0]), true, hooks.host.addresses[hooks.host.module_name], enable_default_fd, () => hooks.host.getSslSessionId(args[0])), { transportModule: hooks.host.moduleName });
         this.buf = args[1];
         this.readbytes_ptr = args[3];
         const fd = fdOrDeferred(hooks.host.SSL_get_fd(args[0]), args[0]);
@@ -25979,7 +28282,7 @@ var SslPlaintextHooks = class {
   prepareWrite(call, args, functionName) {
     const ssl = args[0];
     if (attribute_sdk)
-      maybeCaptureCallerStack(ssl, call.context, () => buildCallerStackJoin(ssl, () => this.host.SSL_get_fd(ssl), false, this.host.addresses[this.host.module_name], enable_default_fd, () => this.host.getSslSessionId(ssl)));
+      maybeCaptureCallerStack(ssl, call.context, () => buildCallerStackJoin(ssl, () => this.host.SSL_get_fd(ssl), false, this.host.addresses[this.host.module_name], enable_default_fd, () => this.host.getSslSessionId(ssl)), { transportModule: this.host.moduleName });
     const fd = fdOrDeferred(this.writeSslFd(ssl, this.host.is_base_hook), ssl);
     if (fd === null) {
       call.deferredSsl = ssl;
@@ -26039,6 +28342,40 @@ function isResolvedAddress(address) {
   return address !== null && address !== void 0 && !address.isNull();
 }
 
+// agent/shared/optional_ssl_fd_session.ts
+init_node_globals();
+var fdLessSslGetFd = (_ssl) => -1;
+var sessionlessSslSessionGetId = (_session, outLength) => {
+  outLength.writeU32(0);
+  return NULL;
+};
+var fridaNativeFunction = (address, returnType, argTypes2) => new NativeFunction(address, returnType, argTypes2);
+function bindOptionalSslFdAndSession(addresses, fdFunctionName, makeNativeFunction = fridaNativeFunction) {
+  const fallbacks = [];
+  const bindOptional = (name, returnType, argTypes2) => {
+    const address = addresses[name];
+    if (isResolvedAddress(address))
+      return makeNativeFunction(address, returnType, argTypes2);
+    fallbacks.push(name);
+    return null;
+  };
+  const sessionGetId = bindOptional("SSL_SESSION_get_id", "pointer", ["pointer", "pointer"]);
+  const getFd = bindOptional(fdFunctionName, "int", ["pointer"]);
+  const getSession = makeNativeFunction(addresses["SSL_get_session"], "pointer", ["pointer"]);
+  return {
+    SSL_get_fd: getFd ?? fdLessSslGetFd,
+    SSL_get_session: getSession,
+    SSL_SESSION_get_id: sessionGetId ?? sessionlessSslSessionGetId,
+    fallbacks,
+    fdLess: getFd === null
+  };
+}
+function describeSslFdSessionFallback(moduleName, fallbacks) {
+  if (fallbacks.length === 0)
+    return "";
+  return `${moduleName}: ${fallbacks.join(", ")} unresolved; plaintext hooks use SSL-scoped fd attribution (fd -1) and an empty session id`;
+}
+
 // agent/legacy/tls/libs/openssl_boringssl.ts
 var ModifyReceiver = class {
   readModification = null;
@@ -26089,6 +28426,7 @@ var OpenSSL_BoringSSL = class _OpenSSL_BoringSSL {
   keylog_callback;
   SSL_get_fd;
   SSL_get_session;
+  fdLess = false;
   static modReceiver;
   do_read_write_hooks = true;
   // we want to hook read and write by default
@@ -26119,7 +28457,7 @@ var OpenSSL_BoringSSL = class _OpenSSL_BoringSSL {
     }
     this.keylog_callback = new NativeCallback(function(ctxPtr, linePtr) {
       devlog("invoking keylog_callback from OpenSSL_BoringSSL (" + moduleName + ")");
-      sendKeylog(linePtr.readCString().toUpperCase());
+      sendKeylog(linePtr.readCString().toUpperCase(), ctxPtr, moduleName);
     }, "void", ["pointer", "pointer"]);
     if (isSymbolAvailable(moduleName, "SSL_write_ex")) {
       addModuleMethod(this.library_method_mapping, moduleName, "SSL_write_ex");
@@ -26137,9 +28475,13 @@ var OpenSSL_BoringSSL = class _OpenSSL_BoringSSL {
     }
     if (!ObjC.available && sslSurfaceResolvable) {
       try {
-        this.SSL_SESSION_get_id = new NativeFunction(this.addresses[this.moduleName]["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"]);
-        this.SSL_get_fd = ObjC.available ? new NativeFunction(this.addresses[this.moduleName]["BIO_get_fd"], "int", ["pointer"]) : new NativeFunction(this.addresses[this.moduleName]["SSL_get_fd"], "int", ["pointer"]);
-        this.SSL_get_session = new NativeFunction(this.addresses[this.moduleName]["SSL_get_session"], "pointer", ["pointer"]);
+        const bound = bindOptionalSslFdAndSession(this.addresses[this.moduleName], ObjC.available ? "BIO_get_fd" : "SSL_get_fd");
+        this.SSL_SESSION_get_id = bound.SSL_SESSION_get_id;
+        this.SSL_get_fd = bound.SSL_get_fd;
+        this.SSL_get_session = bound.SSL_get_session;
+        this.fdLess = bound.fdLess;
+        if (bound.fallbacks.length > 0)
+          devlog(describeSslFdSessionFallback(this.moduleName, bound.fallbacks));
         this.do_read_write_hooks = true;
       } catch (e) {
         this.do_read_write_hooks = false;
@@ -26253,7 +28595,7 @@ var OpenSSL_BoringSSL = class _OpenSSL_BoringSSL {
     } else {
       devlog_error("[OpenSSL Dump Keys Error] Argument 'key' is NULL");
     }
-    sendKeylog(labelStr + " " + client_random_str + " " + secret_key);
+    sendKeylog(labelStr + " " + client_random_str + " " + secret_key, identifier, this.module_name);
   }
   install_boringssl_key_extraction_hook() {
     if (!keylog_enabled)
@@ -26714,7 +29056,7 @@ var Cronet = class _Cronet {
     }
     this.keylog_callback = new NativeCallback(function(ctxPtr, linePtr) {
       devlog("invoking keylog_callback from Cronet (" + moduleName + ")");
-      sendKeylog(linePtr.readCString().toUpperCase());
+      sendKeylog(linePtr.readCString().toUpperCase(), ctxPtr, moduleName);
     }, "void", ["pointer", "pointer"]);
     try {
       this.addresses = readAddresses(moduleName, this.library_method_mapping);
@@ -26741,10 +29083,10 @@ var Cronet = class _Cronet {
   are_callbacks_symbols_available() {
     return this.can_we_install_keylog_callback;
   }
-  get_client_random(s3_ptr, SSL3_RANDOM_SIZE2) {
+  get_client_random(s3_ptr, SSL3_RANDOM_SIZE3) {
     if (!s3_ptr.isNull()) {
       const client_random_ptr = s3_ptr.add(48);
-      const client_random = client_random_ptr.readByteArray(SSL3_RANDOM_SIZE2);
+      const client_random = client_random_ptr.readByteArray(SSL3_RANDOM_SIZE3);
       const hexClientRandom = get_hex_string_from_byte_array(new Uint8Array(client_random));
       return hexClientRandom;
     } else {
@@ -26753,7 +29095,7 @@ var Cronet = class _Cronet {
     }
   }
   get_client_random_from_ssl_struct(ssl_st_ptr) {
-    const SSL3_RANDOM_SIZE2 = 32;
+    const SSL3_RANDOM_SIZE3 = 32;
     let offset_s3;
     switch (Process.arch) {
       case "x64":
@@ -26773,7 +29115,7 @@ var Cronet = class _Cronet {
         return "";
     }
     const s3_ptr = ssl_st_ptr.add(offset_s3).readPointer();
-    return this.get_client_random(s3_ptr, SSL3_RANDOM_SIZE2);
+    return this.get_client_random(s3_ptr, SSL3_RANDOM_SIZE3);
   }
   keyLenheuristic(label, keyPtr) {
     const MAX_KEY_LENGTH = 64;
@@ -26828,7 +29170,7 @@ var Cronet = class _Cronet {
       devlog("[Error] Argument 'key' is NULL");
     }
     devlog("invoking shadow keylog_callback from Cronet (" + this.module_name + ")");
-    sendKeylog(labelStr + " " + client_random + " " + secret_key);
+    sendKeylog(labelStr + " " + client_random + " " + secret_key, sslStructPtr, this.module_name);
     if (!sslStructPtr.isNull()) {
       noteHandshakeLogged(sslStructPtr);
       if (secretU8) {
@@ -26925,18 +29267,32 @@ var Cronet = class _Cronet {
       attachPlaintextWriteHook(address, buildMessage);
   }
   // Peer/session metadata of one SSL_read/SSL_write record, or null when the SSL has no
-  // fd and --enable_default_fd is off (the record cannot be attributed).
+  // fd, no known client_random and --enable_default_fd is off (the record cannot be
+  // attributed). An fd-less record with a client_random carries no address fields.
   buildPlaintextMessage(ssl, symbol, isRead) {
     const fd = this.resolveFd(ssl);
-    if (fd < 0 && !enable_default_fd)
-      return null;
+    if (fd < 0) {
+      const endpointless = buildEndpointlessSslRecord(this.recordSource(), ssl, symbol, isRead);
+      if (endpointless !== null || !enable_default_fd)
+        return endpointless;
+    }
     const message = getPortsAndAddresses(fd, isRead, this.addresses[this.module_name], enable_default_fd);
     if (message === null)
       return null;
     message["ssl_session_id"] = openSslSessionIdDecoder(ssl, this.sessionFns);
-    message["client_random"] = this.get_client_random_from_ssl_struct(ssl);
     message["function"] = symbol;
+    finishSslRecord(message, this.recordSource(), ssl, symbol, isRead);
     return message;
+  }
+  // This module's per-SSL lookups for the shared record builder (record_message.ts).
+  recordSource() {
+    return {
+      library: this.module_name,
+      methodAddresses: this.addresses[this.module_name],
+      enableDefaultFd: enable_default_fd,
+      probeClientRandom: (ssl) => this.get_client_random_from_ssl_struct(ssl),
+      sessionFields: (ssl) => ({ ssl_session_id: openSslSessionIdDecoder(ssl, this.sessionFns) })
+    };
   }
   install_plaintext_read_hook() {
     this.installPlaintextHook("SSL_read", true);
@@ -26990,7 +29346,7 @@ var OpenSSL_BoringSSL_Android = class extends OpenSSL_BoringSSL {
     this.keylogCallbackTracker = tracker;
     const sslNewAddr = this.addresses[this.module_name]["SSL_new"];
     const ctxNewAddr = this.addresses[this.module_name]["SSL_CTX_new"];
-    const attachAll = () => {
+    const attachAll2 = () => {
       const ls = [];
       if (sslNewAddr) {
         ls.push(Interceptor.attach(sslNewAddr, {
@@ -27026,7 +29382,7 @@ var OpenSSL_BoringSSL_Android = class extends OpenSSL_BoringSSL {
           tracker.noteAppCallback(args[0], callback_func);
           Interceptor.attach(callback_func, {
             onEnter: function(args2) {
-              sendKeylog(args2[1].readCString());
+              sendKeylog(args2[1].readCString(), args2[0], instance.module_name);
             }
           });
         }
@@ -27034,9 +29390,9 @@ var OpenSSL_BoringSSL_Android = class extends OpenSSL_BoringSSL {
       return ls;
     };
     if (blinking) {
-      registerBlinkTarget(this.module_name, instance.keylog_callback, attachAll);
+      registerBlinkTarget(this.module_name, instance.keylog_callback, attachAll2);
     } else {
-      attachAll();
+      attachAll2();
     }
     return true;
   }
@@ -27249,6 +29605,7 @@ var GnuTLS = class _GnuTLS {
         var message = getPortsAndAddresses(_GnuTLS.gnutls_transport_get_int(args[0]), true, lib_addesses[current_module_name], enable_default_fd);
         message["ssl_session_id"] = _GnuTLS.getSslSessionId(args[0]);
         message["function"] = "SSL_read";
+        stampRecordLibrary(message, current_module_name);
         this.message = message;
         this.buf = args[1];
       },
@@ -27272,6 +29629,7 @@ var GnuTLS = class _GnuTLS {
         return null;
       message["ssl_session_id"] = _GnuTLS.getSslSessionId(args[0]);
       message["function"] = "SSL_write";
+      stampRecordLibrary(message, current_module_name);
       return message;
     }, _GnuTLS.pendingSends);
   }
@@ -27396,6 +29754,7 @@ var WolfSSL = class _WolfSSL {
       onEnter: function(args) {
         var message = getPortsAndAddresses(_WolfSSL.wolfSSL_get_fd(args[0]), true, lib_addesses[current_module_name], enable_default_fd);
         message["function"] = "wolfSSL_read";
+        stampRecordLibrary(message, current_module_name);
         message["ssl_session_id"] = _WolfSSL.getSslSessionId(args[0]);
         this.message = message;
         this.buf = args[1];
@@ -27420,6 +29779,7 @@ var WolfSSL = class _WolfSSL {
         return null;
       message["ssl_session_id"] = _WolfSSL.getSslSessionId(args[0]);
       message["function"] = "wolfSSL_write";
+      stampRecordLibrary(message, current_module_name);
       return message;
     });
   }
@@ -28536,6 +30896,7 @@ var NSS2 = class _NSS {
           var message = _NSS.getPortsAndAddressesFromNSS(this.fd, true, lib_addesses[current_module_name], enable_default_fd);
           message["ssl_session_id"] = _NSS.getSslSessionIdFromFD(this.fd);
           message["function"] = "NSS_read";
+          stampRecordLibrary(message, current_module_name);
           this.message = message;
           var data = this.buf.readByteArray(new Uint32Array([retval])[0]);
           sendDatalog(message, data);
@@ -28559,6 +30920,7 @@ var NSS2 = class _NSS {
       var message = _NSS.getPortsAndAddressesFromNSS(fd, false, lib_addesses[current_module_name], enable_default_fd);
       message["ssl_session_id"] = _NSS.getSslSessionIdFromFD(fd);
       message["function"] = "NSS_write";
+      stampRecordLibrary(message, current_module_name);
       return message;
     });
   }
@@ -28870,6 +31232,7 @@ var mbed_TLS = class _mbed_TLS {
         var message = getPortsAndAddresses(_mbed_TLS.getSocketDescriptor(args[0]), true, lib_addesses[current_module_name], enable_default_fd);
         message["ssl_session_id"] = _mbed_TLS.getSessionId(args[0]);
         message["function"] = "mbedtls_ssl_read";
+        stampRecordLibrary(message, current_module_name);
         this.message = message;
       },
       onLeave: function(retval) {
@@ -28899,6 +31262,7 @@ var mbed_TLS = class _mbed_TLS {
         var message = getPortsAndAddresses(_mbed_TLS.getSocketDescriptor(args[0]), false, lib_addesses[current_module_name], enable_default_fd);
         message["ssl_session_id"] = _mbed_TLS.getSessionId(args[0]);
         message["function"] = "mbedtls_ssl_write";
+        stampRecordLibrary(message, current_module_name);
         sendDatalog(message, data);
       }
     });
@@ -28976,7 +31340,7 @@ var Cronet2 = class {
     }
     this.keylog_callback = new NativeCallback(function(ctxPtr, linePtr) {
       devlog("invoking keylog_callback from Cronet (" + moduleName + ")");
-      sendKeylog(linePtr.readCString().toUpperCase());
+      sendKeylog(linePtr.readCString().toUpperCase(), ctxPtr, moduleName);
     }, "void", ["pointer", "pointer"]);
     try {
       this.addresses = readAddresses(moduleName, this.library_method_mapping);
@@ -29001,10 +31365,10 @@ var Cronet2 = class {
   are_callbacks_symbols_available() {
     return this.can_we_install_keylog_callback;
   }
-  get_client_random(s3_ptr, SSL3_RANDOM_SIZE2) {
+  get_client_random(s3_ptr, SSL3_RANDOM_SIZE3) {
     if (!s3_ptr.isNull()) {
       const client_random_ptr = s3_ptr.add(48);
-      const client_random = client_random_ptr.readByteArray(SSL3_RANDOM_SIZE2);
+      const client_random = client_random_ptr.readByteArray(SSL3_RANDOM_SIZE3);
       const hexClientRandom = get_hex_string_from_byte_array(new Uint8Array(client_random));
       return hexClientRandom;
     } else {
@@ -29015,6 +31379,9 @@ var Cronet2 = class {
   get_client_random_from_ssl_struct(ssl_st_ptr) {
     if (ssl_st_ptr.isNull())
       return "";
+    const identityCr = sslIdentity(ssl_st_ptr)?.cr;
+    if (identityCr)
+      return identityCr.toUpperCase();
     const cacheKey = ssl_st_ptr.toString();
     const cached = this.clientRandomCache.get(cacheKey);
     if (cached !== void 0)
@@ -29098,7 +31465,7 @@ var Cronet2 = class {
     } else {
       devlog("[Error] Argument 'key' is NULL");
     }
-    sendKeylog(labelStr + " " + client_random + " " + secret_key);
+    sendKeylog(labelStr + " " + client_random + " " + secret_key, sslStructPtr, this.module_name);
   }
   getSslSessionId(ssl) {
     var session = this.SSL_get_session(ssl);
@@ -29119,6 +31486,16 @@ var Cronet2 = class {
     }
     return session_id;
   }
+  /** This module's per-SSL lookups for the shared record builder (record_message.ts). */
+  recordSource() {
+    return {
+      library: this.module_name,
+      methodAddresses: this.addresses[this.module_name],
+      enableDefaultFd: enable_default_fd,
+      probeClientRandom: (ssl) => this.get_client_random_from_ssl_struct(ssl),
+      sessionFields: (ssl) => ({ ssl_session_id: this.getSslSessionId(ssl) })
+    };
+  }
   install_plaintext_read_hook() {
     if (!pcap_enabled)
       return;
@@ -29134,7 +31511,16 @@ var Cronet2 = class {
           cronetReadCount++;
           devlog_debug(`[Cronet legacy SSL_read] call #${cronetReadCount} in ${current_module_name}`);
         }
+        this.message = null;
         this.fd = instance.SSL_get_fd(args[0]);
+        if (this.fd < 0) {
+          const endpointless = buildEndpointlessSslRecord(instance.recordSource(), args[0], "SSL_read", true);
+          if (endpointless !== null) {
+            this.message = endpointless;
+            this.buf = args[1];
+            return;
+          }
+        }
         if (this.fd < 0 && enable_default_fd == false) {
           return;
         }
@@ -29144,12 +31530,13 @@ var Cronet2 = class {
         }
         message["ssl_session_id"] = instance.getSslSessionId(args[0]);
         message["function"] = "SSL_read";
+        finishSslRecord(message, instance.recordSource(), args[0], "SSL_read", true);
         this.message = message;
         this.buf = args[1];
       },
       onLeave: function(retval) {
         retval |= 0;
-        if (retval <= 0 || this.fd < 0 && !enable_default_fd) {
+        if (retval <= 0) {
           return;
         }
         if (this.message) {
@@ -29168,6 +31555,11 @@ var Cronet2 = class {
     var current_module_name = this.module_name;
     attachPlaintextWriteHook(this.addresses[this.moduleName]["SSL_write"], (args) => {
       var fd = instance.SSL_get_fd(args[0]);
+      if (fd < 0) {
+        const endpointless = buildEndpointlessSslRecord(instance.recordSource(), args[0], "SSL_write", false);
+        if (endpointless !== null)
+          return endpointless;
+      }
       if (fd < 0 && enable_default_fd == false) {
         return null;
       }
@@ -29177,6 +31569,7 @@ var Cronet2 = class {
       }
       message["ssl_session_id"] = instance.getSslSessionId(args[0]);
       message["function"] = "SSL_write";
+      finishSslRecord(message, instance.recordSource(), args[0], "SSL_write", false);
       return message;
     });
   }
@@ -29999,7 +32392,7 @@ var Cronet_Android = class extends Cronet2 {
         tracker.noteAppCallback(args[0], callback_func);
         Interceptor.attach(callback_func, {
           onEnter: function(args2) {
-            sendKeylog(args2[1].readCString());
+            sendKeylog(args2[1].readCString(), args2[0], instance.module_name);
           }
         });
       }
@@ -30133,6 +32526,7 @@ var S2nTLS = class _S2nTLS {
         var readfd = readfdPtr.readInt();
         var message = getPortsAndAddresses(readfd, false, lib_addresses[current_module_name], enable_default_fd);
         message["function"] = "s2n_recv";
+        stampRecordLibrary(message, current_module_name);
         message["ssl_session_id"] = "0";
         this.message = message;
         this.buf = args[1];
@@ -30168,6 +32562,7 @@ var S2nTLS = class _S2nTLS {
         var writefd = writefdPtr.readInt();
         var message = getPortsAndAddresses(writefd, true, lib_addresses[current_module_name], enable_default_fd);
         message["function"] = "s2n_send";
+        stampRecordLibrary(message, current_module_name);
         message["ssl_session_id"] = "0";
         this.message = message;
         this.buf = args[1];
@@ -30234,6 +32629,7 @@ init_node_globals();
 // agent/legacy/tls/platforms/android/bouncycastle.ts
 init_node_globals();
 init_shared_structures();
+var BOUNCYCASTLE_LIBRARY_LABEL = "bouncycastle";
 function execute2() {
   setTimeout(function() {
     Java.perform(function() {
@@ -30260,6 +32656,7 @@ function execute2() {
           }
           message["ssl_session_id"] = byteArrayToString(this.this$0.value.getConnection().getSession().getId());
           message["function"] = "writeApplicationData";
+          stampRecordLibrary(message, BOUNCYCASTLE_LIBRARY_LABEL);
           sendDatalog(message, result);
           return this.write(buf, offset, len);
         };
@@ -30286,8 +32683,8 @@ function execute2() {
             message["ss_family"] = "AF_INET6";
           }
           message["ssl_session_id"] = byteArrayToString(this.this$0.value.getConnection().getSession().getId());
-          log(message["ssl_session_id"]);
           message["function"] = "readApplicationData";
+          stampRecordLibrary(message, BOUNCYCASTLE_LIBRARY_LABEL);
           sendDatalog(message, result);
           return bytesRead;
         };
@@ -30427,10 +32824,10 @@ var Flutter = class {
     }
     this.addresses = readAddresses(moduleName, this.library_method_mapping);
   }
-  get_client_random(s3_ptr, SSL3_RANDOM_SIZE2) {
+  get_client_random(s3_ptr, SSL3_RANDOM_SIZE3) {
     if (!s3_ptr.isNull()) {
       const client_random_ptr = s3_ptr.add(48);
-      const client_random = client_random_ptr.readByteArray(SSL3_RANDOM_SIZE2);
+      const client_random = client_random_ptr.readByteArray(SSL3_RANDOM_SIZE3);
       const hexClientRandom = get_hex_string_from_byte_array(new Uint8Array(client_random));
       return hexClientRandom;
     } else {
@@ -30439,7 +32836,7 @@ var Flutter = class {
     }
   }
   get_client_random_from_ssl_struct(ssl_st_ptr) {
-    const SSL3_RANDOM_SIZE2 = 32;
+    const SSL3_RANDOM_SIZE3 = 32;
     let offset_s3;
     switch (Process.arch) {
       case "x64":
@@ -30459,7 +32856,7 @@ var Flutter = class {
         return "";
     }
     const s3_ptr = ssl_st_ptr.add(offset_s3).readPointer();
-    return this.get_client_random(s3_ptr, SSL3_RANDOM_SIZE2);
+    return this.get_client_random(s3_ptr, SSL3_RANDOM_SIZE3);
   }
   dumpKeys(labelPtr, sslStructPtr, keyPtr) {
     const KEY_LENGTH = 32;
@@ -30484,7 +32881,7 @@ var Flutter = class {
       devlog("[Error] Argument 'key' is NULL");
     }
     devlog("invoking ssl_log_secret() from BoringSSL statically linked into Flutter");
-    sendKeylog(labelStr + " " + client_random + " " + secret_key);
+    sendKeylog(labelStr + " " + client_random + " " + secret_key, sslStructPtr, this.module_name);
   }
   install_plaintext_read_hook() {
     if (!pcap_enabled)
@@ -30624,10 +33021,10 @@ var Mono_BTLS = class {
     }
     this.addresses = readAddresses(moduleName, this.library_method_mapping);
   }
-  get_client_random(s3_ptr, SSL3_RANDOM_SIZE2) {
+  get_client_random(s3_ptr, SSL3_RANDOM_SIZE3) {
     if (!s3_ptr.isNull()) {
       const client_random_ptr = s3_ptr.add(48);
-      const client_random = client_random_ptr.readByteArray(SSL3_RANDOM_SIZE2);
+      const client_random = client_random_ptr.readByteArray(SSL3_RANDOM_SIZE3);
       const hexClientRandom = get_hex_string_from_byte_array(new Uint8Array(client_random));
       return hexClientRandom;
     } else {
@@ -30636,7 +33033,7 @@ var Mono_BTLS = class {
     }
   }
   get_client_random_from_ssl_struct(ssl_st_ptr) {
-    const SSL3_RANDOM_SIZE2 = 32;
+    const SSL3_RANDOM_SIZE3 = 32;
     let offset_s3;
     switch (Process.arch) {
       case "x64":
@@ -30656,7 +33053,7 @@ var Mono_BTLS = class {
         return "";
     }
     const s3_ptr = ssl_st_ptr.add(offset_s3).readPointer();
-    return this.get_client_random(s3_ptr, SSL3_RANDOM_SIZE2);
+    return this.get_client_random(s3_ptr, SSL3_RANDOM_SIZE3);
   }
   dumpKeys(labelPtr, sslStructPtr, keyPtr) {
     const KEY_LENGTH = 32;
@@ -30680,7 +33077,7 @@ var Mono_BTLS = class {
     } else {
       devlog("[Error] Argument 'key' is NULL");
     }
-    sendKeylog(labelStr + " " + client_random + " " + secret_key);
+    sendKeylog(labelStr + " " + client_random + " " + secret_key, sslStructPtr, this.module_name);
   }
   install_plaintext_read_hook() {
     if (!pcap_enabled)
@@ -32827,7 +35224,7 @@ function installGoConnReadHook(connRead, memmove, buildMessage) {
 }
 var GO_READ_LABEL = "Go_Conn_Read";
 var GO_WRITE_LABEL = "Go_Conn_Write";
-function goDefaultFdMessageBuilder(enableDefaultFd) {
+function goDefaultFdMessageBuilder(enableDefaultFd, moduleName) {
   return (isRead) => {
     if (!enableDefaultFd)
       return null;
@@ -32836,6 +35233,7 @@ function goDefaultFdMessageBuilder(enableDefaultFd) {
       return null;
     message["ssl_session_id"] = "";
     message["function"] = isRead ? GO_READ_LABEL : GO_WRITE_LABEL;
+    stampRecordLibrary(message, moduleName);
     return message;
   };
 }
@@ -32844,7 +35242,7 @@ function installGoPlaintextHooks(moduleName, symbols, enableDefaultFd) {
     warnGoPlaintextUnsupported(moduleName);
     return;
   }
-  const buildMessage = goDefaultFdMessageBuilder(enableDefaultFd);
+  const buildMessage = goDefaultFdMessageBuilder(enableDefaultFd, moduleName);
   const usable = (p) => !!p && !p.isNull();
   try {
     const writeRecord = symbols[GO_SYMBOL_WRITE_RECORD_LOCKED];
@@ -33795,136 +36193,12 @@ function metartc_execute(moduleName, is_base_hook) {
 init_node_globals();
 init_shared_structures();
 
-// agent/shared/module_exports.ts
-init_node_globals();
-var exportTables = /* @__PURE__ */ new Map();
-function exportTableOf(module) {
-  const key = `${module.path}@${module.base}`;
-  let table = exportTables.get(key);
-  if (table === void 0) {
-    table = /* @__PURE__ */ new Map();
-    try {
-      for (const exp of module.enumerateExports())
-        table.set(exp.name, exp.address);
-    } catch (_) {
-    }
-    exportTables.set(key, table);
-  }
-  return table;
-}
-function findModuleExport2(moduleName, symbol) {
-  const module = Process.findModuleByName?.(moduleName);
-  if (module && typeof module.findExportByName === "function") {
-    return module.findExportByName(symbol) ?? (typeof module.enumerateExports === "function" ? exportTableOf(module).get(symbol) ?? null : null);
-  }
-  const legacyFind = Module.findExportByName;
-  return typeof legacyFind === "function" ? legacyFind(moduleName, symbol) ?? null : null;
-}
-
 // agent/ipsec/libs/strongswan_keys.ts
 init_node_globals();
 init_shared_structures();
 
 // agent/shared/string_anchor_functions.ts
 init_node_globals();
-
-// agent/shared/eh_frame.ts
-init_node_globals();
-var PT_LOAD = 1;
-var PT_GNU_EH_FRAME = 1685382480;
-var DW_EH_PE_udata4 = 3;
-var DW_EH_PE_datarel_sdata4 = 59;
-function searchSortedStarts(count, startAt, addr) {
-  let lo = 0, hi = count - 1, found = -1;
-  while (lo <= hi) {
-    const mid = lo + hi >>> 1;
-    if (startAt(mid) <= addr) {
-      found = mid;
-      lo = mid + 1;
-    } else {
-      hi = mid - 1;
-    }
-  }
-  return found;
-}
-var EhFrameFunctionTable = class _EhFrameFunctionTable {
-  hdr;
-  count;
-  constructor(hdr, count) {
-    this.hdr = hdr;
-    this.count = count;
-  }
-  static fromModule(mod) {
-    try {
-      const hdr = ehFrameHdrOf(mod.base);
-      if (hdr === null)
-        return null;
-      const [version, countEnc, tableEnc] = [hdr.readU8(), hdr.add(2).readU8(), hdr.add(3).readU8()];
-      if (version !== 1 || countEnc !== DW_EH_PE_udata4 || tableEnc !== DW_EH_PE_datarel_sdata4)
-        return null;
-      const count = hdr.add(8).readU32();
-      return count > 0 ? new _EhFrameFunctionTable(hdr, count) : null;
-    } catch (_e) {
-      return null;
-    }
-  }
-  entryStart(i) {
-    return this.hdr.add(12 + i * 8).readS32();
-  }
-  /** Bounds of the function containing `addr`, or null when no FDE covers it. */
-  bounds(addr) {
-    try {
-      const rel = addr.sub(this.hdr).toInt32();
-      const i = searchSortedStarts(this.count, (k) => this.entryStart(k), rel);
-      if (i < 0)
-        return null;
-      const start = this.hdr.add(this.entryStart(i));
-      const end = this.fdeEnd(i, start);
-      if (end !== null && addr.compare(end) >= 0)
-        return null;
-      return { start, end };
-    } catch (_e) {
-      return null;
-    }
-  }
-  /** FDE: u32 length, s32 CIE pointer, pc_begin (pcrel sdata4), pc_range. */
-  fdeEnd(i, start) {
-    const fde = this.hdr.add(this.hdr.add(12 + i * 8 + 4).readS32());
-    const pcBeginField = fde.add(8);
-    if (fde.readU32() === 4294967295 || !pcBeginField.add(pcBeginField.readS32()).equals(start))
-      return null;
-    return start.add(fde.add(12).readU32());
-  }
-};
-function ehFrameHdrOf(base) {
-  if (base.readU32() !== 1179403647)
-    return null;
-  const phoff = base.add(32).readU64().toNumber();
-  const phentsize = base.add(54).readU16();
-  const phnum = base.add(56).readU16();
-  let ehVaddr = -1, minLoad = Number.MAX_SAFE_INTEGER;
-  for (let i = 0; i < phnum; i++) {
-    const ph = base.add(phoff + i * phentsize);
-    const type = ph.readU32();
-    const vaddr = ph.add(16).readU64().toNumber();
-    if (type === PT_LOAD)
-      minLoad = Math.min(minLoad, vaddr);
-    if (type === PT_GNU_EH_FRAME)
-      ehVaddr = vaddr;
-  }
-  if (ehVaddr < 0 || minLoad === Number.MAX_SAFE_INTEGER)
-    return null;
-  return base.add(ehVaddr - (minLoad - minLoad % 4096));
-}
-var tablesByModule = /* @__PURE__ */ new Map();
-function ehFrameTableFor(mod) {
-  const key = `${mod.name}@${mod.base}+${mod.size}`;
-  if (!tablesByModule.has(key))
-    tablesByModule.set(key, EhFrameFunctionTable.fromModule(mod));
-  return tablesByModule.get(key);
-}
-
-// agent/shared/string_anchor_functions.ts
 var DEFAULT_MAX_ANCHOR_SITES = 64;
 var MAX_LITERAL_OCCURRENCES = 16;
 var LEA_RIP_OVERLAP = 6;
@@ -34583,7 +36857,7 @@ function attachHandshakeTracker(addr) {
 function getLibreSslClientRandom() {
   return _crByThread.get(Process.getCurrentThreadId()) ?? null;
 }
-function readSslClientRandom(SSL_get_client_random, ssl) {
+function readSslClientRandom2(SSL_get_client_random, ssl) {
   if (!SSL_get_client_random || !ssl || ssl.isNull())
     return null;
   try {
@@ -34596,7 +36870,7 @@ function readSslClientRandom(SSL_get_client_random, ssl) {
   return null;
 }
 function resolveLibreSslClientRandom(SSL_get_client_random, ssl) {
-  return readSslClientRandom(SSL_get_client_random, ssl) ?? getLibreSslClientRandom();
+  return readSslClientRandom2(SSL_get_client_random, ssl) ?? getLibreSslClientRandom();
 }
 function installLibreSslClientRandomViaSend() {
   if (_sendHookInstalled)
@@ -34747,7 +37021,7 @@ function attachLibreSslPrfHook(addr, SSL_get_client_random, masterKey) {
     },
     onLeave: function(_retval) {
       try {
-        const sslCr = readSslClientRandom(SSL_get_client_random, this.sslPtr);
+        const sslCr = readSslClientRandom2(SSL_get_client_random, this.sslPtr);
         const sslMaster = sslCr ? masterKey(this.sslPtr) : null;
         if (sslCr && sslMaster) {
           devlog("invoking tls1_PRF keylog hook from LibreSSL (dynamic)");
@@ -35062,6 +37336,7 @@ var OpenSSL_BoringSSL2 = class _OpenSSL_BoringSSL {
   keylog_callback;
   SSL_get_fd;
   SSL_get_session;
+  fdLess = false;
   static modReceiver;
   do_read_write_hooks = true;
   // we want to hook read and write by default
@@ -35102,7 +37377,7 @@ var OpenSSL_BoringSSL2 = class _OpenSSL_BoringSSL {
         devlog_error("keylog_callback received a non-keylog payload from " + moduleName + " \u2014 the installed callback is likely wired to the wrong SSL_CTX field; dropping it");
         return;
       }
-      sendKeylog(line.toUpperCase());
+      sendKeylog(line.toUpperCase(), ctxPtr, moduleName);
     }, "void", ["pointer", "pointer"]);
     if (isSymbolAvailable(moduleName, "SSL_write_ex")) {
       addModuleMethod(this.library_method_mapping, moduleName, "SSL_write_ex");
@@ -35150,13 +37425,20 @@ var OpenSSL_BoringSSL2 = class _OpenSSL_BoringSSL {
   }
   /**
    * Bind SSL_get_fd / SSL_get_session / SSL_SESSION_get_id and turn the
-   * plaintext hooks on. Returns false — keys only — if a symbol is unresolved.
+   * plaintext hooks on. SSL_get_fd and SSL_SESSION_get_id are optional
+   * (shared/optional_ssl_fd_session.ts): a deep-resolved module without them
+   * (e.g. libhttpengine.so) gets fd-less stand-ins. Returns false — keys only —
+   * if any other symbol (SSL_get_session) is unresolved.
    */
   bindSslFdAndSessionFunctions() {
     try {
-      this.SSL_SESSION_get_id = new NativeFunction(this.addresses[this.moduleName]["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"]);
-      this.SSL_get_fd = new NativeFunction(this.addresses[this.moduleName]["SSL_get_fd"], "int", ["pointer"]);
-      this.SSL_get_session = new NativeFunction(this.addresses[this.moduleName]["SSL_get_session"], "pointer", ["pointer"]);
+      const bound = bindOptionalSslFdAndSession(this.addresses[this.moduleName], "SSL_get_fd");
+      this.SSL_SESSION_get_id = bound.SSL_SESSION_get_id;
+      this.SSL_get_fd = bound.SSL_get_fd;
+      this.SSL_get_session = bound.SSL_get_session;
+      this.fdLess = bound.fdLess;
+      if (bound.fallbacks.length > 0)
+        devlog(describeSslFdSessionFallback(this.moduleName, bound.fallbacks));
     } catch (e) {
       this.do_read_write_hooks = false;
       devlog_error("Error while loading additional hooks for OpenSSL/BoringSSL: " + e);
@@ -35231,7 +37513,7 @@ var OpenSSL_BoringSSL2 = class _OpenSSL_BoringSSL {
     } else {
       devlog_error("[OpenSSL Dump Keys Error] Argument 'key' is NULL");
     }
-    sendKeylog(labelStr + " " + client_random_str + " " + secret_key);
+    sendKeylog(labelStr + " " + client_random_str + " " + secret_key, identifier, this.module_name);
   }
   install_boringssl_key_extraction_hook() {
     log("Error: TLS key extraction not implemented yet.");
@@ -35601,7 +37883,7 @@ var OpenSSL_From_Python_MacOS = class extends OpenSSL_BoringSSL2 {
           tracker.noteAppCallback(args[0], callback_func);
           Interceptor.attach(callback_func, {
             onEnter: function(args2) {
-              sendKeylog(args2[1].readCString());
+              sendKeylog(args2[1].readCString(), args2[0], instance.module_name);
             }
           });
         }
@@ -36145,6 +38427,7 @@ var GnuTLS2 = class _GnuTLS {
         var message = getPortsAndAddresses(_GnuTLS.gnutls_transport_get_int(args[0]), true, lib_addesses[current_module_name], enable_default_fd);
         message["ssl_session_id"] = _GnuTLS.getSslSessionId(args[0]);
         message["function"] = "SSL_read";
+        stampRecordLibrary(message, current_module_name);
         this.message = message;
         this.buf = args[1];
       },
@@ -36168,6 +38451,7 @@ var GnuTLS2 = class _GnuTLS {
         return null;
       message["ssl_session_id"] = _GnuTLS.getSslSessionId(args[0]);
       message["function"] = "SSL_write";
+      stampRecordLibrary(message, current_module_name);
       return message;
     }, _GnuTLS.pendingSends);
   }
@@ -36342,10 +38626,10 @@ var CONNECTION_FD_OFFSET = { in: 0, out: 4 };
 var MAX_PLAUSIBLE_FD = 1 << 20;
 function readConnectionFd(ssh, direction) {
   try {
-    const state2 = readPointerAt(ssh, 0);
-    if (state2 === null)
+    const state3 = readPointerAt(ssh, 0);
+    if (state3 === null)
       return -1;
-    const fd = state2.add(CONNECTION_FD_OFFSET[direction]).readS32();
+    const fd = state3.add(CONNECTION_FD_OFFSET[direction]).readS32();
     return fd >= 0 && fd < MAX_PLAUSIBLE_FD ? fd : -1;
   } catch {
     return -1;
@@ -36545,8 +38829,8 @@ function messageBytes(view, label, type) {
   message.set(new Uint8Array(payload), 1);
   return message;
 }
-function probeBufferOffset(sshPtr, state2, label, type) {
-  const cached = label === "outgoing_packet" ? state2.outgoingPacketOffset : state2.incomingPacketOffset;
+function probeBufferOffset(sshPtr, state3, label, type) {
+  const cached = label === "outgoing_packet" ? state3.outgoingPacketOffset : state3.incomingPacketOffset;
   if (cached !== null)
     return cached;
   const sessionState = readPointerAt(sshPtr, 0);
@@ -36558,18 +38842,18 @@ function probeBufferOffset(sshPtr, state2, label, type) {
     if (!matches)
       continue;
     if (label === "outgoing_packet") {
-      state2.outgoingPacketOffset = off;
+      state3.outgoingPacketOffset = off;
     } else {
-      state2.incomingPacketOffset = off;
+      state3.incomingPacketOffset = off;
     }
     devlog(`[SSH] probed ${label} sshbuf offset in state: ${off}`);
     return off;
   }
   return null;
 }
-function capturePacket(sshPtr, state2, label, type) {
+function capturePacket(sshPtr, state3, label, type) {
   try {
-    const off = probeBufferOffset(sshPtr, state2, label, type);
+    const off = probeBufferOffset(sshPtr, state3, label, type);
     if (off === null)
       return null;
     const sessionState = readPointerAt(sshPtr, 0);
@@ -36600,7 +38884,7 @@ function makeBaseMessage(fd, isRead, socketHelpers, fnLabel) {
     return null;
   }
 }
-function installSendHook(moduleName, state2) {
+function installSendHook(moduleName, state3) {
   const addr = openSshFunction(moduleName, "ssh_packet_send2_wrapped");
   if (!addr)
     return false;
@@ -36610,15 +38894,15 @@ function installSendHook(moduleName, state2) {
         const sshPtr = args[0];
         if (sshPtr.isNull())
           return;
-        if (!state2.connOutFn)
+        if (!state3.connOutFn)
           return;
-        const fd = state2.connOutFn(sshPtr);
+        const fd = state3.connOutFn(sshPtr);
         if (fd < 0 && !enable_default_fd)
           return;
-        const bytes = capturePacket(sshPtr, state2, "outgoing_packet", 0);
+        const bytes = capturePacket(sshPtr, state3, "outgoing_packet", 0);
         if (!bytes)
           return;
-        const msg = makeBaseMessage(fd, false, state2.socketHelpers, "ssh_packet_send2");
+        const msg = makeBaseMessage(fd, false, state3.socketHelpers, "ssh_packet_send2");
         if (!msg)
           return;
         sendDatalog(msg, bytes);
@@ -36631,7 +38915,7 @@ function installSendHook(moduleName, state2) {
   return true;
 }
 var RECV_HOOK_FUNCTIONS = ["ssh_packet_read_poll2", "ssh_packet_read_poll_seqnr"];
-function installRecvHook(moduleName, state2) {
+function installRecvHook(moduleName, state3) {
   const hookFunction = RECV_HOOK_FUNCTIONS.find((name) => openSshFunction(moduleName, name) !== null);
   if (hookFunction === void 0)
     return false;
@@ -36648,9 +38932,9 @@ function installRecvHook(moduleName, state2) {
         const sshPtr = this.sshPtr;
         if (!sshPtr || sshPtr.isNull())
           return;
-        if (!state2.connInFn)
+        if (!state3.connInFn)
           return;
-        const fd = state2.connInFn(sshPtr);
+        const fd = state3.connInFn(sshPtr);
         if (fd < 0 && !enable_default_fd)
           return;
         const typep = this.typep;
@@ -36659,10 +38943,10 @@ function installRecvHook(moduleName, state2) {
         const type = typep.readU8();
         if (type === 0)
           return;
-        const bytes = capturePacket(sshPtr, state2, "incoming_packet", type);
+        const bytes = capturePacket(sshPtr, state3, "incoming_packet", type);
         if (!bytes)
           return;
-        const msg = makeBaseMessage(fd, true, state2.socketHelpers, "ssh_packet_read_poll2");
+        const msg = makeBaseMessage(fd, true, state3.socketHelpers, "ssh_packet_read_poll2");
         if (!msg)
           return;
         sendDatalog(msg, bytes);
@@ -36674,7 +38958,7 @@ function installRecvHook(moduleName, state2) {
   log(`[SSH] Hooked ${hookFunction} in ${moduleName}`);
   return true;
 }
-function installCipherCryptFallback(moduleName, state2) {
+function installCipherCryptFallback(moduleName, state3) {
   const addr = findModuleExport2(moduleName, "cipher_crypt");
   if (!addr)
     return false;
@@ -36694,7 +38978,7 @@ function installCipherCryptFallback(moduleName, state2) {
           const bytes = src.readByteArray(len);
           if (!bytes)
             return;
-          const msg = makeBaseMessage(-1, false, state2.socketHelpers, "ssh_packet_send2");
+          const msg = makeBaseMessage(-1, false, state3.socketHelpers, "ssh_packet_send2");
           if (!msg)
             return;
           sendDatalog(msg, bytes);
@@ -36714,7 +38998,7 @@ function installCipherCryptFallback(moduleName, state2) {
         const bytes = dest.readByteArray(this.decryptLen);
         if (!bytes)
           return;
-        const msg = makeBaseMessage(-1, true, state2.socketHelpers, "ssh_packet_read_poll2");
+        const msg = makeBaseMessage(-1, true, state3.socketHelpers, "ssh_packet_read_poll2");
         if (!msg)
           return;
         sendDatalog(msg, bytes);
@@ -36740,7 +39024,7 @@ function installSshPacketHooks(moduleName, methodAddresses) {
   if (installedModules.has(moduleName))
     return installedModules.get(moduleName) === true;
   installedModules.set(moduleName, false);
-  const state2 = {
+  const state3 = {
     haveSshbuf: false,
     connInFn: null,
     connOutFn: null,
@@ -36752,24 +39036,24 @@ function installSshPacketHooks(moduleName, methodAddresses) {
     const ptrAddr = findModuleExport2(moduleName, "sshbuf_ptr");
     const lenAddr = findModuleExport2(moduleName, "sshbuf_len");
     if (ptrAddr && lenAddr || locatedByAnchors(moduleName)) {
-      state2.haveSshbuf = true;
+      state3.haveSshbuf = true;
     } else {
       devlog(`[SSH] ${moduleName} is not a recognised OpenSSH build; plaintext probe disabled.`);
     }
-    state2.connInFn = connectionFdReader(moduleName, "in");
-    state2.connOutFn = connectionFdReader(moduleName, "out");
+    state3.connInFn = connectionFdReader(moduleName, "in");
+    state3.connOutFn = connectionFdReader(moduleName, "out");
   } catch (e) {
     devlog_error(`[SSH] accessor resolution failed in ${moduleName}: ${e}`);
   }
-  const haveAccessors = state2.haveSshbuf && state2.connInFn !== null && state2.connOutFn !== null;
+  const haveAccessors = state3.haveSshbuf && state3.connInFn !== null && state3.connOutFn !== null;
   let primaryInstalled = false;
   if (haveAccessors) {
-    primaryInstalled = installSendHook(moduleName, state2) || primaryInstalled;
-    primaryInstalled = installRecvHook(moduleName, state2) || primaryInstalled;
+    primaryInstalled = installSendHook(moduleName, state3) || primaryInstalled;
+    primaryInstalled = installRecvHook(moduleName, state3) || primaryInstalled;
   }
   if (!primaryInstalled) {
     devlog(`[SSH] primary plaintext hooks unavailable in ${moduleName} (accessors=${haveAccessors}); trying cipher_crypt fallback.`);
-    primaryInstalled = installCipherCryptFallback(moduleName, state2);
+    primaryInstalled = installCipherCryptFallback(moduleName, state3);
   }
   installedModules.set(moduleName, primaryInstalled);
   return primaryInstalled;
@@ -36984,12 +39268,12 @@ function readSshEncKeys(sshencPtr, mode) {
 }
 function scanForNewkeysAndExtract(sshPtr) {
   try {
-    const state2 = sshPtr.readPointer();
-    if (state2.isNull())
+    const state3 = sshPtr.readPointer();
+    if (state3.isNull())
       return;
     if (newkeysOffsetInState !== null) {
-      const a = state2.add(newkeysOffsetInState).readPointer();
-      const b = state2.add(newkeysOffsetInState + ptrSize2).readPointer();
+      const a = state3.add(newkeysOffsetInState).readPointer();
+      const b = state3.add(newkeysOffsetInState + ptrSize2).readPointer();
       if (plausibleSshencSlot(a))
         readSshEncKeys(a, 0);
       if (plausibleSshencSlot(b))
@@ -37000,8 +39284,8 @@ function scanForNewkeysAndExtract(sshPtr) {
       let a;
       let b;
       try {
-        a = state2.add(off).readPointer();
-        b = state2.add(off + ptrSize2).readPointer();
+        a = state3.add(off).readPointer();
+        b = state3.add(off + ptrSize2).readPointer();
       } catch {
         continue;
       }
@@ -37537,6 +39821,8 @@ var QuicConnectionTracker = class {
   // best-effort: the per-connection synthetic local port still keeps each
   // connection in its own Wireshark conversation.
   _observedPeer = null;
+  // Delivers peers a native observer queued since the last read (see setObservedPeerFeed).
+  _observedPeerFeed = null;
   // Last peer key (`addr:port`) we emitted a devlog for, per branch. The libc
   // connect() observer fires on EVERY UDP connect() — including every DNS
   // lookup to the resolver — so logging unconditionally floods the JS→Python
@@ -37602,6 +39888,10 @@ var QuicConnectionTracker = class {
       devlog("[QUIC tracker] observed real UDP peer " + formatAddr(peer.addr, peer.family) + ":" + peer.port);
     }
   }
+  /** `feed` runs before each read of the observed peer and calls setObservedPeer for queued peers. */
+  setObservedPeerFeed(feed) {
+    this._observedPeerFeed = feed;
+  }
   /**
    * Resolve connection info for a key, always returning a usable, parseable
    * 4-tuple. Prefers a registered connection, then a deterministic synthetic
@@ -37620,6 +39910,7 @@ var QuicConnectionTracker = class {
    */
   synthesizeInfo(connPtr) {
     const h = hashPtr(connPtr);
+    this._observedPeerFeed?.();
     const peer = this._observedPeer;
     if (peer && peer.family === "AF_INET6") {
       return {
@@ -38517,11 +40808,11 @@ function fridaQuicheMemory(module) {
 function quicheLayoutState(moduleName) {
   if (quicheLayoutStates.has(moduleName))
     return quicheLayoutStates.get(moduleName);
-  let state2 = null;
+  let state3 = null;
   try {
     const module = Process.findModuleByName(moduleName);
     if (module)
-      state2 = {
+      state3 = {
         moduleName,
         mem: fridaQuicheMemory(module),
         layout: null,
@@ -38532,40 +40823,40 @@ function quicheLayoutState(moduleName) {
         connAttempts: 0
       };
   } catch (_e) {
-    state2 = null;
+    state3 = null;
   }
-  quicheLayoutStates.set(moduleName, state2);
-  return state2;
+  quicheLayoutStates.set(moduleName, state3);
+  return state3;
 }
-function adoptFullLayout(state2, learned) {
-  const layout = state2.connLayout ? { ...learned, ...state2.connLayout } : learned;
-  state2.layout = layout;
-  state2.connLayout = layout;
-  state2.sessionConnection = layout.sessionConnection;
-  state2.triedStreams.clear();
+function adoptFullLayout(state3, learned) {
+  const layout = state3.connLayout ? { ...learned, ...state3.connLayout } : learned;
+  state3.layout = layout;
+  state3.connLayout = layout;
+  state3.sessionConnection = layout.sessionConnection;
+  state3.triedStreams.clear();
   return layout;
 }
-function learnQuicheLayout(state2, stream) {
+function learnQuicheLayout(state3, stream) {
   const key = stream.toString(16);
-  if (state2.layout || state2.attempts >= MAX_LAYOUT_ATTEMPTS || state2.triedStreams.has(key))
+  if (state3.layout || state3.attempts >= MAX_LAYOUT_ATTEMPTS || state3.triedStreams.has(key))
     return;
-  state2.attempts++;
-  state2.triedStreams.add(key);
-  const learned = discoverQuicheLayout(state2.mem, stream);
+  state3.attempts++;
+  state3.triedStreams.add(key);
+  const learned = discoverQuicheLayout(state3.mem, stream);
   if (learned) {
-    const layout = adoptFullLayout(state2, learned);
-    log(`[*] Google QUICHE (${state2.moduleName}): resolved real QUIC connection addressing (stream+0x${layout.streamSession.toString(16)} -> session, session+0x${layout.sessionConnection.toString(16)} -> connection, connection+0x${layout.connectionAddresses.toString(16)} -> self/peer address)`);
-  } else if (state2.attempts >= MAX_LAYOUT_ATTEMPTS) {
-    log(`[!] Google QUICHE (${state2.moduleName}): could not resolve the QUIC connection layout after ${MAX_LAYOUT_ATTEMPTS} streams; flows use synthetic per-stream addresses`);
+    const layout = adoptFullLayout(state3, learned);
+    log(`[*] Google QUICHE (${state3.moduleName}): resolved real QUIC connection addressing (stream+0x${layout.streamSession.toString(16)} -> session, session+0x${layout.sessionConnection.toString(16)} -> connection, connection+0x${layout.connectionAddresses.toString(16)} -> self/peer address)`);
+  } else if (state3.attempts >= MAX_LAYOUT_ATTEMPTS) {
+    log(`[!] Google QUICHE (${state3.moduleName}): could not resolve the QUIC connection layout after ${MAX_LAYOUT_ATTEMPTS} streams; flows use synthetic per-stream addresses`);
   }
 }
 function routable(a) {
   return isRoutableEndpoint(a) ? a : null;
 }
-function linkedRecord(state2, link, label, direction) {
+function linkedRecord(state3, link, label, direction) {
   const linked = quicConnectionTracker.resolveLinked("0x" + link.connection.toString(16), routable(link.self), routable(link.peer));
   return {
-    message: buildQuicMessage(linked.info, linked.connKey, label, direction, state2.moduleName),
+    message: buildQuicMessage(linked.info, linked.connKey, label, direction, state3.moduleName),
     streamId: link.streamId
   };
 }
@@ -38574,61 +40865,61 @@ function legacyMessage(streamPtr, label, direction, library) {
   return buildQuicMessage(quicConnectionTracker.resolveInfo(connPtr), connPtr, label, direction, library);
 }
 function resolveQuicheRecord(moduleName, obj, kind, label, direction = "read") {
-  const state2 = quicheLayoutState(moduleName);
+  const state3 = quicheLayoutState(moduleName);
   let legacyKey = obj.toString();
-  if (state2) {
+  if (state3) {
     resetReadableCache();
-    const stream = streamFromHookObject(state2.mem, toAddress(obj), kind);
+    const stream = streamFromHookObject(state3.mem, toAddress(obj), kind);
     if (stream !== null && stream !== 0n) {
-      learnQuicheLayout(state2, stream);
-      const link = state2.layout ? readStreamLink(state2.mem, state2.layout, stream) : null;
+      learnQuicheLayout(state3, stream);
+      const link = state3.layout ? readStreamLink(state3.mem, state3.layout, stream) : null;
       if (link)
-        return { ...linkedRecord(state2, link, label, direction), connection: link.connection };
+        return { ...linkedRecord(state3, link, label, direction), connection: link.connection };
       legacyKey = "0x" + stream.toString(16);
     }
   }
   return { message: legacyMessage(legacyKey, label, direction, moduleName), streamId: null };
 }
 function resolveQuicheSessionRecord(moduleName, session, streamId, label, direction) {
-  const state2 = quicheLayoutState(moduleName);
-  if (state2 && state2.layout) {
+  const state3 = quicheLayoutState(moduleName);
+  if (state3 && state3.layout) {
     resetReadableCache();
-    const link = readSessionLink(state2.mem, state2.layout, toAddress(session), streamId);
+    const link = readSessionLink(state3.mem, state3.layout, toAddress(session), streamId);
     if (link)
-      return linkedRecord(state2, link, label, direction);
+      return linkedRecord(state3, link, label, direction);
   }
   return { message: legacyMessage(session.toString(), label, direction, moduleName), streamId };
 }
-function noteConnectionLayout(state2, layout, source) {
-  if (state2.connLayout)
+function noteConnectionLayout(state3, layout, source) {
+  if (state3.connLayout)
     return;
-  state2.connLayout = { connectionAddresses: layout.connectionAddresses, connectionVtable: layout.connectionVtable };
-  log(`[*] Google QUICHE (${state2.moduleName}): resolved QUIC connection addressing from a ${source} (connection+0x${layout.connectionAddresses.toString(16)} -> self/peer address)`);
+  state3.connLayout = { connectionAddresses: layout.connectionAddresses, connectionVtable: layout.connectionVtable };
+  log(`[*] Google QUICHE (${state3.moduleName}): resolved QUIC connection addressing from a ${source} (connection+0x${layout.connectionAddresses.toString(16)} -> self/peer address)`);
 }
-function sessionConnection(state2, session) {
-  if (state2.sessionConnection === null && state2.connAttempts < MAX_LAYOUT_ATTEMPTS) {
-    state2.connAttempts++;
-    const learned = discoverSessionLayout(state2.mem, session, state2.connLayout);
+function sessionConnection(state3, session) {
+  if (state3.sessionConnection === null && state3.connAttempts < MAX_LAYOUT_ATTEMPTS) {
+    state3.connAttempts++;
+    const learned = discoverSessionLayout(state3.mem, session, state3.connLayout);
     if (learned) {
-      state2.sessionConnection = learned.sessionConnection;
-      noteConnectionLayout(state2, learned, "session");
+      state3.sessionConnection = learned.sessionConnection;
+      noteConnectionLayout(state3, learned, "session");
     }
   }
-  const offset = state2.sessionConnection;
-  return offset === null ? null : state2.mem.readPointer(session + BigInt(offset));
+  const offset = state3.sessionConnection;
+  return offset === null ? null : state3.mem.readPointer(session + BigInt(offset));
 }
-function resolveConnectionRecord(state2, connection, streamId, label, direction) {
-  if (!state2.connLayout && state2.connAttempts < MAX_LAYOUT_ATTEMPTS) {
-    state2.connAttempts++;
-    const learned = discoverConnectionLayout(state2.mem, connection);
+function resolveConnectionRecord(state3, connection, streamId, label, direction) {
+  if (!state3.connLayout && state3.connAttempts < MAX_LAYOUT_ATTEMPTS) {
+    state3.connAttempts++;
+    const learned = discoverConnectionLayout(state3.mem, connection);
     if (learned)
-      noteConnectionLayout(state2, learned, "connection");
+      noteConnectionLayout(state3, learned, "connection");
   }
-  const link = state2.connLayout ? readConnectionLink(state2.mem, state2.connLayout, connection, streamId) : null;
-  return link ? linkedRecord(state2, link, label, direction) : null;
+  const link = state3.connLayout ? readConnectionLink(state3.mem, state3.connLayout, connection, streamId) : null;
+  return link ? linkedRecord(state3, link, label, direction) : null;
 }
-function unresolvedConnectionRecord(state2, connection, streamId, label, direction) {
-  return linkedRecord(state2, { connection, streamId, self: null, peer: null }, label, direction);
+function unresolvedConnectionRecord(state3, connection, streamId, label, direction) {
+  return linkedRecord(state3, { connection, streamId, self: null, peer: null }, label, direction);
 }
 function sendQuicheBody(record, data) {
   sendQuicDatalog(record.message, data, record.streamId ?? -1, void 0, void 0, "udp", void 0, "body");
@@ -38653,8 +40944,8 @@ var QuicStreamReassembler = class {
   pendingTotal = 0;
   constructor(maxStreams = MAX_TRACKED_STREAMS, maxPendingTotal = MAX_PENDING_BYTES_TOTAL) {
     this.maxPendingTotal = maxPendingTotal;
-    this.streams = new LruMap(maxStreams, (_key, state2) => {
-      this.pendingTotal -= state2.pendingBytes;
+    this.streams = new LruMap(maxStreams, (_key, state3) => {
+      this.pendingTotal -= state3.pendingBytes;
     });
   }
   /** Number of streams currently tracked (tests / diagnostics). */
@@ -38671,78 +40962,78 @@ var QuicStreamReassembler = class {
    * (a retransmission). Lets callers skip copying the payload at all.
    */
   canDeliver(key, offset, length) {
-    const state2 = this.streams.get(key);
-    if (state2 === void 0)
+    const state3 = this.streams.get(key);
+    if (state3 === void 0)
       return true;
-    return state2.next !== IGNORED && offset + length > state2.next;
+    return state3.next !== IGNORED && offset + length > state3.next;
   }
   /**
    * Feed one fragment of stream `key`; returns the newly contiguous bytes
    * (possibly several chunks when buffered fragments become deliverable).
    */
   push(key, offset, data, fin = false) {
-    let state2 = this.streams.get(key);
-    if (state2 === void 0) {
-      state2 = { next: 0, pending: [], pendingBytes: 0, finalSize: null, started: false };
-      this.streams.set(key, state2);
+    let state3 = this.streams.get(key);
+    if (state3 === void 0) {
+      state3 = { next: 0, pending: [], pendingBytes: 0, finalSize: null, started: false };
+      this.streams.set(key, state3);
     }
-    if (state2.next === IGNORED)
+    if (state3.next === IGNORED)
       return [];
     if (fin)
-      state2.finalSize = offset + data.length;
+      state3.finalSize = offset + data.length;
     const out = [];
     if (data.length > 0) {
-      if (offset > state2.next)
-        this.buffer(state2, offset, data);
+      if (offset > state3.next)
+        this.buffer(state3, offset, data);
       else
-        this.deliver(state2, offset, data, out);
-      this.drain(state2, out);
+        this.deliver(state3, offset, data, out);
+      this.drain(state3, out);
     }
-    if (state2.next !== IGNORED && state2.finalSize !== null && state2.next >= state2.finalSize) {
-      this.ignore(state2);
+    if (state3.next !== IGNORED && state3.finalSize !== null && state3.next >= state3.finalSize) {
+      this.ignore(state3);
     }
     return out;
   }
-  ignore(state2) {
-    state2.next = IGNORED;
-    this.pendingTotal -= state2.pendingBytes;
-    state2.pending = [];
-    state2.pendingBytes = 0;
+  ignore(state3) {
+    state3.next = IGNORED;
+    this.pendingTotal -= state3.pendingBytes;
+    state3.pending = [];
+    state3.pendingBytes = 0;
   }
   /** Emit the part of [offset, offset+len) at or after `state.next` (offset <= next). */
-  deliver(state2, offset, data, out) {
+  deliver(state3, offset, data, out) {
     const end = offset + data.length;
-    if (end <= state2.next)
+    if (end <= state3.next)
       return;
-    const fresh = data.subarray(state2.next - offset);
-    out.push({ offset: state2.next, data: fresh });
-    state2.next = end;
-    state2.started = true;
+    const fresh = data.subarray(state3.next - offset);
+    out.push({ offset: state3.next, data: fresh });
+    state3.next = end;
+    state3.started = true;
   }
-  buffer(state2, offset, data) {
-    if (state2.pending.some((f2) => f2.offset === offset && f2.data.length >= data.length))
+  buffer(state3, offset, data) {
+    if (state3.pending.some((f2) => f2.offset === offset && f2.data.length >= data.length))
       return;
-    state2.pending.push({ offset, data });
-    state2.pendingBytes += data.length;
+    state3.pending.push({ offset, data });
+    state3.pendingBytes += data.length;
     this.pendingTotal += data.length;
-    const maxBytes = state2.started ? MAX_PENDING_BYTES_PER_STREAM : MAX_UNSTARTED_PENDING_BYTES;
-    const maxFragments = state2.started ? MAX_PENDING_FRAGMENTS_PER_STREAM : MAX_UNSTARTED_PENDING_FRAGMENTS;
-    if (state2.pendingBytes > maxBytes || state2.pending.length > maxFragments || this.pendingTotal > this.maxPendingTotal) {
-      this.ignore(state2);
+    const maxBytes = state3.started ? MAX_PENDING_BYTES_PER_STREAM : MAX_UNSTARTED_PENDING_BYTES;
+    const maxFragments = state3.started ? MAX_PENDING_FRAGMENTS_PER_STREAM : MAX_UNSTARTED_PENDING_FRAGMENTS;
+    if (state3.pendingBytes > maxBytes || state3.pending.length > maxFragments || this.pendingTotal > this.maxPendingTotal) {
+      this.ignore(state3);
     }
   }
-  drain(state2, out) {
+  drain(state3, out) {
     let progressed = true;
-    while (progressed && state2.next !== IGNORED && state2.pending.length > 0) {
+    while (progressed && state3.next !== IGNORED && state3.pending.length > 0) {
       progressed = false;
-      for (let i = 0; i < state2.pending.length; i++) {
-        const f2 = state2.pending[i];
-        if (f2.offset > state2.next)
+      for (let i = 0; i < state3.pending.length; i++) {
+        const f2 = state3.pending[i];
+        if (f2.offset > state3.next)
           continue;
-        state2.pending.splice(i, 1);
-        state2.pendingBytes -= f2.data.length;
+        state3.pending.splice(i, 1);
+        state3.pendingBytes -= f2.data.length;
         this.pendingTotal -= f2.data.length;
-        this.deliver(state2, f2.offset, f2.data, out);
+        this.deliver(state3, f2.offset, f2.data, out);
         progressed = true;
         break;
       }
@@ -38828,12 +41119,8 @@ async function locateQuicheFrameApi(mod) {
   if (Process.arch !== "arm64")
     return none;
   try {
-    const table = ehFrameTableFor(mod);
-    if (!table) {
-      devlog(`[Google QUICHE] ${mod.name}: no usable .eh_frame_hdr; cannot locate STREAM-frame hooks`);
-      return none;
-    }
     const anchors = [...ON_STREAM_FRAME_ANCHORS, ...WRITE_STREAM_DATA_ANCHORS];
+    const table = functionBoundsFor(mod);
     const sites = await anchorSiteFunctions(mod, table, anchors.map((text) => ({ text })));
     const functions = sites.map((list) => list.map((site) => siteFunction(mod, site)));
     const pick = (group) => {
@@ -38891,28 +41178,28 @@ function emitFragment(record, direction, offset, bytes, fin) {
     sendQuicDatalog(record.message, toArrayBuffer(chunk.data), record.streamId, void 0, void 0, "udp", void 0, "stream");
   }
 }
-function connectionRecord(state2, connection, streamId, label, direction, resolvable = true) {
-  return (resolvable ? resolveConnectionRecord(state2, connection, streamId, label, direction) : null) ?? unresolvedConnectionRecord(state2, connection, streamId, label, direction);
+function connectionRecord(state3, connection, streamId, label, direction, resolvable = true) {
+  return (resolvable ? resolveConnectionRecord(state3, connection, streamId, label, direction) : null) ?? unresolvedConnectionRecord(state3, connection, streamId, label, direction);
 }
-function emitIngressFrame(state2, connection, frame) {
+function emitIngressFrame(state3, connection, frame) {
   const length = frame.add(STREAM_FRAME_DATA_LENGTH).readU16();
   const fin = (frame.add(STREAM_FRAME_FIN).readU8() & 1) === 1;
   const streamId = frame.add(STREAM_FRAME_STREAM_ID).readU32();
   const offset = frame.add(STREAM_FRAME_OFFSET).readU64().toNumber();
-  const record = connectionRecord(state2, toAddress(connection), streamId, FRAME_IN_LABEL, "read");
+  const record = connectionRecord(state3, toAddress(connection), streamId, FRAME_IN_LABEL, "read");
   if (!wantsFragment(record, "read", offset, length, fin))
     return;
   const bytes = copyBytes(length > 0 ? frame.add(STREAM_FRAME_DATA_BUFFER).readPointer() : NULL, length);
   if (bytes)
     emitFragment(record, "read", offset, bytes, fin);
 }
-function emitEgressWrite(state2, session, write3) {
+function emitEgressWrite(state3, session, write3) {
   const key = session.toString();
-  const connection = sessionConnection(state2, toAddress(session));
-  const resolvable = connection !== null && connection !== 0n && state2.connLayout !== null;
+  const connection = sessionConnection(state3, toAddress(session));
+  const resolvable = connection !== null && connection !== 0n && state3.connLayout !== null;
   const held = deferredEgress.get(key);
   if (resolvable && held === void 0) {
-    const record = connectionRecord(state2, connection, write3.streamId, FRAME_OUT_LABEL, "write");
+    const record = connectionRecord(state3, connection, write3.streamId, FRAME_OUT_LABEL, "write");
     if (!wantsFragment(record, "write", write3.offset, write3.length, false))
       return;
     const bytes2 = copyBytes(write3.at, write3.length);
@@ -38932,15 +41219,15 @@ function emitEgressWrite(state2, session, write3) {
   deferredEgress.delete(key);
   const conn = resolvable ? connection : toAddress(session);
   for (const f2 of pending) {
-    const record = connectionRecord(state2, conn, f2.streamId, FRAME_OUT_LABEL, "write", resolvable);
+    const record = connectionRecord(state3, conn, f2.streamId, FRAME_OUT_LABEL, "write", resolvable);
     emitFragment(record, "write", f2.offset, f2.bytes, false);
   }
 }
 function bodyHookReports(record) {
   return record.connection !== void 0 && frameCapture.onBody(String(record.message["ssl_session_id"])) === "bodies";
 }
-function onStreamFrameListener(state2) {
-  const crumb = `QuicConnection::OnStreamFrame (${state2.moduleName})`;
+function onStreamFrameListener(state3) {
+  const crumb = `QuicConnection::OnStreamFrame (${state3.moduleName})`;
   return {
     onEnter(args) {
       if (_isShuttingDownNow())
@@ -38950,15 +41237,15 @@ function onStreamFrameListener(state2) {
         resetReadableCache();
         if (!isReadable(args[1], STREAM_FRAME_OFFSET + 8))
           return;
-        emitIngressFrame(state2, args[0], args[1]);
+        emitIngressFrame(state3, args[0], args[1]);
       } catch (e) {
         devlog_error(`[${FRAME_IN_LABEL}] onEnter threw: ${e}`);
       }
     }
   };
 }
-function writeStreamDataListener(state2) {
-  const crumb = `QuicSession::WriteStreamData (${state2.moduleName})`;
+function writeStreamDataListener(state3) {
+  const crumb = `QuicSession::WriteStreamData (${state3.moduleName})`;
   return {
     onEnter(args) {
       this.writer = null;
@@ -38992,7 +41279,7 @@ function writeStreamDataListener(state2) {
         if (after - this.before !== this.length)
           return;
         resetReadableCache();
-        emitEgressWrite(state2, this.session, {
+        emitEgressWrite(state3, this.session, {
           streamId: this.streamId,
           offset: this.offset,
           length: this.length,
@@ -39006,16 +41293,16 @@ function writeStreamDataListener(state2) {
 }
 async function installQuicheFrameHooks(moduleName) {
   const mod = Process.findModuleByName(moduleName);
-  const state2 = quicheLayoutState(moduleName);
-  if (!mod || !state2)
+  const state3 = quicheLayoutState(moduleName);
+  if (!mod || !state3)
     return false;
   const api3 = await locateQuicheFrameApi(mod);
   if (!api3.onStreamFrame || !api3.writeStreamData)
     return false;
   const listeners = [];
   try {
-    listeners.push(Interceptor.attach(api3.onStreamFrame, onStreamFrameListener(state2)));
-    listeners.push(Interceptor.attach(api3.writeStreamData, writeStreamDataListener(state2)));
+    listeners.push(Interceptor.attach(api3.onStreamFrame, onStreamFrameListener(state3)));
+    listeners.push(Interceptor.attach(api3.writeStreamData, writeStreamDataListener(state3)));
   } catch (e) {
     listeners.forEach((l) => l.detach());
     devlog_error(`[Google QUICHE] failed to hook the STREAM-frame boundary in ${moduleName}: ${e}`);
@@ -39166,6 +41453,12 @@ function installQuicSocketObserver() {
   if (socketObserverInstalled)
     return;
   socketObserverInstalled = true;
+  const observer = nativeSocketObserver();
+  if (observer !== null && observer.armUdpPeerRecording()) {
+    quicConnectionTracker.setObservedPeerFeed(() => feedObservedPeers(observer));
+    devlog("[Google QUICHE] recording UDP connect() peers natively for real-peer recovery");
+    return;
+  }
   const udpFds = /* @__PURE__ */ new Set();
   const socketAddr = Module.findGlobalExportByName("socket");
   const connectAddr = Module.findGlobalExportByName("connect");
@@ -39205,6 +41498,13 @@ function installQuicSocketObserver() {
     });
   }
   devlog("[Google QUICHE] installed libc UDP socket observer for real-peer recovery");
+}
+function feedObservedPeers(observer) {
+  for (const sockaddr of observer.drainUdpPeers()) {
+    const peer = parseObservedPeer(sockaddr);
+    if (peer)
+      quicConnectionTracker.setObservedPeer(peer);
+  }
 }
 function readIovec(iovPtr, iovLen, maxBytes) {
   if (iovPtr.isNull() || iovLen === 0 || maxBytes === 0)
@@ -40876,7 +43176,7 @@ var OpenSSL_BoringSSL_Linux = class extends OpenSSL_BoringSSL2 {
         tracker.noteAppCallback(args[0], callback_func);
         Interceptor.attach(callback_func, {
           onEnter: function(args2) {
-            sendKeylog(args2[1].readCString());
+            sendKeylog(args2[1].readCString(), args2[0], instance.module_name);
           }
         });
       }
@@ -40988,7 +43288,7 @@ var OpenSSL_From_Python_Linux = class extends OpenSSL_BoringSSL2 {
           tracker.noteAppCallback(args[0], callback_func);
           Interceptor.attach(callback_func, {
             onEnter: function(args2) {
-              sendKeylog(args2[1].readCString());
+              sendKeylog(args2[1].readCString(), args2[0], instance.module_name);
             }
           });
         }
@@ -41100,6 +43400,7 @@ var WolfSSL2 = class _WolfSSL {
       onEnter: function(args) {
         var message = getPortsAndAddresses(_WolfSSL.wolfSSL_get_fd(args[0]), true, lib_addesses[current_module_name], enable_default_fd);
         message["function"] = "wolfSSL_read";
+        stampRecordLibrary(message, current_module_name);
         message["ssl_session_id"] = _WolfSSL.getSslSessionId(args[0]);
         this.message = message;
         this.buf = args[1];
@@ -41124,6 +43425,7 @@ var WolfSSL2 = class _WolfSSL {
         return null;
       message["ssl_session_id"] = _WolfSSL.getSslSessionId(args[0]);
       message["function"] = "wolfSSL_write";
+      stampRecordLibrary(message, current_module_name);
       return message;
     });
   }
@@ -41369,6 +43671,7 @@ var mbed_TLS2 = class _mbed_TLS {
         var message = getPortsAndAddresses(_mbed_TLS.getSocketDescriptor(args[0]), true, lib_addesses[current_module_name], enable_default_fd);
         message["ssl_session_id"] = _mbed_TLS.getSessionId(args[0]);
         message["function"] = "mbedtls_ssl_read";
+        stampRecordLibrary(message, current_module_name);
         this.message = message;
       },
       onLeave: function(retval) {
@@ -41398,6 +43701,7 @@ var mbed_TLS2 = class _mbed_TLS {
         var message = getPortsAndAddresses(_mbed_TLS.getSocketDescriptor(args[0]), false, lib_addesses[current_module_name], enable_default_fd);
         message["ssl_session_id"] = _mbed_TLS.getSessionId(args[0]);
         message["function"] = "mbedtls_ssl_write";
+        stampRecordLibrary(message, current_module_name);
         sendDatalog(message, data);
       }
     });
@@ -41495,6 +43799,7 @@ var S2nTLS2 = class _S2nTLS {
         var readfd = readfdPtr.readInt();
         var message = getPortsAndAddresses(readfd, false, lib_addresses[current_module_name], enable_default_fd);
         message["function"] = "s2n_recv";
+        stampRecordLibrary(message, current_module_name);
         message["ssl_session_id"] = "0";
         this.message = message;
         this.buf = args[1];
@@ -41530,6 +43835,7 @@ var S2nTLS2 = class _S2nTLS {
         var writefd = writefdPtr.readInt();
         var message = getPortsAndAddresses(writefd, true, lib_addresses[current_module_name], enable_default_fd);
         message["function"] = "s2n_send";
+        stampRecordLibrary(message, current_module_name);
         message["ssl_session_id"] = "0";
         this.message = message;
         this.buf = args[1];
@@ -41743,13 +44049,13 @@ function hookMatrixSslWrites(getWritebuf, encodeWritebuf, emit3) {
   Interceptor.attach(encodeWritebuf, {
     onEnter(args) {
       const tid = Process.getCurrentThreadId();
-      const state2 = pending.get(tid);
-      if (state2 === void 0)
+      const state3 = pending.get(tid);
+      if (state3 === void 0)
         return;
       pending.delete(tid);
-      const length = encodedLength(args[1].toUInt32(), state2.available);
+      const length = encodedLength(args[1].toUInt32(), state3.available);
       if (length > 0)
-        emit3(args[0], state2.buffer.readByteArray(length), "matrixSslEncodeWritebuf");
+        emit3(args[0], state3.buffer.readByteArray(length), "matrixSslEncodeWritebuf");
     }
   });
 }
@@ -41779,7 +44085,7 @@ function matrixSslSessionIdDecoder(ssl, fns) {
     return "";
   }
 }
-function matrixSslEmitter(isRead, moduleAddrs, resolvedFns, enableDefaultFd) {
+function matrixSslEmitter(isRead, moduleAddrs, resolvedFns, enableDefaultFd, library) {
   return (ssl, data, functionName) => {
     try {
       const message = getPortsAndAddresses(-1, isRead, moduleAddrs, enableDefaultFd);
@@ -41787,6 +44093,7 @@ function matrixSslEmitter(isRead, moduleAddrs, resolvedFns, enableDefaultFd) {
         return;
       message["ssl_session_id"] = matrixSslSessionIdDecoder(ssl, resolvedFns);
       message["function"] = functionName;
+      stampRecordLibrary(message, library);
       sendDatalog(message, data);
     } catch (e) {
       devlog(`[matrixssl] ${isRead ? "read" : "write"} capture error: ${e}`);
@@ -41804,7 +44111,7 @@ function createMatrixSslReadHook() {
         devlog("[matrixssl] matrixSslReceivedData unresolved \u2013 read capture disabled");
         return;
       }
-      hookMatrixSslReads(addr, moduleAddrs["matrixSslProcessedData"], matrixSslEmitter(true, moduleAddrs, resolvedFns, enableDefaultFd));
+      hookMatrixSslReads(addr, moduleAddrs["matrixSslProcessedData"], matrixSslEmitter(true, moduleAddrs, resolvedFns, enableDefaultFd, modName));
     }
   };
 }
@@ -41824,7 +44131,7 @@ function createMatrixSslWriteHooks() {
         devlog("[matrixssl] matrixSslEncodeWritebuf unresolved \u2013 write capture disabled");
         return;
       }
-      hookMatrixSslWrites(getBufAddr, encodeAddr, matrixSslEmitter(false, moduleAddrs, resolvedFns, enableDefaultFd));
+      hookMatrixSslWrites(getBufAddr, encodeAddr, matrixSslEmitter(false, moduleAddrs, resolvedFns, enableDefaultFd, modName));
     }
   };
 }
@@ -41914,6 +44221,7 @@ var matrix_SSL = class _matrix_SSL {
       return;
     message["ssl_session_id"] = this.sessionIdFor(ssl);
     message["function"] = functionName;
+    stampRecordLibrary(message, this.module_name);
     sendDatalog(message, data);
   }
   install_tls_keys_callback_hook() {
@@ -43693,11 +46001,7 @@ var offsetLabel = (off) => off === null ? "?" : "+0x" + off.toString(16);
 async function locateBoringSslPlaintextApi(mod) {
   if (Process.arch !== "arm64")
     return null;
-  const table = ehFrameTableFor(mod);
-  if (!table) {
-    devlog(`[BoringSSL plaintext] ${mod.name}: no usable .eh_frame_hdr; cannot bound functions`);
-    return null;
-  }
+  const table = functionBoundsFor(mod);
   const found = await sslLibErrorSites(mod, table);
   if (!found) {
     devlog(`[BoringSSL plaintext] ${mod.name}: no BoringSSL ssl_lib.cc anchor string`);
@@ -43721,7 +46025,17 @@ function describeLocated(mod, api3) {
 // agent/tls/shared/chromium_plaintext.ts
 var installedModules2 = /* @__PURE__ */ new Set();
 var NO_MODIFICATIONS = { readmod: null, writemod: null };
-function plaintextHost(moduleName, socketLibrary, isBaseHook) {
+var STOCK_BORINGSSL_LAYOUT = { s3Off: 48, crOff: 48, source: "stock", validated: false };
+function installStockSslLayout(moduleName) {
+  if (Process.pointerSize !== 8 || sslLayoutFor(moduleName) !== null)
+    return;
+  setSslLayout(moduleName, STOCK_BORINGSSL_LAYOUT);
+}
+function prepareSslLayout(moduleName) {
+  installStockSslLayout(moduleName);
+  prefetchSslLayout(moduleName, "chromium-install");
+}
+function chromiumPlaintextHost(moduleName, socketLibrary, isBaseHook) {
   let addresses = { [moduleName]: {} };
   try {
     addresses = readAddresses(moduleName, {
@@ -43736,11 +46050,21 @@ function plaintextHost(moduleName, socketLibrary, isBaseHook) {
     is_base_hook: isBaseHook,
     addresses,
     // No fd on Chrome's SSL objects: always take the deferred (SSL-scoped) path.
-    SSL_get_fd: (_ssl) => -1,
+    SSL_get_fd: fdLessSslGetFd,
     SSL_get_session: null,
-    SSL_SESSION_get_id: null,
-    getSslSessionId: (_ssl) => ""
+    SSL_SESSION_get_id: sessionlessSslSessionGetId,
+    getSslSessionId: (_ssl) => "",
+    fdLess: true
   };
+}
+function attachChromiumPlaintextHooks(hooks, api3) {
+  if (api3.sslRead)
+    hooks.attachRead(api3.sslRead);
+  if (api3.sslWrite)
+    hooks.attachWrite(api3.sslWrite);
+}
+function exportsSslRecordApi(mod) {
+  return mod.findExportByName("SSL_read") !== null || mod.findExportByName("SSL_write") !== null;
 }
 async function installChromiumPlaintextHooks(moduleName, socketLibrary, isBaseHook) {
   if (!pcap_enabled || installedModules2.has(moduleName))
@@ -43750,16 +46074,19 @@ async function installChromiumPlaintextHooks(moduleName, socketLibrary, isBaseHo
     const mod = Process.findModuleByName(moduleName);
     if (!mod)
       return false;
+    if (exportsSslRecordApi(mod)) {
+      devlog(`[Chromium plaintext] ${moduleName}: SSL_read/SSL_write are exported; left to the export-based hooks`);
+      return false;
+    }
     const api3 = await locateBoringSslPlaintextApi(mod);
     if (!api3 || !api3.sslRead && !api3.sslWrite) {
       log(`[!] ${moduleName}: BoringSSL SSL_read/SSL_write not located; TCP TLS plaintext unavailable (keys only)`);
       return false;
     }
-    const hooks = new SslPlaintextHooks(plaintextHost(moduleName, socketLibrary, isBaseHook), NO_MODIFICATIONS, false);
-    if (api3.sslRead)
-      hooks.attachRead(api3.sslRead);
-    if (api3.sslWrite)
-      hooks.attachWrite(api3.sslWrite);
+    const hooks = new SslPlaintextHooks(chromiumPlaintextHost(moduleName, socketLibrary, isBaseHook), NO_MODIFICATIONS, false);
+    prepareSslLayout(moduleName);
+    attachChromiumPlaintextHooks(hooks, api3);
+    hooks.installScopeHooks();
     log(`[*] ${moduleName}: hooked statically linked BoringSSL for TCP TLS plaintext (${describeLocated(mod, api3)}; located via ssl_lib.cc error-site anchors)`);
     return true;
   } catch (e) {
@@ -43773,6 +46100,561 @@ function chromium_plaintext_execute(moduleName, is_base_hook) {
   if (!pcap_enabled)
     return false;
   return installChromiumPlaintextHooks(moduleName, socket_library, is_base_hook);
+}
+
+// agent/shared/java_request_context.ts
+init_node_globals();
+
+// agent/shared/detach_teardown.ts
+init_node_globals();
+var teardowns = [];
+function registerDetachTeardown(label, fn) {
+  teardowns.push({ label, fn });
+}
+function runDetachTeardowns() {
+  for (let i = teardowns.length - 1; i >= 0; i--) {
+    try {
+      teardowns[i].fn();
+    } catch (_e) {
+    }
+  }
+  teardowns.length = 0;
+}
+function revertJavaOverloads(bridge, overloads, label) {
+  if (overloads.length === 0)
+    return;
+  try {
+    if (!bridge || !bridge.available)
+      return;
+    bridge.perform(() => {
+      for (const overload of overloads) {
+        try {
+          overload.implementation = null;
+        } catch (e) {
+          devlog(`[${label}] revert failed: ${e}`);
+        }
+      }
+    });
+  } catch (e) {
+    devlog(`[${label}] Java-hook teardown skipped: ${e}`);
+  }
+}
+
+// agent/shared/java_request_context.ts
+init_shared_structures();
+function requestContextHooksWanted(cfg) {
+  return cfg.attribute_sdk && cfg.pcap_enabled && !cfg.pairip_safe && !cfg.quic_only;
+}
+var MAX_REQUEST_FRAMES = 32;
+var STACK_FRAME_LINE = /^\s*at\s+([^\s(]+)\(/;
+var HOOK_INTERNAL_FRAME_PREFIXES = ["java.lang.Throwable.", "android.util.Log.", "dalvik.system.VMStack."];
+function parseStackTraceFrames(trace, cap = MAX_REQUEST_FRAMES) {
+  const out = [];
+  if (!trace)
+    return out;
+  for (const line of trace.split("\n")) {
+    if (out.length >= cap)
+      break;
+    const match = STACK_FRAME_LINE.exec(line);
+    if (!match)
+      continue;
+    const frame = match[1];
+    if (HOOK_INTERNAL_FRAME_PREFIXES.some((p) => frame.startsWith(p)))
+      continue;
+    out.push(frame);
+  }
+  return out;
+}
+var HTTPENGINE_CLASS_PREFIXES = [
+  "android.net.http.internal.org.chromium.",
+  "android.net.connectivity.org.chromium."
+];
+var GMS_LOADER_MARKERS = ["com.google.android.gms", "CronetDynamite", "cronet_dynamite"];
+function stackKindFor(className, loaderDescription, hasGmsSentinel = false) {
+  if (HTTPENGINE_CLASS_PREFIXES.some((p) => className.startsWith(p)))
+    return "httpengine";
+  if (hasGmsSentinel)
+    return "gms-cronet";
+  const desc = loaderDescription || "";
+  return GMS_LOADER_MARKERS.some((m2) => desc.includes(m2)) ? "gms-cronet" : "cronet";
+}
+var DEFAULT_LRU_CAPACITY = 4096;
+var THREAD_NAME_CACHE_CAPACITY = 256;
+function createReqIdCounter() {
+  let n = 0;
+  return () => `rc-${++n}`;
+}
+function basePayload(event, req_id, meta) {
+  return { contentType: "request_context", event, req_id, thread: meta.thread, tid: meta.tid, t_ms: meta.t_ms };
+}
+function requestPayload(event, rec, meta, fields = {}) {
+  return { ...basePayload(event, rec.req_id, meta), stack_kind: rec.kind, url: rec.url, ...fields };
+}
+function buildWebviewLoadPayload(req_id, webviewId, url, method2, frames, meta) {
+  return { ...basePayload("webview_load", req_id, meta), webview_id: webviewId, url, method: method2, frames };
+}
+function buildWebviewRequestPayload(req_id, webviewId, url, method2, mainFrame, meta) {
+  return { ...basePayload("webview_request", req_id, meta), webview_id: webviewId, url, method: method2, main_frame: mainFrame };
+}
+function javaString(value) {
+  return value === null || value === void 0 ? null : `${value}`;
+}
+var defaultDeps = {
+  emit: (payload) => sendRequestContext(payload),
+  isShuttingDown: () => _isShuttingDown,
+  now: () => Date.now(),
+  currentThreadId: () => Process.getCurrentThreadId(),
+  registerTeardown: registerDetachTeardown
+};
+var CRONET_REQUEST_CLASS = "org.chromium.net.impl.CronetUrlRequest";
+var CRONET_CTOR_ARG_COUNT = 23;
+var CTOR_URL_ARG = 1;
+var CTOR_METHOD_ARG = 16;
+var ENGINE_BUILDER_CLASS = "org.chromium.net.CronetEngine$Builder";
+var BUILDER_DELEGATE_ARG = "org.chromium.net.ICronetEngineBuilder";
+var GMS_SENTINEL_CLASSES = [
+  "org.chromium.net.impl.NativeCronetProviderSentinel",
+  "org.chromium.net.impl.CronetPccAuditLogger",
+  "org.chromium.net.impl.CronetUmaRecorder"
+];
+var WEBVIEW_CLASS = "android.webkit.WebView";
+var WEBVIEW_CLIENT_CLASS = "android.webkit.WebViewClient";
+var WEBVIEW_ARG = "android.webkit.WebView";
+var WEB_RESOURCE_REQUEST_ARG = "android.webkit.WebResourceRequest";
+var TEARDOWN_LABEL = "java-request-context";
+function zeroCounts() {
+  return { "cronet": 0, "gms-cronet": 0, "httpengine": 0, "webview": 0 };
+}
+var RequestContextState = class {
+  installed = false;
+  teardownRegistered = false;
+  overloads = [];
+  hookedClassKeys = /* @__PURE__ */ new Set();
+  /** WebViewClient (sub)classes reflected once and found not to declare shouldInterceptRequest. */
+  nonInterceptingClassKeys = /* @__PURE__ */ new Set();
+  requests = new LruMap(DEFAULT_LRU_CAPACITY);
+  nextReqId = createReqIdCounter();
+  /** tids currently inside an app-subclass shouldInterceptRequest (suppresses the base-class double emit). */
+  interceptInFlight = /* @__PURE__ */ new Set();
+  counts = zeroCounts();
+  reset() {
+    this.installed = false;
+    this.overloads.length = 0;
+    this.hookedClassKeys.clear();
+    this.nonInterceptingClassKeys.clear();
+    this.requests.clear();
+    this.interceptInFlight.clear();
+    this.counts = zeroCounts();
+  }
+};
+var state = new RequestContextState();
+function swapImplementation(overload, implementation2) {
+  overload.implementation = implementation2;
+  state.overloads.push(overload);
+}
+function wrapOverload(overload, label, handler, deps, timing = "before") {
+  const observe = (self, args, result) => {
+    if (deps.isShuttingDown())
+      return;
+    try {
+      handler(self, args, result);
+    } catch (e) {
+      devlog(`[request-context] ${label} hook error: ${e}`);
+    }
+  };
+  swapImplementation(overload, function(...args) {
+    if (timing === "after") {
+      const result = overload.apply(this, args);
+      observe(this, args, result);
+      return result;
+    }
+    observe(this, args);
+    return overload.apply(this, args);
+  });
+}
+function hookOverloads(klass, method2, label, handler, deps, opts = {}) {
+  const filter = opts.filter ?? (() => true);
+  let overloads;
+  try {
+    overloads = klass[method2].overloads;
+  } catch (e) {
+    devlog(`[request-context] ${label}.${method2} not present: ${e}`);
+    return 0;
+  }
+  let hooked = 0;
+  for (const overload of overloads) {
+    if (!filter(overload)) {
+      devlog(`[request-context] ${label}.${method2}: skipping overload with ${overload.argumentTypes?.length} args`);
+      continue;
+    }
+    wrapOverload(overload, `${label}.${method2}`, handler, deps, opts.timing);
+    hooked++;
+  }
+  return hooked;
+}
+var JavaRuntime = class {
+  deps;
+  system;
+  thread;
+  throwable;
+  androidLog;
+  threadNames = new LruMap(THREAD_NAME_CACHE_CAPACITY);
+  constructor(bridge, deps) {
+    this.deps = deps;
+    this.system = bridge.use("java.lang.System");
+    this.thread = bridge.use("java.lang.Thread");
+    this.throwable = bridge.use("java.lang.Throwable");
+    this.androidLog = bridge.use("android.util.Log");
+  }
+  identity(obj) {
+    return this.system.identityHashCode(obj);
+  }
+  /** The current Java stack: a fixed two JNI calls (probe + getStackTraceString), not two per frame; parsed in JS. */
+  frames() {
+    try {
+      return parseStackTraceFrames(`${this.androidLog.getStackTraceString(this.throwable.$new())}`);
+    } catch (_e) {
+      return [];
+    }
+  }
+  meta() {
+    const tid = this.deps.currentThreadId();
+    return { thread: this.threadName(tid), tid, t_ms: this.deps.now() };
+  }
+  threadName(tid) {
+    const cached = this.threadNames.get(tid);
+    if (cached !== void 0)
+      return cached;
+    let name = null;
+    try {
+      name = `${this.thread.currentThread().getName()}`;
+    } catch (_e) {
+    }
+    this.threadNames.set(tid, name);
+    return name;
+  }
+};
+function isVerifiedCtorShape(overload) {
+  const types2 = overload.argumentTypes || [];
+  return types2.length === CRONET_CTOR_ARG_COUNT && types2[CTOR_URL_ARG]?.className === "java.lang.String" && types2[CTOR_METHOD_ARG]?.className === "java.lang.String";
+}
+function recordFor(rt, self, kind) {
+  return recordForKey(rt.identity(self), kind);
+}
+function recordForKey(key, kind) {
+  let rec = state.requests.get(key);
+  if (!rec) {
+    rec = { req_id: state.nextReqId(), url: null, method: null, frames: [], kind };
+    state.requests.set(key, rec);
+  }
+  return rec;
+}
+function hookCronetRequestClass(klass, kind, rt, deps) {
+  const label = `${kind}:CronetUrlRequest`;
+  let n = hookOverloads(klass, "$init", label, (self, a) => {
+    state.requests.set(rt.identity(self), {
+      req_id: state.nextReqId(),
+      url: javaString(a[CTOR_URL_ARG]),
+      method: javaString(a[CTOR_METHOD_ARG]),
+      frames: rt.frames(),
+      kind
+    });
+  }, deps, { filter: isVerifiedCtorShape });
+  n += hookOverloads(klass, "start", label, (self) => {
+    const rec = recordFor(rt, self, kind);
+    if (rec.frames.length === 0)
+      rec.frames = rt.frames();
+    deps.emit(requestPayload("start", rec, rt.meta(), { method: rec.method, frames: rec.frames }));
+  }, deps);
+  n += hookCronetCallbacks(klass, kind, label, rt, deps);
+  return n;
+}
+function hookCronetCallbacks(klass, kind, label, rt, deps) {
+  let n = hookOverloads(klass, "onRedirectReceived", label, (self, a) => {
+    deps.emit(requestPayload("redirect", recordFor(rt, self, kind), rt.meta(), { url: javaString(a[0]), status: a[1] ?? null }));
+  }, deps);
+  n += hookOverloads(klass, "onResponseStarted", label, (self, a) => {
+    const cached = typeof a[3] === "boolean" ? a[3] : null;
+    deps.emit(requestPayload("response", recordFor(rt, self, kind), rt.meta(), {
+      status: a[0] ?? null,
+      negotiated_protocol: javaString(a[4]),
+      cached
+    }));
+  }, deps);
+  n += hookOverloads(klass, "onSucceeded", label, (self) => emitEnd(rt, self, kind, null, deps), deps);
+  n += hookOverloads(klass, "onCanceled", label, (self) => emitEnd(rt, self, kind, "canceled", deps), deps);
+  n += hookOverloads(klass, "onError", label, (self, a) => {
+    const error = a.find((x) => typeof x === "string") ?? null;
+    emitEnd(rt, self, kind, error ?? `error ${a[0]}`, deps);
+  }, deps);
+  return n;
+}
+function emitEnd(rt, self, kind, error, deps) {
+  const key = rt.identity(self);
+  const rec = recordForKey(key, kind);
+  state.requests.delete(key);
+  deps.emit(requestPayload("end", rec, rt.meta(), error === null ? {} : { error }));
+}
+function enumerateLoaders(bridge) {
+  try {
+    return bridge.enumerateClassLoadersSync();
+  } catch (e) {
+    devlog(`[request-context] loader enumeration failed: ${e}`);
+    return [];
+  }
+}
+function forEachDistinctClass(rt, loaders, classNames, visit) {
+  for (const loader of loaders) {
+    for (const className of classNames) {
+      let klass;
+      try {
+        klass = loader.loadClass(className);
+      } catch (_e) {
+        continue;
+      }
+      const key = `${className}@${rt.identity(klass)}`;
+      if (state.hookedClassKeys.has(key))
+        continue;
+      state.hookedClassKeys.add(key);
+      let defining = null;
+      try {
+        defining = klass.getClassLoader();
+      } catch (_e) {
+      }
+      visit(className, defining ?? loader);
+    }
+  }
+}
+function loaderHasGmsSentinel(loader) {
+  for (const sentinel of GMS_SENTINEL_CLASSES) {
+    try {
+      loader.loadClass(sentinel);
+      return true;
+    } catch (_e) {
+    }
+  }
+  return false;
+}
+function hookCronetRequestIn(bridge, rt, deps, phase, loader) {
+  let desc = "";
+  try {
+    desc = `${loader}`;
+  } catch (_e) {
+  }
+  const kind = stackKindFor(CRONET_REQUEST_CLASS, desc, loaderHasGmsSentinel(loader));
+  try {
+    const klass = bridge.ClassFactory.get(loader).use(CRONET_REQUEST_CLASS);
+    const hooked = hookCronetRequestClass(klass, kind, rt, deps) > 0;
+    if (hooked)
+      state.counts[kind]++;
+    devlog(`[request-context] ${phase}: hooked ${kind} CronetUrlRequest in ${desc.slice(0, 200)}`);
+    return hooked ? 1 : 0;
+  } catch (e) {
+    devlog(`[request-context] ${phase}: ${kind} CronetUrlRequest not hooked: ${e}`);
+  }
+  return 0;
+}
+function hookBuilderDelegateCtorIn(bridge, rt, deps, loader) {
+  try {
+    const klass = bridge.ClassFactory.get(loader).use(ENGINE_BUILDER_CLASS);
+    hookOverloads(klass, "$init", ENGINE_BUILDER_CLASS, (_self, a) => {
+      probeDelegateLoader(bridge, rt, deps, a[0]);
+    }, deps, { filter: isBuilderDelegateCtor, timing: "after" });
+  } catch (e) {
+    devlog(`[request-context] ${ENGINE_BUILDER_CLASS}.<init> not hooked: ${e}`);
+  }
+}
+function isBuilderDelegateCtor(overload) {
+  const types2 = overload.argumentTypes || [];
+  return types2.length === 1 && types2[0]?.className === BUILDER_DELEGATE_ARG;
+}
+function discoverLoaderClasses(bridge, rt, deps) {
+  const classNames = [CRONET_REQUEST_CLASS, ENGINE_BUILDER_CLASS];
+  forEachDistinctClass(rt, enumerateLoaders(bridge), classNames, (className, loader) => {
+    if (className === CRONET_REQUEST_CLASS)
+      hookCronetRequestIn(bridge, rt, deps, "install", loader);
+    else
+      hookBuilderDelegateCtorIn(bridge, rt, deps, loader);
+  });
+}
+function definingLoaderOf(obj) {
+  if (obj === null || obj === void 0)
+    return null;
+  try {
+    return obj.getClass().getClassLoader() ?? null;
+  } catch (_e) {
+    return null;
+  }
+}
+function probeDelegateLoader(bridge, rt, deps, delegate) {
+  const loader = definingLoaderOf(delegate);
+  if (loader === null)
+    return;
+  let added = 0;
+  forEachDistinctClass(rt, [loader], [CRONET_REQUEST_CLASS], (_className, defining) => {
+    added += hookCronetRequestIn(bridge, rt, deps, "builder delegate", defining);
+  });
+  if (added > 0)
+    logCounts("new Cronet loader");
+}
+function hookHttpEngine(bridge, rt, deps) {
+  for (const prefix of HTTPENGINE_CLASS_PREFIXES) {
+    const className = `${prefix}net.impl.CronetUrlRequest`;
+    if (state.hookedClassKeys.has(className))
+      continue;
+    let klass;
+    try {
+      klass = bridge.use(className);
+    } catch (_e) {
+      devlog(`[request-context] HttpEngine class absent: ${className}`);
+      continue;
+    }
+    state.hookedClassKeys.add(className);
+    if (hookCronetRequestClass(klass, "httpengine", rt, deps) > 0)
+      state.counts.httpengine++;
+  }
+}
+function webviewLoadHandler(rt, deps, method2) {
+  return (self, a) => {
+    deps.emit(buildWebviewLoadPayload(state.nextReqId(), `${rt.identity(self)}`, javaString(a[0]), method2, rt.frames(), rt.meta()));
+  };
+}
+function emitWebviewRequest(rt, deps, view, req) {
+  if (req === null || req === void 0)
+    return;
+  const webviewId = view === null || view === void 0 ? "" : `${rt.identity(view)}`;
+  let mainFrame = null;
+  try {
+    mainFrame = !!req.isForMainFrame();
+  } catch (_e) {
+  }
+  deps.emit(buildWebviewRequestPayload(state.nextReqId(), webviewId, javaString(req.getUrl()), javaString(req.getMethod()), mainFrame, rt.meta()));
+}
+function hookBaseInterceptRequest(bridge, rt, deps) {
+  const overload = bridge.use(WEBVIEW_CLIENT_CLASS).shouldInterceptRequest.overload(WEBVIEW_ARG, WEB_RESOURCE_REQUEST_ARG);
+  wrapOverload(overload, "WebViewClient.shouldInterceptRequest", (_self, a) => {
+    if (state.interceptInFlight.has(deps.currentThreadId()))
+      return;
+    emitWebviewRequest(rt, deps, a[0], a[1]);
+  }, deps);
+  return 1;
+}
+function declaresInterceptRequest(cls) {
+  const methods = cls.getDeclaredMethods();
+  for (let i = 0; i < methods.length; i++) {
+    const m2 = methods[i];
+    if (`${m2.getName()}` !== "shouldInterceptRequest")
+      continue;
+    const params = m2.getParameterTypes();
+    if (params.length === 2 && `${params[0].getName()}` === WEBVIEW_ARG && `${params[1].getName()}` === WEB_RESOURCE_REQUEST_ARG)
+      return true;
+  }
+  return false;
+}
+function hookClientOverride(bridge, rt, deps, client) {
+  let cls = client.getClass();
+  while (cls !== null && `${cls.getName()}` !== WEBVIEW_CLIENT_CLASS) {
+    const name = `${cls.getName()}`;
+    const key = `client:${name}@${rt.identity(cls)}`;
+    if (state.hookedClassKeys.has(key))
+      return;
+    if (state.nonInterceptingClassKeys.has(key)) {
+      cls = cls.getSuperclass();
+      continue;
+    }
+    if (declaresInterceptRequest(cls)) {
+      state.hookedClassKeys.add(key);
+      const klass = bridge.ClassFactory.get(cls.getClassLoader()).use(name);
+      wrapInterceptOverride(klass.shouldInterceptRequest.overload(WEBVIEW_ARG, WEB_RESOURCE_REQUEST_ARG), name, rt, deps);
+      devlog(`[request-context] hooked ${name}.shouldInterceptRequest`);
+      return;
+    }
+    state.nonInterceptingClassKeys.add(key);
+    cls = cls.getSuperclass();
+  }
+}
+function wrapInterceptOverride(overload, name, rt, deps) {
+  swapImplementation(overload, function(...args) {
+    if (deps.isShuttingDown())
+      return overload.apply(this, args);
+    const tid = deps.currentThreadId();
+    const outermost = !state.interceptInFlight.has(tid);
+    if (outermost) {
+      try {
+        emitWebviewRequest(rt, deps, args[0], args[1]);
+      } catch (e) {
+        devlog(`[request-context] ${name} hook error: ${e}`);
+      }
+      state.interceptInFlight.add(tid);
+    }
+    try {
+      return overload.apply(this, args);
+    } finally {
+      if (outermost)
+        state.interceptInFlight.delete(tid);
+    }
+  });
+}
+function hookWebView(bridge, rt, deps) {
+  const webView = bridge.use(WEBVIEW_CLASS);
+  let n = hookOverloads(webView, "loadUrl", "WebView", webviewLoadHandler(rt, deps, "GET"), deps);
+  n += hookOverloads(webView, "postUrl", "WebView", webviewLoadHandler(rt, deps, "POST"), deps);
+  n += hookOverloads(webView, "loadDataWithBaseURL", "WebView", webviewLoadHandler(rt, deps, null), deps);
+  n += hookBaseInterceptRequest(bridge, rt, deps);
+  n += hookOverloads(webView, "setWebViewClient", "WebView", (_self, a) => {
+    if (a[0])
+      hookClientOverride(bridge, rt, deps, a[0]);
+  }, deps);
+  if (n > 0)
+    state.counts.webview++;
+}
+function logCounts(reason) {
+  const c = state.counts;
+  log(`[request-context] ${reason}: Java request hooks on cronet=${c.cronet} gms-cronet=${c["gms-cronet"]} httpengine=${c.httpengine} webview=${c.webview} class(es); ${state.overloads.length} overload(s)`);
+}
+function runStep(label, fn) {
+  try {
+    fn();
+  } catch (e) {
+    devlog(`[request-context] ${label} not hooked: ${e}`);
+  }
+}
+function installJavaRequestContextHooks(bridge = Java, deps = defaultDeps) {
+  if (state.installed)
+    return;
+  if (!bridge || !bridge.available) {
+    devlog("[request-context] Java bridge unavailable; per-request hooks skipped");
+    return;
+  }
+  state.installed = true;
+  if (!state.teardownRegistered) {
+    deps.registerTeardown(TEARDOWN_LABEL, () => revertJavaRequestContextHooks(bridge));
+    state.teardownRegistered = true;
+  }
+  bridge.perform(() => {
+    let rt;
+    try {
+      rt = new JavaRuntime(bridge, deps);
+    } catch (e) {
+      devlog(`[request-context] Java runtime not ready; per-request hooks skipped: ${e}`);
+      return;
+    }
+    runStep("cronet loaders + engine builder", () => discoverLoaderClasses(bridge, rt, deps));
+    runStep("httpengine", () => hookHttpEngine(bridge, rt, deps));
+    runStep("webview", () => hookWebView(bridge, rt, deps));
+    logCounts("installed");
+  });
+}
+function revertJavaRequestContextHooks(bridge = Java) {
+  if (state.overloads.length === 0) {
+    state.reset();
+    return;
+  }
+  const overloads = state.overloads.slice();
+  revertJavaOverloads(bridge, overloads, "request-context");
+  state.reset();
+  state.teardownRegistered = false;
+  devlog(`[request-context] reverted ${overloads.length} Java overload(s)`);
 }
 
 // agent/quic/platforms/android/neqo_android.ts
@@ -43836,7 +46718,7 @@ function install_pattern_based_hooks() {
         try {
           pattern_execute(candidate, true);
           markModuleHooked(candidate, "tls");
-          send({ contentType: "library_detected", library: candidate, path: "", protocol: "tls" });
+          send({ contentType: "library_detected", library: candidate, path: loadedModulePath(candidate), protocol: "tls" });
         } catch (e) {
           devlog(`pattern_execute(${candidate}) threw: ${e}`);
         }
@@ -43964,6 +46846,10 @@ function load_android_hooking_agent() {
     // not a substring of "libmainlinecronet". Needs its own entry.
     { platform: plattform_name3, pattern: /^libmainlinecronet\.[\d.]+\.so$/, hookFn: google_quiche_execute3, library: "Google QUICHE (Mainline Cronet APEX)", libraryType: "google_quiche", protocol: "tls", supplementary: true },
     { platform: plattform_name3, pattern: /.*monochrome.*\.so/, hookFn: google_quiche_execute3, library: "Google QUICHE (Monochrome)", libraryType: "google_quiche", protocol: "tls", supplementary: true },
+    // Android 14+ mainline HttpEngine (android.net.http) statically links Cronet's
+    // QUICHE next to its BoringSSL. `supplementary` lets it coexist with the primary
+    // "httpengine (BoringSSL)" row above, which keeps owning keys + TCP plaintext.
+    { platform: plattform_name3, pattern: /.*libhttpengine\.so/, hookFn: google_quiche_execute3, library: "Google QUICHE (HttpEngine)", libraryType: "google_quiche", protocol: "tls", supplementary: true },
     // TCP TLS plaintext for the Chromium monoliths, whose BoringSSL is statically linked
     // and stripped: SSL_read/SSL_write are located via ssl_lib.cc error-site anchors
     // (tls/shared/boringssl_plaintext_locator.ts). `supplementary`: keys still come from
@@ -43971,6 +46857,10 @@ function load_android_hooking_agent() {
     { platform: plattform_name3, pattern: /.*monochrome.*\.so/, hookFn: chromium_plaintext_execute, library: "BoringSSL plaintext (Monochrome)", protocol: "tls", supplementary: true },
     { platform: plattform_name3, pattern: /.*libchrome\.so/, hookFn: chromium_plaintext_execute, library: "BoringSSL plaintext (Chrome)", protocol: "tls", supplementary: true },
     { platform: plattform_name3, pattern: /.*libwebviewchromium.*\.so/, hookFn: chromium_plaintext_execute, library: "BoringSSL plaintext (WebView Chromium)", protocol: "tls", supplementary: true },
+    // Stripped Cronet (embedded libcronet.<ver>.so and GMS Dynamite's): the Cronet row
+    // above only extracts keys when SSL_* are not exported. Builds that do export them
+    // are skipped inside chromium_plaintext (exportsSslRecordApi), so no double hooks.
+    { platform: plattform_name3, pattern: /^libcronet([_.].*)?\.so$/, hookFn: chromium_plaintext_execute, library: "BoringSSL plaintext (Cronet)", protocol: "tls", supplementary: true },
     { platform: plattform_name3, pattern: /.*libxul\.so/, hookFn: neqo_execute3, library: "Mozilla Neqo (Firefox HTTP/3)", libraryType: "neqo", protocol: "tls", supplementary: true },
     // Hooks contributed by optional, separately bundled units (empty in the
     // public build; a full build's private unit registers its rows before the
@@ -44048,6 +46938,11 @@ function load_android_hooking_agent() {
         if (isPatternReplaced())
           install_pattern_based_hooks();
       }
+    });
+  if (requestContextHooksWanted({ attribute_sdk, pcap_enabled, pairip_safe, quic_only }))
+    phases.push({
+      label: "java-request-context",
+      fn: () => installJavaRequestContextHooks()
     });
   if (library_scan_enabled && !pairip_safe)
     phases.push({
@@ -44280,10 +47175,10 @@ var Flutter2 = class {
     }
     this.addresses = readAddresses(moduleName, this.library_method_mapping);
   }
-  get_client_random(s3_ptr, SSL3_RANDOM_SIZE2) {
+  get_client_random(s3_ptr, SSL3_RANDOM_SIZE3) {
     if (!s3_ptr.isNull()) {
       const client_random_ptr = s3_ptr.add(48);
-      const client_random = client_random_ptr.readByteArray(SSL3_RANDOM_SIZE2);
+      const client_random = client_random_ptr.readByteArray(SSL3_RANDOM_SIZE3);
       const hexClientRandom = get_hex_string_from_byte_array(new Uint8Array(client_random));
       return hexClientRandom;
     } else {
@@ -44292,7 +47187,7 @@ var Flutter2 = class {
     }
   }
   get_client_random_from_ssl_struct(ssl_st_ptr) {
-    const SSL3_RANDOM_SIZE2 = 32;
+    const SSL3_RANDOM_SIZE3 = 32;
     let offset_s3;
     switch (Process.arch) {
       case "x64":
@@ -44312,7 +47207,7 @@ var Flutter2 = class {
         return "";
     }
     const s3_ptr = ssl_st_ptr.add(offset_s3).readPointer();
-    return this.get_client_random(s3_ptr, SSL3_RANDOM_SIZE2);
+    return this.get_client_random(s3_ptr, SSL3_RANDOM_SIZE3);
   }
   dumpKeys(labelPtr, sslStructPtr, keyPtr) {
     const KEY_LENGTH = 32;
@@ -44337,7 +47232,7 @@ var Flutter2 = class {
       devlog("[Error] Argument 'key' is NULL");
     }
     devlog("invoking ssl_log_secret() from BoringSSL statically linked into Flutter");
-    sendKeylog(labelStr + " " + client_random + " " + secret_key);
+    sendKeylog(labelStr + " " + client_random + " " + secret_key, sslStructPtr, this.module_name);
   }
   install_plaintext_read_hook() {
     if (!pcap_enabled)
@@ -44574,6 +47469,7 @@ var SSPI_Windows = class {
   install_plaintext_read_hook() {
     if (!pcap_enabled)
       return;
+    const library = this.module_name;
     Interceptor.attach(this.addresses[this.module_name]["DecryptMessage"], {
       onEnter: function(args) {
         this.pMessage = args[1];
@@ -44600,6 +47496,7 @@ var SSPI_Windows = class {
             message["dst_addr"] = 222;
             message["function"] = "DecryptMessage";
             message["ssl_session_id"] = 10;
+            stampRecordLibrary(message, library);
             sendDatalog(message, bytes);
           }
         }
@@ -44609,6 +47506,7 @@ var SSPI_Windows = class {
   install_plaintext_write_hook() {
     if (!pcap_enabled)
       return;
+    const library = this.module_name;
     Interceptor.attach(this.addresses[this.module_name]["EncryptMessage"], {
       onEnter: function(args) {
         this.pMessage = args[2];
@@ -44633,6 +47531,7 @@ var SSPI_Windows = class {
             message["dst_addr"] = 222;
             message["function"] = "EncryptMessage";
             message["ssl_session_id"] = 10;
+            stampRecordLibrary(message, library);
             sendDatalog(message, bytes);
           }
         }
@@ -44986,7 +47885,7 @@ function makeSspiMessage(functionLabel, isRead) {
     ssl_session_id: 10
   };
 }
-function emitSecBufferData(buffers, functionLabel, isRead) {
+function emitSecBufferData(buffers, functionLabel, isRead, moduleName) {
   for (const sb of buffers) {
     if (sb.type !== SECBUFFER_TYPE_DATA)
       continue;
@@ -44995,6 +47894,7 @@ function emitSecBufferData(buffers, functionLabel, isRead) {
     try {
       const bytes = sb.bufferPointer.readByteArray(sb.size);
       const message = makeSspiMessage(functionLabel, isRead);
+      stampRecordLibrary(message, moduleName);
       sendDatalog(message, bytes);
     } catch (e) {
       devlog(`[sspi] SecBuffer read error in ${functionLabel}: ${e}`);
@@ -45013,7 +47913,7 @@ function installSspiPlaintextHooks(addresses, moduleName) {
       onLeave() {
         try {
           const buffers = parseSecBufferDesc(this.pMessage);
-          emitSecBufferData(buffers, "DecryptMessage", true);
+          emitSecBufferData(buffers, "DecryptMessage", true, moduleName);
         } catch (e) {
           devlog(`[sspi] DecryptMessage onLeave error: ${e}`);
         }
@@ -45028,7 +47928,7 @@ function installSspiPlaintextHooks(addresses, moduleName) {
       onEnter(args) {
         try {
           const buffers = parseSecBufferDesc(args[2]);
-          emitSecBufferData(buffers, "EncryptMessage", false);
+          emitSecBufferData(buffers, "EncryptMessage", false, moduleName);
         } catch (e) {
           devlog(`[sspi] EncryptMessage onEnter error: ${e}`);
         }
@@ -45190,7 +48090,7 @@ var OpenSSL_From_Python_Windows = class extends OpenSSL_BoringSSL2 {
           tracker.noteAppCallback(args[0], callback_func);
           Interceptor.attach(callback_func, {
             onEnter: function(args2) {
-              sendKeylog(args2[1].readCString());
+              sendKeylog(args2[1].readCString(), args2[0], instance.module_name);
             }
           });
         }
@@ -45517,7 +48417,7 @@ var Cronet_Windows = class extends Cronet {
             try {
               Interceptor.attach(callback_func, {
                 onEnter: function(args2) {
-                  sendKeylog(args2[1].readCString());
+                  sendKeylog(args2[1].readCString(), args2[0], instance.module_name);
                 }
               });
             } catch (e) {
@@ -46957,7 +49857,7 @@ init_node_globals();
 // agent/rc4/libs/rc4_memscan.ts
 init_node_globals();
 var P = Process;
-var state = {
+var state2 = {
   opts: {
     maxRangeBytes: 64 * 1024 * 1024,
     maxTotalBytes: 300 * 1024 * 1024,
@@ -47005,18 +49905,18 @@ var state = {
 function configureRc4Memscan(opts) {
   if (opts)
     for (const k in opts)
-      state.opts[k] = opts[k];
+      state2.opts[k] = opts[k];
 }
 var FAULT_LOG_MAX = 3;
 function installExceptionHandler() {
-  if (state.handlerInstalled)
+  if (state2.handlerInstalled)
     return;
-  state.handlerInstalled = true;
+  state2.handlerInstalled = true;
   try {
     P.setExceptionHandler(function(details) {
-      state.faults = (state.faults || 0) + 1;
-      if (state.faults <= FAULT_LOG_MAX && details && details.type) {
-        devlog("[rc4] native fault " + details.type + " at " + details.address + " (caught; guard/no-access pages are skipped, not read)" + (state.faults === FAULT_LOG_MAX ? " \u2014 further faults counted silently" : ""));
+      state2.faults = (state2.faults || 0) + 1;
+      if (state2.faults <= FAULT_LOG_MAX && details && details.type) {
+        devlog("[rc4] native fault " + details.type + " at " + details.address + " (caught; guard/no-access pages are skipped, not read)" + (state2.faults === FAULT_LOG_MAX ? " \u2014 further faults counted silently" : ""));
       }
       return false;
     });
@@ -47129,7 +50029,7 @@ function scanIntSboxes(u8, base) {
   }
 }
 function recordSbox(addrStr, form, u8, off) {
-  if (state.sboxes.length >= state.opts.maxSboxes)
+  if (state2.sboxes.length >= state2.opts.maxSboxes)
     return;
   const S = new Uint8Array(256);
   let k;
@@ -47146,7 +50046,7 @@ function recordSbox(addrStr, form, u8, off) {
       identity2 = false;
       break;
     }
-  state.sboxes.push({ addr: addrStr, form, S, identity: identity2 });
+  state2.sboxes.push({ addr: addrStr, form, S, identity: identity2 });
 }
 function isPrintable(c) {
   return c >= 32 && c <= 126;
@@ -47155,8 +50055,8 @@ var HIGH_PRINTABLE_MIN_LEN = 24;
 var HIGH_PRINTABLE_FRAC = 0.97;
 function buildLiveSboxes() {
   const boxes = [], b0 = [], bN = [];
-  for (let s = 0; s < state.sboxes.length; s++) {
-    const sb = state.sboxes[s];
+  for (let s = 0; s < state2.sboxes.length; s++) {
+    const sb = state2.sboxes[s];
     if (sb.identity)
       continue;
     boxes.push(sb.S);
@@ -47187,13 +50087,13 @@ function trialKey(ctx, src, off, len, source, isWindow) {
   ctx.candidates++;
   if (ctx.stop)
     return;
-  const canSbox = state.opts.sboxExactValidate && ctx.live !== null && ctx.live.n > 0;
+  const canSbox = state2.opts.sboxExactValidate && ctx.live !== null && ctx.live.n > 0;
   if (ctx.prefix === null && !canSbox)
     return;
   if (isWindow) {
-    if (ctx.windowTrials >= state.opts.maxWindowTrials)
+    if (ctx.windowTrials >= state2.opts.maxWindowTrials)
       return;
-  } else if (ctx.trials >= state.opts.maxTrials)
+  } else if (ctx.trials >= state2.opts.maxTrials)
     return;
   let h1 = (2166136261 ^ len) >>> 0;
   let h2 = (2166136261 ^ 2654435769 ^ len) >>> 0;
@@ -47207,7 +50107,7 @@ function trialKey(ctx, src, off, len, source, isWindow) {
   const prev = ctx.seen[h1];
   if (prev === h2)
     return;
-  if (prev === void 0 && ctx.seenCount < state.opts.maxSeen) {
+  if (prev === void 0 && ctx.seenCount < state2.opts.maxSeen) {
     ctx.seen[h1] = h2;
     ctx.seenCount++;
   }
@@ -47230,7 +50130,7 @@ function trialKey(ctx, src, off, len, source, isWindow) {
   if (ctx.prefix === null)
     return;
   prgaInto(ctx.prefix, ctx.prefixLen);
-  const kp = state.opts.knownPlaintext;
+  const kp = state2.opts.knownPlaintext;
   if (kp !== null && kp.length <= ctx.prefixLen) {
     let match = true;
     for (let c = 0; c < kp.length; c++) {
@@ -47262,7 +50162,7 @@ function trialKey(ctx, src, off, len, source, isWindow) {
           if (ch === 9 || ch === 10 || ch === 13 || ch >= 32 && ch <= 126)
             printable++;
         }
-        if (printable / checkLen >= state.opts.acceptPrintableFraction) {
+        if (printable / checkLen >= state2.opts.acceptPrintableFraction) {
           const ks = new Uint8Array(len);
           for (let a3 = 0; a3 < len; a3++)
             ks[a3] = src[off + a3];
@@ -47292,20 +50192,20 @@ function trialKey(ctx, src, off, len, source, isWindow) {
 function runToTrials(ctx, u8, runStart, runEnd, source) {
   if (ctx.stop)
     return;
-  const minL = state.opts.minKeyLen, maxL = state.opts.maxKeyLen, runLen = runEnd - runStart;
+  const minL = state2.opts.minKeyLen, maxL = state2.opts.maxKeyLen, runLen = runEnd - runStart;
   if (runLen < minL)
     return;
   if (runLen <= maxL) {
     trialKey(ctx, u8, runStart, runLen, source, false);
     return;
   }
-  if (state.opts.asciiOnly)
+  if (state2.opts.asciiOnly)
     return;
-  if (runLen > state.opts.maxWindowRunLen)
+  if (runLen > state2.opts.maxWindowRunLen)
     return;
   let perRun = 0;
-  const cap = state.opts.maxWindowsPerRun;
-  for (let i = runStart; i < runEnd && perRun < cap && !ctx.stop && ctx.windowTrials < state.opts.maxWindowTrials; i++) {
+  const cap = state2.opts.maxWindowsPerRun;
+  for (let i = runStart; i < runEnd && perRun < cap && !ctx.stop && ctx.windowTrials < state2.opts.maxWindowTrials; i++) {
     const maxHere = Math.min(maxL, runEnd - i);
     for (let L = minL; L <= maxHere && perRun < cap && !ctx.stop; L++) {
       trialKey(ctx, u8, i, L, source, true);
@@ -47315,15 +50215,15 @@ function runToTrials(ctx, u8, runStart, runEnd, source) {
 }
 var _u16 = new Uint8Array(8192);
 function detectSboxesChunk(u8, base) {
-  if (!(state.opts.detectSboxes || state.opts.sboxFirst))
+  if (!(state2.opts.detectSboxes || state2.opts.sboxFirst))
     return;
-  if (state.sboxes.length < state.opts.maxSboxes)
+  if (state2.sboxes.length < state2.opts.maxSboxes)
     scanByteSboxes(u8, base);
-  if (state.sboxes.length < state.opts.maxSboxes)
+  if (state2.sboxes.length < state2.opts.maxSboxes)
     scanIntSboxes(u8, base);
 }
 function recoverChunk(ctx, u8, base) {
-  if (!state.opts.recoverKeys || ctx.stop)
+  if (!state2.opts.recoverKeys || ctx.stop)
     return;
   let off, runStart = -1;
   for (off = 0; off <= u8.length; off++) {
@@ -47340,7 +50240,7 @@ function recoverChunk(ctx, u8, base) {
       }
     }
   }
-  if (state.opts.asciiOnly)
+  if (state2.opts.asciiOnly)
     return;
   let u16Start = -1;
   for (off = 0; off + 1 < u8.length; off += 2) {
@@ -47354,7 +50254,7 @@ function recoverChunk(ctx, u8, base) {
       let n = off - u16Start >> 1;
       if (n > _u16.length)
         n = _u16.length;
-      if (n >= state.opts.minKeyLen) {
+      if (n >= state2.opts.minKeyLen) {
         for (let d = 0; d < n; d++)
           _u16[d] = u8[u16Start + d * 2];
         runToTrials(ctx, _u16, 0, n, "utf16");
@@ -47456,7 +50356,7 @@ function selectRanges() {
   return out;
 }
 function readOneRange(range, totalSoFar) {
-  const perCap = state.opts.maxRangeBytes, budget = state.opts.maxTotalBytes;
+  const perCap = state2.opts.maxRangeBytes, budget = state2.opts.maxTotalBytes;
   if (totalSoFar >= budget)
     return null;
   let sz = range.size;
@@ -47474,11 +50374,11 @@ function bySize(a, b) {
 }
 function orderRangesGrouped(ranges) {
   const ordered = ranges.slice();
-  if (state.opts.largestFirst) {
+  if (state2.opts.largestFirst) {
     ordered.sort(function(a, b) {
       return b.size - a.size;
     });
-  } else if (state.opts.prioritizeAnonymous) {
+  } else if (state2.opts.prioritizeAnonymous) {
     ordered.sort(function(a, b) {
       return a.anonymous === b.anonymous ? bySize(a, b) : a.anonymous ? -1 : 1;
     });
@@ -47493,7 +50393,7 @@ function readAllFast() {
   let total = 0;
   ranges.sort(bySize);
   for (let i = 0; i < ranges.length; i++) {
-    if (total >= state.opts.maxTotalBytes)
+    if (total >= state2.opts.maxTotalBytes)
       break;
     const r = readOneRange(ranges[i], total);
     if (r !== null) {
@@ -47510,9 +50410,9 @@ function yieldTick() {
 }
 var STRUCT_MIN_CT_LEN = 8;
 async function analyze(ct) {
-  state.sboxes = [];
-  const prefix = ct ? ct.subarray(0, Math.min(state.opts.trialPrefix, ct.length)) : null;
-  const struct = state.opts.structuralAccept && ct !== null && ct.length >= STRUCT_MIN_CT_LEN ? { maxLen: ct.length } : null;
+  state2.sboxes = [];
+  const prefix = ct ? ct.subarray(0, Math.min(state2.opts.trialPrefix, ct.length)) : null;
+  const struct = state2.opts.structuralAccept && ct !== null && ct.length >= STRUCT_MIN_CT_LEN ? { maxLen: ct.length } : null;
   const ctx = {
     prefix,
     prefixLen: prefix ? prefix.length : 0,
@@ -47527,11 +50427,11 @@ async function analyze(ct) {
     live: null,
     struct
   };
-  const every = state.opts.yieldEveryBuffers || 8;
-  if (state.opts.groupedRead && !state.opts.sboxFirst) {
+  const every = state2.opts.yieldEveryBuffers || 8;
+  if (state2.opts.groupedRead && !state2.opts.sboxFirst) {
     const ordered = orderRangesGrouped(selectRanges());
     let total = 0, gi = 0, rangesUsed = 0, yc = 0;
-    const budget = state.opts.maxTotalBytes, groupCap = state.opts.readGroupBytes;
+    const budget = state2.opts.maxTotalBytes, groupCap = state2.opts.readGroupBytes;
     while (gi < ordered.length && total < budget && !ctx.stop) {
       const group = [];
       let gBytes = 0;
@@ -47564,7 +50464,7 @@ async function analyze(ct) {
     return ctx;
   }
   const read2 = readAllFast();
-  if (state.opts.sboxFirst) {
+  if (state2.opts.sboxFirst) {
     for (let d = 0; d < read2.buffers.length; d++) {
       try {
         detectSboxesChunk(read2.buffers[d].u8, read2.buffers[d].base);
@@ -47574,7 +50474,7 @@ async function analyze(ct) {
         await yieldTick();
     }
     ctx.live = buildLiveSboxes();
-    if (state.opts.prioritizeAnonymous) {
+    if (state2.opts.prioritizeAnonymous) {
       read2.buffers.sort(function(a, b) {
         return a.anonymous === b.anonymous ? 0 : a.anonymous ? -1 : 1;
       });
@@ -47636,14 +50536,14 @@ var FAST_PASS_OVERRIDES = {
   // is lost.
 };
 async function recoverPass(ct, overrides) {
-  const saved = state.opts;
+  const saved = state2.opts;
   if (overrides)
-    state.opts = Object.assign({}, saved, overrides);
+    state2.opts = Object.assign({}, saved, overrides);
   try {
     return await recoverOnce(ct);
   } finally {
     if (overrides)
-      state.opts = saved;
+      state2.opts = saved;
   }
 }
 async function recover(ct) {
@@ -47661,25 +50561,25 @@ async function recoverOnce(ct) {
   } else if (ctx.best) {
     best = { source: "trial-key(" + ctx.best.source + ")", key: ctx.best.key, sbox: null, score: ctx.best.score };
   }
-  for (let i = 0; i < state.sboxes.length; i++) {
-    if (state.sboxes[i].identity)
+  for (let i = 0; i < state2.sboxes.length; i++) {
+    if (state2.sboxes[i].identity)
       continue;
-    const sc = sboxPrefixScore(state.sboxes[i].S, prefix, prefixLen);
+    const sc = sboxPrefixScore(state2.sboxes[i].S, prefix, prefixLen);
     if (best === null || sc > best.score) {
-      best = { source: "sbox-keystream(" + state.sboxes[i].form + "@" + state.sboxes[i].addr + ")", key: null, sbox: state.sboxes[i].S, score: sc };
+      best = { source: "sbox-keystream(" + state2.sboxes[i].form + "@" + state2.sboxes[i].addr + ")", key: null, sbox: state2.sboxes[i].S, score: sc };
     }
   }
   if (best === null)
     return { ok: false, key: null, sbox: null, source: "no-candidates", plaintextAscii: "", printableFraction: 0 };
   const full = best.sbox ? rc4Prga(best.sbox, ct) : rc4(best.key, ct);
   const scored = scorePlaintext(full);
-  const ok = scored.score >= state.opts.acceptPrintableFraction;
+  const ok = scored.score >= state2.opts.acceptPrintableFraction;
   return { ok, key: best.key, sbox: best.sbox, source: best.source, plaintextAscii: scored.ascii, printableFraction: scored.printableFraction };
 }
 var MIN_CT_LEN = 16;
 function decryptFrameWithKey(ct, dir) {
   try {
-    const key = state.recoveredKey;
+    const key = state2.recoveredKey;
     const whole = scorePlaintext(rc4(key, ct));
     let best = whole, off = 0;
     if (ct.length > 4) {
@@ -47689,7 +50589,7 @@ function decryptFrameWithKey(ct, dir) {
         off = 4;
       }
     }
-    if (best.printableFraction >= state.opts.acceptPrintableFraction || best.score > best.printableFraction) {
+    if (best.printableFraction >= state2.opts.acceptPrintableFraction || best.score > best.printableFraction) {
       log("[rc4] " + dir + " plaintext" + (off ? " (after 4B len)" : "") + ": '" + best.ascii + "'");
     }
   } catch (e) {
@@ -47706,27 +50606,27 @@ function rc4FrameBody(ct) {
 async function handleCiphertext(ct, dir) {
   if (!ct || ct.length < MIN_CT_LEN)
     return;
-  if (state.recoveredKey !== null) {
+  if (state2.recoveredKey !== null) {
     decryptFrameWithKey(ct, dir);
     return;
   }
-  if (state.scanning)
+  if (state2.scanning)
     return;
-  if (state.scannedLengths[ct.length])
+  if (state2.scannedLengths[ct.length])
     return;
-  state.scanning = true;
+  state2.scanning = true;
   try {
     const body = rc4FrameBody(ct);
     const r = await recover(body);
     if (!r.ok) {
-      state.scannedLengths[ct.length] = true;
+      state2.scannedLengths[ct.length] = true;
       devlog("[rc4] memscan: could not confidently decrypt " + dir + " ciphertext (" + ct.length + "B); best='" + r.plaintextAscii + "'");
       return;
     }
     if (r.key !== null) {
       emitRc4Key(r.key, "trial-key(mem)", dir);
-      state.keyEmitted = true;
-      state.recoveredKey = r.key;
+      state2.keyEmitted = true;
+      state2.recoveredKey = r.key;
       log("[rc4] recovered RC4 key from process memory via " + r.source + " (dir=" + dir + "); plaintext='" + r.plaintextAscii + "'");
     } else {
       log("[rc4] memscan recovered an RC4 keystream (S-box) but no key bytes to emit; plaintext='" + r.plaintextAscii + "'");
@@ -47734,7 +50634,7 @@ async function handleCiphertext(ct, dir) {
   } catch (e) {
     devlog("[rc4] memscan handleCiphertext error: " + (e && e.message ? e.message : e));
   } finally {
-    state.scanning = false;
+    state2.scanning = false;
   }
 }
 var SECBUFFER_DATA = 1;
@@ -47809,10 +50709,10 @@ function installSspiHooks() {
   return hookedEnc || hookedDec;
 }
 function ensureSspiHooks() {
-  if (state.sspiHooked)
+  if (state2.sspiHooked)
     return true;
-  state.sspiHooked = installSspiHooks();
-  return state.sspiHooked;
+  state2.sspiHooked = installSspiHooks();
+  return state2.sspiHooked;
 }
 function armSspiHooks() {
   if (ensureSspiHooks())
@@ -47846,9 +50746,9 @@ function armSspiHooks() {
   }
 }
 function ensureRc4WindowsMemscanArmed() {
-  if (state.armed)
+  if (state2.armed)
     return;
-  state.armed = true;
+  state2.armed = true;
   configureRc4Memscan({
     detectSboxes: true,
     sboxExactValidate: true,
@@ -49197,19 +52097,6 @@ function emitCandidate(c, extensions, providers) {
   }
 }
 
-// agent/shared/detach_teardown.ts
-init_node_globals();
-var teardowns = [];
-function runDetachTeardowns() {
-  for (let i = teardowns.length - 1; i >= 0; i--) {
-    try {
-      teardowns[i].fn();
-    } catch (_e) {
-    }
-  }
-  teardowns.length = 0;
-}
-
 // agent/fritap_agent.ts
 globalThis.init_addresses = {};
 function initStage(stage, fn, fatal = true) {
@@ -49347,6 +52234,7 @@ attribute_sdk = config_batch.attribute_sdk ?? attribute_sdk;
 setConfigExtensions(config_batch.extensions ?? {});
 anti_root = initStage("anti-handshake", () => recvHandshake("anti", anti_root, "antiroot"));
 initStage("pipeline-init", () => initializePipeline(parsedPatterns ?? void 0, experimental));
+initStage("ssl-layout-autolocate", () => installSslLayoutAutoLocate(), false);
 function getOffsets() {
   return offsets;
 }

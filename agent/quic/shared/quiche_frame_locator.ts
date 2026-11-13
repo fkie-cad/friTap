@@ -24,7 +24,9 @@
 //                                  "Received crypto frame on non crypto stream."
 //   QuicSession::WriteStreamData:  " does not exist when trying to write data."
 // Every load site of an anchor must lie in ONE function (bounded through the
-// module's .eh_frame_hdr), and both OnStreamFrame anchors must agree.
+// module's .eh_frame_hdr, or by landing pads where no FDE covers the site or the
+// module has no .eh_frame_hdr — eh_frame.ts functionBoundsFor), and both
+// OnStreamFrame anchors must agree.
 //
 // Verified on Chrome 133.0.6943.137 libmonochrome_64.so (OnStreamFrame
 // +0x54e74b4, WriteStreamData +0x551c06c) and mainline Cronet 133.0.6876.3
@@ -32,7 +34,7 @@
 
 import { devlog } from "../../util/log.js";
 import { AnchorSite, anchorSiteFunctions, moduleOffsetLabel } from "../../shared/arm64_xref.js";
-import { ehFrameTableFor } from "../../shared/eh_frame.js";
+import { functionBoundsFor } from "../../shared/eh_frame.js";
 
 export const ON_STREAM_FRAME_ANCHORS = [
     "Unencrypted stream data seen.",
@@ -103,14 +105,11 @@ export async function locateQuicheFrameApi(mod: Module): Promise<LocatedFrameApi
     const none: LocatedFrameApi = { onStreamFrame: null, writeStreamData: null };
     if (Process.arch !== "arm64") return none;
     try {
-        const table = ehFrameTableFor(mod);
-        if (!table) {
-            devlog(`[Google QUICHE] ${mod.name}: no usable .eh_frame_hdr; cannot locate STREAM-frame hooks`);
-            return none;
-        }
         const anchors = [...ON_STREAM_FRAME_ANCHORS, ...WRITE_STREAM_DATA_ANCHORS];
         // The NUL pins the literal's end; its start is the hit itself (the code
         // references exactly that address even when the literal is tail-merged).
+        // FDE bounds where .eh_frame covers a site; landing-pad bounds elsewhere.
+        const table = functionBoundsFor(mod);
         const sites = await anchorSiteFunctions(mod, table, anchors.map((text) => ({ text })));
         const functions = sites.map((list) => list.map((site) => siteFunction(mod, site)));
         const pick = (group: (SiteFunction | null)[][]) => {

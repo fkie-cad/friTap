@@ -24,6 +24,7 @@ import time
 from typing import TYPE_CHECKING, runtime_checkable
 from typing import Protocol as TypingProtocol
 
+from .client_random import normalize_client_random
 from .connection_index import DUMMY_SESSION_ID_BASE, NSS_DUMMY_SESSION_ID
 from .constants import (
     INFRASTRUCTURE_PORTS,
@@ -170,7 +171,7 @@ class NormalizeStage:
         if ssl_session_id.startswith(DUMMY_SESSION_ID_BASE) or ssl_session_id == NSS_DUMMY_SESSION_ID:
             ssl_session_id = ""
         ctx.ssl_session_id = ssl_session_id
-        ctx.client_random = str(msg.get("client_random", ""))
+        ctx.client_random = normalize_client_random(msg.get("client_random"))
         # QUIC-specific fields (pass through if present)
         ctx.stream_id = msg.get("stream_id")
         ctx.quic_scid = str(msg.get("quic_scid", ""))

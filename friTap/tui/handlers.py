@@ -25,6 +25,7 @@ from ..events import (
     LiveReadyEvent,
     SessionEvent,
     WiresharkConnectedEvent,
+    is_agent_dev_console,
 )
 from ..fritap_utility import find_wireshark_binary
 from ..output.base import OutputHandler
@@ -32,6 +33,15 @@ from ..output.base import OutputHandler
 if TYPE_CHECKING:
     from ..events import EventBus
     from .app import FriTapApp
+
+
+def belongs_in_activity_log(event: ConsoleEvent) -> bool:
+    """False for agent developer diagnostics (devlog / console_dev).
+
+    They would flood the activity log; the TUI debug log file records them
+    through its own subscription (capture_controller), whatever this says.
+    """
+    return not is_agent_dev_console(event)
 
 
 class TuiOutputHandler(OutputHandler):
@@ -66,6 +76,8 @@ class TuiOutputHandler(OutputHandler):
         self._app.call_from_thread(self._update_keylog_ui, event)
 
     def _on_console(self, event: ConsoleEvent) -> None:
+        if not belongs_in_activity_log(event):
+            return
         self._app.call_from_thread(self._update_console_ui, event)
 
     def _on_error(self, event: ErrorEvent) -> None:

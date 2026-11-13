@@ -49,6 +49,8 @@ import { log, devlog, _isShuttingDownNow } from "../util/log.js";
 import { sendKeylog } from "./shared_structures.js";
 import {
     isLDRimmU64, isCBZ64, isCBNZ64, decodeLDRU64Imm, regRd, regRn,
+    isADDimm64, decodeADDImm12, isBL, isBLR, isBLRAuth, movzW, writesReg,
+    movRegSource, movRegDest, directBranchOffset, endsFallThrough,
 } from "./arm64.js";
 import {
     findAnchorStringsAsync, findStringLoadSitesAsync, firstCallTargetForward,
@@ -65,6 +67,7 @@ import { findModuleOrPeImage, type ModuleLike } from "../util/proc_maps.js";
 import { toHexPattern } from "../util/hex.js";
 import { makeWin64ToSysvThunk } from "./win64_thunk.js";
 import { offsets } from "../fritap_agent.js";
+import { ehFrameTableFor } from "./eh_frame.js";
 
 /**
  * BoringSSL's NSS keylog label strings. ssl_log_secret is called once per label
@@ -145,6 +148,160 @@ export function decodeCtxKeylogOffsets(
         }
     }
     return null;
+}
+
+// ---- ssl->s3 / s3->client_random layout (the P1 client_random join key) ----
+//
+// After the keylog_callback early return and the CBB setup, ssl_log_secret
+// reads ssl->s3 and passes &s3->client_random to the hex writer:
+//     mov  x19, x0              ; ssl kept in a callee-saved register
+//     ...  (CBB_init / CBB_add_bytes calls)
+//     ldr  x8, [x19, #s3Off]    ; x8 = ssl->s3
+//     add  x1, x8, #crOff       ; x1 = s3->client_random
+//     mov  w2, #0x20            ; SSL3_RANDOM_SIZE (optional corroboration)
+// decodeSslLogSecretLayout() follows the ssl register through such moves and
+// accepts exactly one distinct (s3Off, crOff) pair; anything ambiguous is null.
+
+/** Upper bound on the body words scanned when the function end is unknown. */
+export const SSL_LOG_SECRET_MAX_WORDS = 256;
+const MIN_S3_OFFSET = 0x8;
+const MAX_S3_OFFSET = 0x400;
+const MIN_CLIENT_RANDOM_OFFSET = 0x10;
+const MAX_CLIENT_RANDOM_OFFSET = 0x200;
+// How far after the s3 load the `add xB, xA, #crOff` may appear.
+const CLIENT_RANDOM_ADD_WINDOW = 16;
+// Extra words after the add that may carry the `mov w2, #0x20` length argument.
+const LENGTH_ARG_WINDOW = 4;
+const LENGTH_ARG_REG = 2;
+const SSL3_RANDOM_SIZE = 0x20;
+// AAPCS64: x0..x18 are caller-saved, so a call clobbers any ssl alias there.
+const LAST_CALLER_SAVED_REG = 18;
+
+/** Decoded ssl->s3 / s3->client_random offsets (lengthArgSeen = `mov w2,#0x20` nearby). */
+export interface SslLogSecretLayout { s3Off: number; crOff: number; lengthArgSeen: boolean; }
+
+function isCallWord(w: number): boolean {
+    return isBL(w) || isBLR(w) || isBLRAuth(w);
+}
+
+/** True when `w` is a call and `reg` is caller-saved (its value does not survive). */
+function clobbersCallerSavedReg(w: number, reg: number): boolean {
+    return isCallWord(w) && reg <= LAST_CALLER_SAVED_REG;
+}
+
+// The ssl aliases are a bitmask over x0..x30 (bit N = xN holds the ssl pointer).
+const SSL_ARG_MASK = 1; // only x0 on entry
+const XZR = 31;
+
+function holdsSsl(aliasMask: number, reg: number): boolean {
+    return reg < XZR && ((aliasMask >>> reg) & 1) === 1;
+}
+
+/** Aliases after executing `w`: drop overwritten registers, add `mov xD, <alias>` targets. */
+function sslAliasesAfter(aliasMask: number, w: number): number {
+    const source = movRegSource(w);
+    const dest = movRegDest(w);
+    let next = aliasMask;
+    for (let reg = 0; reg < XZR; reg++) {
+        if (holdsSsl(next, reg) && (writesReg(w, reg) || clobbersCallerSavedReg(w, reg))) next &= ~(1 << reg);
+    }
+    if (source !== null && dest !== null && dest !== XZR && holdsSsl(aliasMask, source)) next |= 1 << dest;
+    return next >>> 0;
+}
+
+/** Word indices that may execute after word `i` (fall-through and/or direct branch). */
+function successorIndices(words: number[], i: number): number[] {
+    const w = words[i] >>> 0;
+    const successors = endsFallThrough(w) ? [] : [i + 1];
+    const branch = directBranchOffset(w);
+    if (branch !== null) successors.push(i + branch / 4);
+    return successors.filter((s) => s >= 0 && s < words.length);
+}
+
+/**
+ * Must-alias dataflow over the scanned words: for each word, the registers that
+ * hold `ssl` on EVERY path from the entry that stays inside the window (null =
+ * not reached). Following branches matters because the s3 load is often laid
+ * out after an error path that reuses the alias register (e.g. `mov w19, wzr`).
+ */
+function sslAliasesAtEachWord(words: number[]): (number | null)[] {
+    const before: (number | null)[] = new Array(words.length).fill(null);
+    if (words.length === 0) return before;
+    before[0] = SSL_ARG_MASK;
+    const worklist = [0];
+    while (worklist.length > 0) {
+        const i = worklist.pop()!;
+        const after = sslAliasesAfter(before[i]!, words[i] >>> 0);
+        for (const s of successorIndices(words, i)) {
+            const merged = before[s] === null ? after : (before[s]! & after) >>> 0;
+            if (merged !== before[s]) { before[s] = merged; worklist.push(s); }
+        }
+    }
+    return before;
+}
+
+/** `ldr xA, [alias, #s3Off]` with a plausible s3Off that is not the ctx offset -> s3Off. */
+function s3LoadOffset(w: number, aliasMask: number, ctxOff: number): number | null {
+    if (!isLDRimmU64(w) || !holdsSsl(aliasMask, regRn(w))) return null;
+    const off = decodeLDRU64Imm(w);
+    if (off === ctxOff || off < MIN_S3_OFFSET || off > MAX_S3_OFFSET) return null;
+    return off;
+}
+
+/** The `add xB, xA, #crOff` following the s3 load, before xA is overwritten. */
+function findClientRandomAdd(
+    words: number[], loadIndex: number, s3Reg: number,
+): { crOff: number; addIndex: number } | null {
+    const last = Math.min(words.length - 1, loadIndex + CLIENT_RANDOM_ADD_WINDOW);
+    for (let i = loadIndex + 1; i <= last; i++) {
+        const w = words[i] >>> 0;
+        if (isADDimm64(w) && regRn(w) === s3Reg) {
+            const crOff = decodeADDImm12(w);
+            if (crOff >= MIN_CLIENT_RANDOM_OFFSET && crOff <= MAX_CLIENT_RANDOM_OFFSET) return { crOff, addIndex: i };
+        }
+        if (writesReg(w, s3Reg) || clobbersCallerSavedReg(w, s3Reg) || endsFallThrough(w)) return null;
+    }
+    return null;
+}
+
+/** True when `mov w2, #0x20` (the 32-byte client_random length) sits in [from, to]. */
+function lengthArgBetween(words: number[], from: number, to: number): boolean {
+    for (let i = from; i <= Math.min(to, words.length - 1); i++) {
+        if (movzW(words[i] >>> 0, LENGTH_ARG_REG) === SSL3_RANDOM_SIZE) return true;
+    }
+    return false;
+}
+
+/** Every (s3 load, client_random add) pair reachable from the ssl argument. */
+function collectSslLayoutCandidates(words: number[], ctxOff: number): SslLogSecretLayout[] {
+    const window = words.slice(0, SSL_LOG_SECRET_MAX_WORDS);
+    const aliasesAt = sslAliasesAtEachWord(window);
+    const found: SslLogSecretLayout[] = [];
+    for (let i = 0; i < window.length; i++) {
+        const w = window[i] >>> 0;
+        const s3Off = aliasesAt[i] === null ? null : s3LoadOffset(w, aliasesAt[i]!, ctxOff);
+        const add = s3Off === null ? null : findClientRandomAdd(window, i, regRd(w));
+        if (s3Off !== null && add !== null) {
+            const lengthArgSeen = lengthArgBetween(window, i, add.addIndex + LENGTH_ARG_WINDOW);
+            found.push({ s3Off, crOff: add.crOff, lengthArgSeen });
+        }
+    }
+    return found;
+}
+
+/**
+ * Decode {s3Off, crOff} from ssl_log_secret's body words (up to
+ * SSL_LOG_SECRET_MAX_WORDS, or fewer when the function end is known). Pure, so
+ * it is unit-testable without Frida. `ctxOff` (from decodeCtxKeylogOffsets) is
+ * excluded as an s3 candidate. Returns null when no pair is found or when two
+ * DIFFERENT pairs are: a wrong layout would stamp the wrong client_random.
+ */
+export function decodeSslLogSecretLayout(words: number[], ctxOff: number): SslLogSecretLayout | null {
+    const candidates = collectSslLayoutCandidates(words, ctxOff);
+    if (candidates.length === 0) return null;
+    const { s3Off, crOff } = candidates[0];
+    if (candidates.some((c) => c.s3Off !== s3Off || c.crOff !== crOff)) return null;
+    return { s3Off, crOff, lengthArgSeen: candidates.some((c) => c.lengthArgSeen) };
 }
 
 /**
@@ -248,7 +405,9 @@ function installViaCtxWrite(
 ): boolean {
     const { ctxOff, cbOff } = offs;
     let dropLogged = false;
-    const emitKeylogLine = (linePtr: NativePointer): void => {
+    // `ssl` is the callback's first argument (const SSL *); it lets sendKeylog
+    // note the line's client_random for this SSL* (ssl_identity.ts).
+    const emitKeylogLine = (linePtr: NativePointer, ssl?: NativePointer): void => {
         try {
             if (linePtr.isNull()) return;
             // This path emits through BoringSSL's keylog_callback, not through
@@ -263,13 +422,13 @@ function installViaCtxWrite(
                 return;
             }
             const line = linePtr.readCString();
-            if (line) sendKeylog(line);
+            if (line) sendKeylog(line, ssl, moduleName);
         } catch (e) {
             devlog(`[anchor-locator] ${moduleName}: keylog callback error: ${e}`);
         }
     };
-    const keylogCb = new NativeCallback(function (_ssl: NativePointer, linePtr: NativePointer) {
-        emitKeylogLine(linePtr);
+    const keylogCb = new NativeCallback(function (ssl: NativePointer, linePtr: NativePointer) {
+        emitKeylogLine(linePtr, ssl);
     }, "void", ["pointer", "pointer"]);
     rootedCallbacks.push(keylogCb); // load-bearing GC root
     // The pointer BoringSSL will call. Win64 code under Wine (Linux-host Frida,
@@ -295,7 +454,10 @@ function installViaCtxWrite(
             Interceptor.attach(fn, {
                 onEnter(args: InvocationArguments) {
                     // keylog_callback(const SSL *ssl, const char *line)
-                    emitKeylogLine(abi === null ? args[1] : argAt(this.context, abi, 1));
+                    emitKeylogLine(
+                        abi === null ? args[1] : argAt(this.context, abi, 1),
+                        abi === null ? args[0] : argAt(this.context, abi, 0),
+                    );
                 },
             });
             log(`[*] ${moduleName}: the app already sets a keylog callback (${fn}); hooked it instead of replacing it`);
@@ -446,6 +608,109 @@ async function locateSslLogSecret(mod: Module, moduleName: string): Promise<Nati
     return ptr(agreed);
 }
 
+// One xref scan per loaded module, shared by tier 4 and locateSslLayout(), so
+// a concurrent caller awaits the scan already in flight instead of starting a
+// second one. Keyed by name + base (Module objects are not stable identities).
+const sslLogSecretByModule = new Map<string, Promise<NativePointer | null>>();
+
+/** Memoized locateSslLogSecret(): at most one scan per loaded module. */
+function locateSslLogSecretCached(mod: Module, moduleName: string): Promise<NativePointer | null> {
+    const key = `${mod.name}@${mod.base}`;
+    let pending = sslLogSecretByModule.get(key);
+    if (pending === undefined) {
+        pending = locateSslLogSecret(mod, moduleName);
+        sslLogSecretByModule.set(key, pending);
+    }
+    return pending;
+}
+
+/** Word count to decode at ssl_log_secret: the eh_frame function size, capped. */
+function sslLogSecretWordCount(mod: Module, fnAddr: NativePointer): number {
+    const bounds = ehFrameTableFor(mod)?.bounds(fnAddr) ?? null;
+    if (bounds === null || bounds.end === null || !bounds.start.equals(fnAddr)) return SSL_LOG_SECRET_MAX_WORDS;
+    const words = bounds.end.sub(fnAddr).toInt32() / 4;
+    return Math.max(1, Math.min(SSL_LOG_SECRET_MAX_WORDS, Math.floor(words)));
+}
+
+/**
+ * Bytes readable from `addr`, capped at `maxBytes`. Follows adjacent readable
+ * mappings, so a body that spans two mappings is covered; stops at the first
+ * unmapped or non-readable byte. Never throws.
+ */
+export function readableByteCount(addr: NativePointer, maxBytes: number): number {
+    let covered = 0;
+    try {
+        while (covered < maxBytes) {
+            const cursor = addr.add(covered);
+            const range = Process.findRangeByAddress(cursor);
+            if (range === null || range.protection[0] !== "r") break;
+            const leftInRange = range.base.add(range.size).sub(cursor);
+            const wanted = maxBytes - covered;
+            if (leftInRange.compare(ptr(wanted)) >= 0) return maxBytes;
+            const left = leftInRange.toUInt32();
+            if (left === 0) break;
+            covered += left;
+        }
+    } catch (_e) { /* best-effort: report what was covered */ }
+    return covered;
+}
+
+/**
+ * Up to `count` readable instruction words at `addr` (stops at the first unmapped
+ * one): one readability walk, then ONE readByteArray. The Uint32Array view reads
+ * the host's (= target's, in-process) little-endian words, exactly like readU32.
+ */
+export function readInstructionWords(addr: NativePointer, count: number): number[] {
+    const wordCount = Math.floor(readableByteCount(addr, count * 4) / 4);
+    if (wordCount === 0) return [];
+    try {
+        const bytes = addr.readByteArray(wordCount * 4);
+        return bytes === null ? [] : Array.from(new Uint32Array(bytes));
+    } catch (_e) {
+        return [];
+    }
+}
+
+/** Decode {s3Off, crOff, ctxOff} from the located ssl_log_secret body, or null. */
+function decodeSslLayoutAt(
+    mod: Module, moduleName: string, fnAddr: NativePointer,
+): { s3Off: number; crOff: number; ctxOff: number } | null {
+    const words = readInstructionWords(fnAddr, sslLogSecretWordCount(mod, fnAddr));
+    const ctx = decodeCtxKeylogOffsets(words.slice(0, PROLOGUE_WORDS));
+    const layout = ctx === null ? null : decodeSslLogSecretLayout(words, ctx.ctxOff);
+    if (ctx === null || layout === null) {
+        devlog(`[anchor-locator] ${moduleName}: ssl layout not decoded at ${fnAddr} (${words.length} words, ` +
+            `ctx ${ctx === null ? "missing" : "ok"})`);
+        return null;
+    }
+    devlog(`[anchor-locator] ${moduleName}: ssl layout at ${fnAddr}: s3Off=0x${layout.s3Off.toString(16)} ` +
+        `crOff=0x${layout.crOff.toString(16)} ctxOff=0x${ctx.ctxOff.toString(16)} lengthArg=${layout.lengthArgSeen}`);
+    return { s3Off: layout.s3Off, crOff: layout.crOff, ctxOff: ctx.ctxOff };
+}
+
+/**
+ * LOCATE-ONLY entry point: find ssl_log_secret in `moduleName` (sharing the
+ * tier-4 scan) and decode the ssl->s3 / s3->client_random layout from it.
+ * Writes nothing to SSL_CTX and attaches no hook, so it is safe to call when
+ * keylogging is disabled. arm64 only (x64 is left to overlap learning).
+ * Never throws; resolves null on any miss.
+ */
+export async function locateSslLayout(
+    moduleName: string,
+): Promise<{ s3Off: number; crOff: number; ctxOff: number } | null> {
+    if (Process.arch !== "arm64") return null;
+    try {
+        const mod = Process.findModuleByName(moduleName);
+        if (mod === null) return null;
+        const fnAddr = await locateSslLogSecretCached(mod, moduleName);
+        if (fnAddr === null || _isShuttingDownNow()) return null;
+        return decodeSslLayoutAt(mod, moduleName, fnAddr);
+    } catch (e) {
+        devlog(`[anchor-locator] ${moduleName}: ssl layout locate failed: ${e}`);
+        return null;
+    }
+}
+
 /**
  * Tier-4 entry point (registered with boringssl_keylog_outcome). Resolves true
  * iff a keylog hook was installed. ASYNC: the xref scan yields to the event loop
@@ -486,7 +751,7 @@ export async function runAnchorLocatorTier4(
         return false;
     }
 
-    const sslLogSecret = await locateSslLogSecret(mod, moduleName);
+    const sslLogSecret = await locateSslLogSecretCached(mod, moduleName);
     if (sslLogSecret === null) return false;
     // The scan above yields to the JS loop; a detach/dispose that ran meanwhile
     // has already restored the keylog fields, so installing now would leave a

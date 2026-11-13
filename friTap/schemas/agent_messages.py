@@ -360,10 +360,15 @@ class CallerStackMessage(BaseAgentMessage):
     plaintext hook (OPT-IN via ``--attribute-sdk``; OFF by default).
 
     Additive, attribution-only message: it carries the SAME connection-identity
-    join fields as :class:`ConnectionLifecycleMessage` (so the host can join it
-    onto a connection — primarily by ``ssl_session_id``) plus the captured
-    native and Java frames. The agent emits it exactly once per SSL object; it
-    never carries key material or plaintext.
+    join fields as :class:`ConnectionLifecycleMessage` plus the captured native
+    and Java frames. The host joins it onto a connection by the 4-tuple first
+    and falls back to ``ssl_session_id``. The agent emits it exactly once per
+    SSL object; it never carries key material or plaintext.
+
+    Optional identity fields (additive, empty/0 when the agent cannot read
+    them): ``client_random`` (hex ClientHello random of the SSL object, the
+    per-connection join key), ``tid`` / ``thread_name`` / ``pid`` of the
+    calling thread, and ``transport_module`` (the module whose TLS hook fired).
     """
 
     contentType: Literal["caller_stack"] = "caller_stack"
@@ -375,6 +380,42 @@ class CallerStackMessage(BaseAgentMessage):
     ss_family: str = "AF_INET"
     java_frames: list[str] = []
     native_frames: list[CallerFrame] = []
+    client_random: str = ""
+    tid: int = 0
+    thread_name: str = ""
+    pid: int = 0
+    transport_module: str = ""
+
+
+#: Lifecycle points of a Java-level HTTP request reported by ``request_context``.
+RequestContextPoint = Literal[
+    "start", "redirect", "response", "end", "webview_load", "webview_request",
+]
+
+
+class RequestContextMessage(BaseAgentMessage):
+    """Java-level context of one HTTP request (Cronet / GMS Cronet / HttpEngine / WebView),
+    opt-in via ``--attribute-sdk``. One per lifecycle ``event``; never carries keys, headers
+    or bodies. ``negotiated_protocol`` is the HTTP ALPN; ``protocol`` stays the friTap record
+    protocol.
+    """
+
+    contentType: Literal["request_context"] = "request_context"
+    event: RequestContextPoint
+    req_id: str
+    stack_kind: Optional[str] = None  # "cronet" | "gms-cronet" | "httpengine" | "webview"
+    url: Optional[str] = None
+    method: Optional[str] = None
+    frames: list[str] = []
+    thread: Optional[str] = None
+    tid: Optional[int] = None
+    t_ms: Optional[float] = None  # agent Date.now() at the lifecycle point
+    status: Optional[int] = None
+    negotiated_protocol: Optional[str] = None
+    cached: Optional[bool] = None
+    error: Optional[str] = None
+    webview_id: Optional[str] = None
+    main_frame: Optional[bool] = None
 
 
 # ---------------------------------------------------------------------------
@@ -416,6 +457,7 @@ AgentMessage = Annotated[
         IPSecESPKeysMessage,
         OhttpPlaintextMessage,
         CallerStackMessage,
+        RequestContextMessage,
     ],
     Field(discriminator="contentType"),
 ]

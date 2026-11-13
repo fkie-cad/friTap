@@ -2,6 +2,11 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
+    "anti_root": {
+      "default": false,
+      "description": "Android only: enable friTap's anti-root-detection hooks (-ar/--anti_root). Changes app behaviour; use only on authorized targets.",
+      "type": "boolean"
+    },
     "args": {
       "description": "Arguments for a spawned executable (spawn=true only).",
       "items": {

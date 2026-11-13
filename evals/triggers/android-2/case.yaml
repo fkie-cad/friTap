@@ -1,0 +1,18 @@
+schema_version: "1.1"
+name: trigger-android-2
+description: 'specific: package name, keylog + pcap over adb'
+tags: [trigger, positive]
+runs: 3
+execution:
+  max_turns: 3
+  timeout_seconds: 120
+  allowed_tools: [Skill]
+  prompt: |
+    Emulator on adb (emulator-5556, rooted), package is de.example.wallet. Spawn it with friTap and write the TLS keys to wallet_keys.log plus a plaintext pcap. Our own test build, so attach is fine.
+graders:
+  - name: fires-fritap-android
+    type: tool_used
+    tool: Skill
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?fritap-android"'
+    min: 1
+    arm: both

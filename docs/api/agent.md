@@ -55,6 +55,9 @@ on stderr and exits with `2`.
 
 Read tools and `export` take a capture source: either `tap` (a `.tap` path
 inside the sandbox root) or `session_id` (a **stopped** capture session).
+`diff` takes two sources instead: `tap_a`/`tap_b` or `session_a`/`session_b`
+(in any mix) for two captures, or `tap`/`session_id` plus
+`phase_a`/`phase_b` for two phases of one capture.
 `fritap q <tool> --help-json` prints the full parameter and result schema of a
 tool; `fritap q --list` lists them all.
 
@@ -113,6 +116,9 @@ accepts (e.g. `offsets`, `patterns`, `force_scan`, `library_scan`,
 - **`duration_s`** (default 60, 1..3600): the capture stops cleanly after it.
 - **`spawn`** (default `true`) or attach to a running process; `args` only with
   spawn; `follow_exec` (default `true`) follows the target across `exec()`.
+- **`anti_root`** (default `false`, Android only): enables friTap's
+  anti-root-detection hooks (`-ar` / `--anti_root`). It changes the app's
+  behaviour; use it only on authorized targets.
 - `device`: `local` (default), `usb` or a Frida device id; `host`: a remote
   frida-server `ip:port` (wins over `device`).
 
@@ -157,9 +163,14 @@ elapsed, exit code `0`), `stopped` (`stop_capture` / Ctrl+C) or `error`
 the wrong protocol or a statically linked library: retry with other
 `protocols` / `protocol_options` (see `list_supported_protocols`).
 
-`mark_phase` records `{"t": <epoch seconds>, "t_rel": <seconds since capture
-start>, "label": "login"}` in the session (they appear in the status `phases`). Mark before each user action you drive so
-the traffic can be attributed afterwards.
+`mark_phase` records `{"t": <epoch seconds>, "at": "<ISO-8601 UTC, same
+instant as t>", "t_rel": <seconds since capture start>, "label": "login"}` in
+the session (they appear in the status `phases` and in the `phases.jsonl`
+sidecar next to the tap). Mark before each user action you drive so the
+traffic can be attributed afterwards. Labels are short, lower-case and
+hyphenated (`login`, `consent-declined`, `token-refresh`); `diff`
+`phase_a`/`phase_b` must match them exactly. A whitespace-only label, or
+marking a session that already ended, fails with `bad_param`.
 
 `stop_capture` sends SIGINT, waits for the clean teardown and returns the final
 status. Read tools reject a session that is still running with
@@ -176,11 +187,14 @@ fritap q list_endpoints --tap run.tap --protocol tls --limit 20
 fritap q list_findings --tap run.tap --min-severity medium
 fritap q get_flow --tap run.tap --ref f12 --fields request,response --max-bytes 1024
 # prove a specific value leaves the device (and in what encoded shape)
+fritap q find_values --tap run.tap --values email=alice@example.com --values 'gps=48.137,11.575'
 fritap q find_values --tap run.tap --json \
   '{"values": [{"value": "alice@example.com", "kind": "email", "label": "signup"}]}'
+# attribute hosts with your own first-party domains (comma-separated)
+fritap q get_digest --tap run.tap --first-party myapp.com,myapp-cdn.net
 # what changed between two captures, or between two phases of one capture
 fritap q diff --tap-a before.tap --tap-b after.tap --first-party myapp.com
-fritap q diff --tap run.tap --phase-a consent-denied --phase-b consent-granted
+fritap q diff --tap run.tap --phase-a consent-declined --phase-b consent-granted
 ```
 
 - `find_values` traces operator-supplied *known* values (an email, advertising
@@ -191,22 +205,46 @@ fritap q diff --tap run.tap --phase-a consent-denied --phase-b consent-granted
   canaries are kept but flagged under `warnings`. The `kind` canonical values
   are `aaid`, `android_id`, `email`, `free`, `gps`, `imei`, `ip`, `phone`; the
   PII-detector aliases `advertising_id`/`idfa`/`gaid`/`adid`/`idfv` (→ `aaid`)
-  and `geo`/`geolocation`/`location` (→ `gps`) are also accepted.
+  and `geo`/`geolocation`/`location` (→ `gps`) are also accepted. Each
+  `values` item is a `{value, kind?, label}` object or a `"KIND=VALUE"` /
+  bare `"VALUE"` string (kind `free`), labelled `<kind>-<n>`; on the shell
+  repeat `--values` once per item (commas are not split, a `{...}` argument is
+  one JSON object). `=` is the separator so IPv6 addresses and URLs never parse
+  as a kind; use the object form when the value itself starts with `kind=`.
 - `diff` reports the HTTP endpoints that **appeared**, **disappeared** or
   **changed** (status codes, content types, request volume) between two
-  captures (`tap_a`/`tap_b`) or two phase windows of one capture (`tap` +
-  `phase_a`/`phase_b`, read from the `phases.jsonl` sidecar next to the tap, or
-  `phases_path`). Host groups carry offline `owner`/`category`/`party`
+  captures (`tap_a`/`tap_b`, or the stopped sessions `session_a`/`session_b`,
+  in any mix such as `tap_a` + `session_b`) or two phase windows of one
+  capture (`tap` or `session_id`, plus `phase_a`/`phase_b`, read from the
+  `phases.jsonl` sidecar next to the tap, or `phases_path`). An unknown
+  `phase_a`/`phase_b` fails with `bad_param` carrying `known_labels` and a
+  did-you-mean hint. Host groups carry offline `owner`/`category`/`party`
   attribution; `first_party` marks which domains are first-party.
+- `get_flow` adds a `phase` (the label of the last `mark_phase` marker at or
+  before the flow started) to the flow when a `phases.jsonl` sidecar exists
+  next to the tap; there is no need to compare `started` with the markers'
+  `t`/`at` by hand.
 - `get_digest` with `attribute: true` (optionally `first_party`) annotates each
   host row with trusted `owner`/`category`/`party`; omit it and the digest is
   unchanged.
 - When a capture was taken with `--attribute-sdk`, the flows carry the calling
-  SDK resolved from their backtrace. The digest lifts it onto the host and
-  endpoint rows (and `diff` onto the endpoint rows) as a trusted top-level
-  `sdks` list of `{sdk, vendor, category}` (from the bundled signature table,
-  **not** `untrusted`); captures without it are unchanged.
-- `first_party` (on `get_digest` and `diff`) is a list of domains, or the string
+  SDK resolved from their backtrace (`attribution.originator`, see
+  [Transport vs originator](#transport-vs-originator)). The digest lifts it
+  onto the host and endpoint rows (and `diff` onto the endpoint rows) as a
+  trusted top-level `sdks` list of `{sdk, vendor, category}` (from the bundled
+  signature table, **not** `untrusted`), taken from `attribution.originator`
+  and falling back to the older per-flow `sdk`; captures without it carry no
+  `sdks`.
+  Each backtrace is joined onto its connection by the TLS `client_random`
+  first, then by the connection 4-tuple, then by a real session id; every flow
+  of that connection (including HTTP/2 streams born later) gets it. Stacks
+  that match no signature are kept too: the flow stores a compact
+  `caller_stack` (`transport_module`, `thread_name`, `tid`, `pid`, up to 8
+  native `{module, symbol}` and 8 Java frames, each string escaped and capped
+  at 80 characters) and its `sdk` stays empty. These frame strings come from
+  the target process, so treat them as untrusted.
+- `first_party` (on `get_digest` and `diff`) is a list of domains, a
+  comma-separated string (`--first-party a.com,b.com`), or the string
   `"auto"` to infer the app's own backend: the most-contacted non-tracker
   registrable domains (eTLD+1), plus any other non-tracker domain seen at least
   half as often. `get_digest` infers from the digested hosts; `diff` infers from
@@ -223,9 +261,97 @@ fritap q diff --tap run.tap --phase-a consent-denied --phase-b consent-granted
   `f<N>#m<k>` decoded message `k` (0-based) of that flow. Refs are stable
   across runs and filters; pass them to `get_flow`. (A finding not tied to a
   selected flow has an empty `ref`.)
+- A finding row groups identical findings (`count`); its `ref` is only the
+  first flow. `refs` lists every distinct flow the row covers (first-seen
+  order, at most 10; `refs_more` counts the rest). Read `refs`, not `ref`,
+  before concluding a flow or host was not flagged.
 - The digest is `fritap.digest/2`; `format: "md"` returns compact Markdown
   instead (`fritap.digest_md/1`). See the
   [digest documentation](../advanced/traffic-analysis.md#capture-digest-for-ai-agents-fritap-report).
+
+#### Transport vs originator
+
+A flow's `.tap` meta can carry an additive `attribution` block that separates
+**which module carried the flow** (the transport, known for certain) from
+**who caused it** (the originator, a guess with a confidence):
+
+| Field | When set | Values |
+|---|---|---|
+| `transport` | every TLS/QUIC flow with a known library | `{module, kind}`; `kind` is `chrome`, `webview`, `cronet`, `gms-cronet`, `httpengine`, `flutter`, `libsignal`, `electron`, `cef` or `other` |
+| `originator` | `--attribute-sdk`, stack matched an SDK | `{sdk, vendor, category}` (trusted, from the signature table) |
+| `confidence` | with `originator` | `high`, `medium`, `low` |
+| `source` | with `originator` | `java-request`, `context`, `native-stack`, `connection-fallback` (see the table below) |
+| `bucket` | traffic not caused by an app SDK | `chromium-internal` (Chromium's own background traffic), `cache` (on request-context records of requests served from the cache, which have no flow) |
+| `mixed` | the connection carries more than one originator | `true` |
+
+Sources and their confidence:
+
+| `source` | Set when | `confidence` |
+|---|---|---|
+| `java-request` | a Java request context matched this flow's own request (Android, `--attribute-sdk` with `-p`) | `high`; `medium` when requests from different SDKs had the same key and the oldest unused one was picked |
+| `context` | a WebView request other than the `loadUrl`/`postUrl` navigation itself (subresources, page-initiated navigations), attributed through the WebView load that owns it | `medium` at most |
+| `native-stack` | a caller stack joined directly to the flow | `high` only on `libsignal`; otherwise `medium` |
+| `connection-fallback` | the flow inherits its connection's originator | always `low` |
+
+A flow keeps its current claim unless a new one ranks strictly higher
+(`claim_rank()` in `friTap/flow/attribution.py`): confidence first
+(`high` > `medium` > `low`), then the source (`java-request` > `context` >
+`native-stack` > `connection-fallback`). So `java-request`/`high` >
+`java-request`/`medium` > `context`/`medium` > `native-stack`/`medium` >
+`connection-fallback`/`low`.
+
+- `libmonochrome` / `libchrome` resolve to `chrome` when the target package or
+  process is a Chromium-based browser listed in the signature table's
+  `chromium_browser_packages` (Chrome and its channels, Brave, Edge, Samsung
+  Internet, Vivaldi, Opera, Kiwi, Yandex; case-insensitive, a `:subprocess`
+  suffix is ignored), otherwise to `webview`. So kind `chrome` means "a
+  Chromium-based browser's own network stack", not only Google Chrome; a
+  signature overlay can add browsers to the list. `libcronet` loaded from a GMS path
+  (`com.google.android.gms`, `/dynamite`) is `gms-cronet`. A TLS module the
+  table does not know is `other`.
+- Confidence: a caller stack joined directly to the flow gives `native-stack`,
+  `high` only on a synchronous transport (`libsignal`), whose stack is
+  captured on the caller's own thread, and `medium` on every other kind:
+  the Chromium family (`chrome`, `webview`, `cronet`, `gms-cronet`,
+  `httpengine`, `electron`, `cef`), whose stacks come from a shared network
+  thread, as well as `flutter`, `other`, a missing kind and kinds added by a
+  signature overlay. A flow that inherits
+  its connection's originator (a later HTTP/2 or HTTP/3 stream, a sibling
+  flow) gets `connection-fallback`, always `low`, never `high`.
+- Transport modules (`libcronet`, `libflutter.so`, `libmonochrome`,
+  `libwebviewchromium`, ...) are never reported as the originator: a native
+  stack that shows only `libcronet` or `libflutter.so` no longer resolves to
+  "Cronet" or "Flutter". Java/ObjC package matching is unchanged.
+- Java request context (Android, `--attribute-sdk` with plaintext `-p`; not
+  with `-f`, `--pairip-safe` or `--quic-only`): the agent hooks Cronet, GMS
+  Cronet, HttpEngine and WebView where a request is built and sends one
+  `request_context` message per lifecycle point (`event`: `start`, `redirect`,
+  `response`, `end`, `webview_load`, `webview_request`) of the request
+  `req_id`. Fields: `stack_kind` (`cronet`, `gms-cronet`, `httpengine`,
+  `webview`), `url` (the full URL **including the query string**, capped at
+  2048 characters), `method`, `frames` (Java `class.method`, at most 32),
+  `thread`, `tid`, `t_ms`, `status`, `negotiated_protocol` (the HTTP protocol
+  the stack reports, e.g. `h2`, `h3`; named so because `protocol` is the
+  friTap record protocol of every message), `cached`, `error`, `webview_id`,
+  `main_frame`. Schema: `RequestContextMessage` in
+  `friTap/schemas/agent_messages.py`. All strings come from the target and are
+  escaped by the host. The message never carries keys, headers or bodies.
+- The host joins request contexts onto flows
+  (`friTap/flow/request_context_join.py`) by a normalized request key (method
+  plus canonical URL: lower-case scheme and host, no userinfo, default port or
+  fragment, canonical percent-escapes, path and query kept) and by host
+  receive time: the context must start at most 2 s after the flow's first
+  request and at most 60 s before it. A match on host and time only gives no
+  claim. Finished contexts are stored in the `.tap` as `REC_REQUEST_CONTEXT`
+  records, also when they match no flow (see
+  [the `.tap` format](tap-format.md)).
+- The digest's host rows gain `transports` (the sorted transport kinds of
+  their flows).
+- `FRITAP_SDK_SIGNATURES=path[:path]` (`os.pathsep`-separated) layers extra
+  signature files over the bundled table; a bad file is warned about and
+  skipped. A `transport_kind` that is not a lower-case slug (or
+  `chrome-or-webview`) is warned about and ignored for that entry. The table format is described in
+  `friTap/analysis/attribution/data/README.md`.
 
 ### 5. Export
 
@@ -547,8 +673,29 @@ Hand-written schemas of the two streaming/document formats:
 - [`fritap.digest-2.schema.json`](schemas/fritap.digest-2.schema.json): the
   capture digest (`fritap.digest/2`).
 
+**Agent developer logs.** The Frida agent's developer diagnostics
+(`console_dev` and the `devlog_debug`/`info`/`warn`/`error` messages
+`console_debug`, `console_info`, `console_warn`, `console_error`) appear only
+in `--debug-log`, and with `-d` / `-do` on the console and in the JSONL
+outputs (`-j -`, `-j file.jsonl`), as debug-level `console` records with
+`"origin": "agent_dev"`; info/warn/error lines are prefixed
+`[agent <level> <file>:<line> <func>]`. The TUI activity log never shows them.
+The Python API pipeline (`friTap.pipeline`) instead reports them with their
+real agent level.
+
+## Skills and MCP prompts
+
+friTap ships Agent Skills (`SKILL.md` workflows for capture, leak proof,
+privacy and security audits, Android, offline decryption, memory scanning,
+Telegram, Wine and custom hooks) that teach an agent how to use these tools.
+Install them with `fritap skills install` (any agent that reads `SKILL.md`) or
+the Claude Code plugin (`/plugin marketplace add fkie-cad/friTap`), or use them
+without installing anything: `fritap mcp` lists one MCP prompt per skill, with
+optional `target` and `device` arguments. See [Agent skills](../agents/skills.md).
+
 ## See also
 
+- [Agent skills](../agents/skills.md)
 - [Privacy audit playbook](../agents/privacy-audit.md)
 - [Security audit playbook](../agents/security-audit.md)
 - [CLI reference: machine-readable output](cli.md#machine-readable-output)

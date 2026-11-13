@@ -33,7 +33,6 @@ from ..config import FriTapConfig, effective_script_load_timeout
 from ..constants import AGENT_ABI_VERSION, SSL_READ, SSL_WRITE
 from ..events import (
     AntiTamperDetectedEvent,
-    CallerStackEvent,
     DatalogEvent,
     DetachEvent,
     EventBus,
@@ -419,6 +418,9 @@ class SSL_Logger():
         self.startup = True
         self.process = None
         self.pid = None
+        # Process name resolved after a numeric-PID attach (see
+        # apply_resolved_process_name); None for name targets / spawn.
+        self.resolved_process_name = None
         self.device = None
         self.keylog_file = None
         self.json_file = None
@@ -433,6 +435,9 @@ class SSL_Logger():
         self.traced_Socket_Set = set()
         self.traced_scapy_socket_Set = set()
         self._live_handler = None
+        # The hooked-key (TLS) KeylogOutputHandler, kept so readers resolve its
+        # lazily opened file at call time (see _live_keylog_file()).
+        self._tls_keylog_handler = None
 
         # Event bus for decoupled event handling
         self._event_bus = EventBus()
@@ -757,7 +762,8 @@ class SSL_Logger():
         lib_name = event.library
         if lib_name and lib_name not in self._detected_libraries:
             self._detected_libraries.add(lib_name)
-            self.logger.debug("Library detected — %s (protocol=%s)", lib_name, event.protocol)
+            self.logger.debug("Library detected — %s (protocol=%s, path=%s)", lib_name, event.protocol,
+                              getattr(event, "path", "") or "-")
 
             # Only switch protocol handler when in auto-detect / install-everything mode
             if self._config.protocol in ("auto", "all"):
@@ -815,15 +821,7 @@ class SSL_Logger():
 
 
         if self.offsets is not None:
-            try:
-                with open(self.offsets, "r") as offset_file:
-                    self.offsets_data = offset_file.read()
-            except FileNotFoundError:
-                try:
-                    json.loads(self.offsets)
-                    self.offsets_data = self.offsets
-                except ValueError as e:
-                    self.logger.error(f"Log error, defaulting to auto-detection: {e}")
+            self._load_offsets_data()
 
         self.load_patterns()
 
@@ -856,6 +854,36 @@ class SSL_Logger():
         self._setup_output_handlers()
         self._handlers_active = True
 
+    def _remember_tls_keylog_handler(self, handler) -> None:
+        """Keep the hooked-key keylog handler; a ``tls`` one beats other splits.
+
+        The memory-scan handler is never kept (it is not the ``-k`` keylog).
+        """
+        if self._is_memory_scan_handler(handler):
+            return
+        current = getattr(self, "_tls_keylog_handler", None)
+        if current is None or not self._is_tls_keylog_handler(current):
+            self._tls_keylog_handler = handler
+
+    @staticmethod
+    def _is_tls_keylog_handler(handler) -> bool:
+        formatter = getattr(handler, "_formatter", None)
+        return getattr(formatter, "protocol", None) == "tls"
+
+    def _live_keylog_file(self):
+        """The keylog handle as it is NOW (handler-owned when handlers are active)."""
+        handler = getattr(self, "_tls_keylog_handler", None)
+        if handler is not None:
+            return handler._file
+        return getattr(self, "keylog_file", None)
+
+    def _live_keylog_path(self):
+        """The hooked-key keylog path (handler path, else the ``-k`` option)."""
+        handler = getattr(self, "_tls_keylog_handler", None)
+        if handler is not None:
+            return handler._path
+        return getattr(self, "keylog", None)
+
     @staticmethod
     def _is_memory_scan_handler(handler) -> bool:
         """Whether *handler* is the heap scanner's (``-ms``) keylog writer."""
@@ -882,6 +910,29 @@ class SSL_Logger():
             except Exception as e:
                 self.logger.debug(
                     f"mid-stream secrets path advertisement skipped: {e}")
+
+    def _hand_endpoint_pinner_to_pcap(self):
+        """Give the PCAP object the router's option-5 pinner for the -p rewrite at stop."""
+        router = getattr(self, "_message_router", None)
+        pinner = getattr(router, "endpoint_pinner", None)
+        if self.pcap_obj is None or pinner is None \
+                or not hasattr(self.pcap_obj, "set_endpoint_pinner"):
+            return
+        self.pcap_obj.set_endpoint_pinner(pinner)
+
+    def _finalize_plaintext_pcap(self, full_capture):
+        """Rewrite the closed -p pcap's safe synthetic streams.
+
+        Runs only after the output handlers closed the file; never for -f (a
+        different file and finalize path) or the LSASS helper session.
+        """
+        output = getattr(getattr(self, "_config", None), "output", None)
+        if (self.pcap_obj is None or full_capture or not self._handlers_active
+                or getattr(output, "auxiliary_session", False)):
+            return
+        finalize = getattr(self.pcap_obj, "finalize_plaintext_capture", None)
+        if callable(finalize):
+            finalize()
 
     def _seed_known_server_ports(self):
         """Seed explicit capture-time TLS/QUIC server ports into the manifest.
@@ -922,7 +973,11 @@ class SSL_Logger():
         for handler in self._output_handlers:
             handler.setup(self._event_bus)
             if isinstance(handler, KeylogOutputHandler):
+                # NOTE: the handler opens its file lazily on the first key, so this
+                # snapshot is normally None. Readers needing the live handle use
+                # _live_keylog_file() / _live_keylog_path() instead.
                 self.keylog_file = handler._file
+                self._remember_tls_keylog_handler(handler)
                 # Propagate the keylog file path into the pcap object so the
                 # capture manifest ('keylog' branch in PCAP._write_capture_manifest)
                 # is actually populated; PCAP.keylog_path is otherwise never set.
@@ -940,6 +995,7 @@ class SSL_Logger():
             if isinstance(handler, (LivePcapngHandler, LiveAutoDecryptHandler, LiveWiresharkHandler)):
                 self._live_handler = handler
         self._record_memory_scan_keylogs()
+        self._hand_endpoint_pinner_to_pcap()
 
         # Load plugins
         from ..plugins.loader import PluginLoader
@@ -3193,6 +3249,34 @@ class SSL_Logger():
         from ..patterns.loader import PatternLoader
         return PatternLoader.validate(patterns)
 
+    def _load_offsets_data(self):
+        """Read ``--offsets`` (a file path, else an inline JSON string).
+
+        The raw text is forwarded to the agent, which ``JSON.parse``s it and
+        silently drops the offsets on failure — so an existing file whose
+        content is not valid JSON gets a clear warning here.
+        """
+        try:
+            with open(self.offsets, "r") as offset_file:
+                self.offsets_data = offset_file.read()
+        except FileNotFoundError:
+            try:
+                json.loads(self.offsets)
+                self.offsets_data = self.offsets
+            except ValueError as e:
+                self.logger.error(f"Log error, defaulting to auto-detection: {e}")
+            return
+        self._warn_if_offsets_not_json()
+
+    def _warn_if_offsets_not_json(self):
+        try:
+            json.loads(self.offsets_data)
+        except ValueError as e:
+            self.logger.warning(
+                f"--offsets file '{self.offsets}' is not valid JSON ({e}); "
+                "the agent will ignore these offsets and fall back to "
+                "auto-detection. See offsets_example.json for the format.")
+
     def load_patterns(self):
         """Load patterns: auto-load defaults, then deep-merge user patterns on top.
 
@@ -3443,6 +3527,20 @@ class SSL_Logger():
         protocols = getattr(self._config, "protocols", None) or []
         return "signal" in protocols
 
+    def apply_resolved_process_name(self, name: str) -> None:
+        """Pass the process name resolved after a numeric-PID attach to every
+        flow collector this logger can reach: its own (live scan / Signal) and
+        any output handler owning one (``--tap``). Re-setting the capture
+        target re-classifies flows already stamped with the PID-only name.
+        """
+        self.resolved_process_name = name
+        if self._flow_collector is not None:
+            self._flow_collector.set_capture_target(self._config.target, process_name=name)
+        for handler in getattr(self, "_output_handlers", []):
+            set_process_name = getattr(handler, "set_process_name", None)
+            if callable(set_process_name):
+                set_process_name(name)
+
     def _setup_live_scan(self):
         """Wire up live passive analysis of observed traffic, if requested.
 
@@ -3460,7 +3558,7 @@ class SSL_Logger():
         try:
             from ..analysis import AnalyzerPlugin
             from ..analysis.registry import resolve_analyzers
-            from ..events import DatalogEvent, FlowEvent, OhttpEvent
+            from ..events import FlowEvent
             from ..flow.collector import FlowCollector
             from ..flow.models import FlowEventType
 
@@ -3494,21 +3592,7 @@ class SSL_Logger():
                     event_bus=self._event_bus, signal_messages=signal_live
                 )
             self._flow_collector.set_event_bus(self._event_bus)
-            self._event_bus.subscribe(DatalogEvent, self._flow_collector.on_data)
-            self._event_bus.subscribe(OhttpEvent, self._flow_collector.on_ohttp)
-            self._event_bus.subscribe(
-                LibraryDetectedEvent, self._flow_collector.on_library_detected
-            )
-            self._event_bus.subscribe(
-                SessionEvent, self._flow_collector.on_session_event
-            )
-            # Opt-in SDK attribution (--attribute-sdk): resolved caller-stack SDK.
-            self._event_bus.subscribe(
-                CallerStackEvent, self._flow_collector.on_sdk
-            )
-            # Feed protocol key material to the live decryptor (no-op unless the
-            # collector was built with signal_messages=True).
-            self._event_bus.subscribe(KeylogEvent, self._flow_collector.on_keylog)
+            self._flow_collector.subscribe_to(self._event_bus)
             self._flow_collector.set_capture_target(self._config.target)
 
             # The bounded queue + daemon worker only make sense with passive
@@ -3754,6 +3838,35 @@ class SSL_Logger():
             if repo_root not in _sys.path:
                 _sys.path.insert(0, repo_root)
             return importlib.import_module(name)
+
+    @classmethod
+    def _wine_pattern_translator(cls):
+        """The ``agent_gdb.wine.pattern_translate`` module (importable once
+        :meth:`_wine_extractor_module` has put ``agent_gdb`` on the path)."""
+        import importlib
+        cls._wine_extractor_module()
+        return importlib.import_module("agent_gdb.wine.pattern_translate")
+
+    def _user_patterns_path(self):
+        """The ``--patterns`` path, or None (also when hooking config lacks it)."""
+        return getattr(self._config.hooking, "patterns", None)
+
+    def _wine_gdb_patterns_file(self):
+        """``--patterns`` in the flat format the Wine gdb script reads: a flat
+        file as is, a v2 file translated to a temp file, else None (warned)."""
+        user_path = self._user_patterns_path()
+        if not user_path:
+            return None
+        return self._wine_pattern_translator().wine_patterns_for_gdb(
+            user_path, self.logger,
+        )
+
+    def _discard_wine_gdb_patterns(self, gdb_patterns):
+        """Remove a temp file made by :meth:`_wine_gdb_patterns_file`."""
+        if gdb_patterns:
+            self._wine_pattern_translator().discard_translated_patterns(
+                gdb_patterns, self._user_patterns_path(),
+            )
 
     @classmethod
     def _iter_proc_cmdlines(cls):
@@ -4133,12 +4246,14 @@ class SSL_Logger():
                 self._done_event.set()
                 return None, None
             gdb_run_as = self._wine_gdb_run_as(run_as, keylog)
+            gdb_patterns = self._wine_gdb_patterns_file()
             work = functools.partial(
                 wke.launch_and_attach,
                 wine_cmd=argv[0],
                 program=rest[0],
                 program_args=rest[1:],
                 keylog=keylog,
+                patterns=gdb_patterns,
                 verbose=self.verbose,
                 logger=self.logger,
                 on_process=self._track_wine_proc,
@@ -4160,10 +4275,12 @@ class SSL_Logger():
             gdb_run_as = self._wine_gdb_run_as(
                 wke.sudo_invoker(), keylog, target_pid=attach,
             )
+            gdb_patterns = self._wine_gdb_patterns_file()
             work = functools.partial(
                 wke.run_wine_key_extraction,
                 attach=str(attach),
                 keylog=keylog,
+                patterns=gdb_patterns,
                 verbose=self.verbose,
                 on_process=self._track_wine_proc,
                 run_as=gdb_run_as,
@@ -4179,6 +4296,7 @@ class SSL_Logger():
                 reason = f"Wine GDB key extraction failed: {exc}"
                 self.logger.error("%s", reason)
             finally:
+                self._discard_wine_gdb_patterns(gdb_patterns)
                 self._finish_wine_session(reason)
 
         self._wine_thread = threading.Thread(
@@ -4784,8 +4902,9 @@ class SSL_Logger():
             # backup. Then flush our own handle best-effort before reading.
             _release_lsass_keylog_writer(self.logger)
             try:
-                if self.keylog_file is not None and not self.keylog_file.closed:
-                    self.keylog_file.flush()
+                live_keylog_file = self._live_keylog_file()
+                if live_keylog_file is not None and not live_keylog_file.closed:
+                    live_keylog_file.flush()
             except Exception:  # noqa: BLE001
                 pass
             # Both sessions' handlers are closed by now (ours in
@@ -4808,6 +4927,38 @@ class SSL_Logger():
                 _relabel_one_schannel_keylog(self.logger, tshark_bin, pcap_name, keylog_path)
         except Exception:  # noqa: BLE001 - never break teardown
             self.logger.debug("SChannel keylog auto-relabel failed", exc_info=True)
+
+    def _full_capture_keylog_path(self):
+        """The keylog this full capture really wrote, else ``None`` (never raises)."""
+        try:
+            written = getattr(self.pcap_obj, "written_keylog_path", None)
+            if callable(written):
+                return written()
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+
+    def _auto_build_tap_from_full_capture(self, pcap_name):
+        """With ``-f --tap X.tap``, convert the finished full capture into X.tap.
+
+        Runs the in-process offline pipeline (manifest-aware) via
+        :func:`friTap.offline.auto_tap.auto_build_tap`. A no-op without --tap,
+        for the LSASS helper session, or when no pcap was written. Never raises.
+        """
+        try:
+            from ..offline.auto_tap import auto_build_tap, should_auto_build_tap
+            output = self._config.output
+            tap_path = getattr(output, "tap_output", None)
+            if not should_auto_build_tap(
+                    full_capture=True, tap_path=tap_path, pcap_path=pcap_name,
+                    auxiliary_session=getattr(output, "auxiliary_session", False)):
+                return
+            auto_build_tap(pcap_name, tap_path,
+                           keylog_path=self._full_capture_keylog_path(),
+                           capture_target=str(getattr(self._config, "target", "") or ""),
+                           logger=self.logger)
+        except Exception:  # noqa: BLE001 - never break teardown
+            self.logger.debug("auto .tap build from full capture failed", exc_info=True)
 
     def _run_cleanup_steps(self, live=False, socket_trace=False, full_capture=False, debug_output=False, debug=False):
         """Perform the actual teardown work. Always invoked via cleanup(), which
@@ -4840,6 +4991,9 @@ class SSL_Logger():
 
         # Close output handlers (new modular path)
         self.close_output_handlers()
+        # -p: the plaintext pcap is closed now; switch synthetic streams to
+        # their real tuples where safe and record the manifest summary.
+        self._finalize_plaintext_pcap(full_capture)
 
         if self.pcap_obj is not None and full_capture:
             if self.pcap_obj.full_capture_thread.is_alive():
@@ -4916,6 +5070,10 @@ class SSL_Logger():
             # without a separate --repair-keylog pass (fixes TLS 1.3 label swaps and
             # ??? client_randoms via trial decryption against the raw full capture).
             self._auto_relabel_schannel_keylog(pcap_name)
+
+            # -f --tap: the plaintext hooks were off, so build the .tap from the
+            # finalized pcap + keylog (after the relabel, so it sees fixed keys).
+            self._auto_build_tap_from_full_capture(pcap_name)
 
         self.running = False
         self._done_event.set()

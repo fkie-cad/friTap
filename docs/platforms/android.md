@@ -308,6 +308,82 @@ datagram sockets are never mis-attributed as the peer of a TLS connection.
 In practice this means more complete `--pcap` output (correct source/destination
 addresses) for apps using BIO-wrapped or NIO/async networking, with no extra flags.
 
+### Cronet and HttpEngine plaintext (Android arm64)
+
+TCP TLS plaintext (`-p`) is also captured from the stripped BoringSSL inside
+app-embedded Cronet (`libcronet.<version>.so`), GMS Dynamite Cronet and the
+platform HttpEngine (`libhttpengine.so`, Android 14+):
+
+- Cronet builds that do not export `SSL_read`/`SSL_write` are handled by the
+  supplementary row "BoringSSL plaintext (Cronet)", which locates them from
+  BoringSSL's `ssl_lib.cc` error sites. Builds that do export them keep the
+  export-based hooks, so no record is captured twice.
+- Where `.eh_frame_hdr` has no entry for a function, the locators fall back to
+  function bounds from arm64 landing-pad instructions (`PACIASP` / `bti c`).
+- `libhttpengine.so` no longer drops to key-only mode with "Error: missing
+  argument … Only key extraction will be available for libhttpengine.so": it
+  has no `SSL_get_fd` / `SSL_SESSION_get_id`, so friTap recovers the socket
+  per SSL object and leaves the session id empty. Its QUIC traffic is covered
+  by the "Google QUICHE (HttpEngine)" row.
+
+This path is new and device verification is still pending.
+
+## Per-request SDK attribution (Java request context)
+
+With `--attribute-sdk`, flows are attributed to the SDK that caused them (see
+[USAGE.md](https://github.com/fkie-cad/friTap/blob/main/USAGE.md#sdkcaller-attribution---attribute-sdk)
+and [Transport vs originator](../api/agent.md#transport-vs-originator)).
+Chromium-based stacks send all requests from a shared network thread, so the
+native backtrace rarely names the SDK. On Android, friTap therefore also hooks
+the Java side where each request is built and records that Java stack per
+request:
+
+```bash
+fritap -m -p out.pcap --attribute-sdk --tap out.tap com.example.app
+```
+
+**When the hooks are installed:** only with `--attribute-sdk` **and** a
+plaintext capture (`-p`). They are not installed with `-f` (no plaintext
+hooks), `--pairip-safe` (no ART instrumentation) or `--quic-only` (no Java
+hooks). They are removed again when friTap detaches.
+
+**Supported stacks:**
+
+| Stack | What is hooked |
+|---|---|
+| App-embedded Cronet | `org.chromium.net.impl.CronetUrlRequest` (constructor, `start()`, redirect/response/end callbacks) |
+| GMS Cronet (Play services Dynamite) | the same class in the Dynamite class loader, found again after an engine is built |
+| HttpEngine (Android 14+) | the platform copy of `CronetUrlRequest` in the boot class loader |
+| WebView | `loadUrl`, `postUrl`, `loadDataWithBaseURL`, and `WebViewClient.shouldInterceptRequest` |
+
+**How requests are matched to flows:** by method, normalized URL and the time
+on the host. An exact match is `java-request`/`high` (or `medium` when
+requests from different SDKs had the same URL). A WebView `loadUrl`/`postUrl`
+navigation is `java-request`/`high`; every other WebView request (subresources,
+and main-frame navigations the page makes by itself) gets the SDK of the WebView
+load that owns it as `context`/`medium`, and no claim when no owning load is
+known. A match on host and time alone gives no claim. Keys compare the first
+682 characters of the canonical URL. Every finished request is also stored in the `.tap` as a
+request-context record, including requests that matched no flow and requests
+served from the cache (`bucket: "cache"`).
+
+!!! warning "Full URLs are recorded"
+    The request context records the **full URL, including the query string**,
+    plus the method, status and up to 32 Java frames. Query strings often hold
+    tokens, ids or other personal data. URLs are capped at 2048 characters
+    and escaped. Treat a `.tap` captured with `--attribute-sdk` like the
+    decrypted traffic itself.
+
+**Known limits:**
+
+- A WebView client set **before** friTap attached is not hooked if it
+  overrides `shouldInterceptRequest`: overrides are found when the app calls
+  `setWebViewClient`. Clients set later are hooked.
+- With a headless `--tap` capture, flows already written to the `.tap` are not
+  updated when a matching request context arrives later.
+- On the flow side the URL scheme is assumed to be `https` (the flow carries
+  only the authority and path).
+
 ## `--modern` (EXPERIMENTAL agent path)
 
 !!! warning "EXPERIMENTAL — default is the legacy path"
@@ -358,22 +434,24 @@ fritap -m -s --pcap bank_auth.pcap com.example.bankapp
 
 ### Telegram (MTProto)
 
-friTap can decrypt Telegram's MTProto 2.0 cloud-chat traffic on Android via
-`--protocol mtproto` (tshark cannot — friTap ships its own decryptor):
+On Android, friTap's `--protocol mtproto` hooks extract Telegram's MTProto 2.0
+**keys** (tshark cannot decrypt MTProto — friTap ships its own offline
+decryptor). Live MTProto **plaintext** capture is not implemented yet: the
+inbound/outbound plaintext hook sites are still unfilled, so capture the keys
+and the raw traffic live, then decrypt offline:
 
 ```bash
-# Live: decrypted MTProto straight into a .tap
-fritap -m --protocol mtproto org.telegram.messenger
+# Live: MTProto key extraction (auth keys written to the keylog)
+fritap -m --protocol mtproto -k tg.keys org.telegram.messenger
 
-# Live full capture: pcap + MTProto keylog (for later offline re-analysis)
+# Live full capture: pcap + MTProto keylog for offline decryption
 fritap -m --protocol mtproto -f -p tg.pcapng -k tg.keys org.telegram.messenger
 ```
 
 To cover **both** Telegram encryption layers in one run, use the umbrella
 `--protocol telegram`: cloud chats (MTProto **transport** — not end-to-end) plus
 **secret chats** (MTProto 2.0 **end-to-end**). It writes one combined keylog
-(`MTPROTO_AUTH_KEY` + `MTPROTO_E2E_KEY`) consumed offline via `--telegram-keylog`;
-secret-chat plaintext can also be captured live with `-p`:
+(`MTPROTO_AUTH_KEY` + `MTPROTO_E2E_KEY`) consumed offline via `--telegram-keylog`:
 
 ```bash
 # Live full capture: pcap + combined (cloud + secret) Telegram keylog
@@ -381,9 +459,9 @@ fritap -m --protocol telegram -f -p tg.pcapng -k tg.keys org.telegram.messenger
 ```
 
 See [Telegram (MTProto)](../protocols/telegram.md) for the keylog format, the
-offline `--mtproto-keylog` / `--telegram-keylog` workflows, the crypto backend
-(which ships in friTap's base install, no extra needed), and scope/limitations
-(cloud-chat live plaintext is future work — use the keylog → offline path).
+offline `--mtproto-keylog` / `--telegram-keylog` decryption workflows, the crypto
+backend (which ships in friTap's base install, no extra needed), and
+scope/limitations.
 
 
 
@@ -402,6 +480,20 @@ adb shell su -c "killall frida-server"
 # Restart with correct permissions
 adb shell su -c "/data/local/tmp/frida-server &"
 ```
+
+**frida-server or Injection Blocked by SELinux:**
+
+If frida-server refuses to start, or attaching/spawning fails with permission
+errors (look for `avc: denied` lines in `adb logcat`), SELinux enforcement may be
+blocking it. On a **test device only**, switch SELinux to permissive temporarily:
+
+```bash
+adb shell getenforce              # Enforcing / Permissive
+adb shell su -c setenforce 0      # permissive until the next reboot
+```
+
+The setting resets to `Enforcing` on reboot (or run `adb shell su -c setenforce 1`).
+Never leave a personal device in permissive mode.
 
 **App Crashes Immediately:**
 ```bash
@@ -427,7 +519,7 @@ fritap -m --patterns android_patterns.json -k keys.log com.example.app
 fritap -m --enable_default_fd --pcap traffic.pcap com.example.app
 
 # Enable full capture
-fritap -m --full_capture -k keys.log com.example.app
+fritap -m --full_capture -p traffic.pcap -k keys.log com.example.app
 ```
 
 ### Device-Specific Issues
@@ -503,7 +595,7 @@ adb shell su -c "rm -rf /data/local/tmp/frida-*"
 
 ```bash
 # Analyze suspicious APKs in isolated environment
-fritap -m --anti_root --full_capture -k malware_keys.log com.suspicious.app
+fritap -m --anti_root --full_capture -p malware_full.pcap -k malware_keys.log com.suspicious.app
 
 # Monitor for C&C communications
 fritap -m --enable_spawn_gating --pcap malware_traffic.pcap com.suspicious.app
@@ -552,9 +644,15 @@ done
 ```bash
 # Live analysis with Wireshark
 fritap -m --live com.example.app
+# friTap prints the pipe path: <tempdir>/fritap_sharkfin.pcapng
+# (<tempdir> follows $TMPDIR, e.g. /var/folders/... on macOS)
 
-# Then in Wireshark: File → Open → /tmp/sharkfin
+# Then, in another terminal, open the printed path:
+wireshark -k -i <tempdir>/fritap_sharkfin.pcapng
 ```
+
+The live pipe runs on the host, so it works for Android targets from a Linux or
+macOS host; it is not supported when friTap runs on Windows.
 
 !!! tip "Capture live from inside Wireshark (extcap backend)"
     friTap ships a Wireshark **extcap** backend so you can start an Android capture

@@ -1,0 +1,18 @@
+schema_version: "1.1"
+name: trigger-decrypt-2
+description: 'specific: pcap + keylog -> .tap and report'
+tags: [trigger, positive]
+runs: 3
+execution:
+  max_turns: 3
+  timeout_seconds: 120
+  allowed_tools: [Skill]
+  prompt: |
+    I've got session.pcap and sslkeys.log that friTap produced last week. Turn them into a .tap and give me a digest of the flows, no device attached anymore.
+graders:
+  - name: fires-fritap-decrypt
+    type: tool_used
+    tool: Skill
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?fritap-decrypt"'
+    min: 1
+    arm: both

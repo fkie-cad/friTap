@@ -1222,6 +1222,10 @@ if TEXTUAL_AVAILABLE:
                     if fid not in written_ids and flow_findings:
                         writer.write_findings(fid, flow_findings)
 
+                # Carry the Java request contexts (--attribute-sdk) over too.
+                for record in self._replay_ctrl.read_request_contexts():
+                    writer.write_request_context(record)
+
                 writer.close()
 
                 from ..modals.alert_modal import AlertModal

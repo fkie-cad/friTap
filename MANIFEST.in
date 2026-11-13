@@ -12,6 +12,7 @@ include friTap/analysis/attribution/data/README.md
 recursive-include friTap/offline/mtproto/schema *.tl SOURCE.txt
 recursive-include friTap/plugins/shared_utility *.js
 recursive-include friTap/tui/css *.tcss
+recursive-include friTap/skills SKILL.md *.md
 recursive-include friTap/assets *
 recursive-include friTap/plugins/examples README*
 recursive-include integrations *.py *.sh README*

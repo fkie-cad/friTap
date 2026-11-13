@@ -1,0 +1,19 @@
+schema_version: "1.1"
+name: trigger-offtopic-mitmproxy-ca
+description: 'mitmproxy user CA setup'
+tags: [trigger, offtopic]
+runs: 3
+execution:
+  max_turns: 3
+  timeout_seconds: 120
+  allowed_tools: [Skill]
+  prompt: |
+    How do I configure mitmproxy on Android 14 with a user-installed CA so I can intercept my own app's debug build?
+graders:
+  - name: no-fritap-skill
+    type: tool_used
+    tool: Skill
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?fritap-'
+    min: 0
+    max: 0
+    arm: both

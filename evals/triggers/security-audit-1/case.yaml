@@ -1,0 +1,18 @@
+schema_version: "1.1"
+name: trigger-security-audit-1
+description: 'terse: MASVS network testing'
+tags: [trigger, positive]
+runs: 3
+execution:
+  max_turns: 3
+  timeout_seconds: 120
+  allowed_tools: [Skill]
+  prompt: |
+    do the MASVS-NETWORK checks for our banking app with fritap
+graders:
+  - name: fires-fritap-security-audit
+    type: tool_used
+    tool: Skill
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?fritap-security-audit"'
+    min: 1
+    arm: both

@@ -122,15 +122,19 @@ def test_classify_frames_real_sdk_frame_never_skipped_as_noise(resolver: SdkReso
 
 
 def test_classify_frames_native_module_resolves(resolver: SdkResolver) -> None:
-    result = resolver.classify_frames(native_modules=["libflutter.so"])
+    # libflutter.so is now a transport (deny-listed); use a non-transport
+    # native SDK module to exercise native resolution.
+    result = resolver.classify_frames(native_modules=["libhermes.so"])
     assert result is not None
-    assert result.sdk == "Flutter"
+    assert result.sdk == "React Native"
     assert result.category == "framework"
 
 
-def test_classify_frames_native_prefix_match(resolver: SdkResolver) -> None:
-    result = resolver.classify_frames(native_modules=["libcronet.109.0.5386.0.so"])
-    assert result is not None and result.sdk == "Cronet"
+def test_classify_frames_native_transport_prefix_is_denied(resolver: SdkResolver) -> None:
+    # libcronet still prefix-matches its entry, but it is a transport
+    # (transport_kind="cronet"), so it is never the originator.
+    assert resolver.classify_package("libcronet.109.0.5386.0.so").sdk == "Cronet"
+    assert resolver.classify_frames(native_modules=["libcronet.109.0.5386.0.so"]) is None
 
 
 def test_classify_frames_java_precedes_native(resolver: SdkResolver) -> None:

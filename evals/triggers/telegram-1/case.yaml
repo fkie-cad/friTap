@@ -1,0 +1,18 @@
+schema_version: "1.1"
+name: trigger-telegram-1
+description: 'terse: Telegram auth key'
+tags: [trigger, positive]
+runs: 3
+execution:
+  max_turns: 3
+  timeout_seconds: 120
+  allowed_tools: [Skill]
+  prompt: |
+    I want to analyse the MTProto traffic of my own Telegram test account (org.telegram.messenger on a rooted emulator) with friTap. How do I capture what is needed to decrypt it?
+graders:
+  - name: fires-fritap-telegram
+    type: tool_used
+    tool: Skill
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?fritap-telegram"'
+    min: 1
+    arm: both

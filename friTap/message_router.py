@@ -10,10 +10,28 @@ Routes agent message payloads to the EventBus as typed events.
 from __future__ import annotations
 
 import logging
+from typing import get_args
 
+from .caller_stack_shapes import (
+    REQUEST_CONTEXT_FRAME_LIMIT,
+    REQUEST_CONTEXT_FRAME_TEXT_LIMIT,
+    REQUEST_CONTEXT_TEXT_LIMITS,
+    UNTRUSTED_TEXT_LIMIT,
+    bounded_strings,
+    caller_stack_lookup_keys,
+    capped_text,
+    finite_float,
+    non_negative_int,
+    optional_bool,
+    strict_int,
+    untrusted_caller_stack,
+)
+from .client_random import normalize_client_random
 from .connection_index import resolve_connection_key
-from .constants import ContentType, direction_for_function
+from .constants import DIRECTION_READ, ContentType, direction_for_function
+from .endpoint_pinner import EndpointPinner, RecordEndpoints, ResolvedEndpoints
 from .events import (
+    AGENT_DEV_ORIGIN,
     AntiTamperDetectedEvent,
     CallerStackEvent,
     ConsoleEvent,
@@ -24,6 +42,7 @@ from .events import (
     LibraryDetectedEvent,
     OhttpEvent,
     PlatformReportEvent,
+    RequestContextEvent,
     SessionEvent,
 )
 from .legacy.ssl_logger_core import (
@@ -31,8 +50,56 @@ from .legacy.ssl_logger_core import (
     resolve_ss_family,
     sanitize_raw_addr,
 )
+from .schemas.agent_messages import RequestContextPoint
 from .ssl_logger import get_addr_string
 from .text_safety import safe_terminal_text
+
+#: Agent devlog content types routed as debug-level dev diagnostics, mapped to
+#: the agent level shown in the message prefix (``devlog_debug`` keeps its
+#: unprefixed console_debug route).
+_AGENT_DEVLOG_LEVELS = {
+    ContentType.CONSOLE_INFO: "info",
+    ContentType.CONSOLE_WARN: "warn",
+    ContentType.CONSOLE_ERROR: "error",
+}
+
+
+def _format_devlog_callsite(payload: dict) -> str:
+    """``file:line func`` from the agent's flat callsite fields (each optional), escaped."""
+    location = safe_terminal_text(payload.get("file") or "")
+    line = payload.get("line")
+    if location and line not in (None, ""):
+        location = f"{location}:{safe_terminal_text(line)}"
+    func = safe_terminal_text(payload.get("func") or "")
+    return " ".join(part for part in (location, func) if part)
+
+
+def format_devlog_prefix(agent_level: str, payload: dict) -> str:
+    """``[agent <level> <file>:<line> <func>]``; callsite parts omitted when missing."""
+    callsite = _format_devlog_callsite(payload)
+    return f"[agent {agent_level} {callsite}]" if callsite else f"[agent {agent_level}]"
+
+
+#: ``event`` values a ``request_context`` message may carry (anything else is
+#: dropped); derived from the schema's ``RequestContextPoint`` literal.
+REQUEST_CONTEXT_EVENTS = frozenset(get_args(RequestContextPoint))
+
+
+def request_context_fields(payload: dict) -> dict:
+    """The fields of a raw ``request_context`` payload, escaped, capped and
+    coerced to their :class:`RequestContextEvent` types."""
+    text = {name: capped_text(payload.get(name), limit)
+            for name, limit in REQUEST_CONTEXT_TEXT_LIMITS.items()}
+    return {
+        **text,
+        "frames": bounded_strings(payload.get("frames"), REQUEST_CONTEXT_FRAME_LIMIT,
+                                  REQUEST_CONTEXT_FRAME_TEXT_LIMIT),
+        "tid": strict_int(payload.get("tid")),
+        "t_ms": finite_float(payload.get("t_ms")),
+        "status": strict_int(payload.get("status")),
+        "cached": optional_bool(payload.get("cached")),
+        "main_frame": optional_bool(payload.get("main_frame")),
+    }
 
 
 def payload_protocol(payload: dict, default: str) -> str:
@@ -44,6 +111,17 @@ def payload_protocol(payload: dict, default: str) -> str:
     ``"ssh"`` for SSH key records) -- covers a message without a tag.
     """
     return str(payload.get("protocol") or default)
+
+
+def _with_normalized_client_random(payload: dict) -> dict:
+    """*payload* with ``client_random`` normalized (see
+    :func:`~friTap.client_random.normalize_client_random`), so every emitter
+    keys on the same form. The caller's dict is never mutated; payloads
+    without the field are returned as-is.
+    """
+    if "client_random" not in payload:
+        return payload
+    return {**payload, "client_random": normalize_client_random(payload["client_random"])}
 
 
 class _CanonicalProxy:
@@ -68,6 +146,10 @@ class MessageRouter:
         self._event_bus = event_bus
         self._logger = logging.getLogger("friTap.router")
         self._data_filter = None  # Optional FilterEngine for network-level filtering
+        # Option 5: sticky per-client_random tuple for TCP records, synthetic
+        # when the agent sent none. Public so the pcap finalize path can read
+        # its mapping table (synthetic -> real) via ``mappings()``.
+        self.endpoint_pinner = EndpointPinner()
         # Render the anti-tamper banner at most once per session, even though
         # several agent code paths may emit `anti_tamper_detected` (detection +
         # loader-hook skip). Subsequent events still flow to API consumers.
@@ -94,6 +176,7 @@ class MessageRouter:
 
     def route(self, payload: dict, data: bytes) -> None:
         """Parse an agent message payload and emit the corresponding event."""
+        payload = _with_normalized_client_random(payload)
         content_type = payload.get("contentType")
 
         if content_type == "keylog" and payload.get("keylog"):
@@ -132,12 +215,16 @@ class MessageRouter:
             self._emit_console(payload, level="info")
         elif content_type == "console_dev":
             self._emit_console_dev(payload)
+        elif content_type == ContentType.CONSOLE_DEBUG or content_type in _AGENT_DEVLOG_LEVELS:
+            self._emit_console_devlog(payload, _AGENT_DEVLOG_LEVELS.get(content_type))
         elif content_type == "hook_breadcrumb":
             self._emit_hook_breadcrumb(payload)
         elif content_type == ContentType.PLATFORM_REPORT:
             self._emit_platform_report(payload)
         elif content_type == ContentType.CALLER_STACK:
             self._emit_caller_stack(payload)
+        elif content_type == ContentType.REQUEST_CONTEXT:
+            self._emit_request_context(payload)
 
     def _emit_keylog(self, payload: dict) -> None:
         self._event_bus.emit(KeylogEvent(
@@ -168,30 +255,56 @@ class MessageRouter:
             sanitize_raw_addr(dst_addr, addr_family),  # raw (validated)
         )
 
+    def _datalog_endpoints(self, payload: dict, client_random: str,
+                           direction: str) -> ResolvedEndpoints:
+        """The record's endpoints after option-5 pinning (unchanged when it
+        does not apply: non-TCP transport or no client_random)."""
+        (src_addr_str, src_port, dst_addr_str, dst_port,
+         ss_family, src_addr, dst_addr) = self._resolve_addresses(payload)
+        record = RecordEndpoints(src_addr_str, src_port, dst_addr_str, dst_port,
+                                 src_addr, dst_addr, ss_family)
+        resolved = self.endpoint_pinner.resolve(
+            client_random, payload.get("transport", "tcp"),
+            direction == DIRECTION_READ, record)
+        return resolved if resolved is not None else ResolvedEndpoints(
+            src_addr_str, src_port, dst_addr_str, dst_port, src_addr, dst_addr, ss_family)
+
+    @staticmethod
+    def _endpoint_fields(endpoints: ResolvedEndpoints) -> dict:
+        """DatalogEvent address fields (incl. the option-5 flag and observed_*)."""
+        observed = endpoints.observed
+        return {
+            "src_addr": endpoints.src_addr, "src_port": endpoints.src_port,
+            "dst_addr": endpoints.dst_addr, "dst_port": endpoints.dst_port,
+            "src_addr_raw": endpoints.src_addr_raw,
+            "dst_addr_raw": endpoints.dst_addr_raw,
+            "ss_family": endpoints.ss_family,
+            "endpoints_synthetic": endpoints.synthetic,
+            "observed_src_addr": observed.src_addr if observed else "",
+            "observed_src_port": observed.src_port if observed else 0,
+            "observed_dst_addr": observed.dst_addr if observed else "",
+            "observed_dst_port": observed.dst_port if observed else 0,
+            "observed_ss_family": observed.ss_family if observed else "",
+        }
+
     def _emit_datalog(self, payload: dict, data: bytes) -> None:
-        src_addr_str, src_port, dst_addr_str, dst_port, ss_family, src_addr, dst_addr = self._resolve_addresses(payload)
+        function = payload.get("function", "")
+        direction = direction_for_function(function, payload.get("direction"))
+        client_random = payload.get("client_random", "")
+        endpoints = self._datalog_endpoints(payload, client_random, direction)
 
         if self._data_filter is not None:
-            if not self._check_data_filter(
-                src_addr_str, src_port, dst_addr_str, dst_port,
-                payload_protocol(payload, "tls"),
+            if not self._passes_data_filter(
+                endpoints, client_random, direction, payload_protocol(payload, "tls"),
             ):
                 return
 
-        function = payload.get("function", "")
         self._event_bus.emit(DatalogEvent(
             data=data,
             function=function,
-            direction=direction_for_function(function, payload.get("direction")),
-            src_addr=src_addr_str,
-            src_port=src_port,
-            dst_addr=dst_addr_str,
-            dst_port=dst_port,
-            src_addr_raw=src_addr,
-            dst_addr_raw=dst_addr,
-            ss_family=ss_family,
+            direction=direction,
             ssl_session_id=str(payload.get("ssl_session_id", "")),
-            client_random=str(payload.get("client_random", "")),
+            client_random=client_random,
             transport=payload.get("transport", "tcp"),
             http3_headers=payload.get("http3_headers"),
             stream_id=payload.get("stream_id"),
@@ -201,6 +314,7 @@ class MessageRouter:
             quic_payload=str(payload.get("quic_payload") or ""),
             library=str(payload.get("library") or ""),
             protocol=payload_protocol(payload, "tls"),
+            **self._endpoint_fields(endpoints),
         ))
 
     def _emit_library_detected(self, payload: dict) -> None:
@@ -239,11 +353,32 @@ class MessageRouter:
             level=level,
         ))
 
-    def _emit_console_dev(self, payload: dict) -> None:
+    def _emit_agent_dev_console(self, message: str) -> None:
+        # Agent developer diagnostics (console_dev, devlog_*) are demoted to
+        # debug level and tagged with their origin: they reach --debug-log and
+        # -d/-do output, never the normal console, the TUI activity log or a
+        # non-debug JSONL stream. *message* must already be escaped.
         self._event_bus.emit(ConsoleEvent(
-            message=safe_terminal_text(payload.get("console_dev", "")),
+            message=message,
             level="debug",
+            origin=AGENT_DEV_ORIGIN,
         ))
+
+    def _emit_console_dev(self, payload: dict) -> None:
+        self._emit_agent_dev_console(
+            safe_terminal_text(payload.get("console_dev", "")))
+
+    def _emit_console_devlog(self, payload: dict, agent_level) -> None:
+        # Agent devlog_*() lines ({contentType: "console_debug" | "console_info"
+        # | ..., message}) take the same debug-level path as console_dev: they
+        # reach --debug-log and stay off the normal console unless debug output
+        # is enabled. devlog_debug (*agent_level* None) stays unprefixed;
+        # info/warn/error carry the agent's level and callsite so the real
+        # severity survives in the debug log.
+        message = safe_terminal_text(str(payload.get("message", "")))
+        if agent_level is not None:
+            message = f"{format_devlog_prefix(agent_level, payload)} {message}"
+        self._emit_agent_dev_console(message)
 
     def _emit_hook_breadcrumb(self, payload: dict) -> None:
         # In-memory crash-attribution marker (never printed). SSL_Logger stores
@@ -508,6 +643,33 @@ class MessageRouter:
             protocol=payload_protocol(payload, "ohttp"),
         ))
 
+    def _filter_candidates(self, endpoints: ResolvedEndpoints, client_random: str,
+                           direction: str) -> list:
+        """The tuples a record may be filtered on: its emitted (pinned) one plus,
+        under a synthetic pin, the real tuple it carries (``observed``) or the
+        one learned earlier for the connection.
+
+        A synthetic-only record of a connection whose real tuple was never
+        seen has only its 198.18/15 tuple, which no host/port filter on a real
+        address can match -- such records are dropped by those filters, as
+        before; protocol-only filters still pass them.
+        """
+        candidates = [endpoints]
+        if not endpoints.synthetic:
+            return candidates
+        real = endpoints.observed or self.endpoint_pinner.learned_real(
+            client_random, direction == DIRECTION_READ)
+        if real is not None:
+            candidates.append(real)
+        return candidates
+
+    def _passes_data_filter(self, endpoints: ResolvedEndpoints, client_random: str,
+                            direction: str, protocol: str) -> bool:
+        """True when the pinned OR the real endpoints of the record match."""
+        return any(
+            self._check_data_filter(c.src_addr, c.src_port, c.dst_addr, c.dst_port, protocol)
+            for c in self._filter_candidates(endpoints, client_random, direction))
+
     def _check_data_filter(
         self, src_addr: str, src_port: int,
         dst_addr: str, dst_port: int, protocol: str,
@@ -525,29 +687,21 @@ class MessageRouter:
             return True
 
     def _emit_caller_stack(self, payload: dict) -> None:
-        """Resolve a ``caller_stack`` backtrace to its owning SDK and emit a
-        :class:`CallerStackEvent` carrying ONLY the trusted signature metadata.
+        """Emit a :class:`CallerStackEvent` for every ``caller_stack`` backtrace.
 
         The agent sends this once per connection under ``--attribute-sdk``. The
         frame strings (``java_frames``, ``native_frames[].module``) are
-        attacker-controlled, so they are handed to
-        :func:`~friTap.analysis.attribution.sdk.classify_frames` purely as
-        lookup keys and never echoed: only the trusted ``{sdk, vendor,
-        category}`` dict from the bundled table leaves this method. Nothing is
-        emitted when no signature matches (the flow keeps ``sdk = None``, like
-        any flow without a backtrace), so an unresolved stack is a no-op.
+        attacker-controlled: :func:`~friTap.analysis.attribution.sdk.classify_frames`
+        uses them purely as lookup keys, and ``sdk`` carries only the trusted
+        ``{sdk, vendor, category}`` dict on a signature match (``None``
+        otherwise). The frames themselves travel escaped and length-capped under
+        ``untrusted`` (see :mod:`friTap.caller_stack_shapes`), so an unclassified
+        stack still reaches the collector as the flow's ``caller_stack``.
         """
-        from .analysis.attribution.sdk import classify_frames
-
-        java_frames = [f for f in (payload.get("java_frames") or []) if isinstance(f, str)]
-        native_modules = [
-            frame.get("module")
-            for frame in (payload.get("native_frames") or [])
-            if isinstance(frame, dict) and isinstance(frame.get("module"), str) and frame.get("module")
-        ]
-        sdk = classify_frames(java_frames=java_frames, native_modules=native_modules)
-        if sdk is None:
-            return
+        java_frames, native_modules = caller_stack_lookup_keys(payload)
+        sdk = self._classify_caller_stack(java_frames, native_modules)
+        identity = self._caller_stack_identity(payload)
+        self._log_caller_stack(identity["client_random"], payload, sdk)
         src_addr_str, src_port, dst_addr_str, dst_port, *_ = self._resolve_addresses(payload)
         self._event_bus.emit(CallerStackEvent(
             ssl_session_id=str(payload.get("ssl_session_id", "")),
@@ -555,8 +709,63 @@ class MessageRouter:
             src_port=src_port,
             dst_addr=dst_addr_str,
             dst_port=dst_port,
-            sdk=sdk.as_dict(),
+            sdk=sdk,
             protocol=payload_protocol(payload, "tls"),
+            untrusted=untrusted_caller_stack(payload),
+            **identity,
+        ))
+
+    @staticmethod
+    def _classify_caller_stack(java_frames: list, native_modules: list):
+        """The trusted SDK dict for the frames, or ``None`` when nothing matches."""
+        from .analysis.attribution.sdk import classify_frames
+
+        sdk = classify_frames(java_frames=java_frames, native_modules=native_modules)
+        return sdk.as_dict() if sdk is not None else None
+
+    def _log_caller_stack(self, client_random: str, payload: dict, sdk) -> None:
+        """Debug line ``caller_stack cr=<first16> native=N java=M sdk=<name|->``."""
+        native = payload.get("native_frames")
+        java = payload.get("java_frames")
+        self._logger.debug(
+            "caller_stack cr=%s native=%d java=%d sdk=%s",
+            client_random[:16] or "-",
+            len(native) if isinstance(native, list) else 0,
+            len(java) if isinstance(java, list) else 0,
+            sdk.get("sdk", "-") if sdk else "-",
+        )
+
+    @staticmethod
+    def _caller_stack_identity(payload: dict) -> dict:
+        """The optional connection/thread identity fields of a ``caller_stack``
+        payload, coerced to their event types (missing/invalid -> empty/0).
+
+        ``thread_name`` and ``transport_module`` come from the target, so they
+        are escaped like other agent text and capped at 120 characters.
+        """
+        return {
+            "client_random": payload.get("client_random", ""),
+            "tid": non_negative_int(payload.get("tid")),
+            "thread_name": capped_text(payload.get("thread_name"), UNTRUSTED_TEXT_LIMIT),
+            "pid": non_negative_int(payload.get("pid")),
+            "transport_module": capped_text(
+                payload.get("transport_module"), UNTRUSTED_TEXT_LIMIT),
+        }
+
+    def _emit_request_context(self, payload: dict) -> None:
+        """Emit a :class:`RequestContextEvent`; strings escaped and capped,
+        malformed payloads dropped without raising."""
+        event, req_id = payload.get("event"), payload.get("req_id")
+        known_event = isinstance(event, str) and event in REQUEST_CONTEXT_EVENTS
+        if not known_event or not isinstance(req_id, str) or not req_id:
+            self._logger.debug(
+                "request_context dropped: invalid event/req_id (event=%s)",
+                capped_text(event, UNTRUSTED_TEXT_LIMIT) or "-")
+            return
+        self._event_bus.emit(RequestContextEvent(
+            event=event,
+            protocol=payload_protocol(payload, "tls"),
+            **request_context_fields(payload),
         ))
 
     def _emit_lifecycle(self, payload: dict) -> None:
@@ -575,10 +784,11 @@ class MessageRouter:
         # empty/None -> "tls" coercion is ALSO enforced inside
         # resolve_connection_key, so the two paths can never key differently.
         protocol = payload_protocol(payload, "tls")
+        client_random = payload.get("client_random", "")
         conn_id = resolve_connection_key(
             src_addr_str, src_port, dst_addr_str, dst_port,
             session_token=str(payload.get("ssl_session_id", "")),
-            client_random=str(payload.get("client_random", "")),
+            client_random=client_random,
             protocol=protocol,
         )
 
@@ -594,7 +804,7 @@ class MessageRouter:
         self._event_bus.emit(SessionEvent(
             session_id=str(payload.get("ssl_session_id", "")),
             event_type=payload.get("event", ""),
-            client_random=str(payload.get("client_random", "")),
+            client_random=client_random,
             connection_id=conn_id,
             src_addr=src_addr_str,
             src_port=src_port,

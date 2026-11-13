@@ -7,6 +7,7 @@ import { ObjC } from "../../../shared/objclib.js";
 import { sendKeylog } from "../../../shared/shared_structures.js";
 import { SslPlaintextHooks } from "../../../shared/ssl_plaintext_hooks.js";
 import { buildDefaultSslMethodMapping, addModuleMethod, hasResolvableSslSurface, isResolvedAddress } from "./ssl_method_mapping.js";
+import { bindOptionalSslFdAndSession, describeSslFdSessionFallback } from "../../../shared/optional_ssl_fd_session.js";
 
 class ModifyReceiver{
     public readModification: ArrayBuffer | null = null;
@@ -77,6 +78,7 @@ export class OpenSSL_BoringSSL {
     keylog_callback: any;
     SSL_get_fd: any;
     SSL_get_session: any;
+    fdLess = false;
     static modReceiver: ModifyReceiver;
     do_read_write_hooks: boolean = true; // we want to hook read and write by default
 
@@ -120,7 +122,8 @@ export class OpenSSL_BoringSSL {
 
         this.keylog_callback = new NativeCallback(function (ctxPtr: NativePointer, linePtr: NativePointer) {
             devlog("invoking keylog_callback from OpenSSL_BoringSSL ("+ moduleName +")");
-            sendKeylog(linePtr.readCString().toUpperCase());
+            // keylog_callback is (const SSL *ssl, const char *line): ctxPtr is the SSL*.
+            sendKeylog(linePtr.readCString().toUpperCase(), ctxPtr, moduleName);
         }, "void", ["pointer", "pointer"]);
 
         // Check and add SSL_write_ex if available
@@ -150,13 +153,20 @@ export class OpenSSL_BoringSSL {
 
         // Deep-resolved modules (e.g. libhttpengine.so, <=2 dynsym exports) get
         // their SSL_* addresses from readAddresses' symbol-table fallback; a
-        // symbol it could not resolve stays undefined and the NativeFunction
-        // constructor throws, which the catch below turns into key-only mode.
+        // symbol it could not resolve stays undefined. SSL_get_fd and
+        // SSL_SESSION_get_id fall back to fd-less stand-ins; any other missing
+        // symbol makes the NativeFunction constructor throw, which the catch
+        // below turns into key-only mode.
         if(!ObjC.available && sslSurfaceResolvable){
             try{
-                this.SSL_SESSION_get_id = new NativeFunction(this.addresses[this.moduleName]["SSL_SESSION_get_id"], "pointer", ["pointer", "pointer"]);
-                this.SSL_get_fd = ObjC.available ? new NativeFunction(this.addresses[this.moduleName]["BIO_get_fd"], "int", ["pointer"]) : new NativeFunction(this.addresses[this.moduleName]["SSL_get_fd"], "int", ["pointer"]);
-                this.SSL_get_session = new NativeFunction(this.addresses[this.moduleName]["SSL_get_session"], "pointer", ["pointer"]);
+                // SSL_get_fd / SSL_SESSION_get_id are optional (shared/optional_ssl_fd_session.ts):
+                // unresolved ones get the fd-less stand-ins instead of forcing key-only mode.
+                const bound = bindOptionalSslFdAndSession(this.addresses[this.moduleName], ObjC.available ? "BIO_get_fd" : "SSL_get_fd");
+                this.SSL_SESSION_get_id = bound.SSL_SESSION_get_id;
+                this.SSL_get_fd = bound.SSL_get_fd;
+                this.SSL_get_session = bound.SSL_get_session;
+                this.fdLess = bound.fdLess;
+                if (bound.fallbacks.length > 0) devlog(describeSslFdSessionFallback(this.moduleName, bound.fallbacks));
                 this.do_read_write_hooks = true;
             }catch(e){
                 this.do_read_write_hooks = false;
@@ -338,7 +348,7 @@ export class OpenSSL_BoringSSL {
         }
 
         //devlog("OpenSSL log: "+labelStr+" "+client_random_str+" "+secret_key);
-        sendKeylog(labelStr+" "+client_random_str+" "+secret_key);
+        sendKeylog(labelStr+" "+client_random_str+" "+secret_key, identifier, this.module_name);
     }
 
     install_boringssl_key_extraction_hook(){
@@ -364,7 +374,6 @@ export class OpenSSL_BoringSSL {
        *     "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76336".
        */
       getSslSessionId(ssl: NativePointer) {
-          
         var session = this.SSL_get_session(ssl) as NativePointer
         if (session.isNull()) {
             if(enable_default_fd){

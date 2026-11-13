@@ -14,6 +14,9 @@ import assert from "node:assert/strict";
 import "./frida-test-stubs.js";
 
 import { SslPlaintextHooks, SslPlaintextHost } from "./ssl_plaintext_hooks.js";
+import {
+    SslMemoryReader, noteSslClientRandom, resetSslIdentityState, setSslLayout, setSslMemoryReader,
+} from "./ssl_identity.js";
 
 const G = globalThis as any;
 
@@ -201,3 +204,139 @@ for (const ex of [false, true]) {
         }
     });
 }
+
+// ── client_random lookup (P1 design B4): cache -> module layout -> export -> none ──
+
+function memPtr(address: number): any {
+    return {
+        address, isNull: () => address === 0, toString: () => "0x" + address.toString(16),
+        equals: (other: any) => other.address === address,
+    };
+}
+
+/** Fake UInt64 over 8 little-endian bytes: only equals() is used by ssl_identity's anchor check. */
+function fakeU64(bytes: Uint8Array): any {
+    const value = Array.from(bytes).reduceRight((acc, b) => (acc << 8n) | BigInt(b), 0n);
+    return { value, equals: (other: any) => other.value === value };
+}
+
+/** Sparse fake memory (pointer slots + byte cells); anything unwritten faults (null). */
+class FakeSslMemory implements SslMemoryReader {
+    pointers = new Map<number, number>();
+    bytes = new Map<number, number>();
+    readPointer(base: any, offset: number): any {
+        const value = this.pointers.get(base.address + offset);
+        return value === undefined ? null : memPtr(value);
+    }
+    readBytes(base: any, offset: number, length: number): Uint8Array | null {
+        const out = new Uint8Array(length);
+        for (let i = 0; i < length; i++) {
+            const b = this.bytes.get(base.address + offset + i);
+            if (b === undefined) return null;
+            out[i] = b;
+        }
+        return out;
+    }
+    readU64(base: any, offset: number): any {
+        const bytes = this.readBytes(base, offset, 8);
+        return bytes === null ? null : fakeU64(bytes);
+    }
+    /** ssl->s3 at ssl+s3Off, cr at s3+crOff. */
+    place(ssl: number, s3: number, cr: string, s3Off = 0x30, crOff = 0x30): void {
+        this.pointers.set(ssl + s3Off, s3);
+        for (let i = 0; i < 32; i++) this.bytes.set(s3 + crOff + i, parseInt(cr.slice(i * 2, i * 2 + 2), 16));
+    }
+}
+
+function crHex(seed: number): string {
+    let out = "";
+    for (let i = 0; i < 32; i++) out += (((seed * 31 + i * 7) % 255) + 1).toString(16).padStart(2, "0");
+    return out;
+}
+
+function crHooks(moduleName: string, viaExport?: (ssl: any) => string): SslPlaintextHooks {
+    const host = { ...makeHost(true), moduleName, module_name: moduleName, clientRandomViaExport: viaExport };
+    if (!viaExport) host.clientRandomViaExport = () => "";
+    return new SslPlaintextHooks(host, NO_MODS, false);
+}
+
+function withFakeMemory(run: (mem: FakeSslMemory) => void): void {
+    resetSslIdentityState();
+    const mem = new FakeSslMemory();
+    setSslMemoryReader(mem);
+    try { run(mem); } finally { setSslMemoryReader(null); resetSslIdentityState(); }
+}
+
+test("clientRandomFor: a keylog-noted SSL* anchored by the module's layout is a cache hit (no export call)", () => withFakeMemory((mem) => {
+    setSslLayout("libmonochrome.so", { s3Off: 0x30, crOff: 0x30, source: "decoded", validated: true });
+    let exportCalls = 0;
+    const hooks = crHooks("libmonochrome.so", () => { exportCalls++; return crHex(9); });
+    const ssl = memPtr(0x10000);
+    mem.place(0x10000, 0x11000, crHex(1));
+    noteSslClientRandom(ssl, crHex(1).toUpperCase(), "libmonochrome.so");
+    assert.equal(hooks.clientRandomFor(ssl), crHex(1));
+    assert.equal(hooks.clientRandomFor(ssl), crHex(1));
+    assert.equal(exportCalls, 0);
+}));
+
+test("clientRandomFor: an anchorless keylog note is not served ahead of the export; it is the fallback", () => withFakeMemory(() => {
+    let exported = crHex(9);
+    let exportCalls = 0;
+    const hooks = crHooks("libmonochrome.so", () => { exportCalls++; return exported; });
+    const ssl = memPtr(0x10000);
+    noteSslClientRandom(ssl, crHex(1).toUpperCase());
+    assert.equal(hooks.clientRandomFor(ssl), crHex(9), "the export reflects a reused SSL* address");
+    assert.equal(exportCalls, 1);
+    noteSslClientRandom(ssl, crHex(1));
+    exported = "";
+    assert.equal(hooks.clientRandomFor(ssl), crHex(1), "the note answers when the export yields nothing");
+}));
+
+test("clientRandomFor: layouts are per module (two modules, only one has a layout)", () => withFakeMemory((mem) => {
+    setSslLayout("libmonochrome.so", { s3Off: 0x30, crOff: 0x30, source: "decoded", validated: true });
+    const chrome = crHooks("libmonochrome.so");
+    const other = crHooks("libssl.so");
+    const sslA = memPtr(0x20000);
+    const sslB = memPtr(0x30000);
+    mem.place(0x20000, 0x21000, crHex(2));
+    mem.place(0x30000, 0x31000, crHex(3));
+    assert.equal(chrome.clientRandomFor(sslA), crHex(2), "read through libmonochrome's layout");
+    assert.equal(other.clientRandomFor(sslB), "", "libmonochrome's layout is never applied to libssl");
+}));
+
+test("clientRandomFor: an unvalidated layout answers after 3 distinct plausible SSL*", () => withFakeMemory((mem) => {
+    setSslLayout("libwebviewchromium.so", { s3Off: 0x30, crOff: 0x30, source: "stock", validated: false });
+    const hooks = crHooks("libwebviewchromium.so");
+    const results: string[] = [];
+    for (let i = 0; i < 3; i++) {
+        mem.place(0x40000 + i * 0x1000, 0x50000 + i * 0x1000, crHex(10 + i));
+        results.push(hooks.clientRandomFor(memPtr(0x40000 + i * 0x1000)));
+    }
+    assert.deepEqual(results, ["", "", crHex(12)]);
+}));
+
+test("clientRandomFor: falls back to the SSL_get_client_random export, asked per record (never an anchorless cache hit)", () => withFakeMemory(() => {
+    let exportCalls = 0;
+    let exported = crHex(4).toUpperCase();
+    const hooks = crHooks("libssl.so", () => { exportCalls++; return exported; });
+    const ssl = memPtr(0x60000);
+    assert.equal(hooks.clientRandomFor(ssl), crHex(4));
+    exported = crHex(6);
+    assert.equal(hooks.clientRandomFor(ssl), crHex(6), "a reused SSL* address yields the new connection's cr");
+    assert.equal(exportCalls, 2);
+}));
+
+test("clientRandomFor: nothing known -> \"\" and nothing is negative-cached", () => withFakeMemory(() => {
+    let answer = "";
+    const hooks = crHooks("libssl.so", () => answer);
+    const ssl = memPtr(0x70000);
+    assert.equal(hooks.clientRandomFor(ssl), "");
+    answer = crHex(5);
+    assert.equal(hooks.clientRandomFor(ssl), crHex(5));
+}));
+
+test("clientRandomFor: without a host override, a module with no export resolves to none", () => withFakeMemory(() => {
+    const host = { ...makeHost(true), moduleName: "libmonochrome.so", module_name: "libmonochrome.so" };
+    const hooks = new SslPlaintextHooks(host, NO_MODS, false);
+    assert.equal(hooks.clientRandomFor(memPtr(0x80000)), "");
+}));

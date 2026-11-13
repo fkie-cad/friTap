@@ -428,6 +428,15 @@ class Backend(ABC):
         """
         raise NotImplementedError(f"{self.name} backend does not support process paths")
 
+    def process_name(self, device: Any, pid: int) -> str | None:
+        """Return the best display name for *pid* (an Android package id when
+        the backend knows one), or ``None`` when it cannot be resolved.
+
+        Used once after attaching by numeric PID so flow classification sees
+        a real process name instead of the PID string. Default: unsupported.
+        """
+        return None
+
     def check_connectivity(self, device: Any) -> bool:
         """Test whether *device* is reachable without materializing full process list.
 

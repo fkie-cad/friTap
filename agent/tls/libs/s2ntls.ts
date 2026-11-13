@@ -1,5 +1,6 @@
 import { readAddresses, getPortsAndAddresses, resolveOffsets} from "../../shared/shared_functions.js"
 import { sendKeylog, sendDatalog } from "../../shared/shared_structures.js"
+import { stampRecordLibrary } from "../../shared/record_message.js";
 import { enable_default_fd, pcap_enabled } from "../../fritap_agent.js"
 import { log, devlog } from "../../util/log.js"
 import { resolveWithPipelineAsync } from "../../shared/pipeline_utils.js"
@@ -66,6 +67,8 @@ export class S2nTLS {
                 var message = getPortsAndAddresses(readfd, false, lib_addresses[current_module_name], enable_default_fd);
 
                 message["function"] = "s2n_recv";
+
+                stampRecordLibrary(message, current_module_name);
                 message["ssl_session_id"] = "0"
                 this.message = message;
                 this.buf = args[1];
@@ -108,6 +111,8 @@ export class S2nTLS {
                 var message = getPortsAndAddresses(writefd, true, lib_addresses[current_module_name], enable_default_fd);
 
                 message["function"] = "s2n_send";
+
+                stampRecordLibrary(message, current_module_name);
                 message["ssl_session_id"] = "0"
                 this.message = message;
                 this.buf = args[1];

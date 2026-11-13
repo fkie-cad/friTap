@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">friTap Attribution Fixture</string>
+    <string name="status_idle">Waiting for autorun or the RUN broadcast.</string>
+    <string name="status_running">Run requested (%1$d rounds). See logcat tag FRITAP_GT.</string>
+</resources>

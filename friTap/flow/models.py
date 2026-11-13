@@ -448,6 +448,28 @@ class Flow:
     # byte-identical to today.
     sdk: Optional[dict] = None
 
+    # Compact caller stack of the flow's connection (opt-in, --attribute-sdk),
+    # stored whether or not it matched an SDK: ``{transport_module,
+    # thread_name, tid, pid, native_frames[:8] ({module, symbol}),
+    # java_frames[:8]}``, strings escaped and capped at 80 characters (see
+    # friTap/caller_stack_shapes.py). Target-controlled text; ``None`` when no
+    # stack was joined. Persisted into the .tap meta only when set.
+    caller_stack: Optional[dict] = None
+
+    # Transport vs originator attribution (friTap/flow/attribution.py):
+    # ``{"transport": {module, kind}, "originator": {sdk, vendor, category},
+    # "confidence", "source", "bucket", "mixed": True}``, every key optional.
+    # The transport is stamped on every TLS/QUIC flow with a known library; the
+    # originator group only when a classified caller stack joined. ``None``
+    # otherwise.
+    attribution: Optional[dict] = None
+
+    # True while src/dst (and local/remote) are a synthetic 198.18.0.0/15 pin
+    # for an fd-less connection (option 5, friTap/endpoint_pinner.py) rather
+    # than a real socket address. Cleared when the real tuple is observed and
+    # the endpoints are upgraded. Persisted into the .tap meta only when True.
+    endpoints_synthetic: bool = False
+
     # Ordered protocol layer stack (outermost transport -> innermost), e.g.
     # [tls, http2] or [quic, http3]. Per-flow LINEAR (HTTP/2-3 streams are
     # already separate flows). Resolved by name via __getattr__: ``flow.tls``,

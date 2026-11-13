@@ -1,0 +1,18 @@
+schema_version: "1.1"
+name: trigger-capture-1
+description: 'terse: what does an app send'
+tags: [trigger, positive]
+runs: 3
+execution:
+  max_turns: 3
+  timeout_seconds: 120
+  allowed_tools: [Skill]
+  prompt: |
+    which servers does the app with pid 4242 on my linux box talk to, and what does it send them? use fritap
+graders:
+  - name: fires-fritap-capture
+    type: tool_used
+    tool: Skill
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?fritap-capture"'
+    min: 1
+    arm: both

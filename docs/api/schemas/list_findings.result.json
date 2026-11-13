@@ -28,6 +28,15 @@
           "ref": {
             "type": "string"
           },
+          "refs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "refs_more": {
+            "type": "integer"
+          },
           "severity": {
             "type": "string"
           },

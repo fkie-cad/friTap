@@ -1,0 +1,36 @@
+schema_version: "1.1"
+name: outcome-phase-diff
+description: Compare the before-login and after-login phases with diff.
+tags: [outcome]
+runs: 3
+context:
+  scaffold_script: stage_fixture.sh
+execution:
+  max_turns: 15
+  timeout_seconds: 300
+  allowed_tools: [Read, Glob, Skill]
+  prompt: |
+    audit.tap has phase markers (before-login, after-login). What new hosts and
+    endpoints did the app start talking to after the login?
+graders:
+  - name: used-diff
+    type: tool_used
+    tool: mcp__plugin_fritap_fritap__diff
+    min: 1
+    arm: both
+  - name: names-new-hosts
+    type: regex
+    pattern: 'cdn\.example-shop\.test[\s\S]*track\.adnet-metrics\.test|track\.adnet-metrics\.test[\s\S]*cdn\.example-shop\.test'
+    match: contains
+    arm: both
+  - name: diff-correct
+    type: llm
+    focus: last_message
+    weight: 2
+    arm: both
+    criteria: |
+      Ground truth: after login, new hosts are cdn.example-shop.test and
+      track.adnet-metrics.test; new endpoints are POST /v1/login, GET /v1/orders,
+      GET /banner.txt and GET /collect. api.example-shop.test was already contacted
+      before login (GET /v1/catalog). PASS if the answer lists both new hosts and does
+      not claim api.example-shop.test is new. FAIL otherwise.

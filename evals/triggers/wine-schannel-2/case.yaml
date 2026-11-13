@@ -1,0 +1,18 @@
+schema_version: "1.1"
+name: trigger-wine-schannel-2
+description: 'specific: sudo + empty keylog under Wine'
+tags: [trigger, positive]
+runs: 3
+execution:
+  max_turns: 3
+  timeout_seconds: 120
+  allowed_tools: [Skill]
+  prompt: |
+    I ran `sudo fritap --wine on -k keys.log wine ~/apps/client.exe` and keys.log stays empty. WINEPREFIX is ~/.wine-client. What is going on?
+graders:
+  - name: fires-fritap-wine-schannel
+    type: tool_used
+    tool: Skill
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?fritap-wine-schannel"'
+    min: 1
+    arm: both

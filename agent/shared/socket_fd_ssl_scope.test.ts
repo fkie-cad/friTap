@@ -20,6 +20,7 @@ import {
 } from "./socket_fd_tracker.js";
 import { setPcapEnabled } from "./shared_structures.js";
 import { installReadHook } from "../core/executors/read_write.js";
+import { noteSslClientRandom, sslIdentity } from "./ssl_identity.js";
 
 const G = globalThis as any;
 
@@ -146,6 +147,15 @@ test("handshake scope caches the fd before the first SSL_read (data buffered in 
 
     listeners.get("0xmod_SSL_free")![0].onEnter.call({}, [hs]);
     assert.equal(sslCall(hs), 82, "SSL_free hook dropped the entry");
+});
+
+test("SSL_free also forgets the SSL's client_random identity (ssl_identity)", () => {
+    // Relies on the SSL_free listener installed by the previous test.
+    const freed = addr("sslFreedIdentity");
+    noteSslClientRandom(freed, "ab".repeat(32));
+    assert.equal(sslIdentity(freed)?.cr, "ab".repeat(32));
+    listeners.get("0xmod_SSL_free")![0].onEnter.call({}, [freed]);
+    assert.equal(sslIdentity(freed), null, "SSL_free hook dropped the identity");
 });
 
 test("executor: a FAILED fd-less SSL_read still closes its scope and caches its fd", () => {

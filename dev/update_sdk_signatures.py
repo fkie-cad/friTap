@@ -20,7 +20,8 @@ This is the ONLY place in the SDK-attribution feature that touches the
 network, and only when ``--merge-exodus`` is passed; the runtime resolver is
 fully offline and the fetched Exodus data is NEVER bundled into the repository
 automatically. Output is deterministic: entries are sorted, so re-running
-against the same inputs yields a byte-identical file. Standard library only.
+against the same inputs yields a byte-identical file. Standard library plus
+friTap's own pattern validators.
 
 License note: Exodus Privacy's tracker definitions are distributed under the
 GNU AGPL. Merging them is the operator's explicit, on-demand opt-in via
@@ -37,11 +38,24 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Optional
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "friTap" / "analysis" / "attribution" / "data"
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
+# Same validation the resolver applies, so a regenerate never keeps an item it would drop.
+from friTap.analysis.attribution.sdk import (  # noqa: E402
+    _browser_patterns,
+    _internal_host_patterns,
+)
+
+DATA_DIR = PROJECT_ROOT / "friTap" / "analysis" / "attribution" / "data"
 SIGNATURES_PATH = DATA_DIR / "sdk_signatures.json"
 
 SCHEMA = "fritap.sdk_signatures/1"
 EXODUS_TRACKERS_URL = "https://reports.exodus-privacy.eu.org/api/trackers"
+#: Top-level key listing the Chromium-based browsers (see the data README).
+BROWSER_PACKAGES_KEY = "chromium_browser_packages"
+#: Top-level key listing Chromium's background-service hosts (see the data README).
+INTERNAL_HOSTS_KEY = "chromium_internal_hosts"
 
 #: Exodus tags trackers with a free-text ``category`` string; fold the common
 #: ones onto our stable slugs. Anything unlisted falls back to ``other``.
@@ -58,9 +72,18 @@ _EXODUS_CATEGORY_MAP = {
 }
 
 
-def _canonical_entry(sdk: str, vendor: str, category: str) -> "OrderedDict[str, str]":
-    """Build one signature value with a stable key order."""
-    return OrderedDict([("sdk", sdk), ("vendor", vendor), ("category", category)])
+def _canonical_entry(
+    sdk: str, vendor: str, category: str, transport_kind: str = ""
+) -> "OrderedDict[str, str]":
+    """Build one signature value with a stable key order.
+
+    ``transport_kind`` (transport-module entries only) is kept when non-empty
+    so a regenerate never drops the transport/originator split.
+    """
+    entry = OrderedDict([("sdk", sdk), ("vendor", vendor), ("category", category)])
+    if transport_kind:
+        entry["transport_kind"] = transport_kind
+    return entry
 
 
 def load_entries(path: Path) -> "OrderedDict[str, OrderedDict[str, str]]":
@@ -75,9 +98,46 @@ def load_entries(path: Path) -> "OrderedDict[str, OrderedDict[str, str]]":
         if not isinstance(meta, dict):
             continue
         result[prefix] = _canonical_entry(
-            meta.get("sdk", ""), meta.get("vendor", ""), meta.get("category", "other")
+            meta.get("sdk", ""),
+            meta.get("vendor", ""),
+            meta.get("category", "other"),
+            meta.get("transport_kind", ""),
         )
     return result
+
+
+def load_browser_packages(path: Path) -> "Optional[list[str]]":
+    """Load the ``chromium_browser_packages`` list, deduplicated and sorted.
+
+    ``None`` when the file or key is absent. Preserved (only canonicalised) so
+    a regenerate never drops the Chromium browser list that ``SdkResolver``
+    uses to resolve ``chrome-or-webview`` modules.
+    """
+    return _load_pattern_list(path, BROWSER_PACKAGES_KEY, _browser_patterns)
+
+
+def load_internal_hosts(path: Path) -> "Optional[list[str]]":
+    """Load the ``chromium_internal_hosts`` list, deduplicated and sorted.
+
+    ``None`` when the file or key is absent. Preserved (only canonicalised) so
+    a regenerate never drops the hosts that bucket Chromium's own background
+    traffic as ``chromium-internal``.
+    """
+    return _load_pattern_list(path, INTERNAL_HOSTS_KEY, _internal_host_patterns)
+
+
+def _load_pattern_list(path: Path, key: str, valid_patterns) -> "Optional[list[str]]":
+    """The valid items of *path*'s top-level *key* list, sorted; ``None`` when absent.
+
+    A present but empty list stays ``[]``: dropping the key would bring back the resolver's defaults.
+    """
+    if not path.exists():
+        return None
+    with open(path, "r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    if not isinstance(payload, dict) or key not in payload:
+        return None
+    return sorted(set(valid_patterns(payload, path)))
 
 
 def _normalize_exodus_category(raw: Optional[str]) -> str:
@@ -140,6 +200,8 @@ def write_signatures(
     entries: "OrderedDict[str, OrderedDict[str, str]]",
     path: Path,
     merged_exodus: bool,
+    browser_packages: "Optional[list[str]]" = None,
+    internal_hosts: "Optional[list[str]]" = None,
 ) -> None:
     """Serialise the signature table deterministically (sorted by prefix)."""
     ordered = OrderedDict((p, entries[p]) for p in sorted(entries))
@@ -156,6 +218,10 @@ def write_signatures(
     )
     payload["kind"] = "merged" if merged_exodus else "seed"
     payload["entry_count"] = len(ordered)
+    if browser_packages is not None:
+        payload[BROWSER_PACKAGES_KEY] = list(browser_packages)
+    if internal_hosts is not None:
+        payload[INTERNAL_HOSTS_KEY] = list(internal_hosts)
     payload["entries"] = ordered
     with open(path, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2, ensure_ascii=False, sort_keys=False)
@@ -193,7 +259,13 @@ def main(argv=None) -> int:
         added = merge_exodus(entries, payload)
         print(f"merged Exodus: {added} new prefixes")
 
-    write_signatures(entries, out_path, merged_exodus=args.merge_exodus)
+    write_signatures(
+        entries,
+        out_path,
+        merged_exodus=args.merge_exodus,
+        browser_packages=load_browser_packages(SIGNATURES_PATH),
+        internal_hosts=load_internal_hosts(SIGNATURES_PATH),
+    )
     return 0
 
 

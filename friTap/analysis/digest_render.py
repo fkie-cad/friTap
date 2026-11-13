@@ -58,11 +58,20 @@ def _message_line(row: dict) -> str:
             f"{_code(u['kind'])} @ {_code(u['host'])} ({row['ref']})")
 
 
+def _finding_refs(row: dict) -> str:
+    """Every flow a finding row covers (``refs``), falling back to ``ref``."""
+    refs = row.get("refs") or ([row["ref"]] if row["ref"] else [])
+    if not refs:
+        return "cross-flow"
+    more = f" +{row['refs_more']} more" if row.get("refs_more") else ""
+    return ", ".join(refs) + more
+
+
 def _finding_line(row: dict) -> str:
     u = row["untrusted"]
     masvs = f" [{', '.join(row['masvs'])}]" if row.get("masvs") else ""
     return (f"- {row['severity']}/{row['category']} x{row['count']} {_code(u['title'])} "
-            f"— {_code(u['description'])} ({row['ref'] or 'cross-flow'}){masvs}")
+            f"— {_code(u['description'])} ({_finding_refs(row)}){masvs}")
 
 
 _SECTION_RENDERERS: tuple[tuple[str, str, Callable[[dict], str]], ...] = (

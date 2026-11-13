@@ -22,6 +22,15 @@ PCAP_FORMAT_CHOICES = (PCAP_FORMAT_AUTO, PCAP_FORMAT_PCAP, PCAP_FORMAT_PCAPNG)
 
 _EXTENSION_FORMATS = {".pcap": PCAP_FORMAT_PCAP, ".pcapng": PCAP_FORMAT_PCAPNG}
 
+#: Suffix of the ``<pcap>.fritap.json`` sidecar manifest next to a capture.
+MANIFEST_SUFFIX = ".fritap.json"
+
+#: Classic pcap magic (as stored) -> ``struct`` byte order, micro- and nanosecond.
+PCAP_MAGIC_TO_ENDIAN = {
+    b"\xd4\xc3\xb2\xa1": "<", b"\x4d\x3c\xb2\xa1": "<",
+    b"\xa1\xb2\xc3\xd4": ">", b"\xa1\xb2\x3c\x4d": ">",
+}
+
 
 def is_pcapng_filename(name):
     """Return True iff `name` has a .pcapng extension (case-insensitive)."""

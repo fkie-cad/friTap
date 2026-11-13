@@ -74,7 +74,7 @@ export class OpenSSL_BoringSSL_Android extends OpenSSL_BoringSSL {
                     if (callback_func.isNull() || tracker.sealed) return;
                     tracker.noteAppCallback(args[0], callback_func);
                     Interceptor.attach(callback_func, {
-                        onEnter: function (args: any) { sendKeylog(args[1].readCString()); }
+                        onEnter: function (args: any) { sendKeylog(args[1].readCString(), args[0], instance.module_name); }
                     });
                 }
             }));

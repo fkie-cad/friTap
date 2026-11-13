@@ -17,12 +17,16 @@ import { readHexFromPointer } from "../decoders/hex_utils.js";
  *   2. Get ports and addresses
  *   3. Extract session_id and client_random
  *   4. Send "destroyed" lifecycle event
+ *
+ * `onFreed` (optional) runs after the lifecycle event, even when it was not
+ * sent, e.g. to drop per-SSL* caches (ssl_identity.forgetSslIdentity).
  */
 export function createLifecycleHook(
     freeSymbol: string,
     fdDecoder: FdDecoder,
     sessionIdDecoder: SessionIdDecoder,
     clientRandomDecoder?: ClientRandomDecoder,
+    onFreed?: (ctx: NativePointer) => void,
 ): ExtraHookDef {
     return {
         install: (addresses, modName, resolvedFns, enableDefaultFd) => {
@@ -42,11 +46,26 @@ export function createLifecycleHook(
                         sendConnectionLifecycle("destroyed", message);
                     } catch (e) {
                         devlog(`${freeSymbol} lifecycle hook: context partially torn down: ${e}`);
+                    } finally {
+                        runFreedCallback(freeSymbol, ctx, onFreed);
                     }
                 },
             });
         },
     };
+}
+
+function runFreedCallback(
+    freeSymbol: string,
+    ctx: NativePointer,
+    onFreed?: (ctx: NativePointer) => void,
+): void {
+    if (!onFreed) return;
+    try {
+        onFreed(ctx);
+    } catch (e) {
+        devlog(`${freeSymbol} lifecycle hook: onFreed failed: ${e}`);
+    }
 }
 
 /**

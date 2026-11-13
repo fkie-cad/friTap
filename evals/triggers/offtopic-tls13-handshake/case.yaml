@@ -1,0 +1,19 @@
+schema_version: "1.1"
+name: trigger-offtopic-tls13-handshake
+description: 'TLS theory question'
+tags: [trigger, offtopic]
+runs: 3
+execution:
+  max_turns: 3
+  timeout_seconds: 120
+  allowed_tools: [Skill]
+  prompt: |
+    Explain the TLS 1.3 handshake step by step, including where the handshake and application traffic secrets come from.
+graders:
+  - name: no-fritap-skill
+    type: tool_used
+    tool: Skill
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?fritap-'
+    min: 0
+    max: 0
+    arm: both

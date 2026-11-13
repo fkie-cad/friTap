@@ -24,16 +24,17 @@
 //                    case it is the peek-shaped function with the larger call set
 //                    (it also calls the buffer-consume helper).
 // Function boundaries come from the module's .eh_frame_hdr search table, so a
-// hook is only ever placed on a real function entry.
+// hook is only ever placed on a real function entry; sites no FDE covers use
+// landing-pad bounds (eh_frame.ts functionBoundsFor).
 //
 // Verified on Chrome 133.0.6943.137 libmonochrome_64.so (SSL_read +0x515113c,
 // SSL_write +0x5151490) and on mainline Cronet's stable_cronet_libssl.so (the
 // inlined-peek shape; checked against its exported SSL_read/SSL_write).
 
 import { devlog } from "../../util/log.js";
-import { anchorSiteFunctions, moduleOffsetLabel } from "../../shared/arm64_xref.js";
+import { FunctionBoundsSource, anchorSiteFunctions, moduleOffsetLabel } from "../../shared/arm64_xref.js";
 import { blTargetOffset, movzW } from "../../shared/arm64.js";
-import { EhFrameFunctionTable, ehFrameTableFor } from "../../shared/eh_frame.js";
+import { functionBoundsFor } from "../../shared/eh_frame.js";
 
 // ---------------------------------------------------------------------------
 // Pure logic (unit-tested under Node)
@@ -170,7 +171,7 @@ function calleesOf(mod: Module, start: NativePointer, end: NativePointer | null)
 }
 
 /** Functions near `around` whose FIRST call is a BL to `peek` (SSL_read wrapping SSL_peek). */
-function wrappersOf(mod: Module, table: EhFrameFunctionTable, peek: number, lo: number, hi: number): number[] {
+function wrappersOf(mod: Module, table: FunctionBoundsSource, peek: number, lo: number, hi: number): number[] {
     const start = Math.max(0, lo - WRAPPER_SEARCH_MARGIN);
     const end = Math.min(hi + WRAPPER_SEARCH_MARGIN, mod.size);
     const words = readWords(mod.base.add(start), (end - start) >> 2) ?? new Uint32Array(0);
@@ -197,7 +198,7 @@ export interface LocatedPlaintextApi {
 const SSL_LIB_ANCHOR = { text: "/ssl/ssl_lib.cc", literalSuffix: true, maxSites: 512 };
 
 /** Error sites (function + reason) of the ssl_lib.cc anchor's load sites, plus each function's end. */
-async function sslLibErrorSites(mod: Module, table: EhFrameFunctionTable):
+async function sslLibErrorSites(mod: Module, table: FunctionBoundsSource):
         Promise<{ sites: ErrorSite[]; bodies: Map<number, NativePointer | null> } | null> {
     const [loads] = await anchorSiteFunctions(mod, table, [SSL_LIB_ANCHOR]);
     if (loads.length === 0) return null;
@@ -215,7 +216,7 @@ async function sslLibErrorSites(mod: Module, table: EhFrameFunctionTable):
 }
 
 /** SSL_read from the error-site groups (see resolveSslRead), or null. */
-function locateSslRead(mod: Module, table: EhFrameFunctionTable, groups: Map<number, Set<number>>,
+function locateSslRead(mod: Module, table: FunctionBoundsSource, groups: Map<number, Set<number>>,
                        readImpl: number, bodies: Map<number, NativePointer | null>): number | null {
     const peekShaped = peekShapedFunctions(groups).map((func) => ({
         func, callees: calleesOf(mod, mod.base.add(func), bodies.get(func) ?? null),
@@ -229,15 +230,12 @@ const offsetLabel = (off: number | null) => off === null ? "?" : "+0x" + off.toS
 
 /**
  * Locate SSL_read/SSL_write in `mod` (arm64 only). Never throws; returns null
- * when the anchor or the function table is missing.
+ * when the anchor is missing.
  */
 export async function locateBoringSslPlaintextApi(mod: Module): Promise<LocatedPlaintextApi | null> {
     if (Process.arch !== "arm64") return null;
-    const table = ehFrameTableFor(mod);
-    if (!table) {
-        devlog(`[BoringSSL plaintext] ${mod.name}: no usable .eh_frame_hdr; cannot bound functions`);
-        return null;
-    }
+    // FDE bounds where .eh_frame covers the site; landing-pad bounds elsewhere.
+    const table = functionBoundsFor(mod);
     const found = await sslLibErrorSites(mod, table);
     if (!found) {
         devlog(`[BoringSSL plaintext] ${mod.name}: no BoringSSL ssl_lib.cc anchor string`);

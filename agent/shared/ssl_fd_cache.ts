@@ -54,6 +54,12 @@ export class SslFdCache {
         for (const ssl of ssls) this.fdBySsl.delete(ssl);
     }
 
+    /** Forget everything (closed-fd notifications were lost; no cached fd is trustworthy). */
+    clear(): void {
+        this.fdBySsl.clear();
+        this.sslsByFd.clear();
+    }
+
     /** Number of fds in the reverse index (test hook for index consistency). */
     get indexedFdCount(): number {
         return this.sslsByFd.size;

@@ -154,7 +154,7 @@ export class Cronet_Windows extends Cronet {
                         try {
                             Interceptor.attach(callback_func, {
                                 onEnter: function (args: any) {
-                                    sendKeylog(args[1].readCString());
+                                    sendKeylog(args[1].readCString(), args[0], instance.module_name);
                                 }
                             });
                         } catch(e) {

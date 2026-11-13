@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import io
 import json
 import sys
 import textwrap
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -20,7 +22,8 @@ from friTap.agent_api.capture.runner import (
     validate_request,
 )
 from friTap.agent_api.capture.session import DEBUG_LOG_NAME, PHASES_NAME, CaptureSession
-from friTap.agent_api.capture.status import StatusTracker
+from friTap.agent_api.adapters.cli import QueryCli
+from friTap.agent_api.capture.status import TERMINAL_STATES, StatusTracker
 from friTap.agent_api.registry import Registry
 from friTap.agent_api.services import capture as capture_service
 from friTap.agent_api.services import discovery
@@ -61,6 +64,21 @@ def test_argv_follow_exec_false_and_spawn_args_after_separator():
     argv = build_argv(_req(target="/bin/curl", args=("-s", "https://x"), follow_exec=False), CMD)
     assert "--no-follow-exec" in argv
     assert argv[-4:] == ["--", "/bin/curl", "-s", "https://x"]
+
+
+@pytest.mark.parametrize("anti_root,present", [(True, True), (False, False)])
+def test_argv_anti_root_flag(anti_root, present):
+    argv = build_argv(_req(anti_root=anti_root), CMD)
+    assert ("--anti_root" in argv) is present
+    if present:
+        assert argv.index("--anti_root") < argv.index("--")
+
+
+def test_request_from_params_anti_root_default_and_display_argv():
+    assert capture_service.request_from_params({"target": "com.app"}).anti_root is False
+    req = capture_service.request_from_params({"target": "com.app", "anti_root": True})
+    assert req.anti_root is True
+    assert "--anti_root" in capture_service.display_argv(req)
 
 
 @pytest.mark.parametrize("device,host,expected", [
@@ -434,6 +452,28 @@ def test_mark_phase_t_rel_uses_session_clock(tmp_path):
     assert (entry["t"], entry["t_rel"]) == (102.5, 2.5)
 
 
+def test_mark_phase_entry_has_iso_utc_at(tmp_path):
+    session = CaptureSession("s1", _req(target="app", session_dir=tmp_path), [],
+                             clock=lambda: 1700000000.25)
+    entry = session.mark_phase("login")
+    assert entry["at"] == "2023-11-14T22:13:20Z"
+    parsed = datetime.strptime(entry["at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    assert parsed.timestamp() == int(entry["t"])
+    written = json.loads((tmp_path / PHASES_NAME).read_text().splitlines()[0])
+    assert written["at"] == entry["at"]
+
+
+@pytest.mark.parametrize("state", sorted(TERMINAL_STATES))
+def test_mark_phase_rejected_after_session_ended(tmp_path, state):
+    session = CaptureSession("s1", _req(target="app", session_dir=tmp_path), [])
+    session._tracker.state = state
+    with pytest.raises(ToolError) as info:
+        session.mark_phase("late")
+    assert info.value.error_type == "bad_param"
+    assert info.value.extra["param"] == "session_id"
+    assert not (tmp_path / PHASES_NAME).exists()
+
+
 @pytest.mark.parametrize("lines,stop_requested,expected", [
     ([], False, None),
     (['{"type":"stream_start"}'], False, None),
@@ -545,6 +585,48 @@ def test_tools_capture_round_trip(tool_registry, ctx):
     assert final["state"] == "stopped"
     listed = tool_registry.call("list_sessions", {}, context=ctx)["sessions"]
     assert [row["session_id"] for row in listed] == [sid]
+
+
+def test_tools_mark_phase_strips_label_and_returns_at(tool_registry, ctx):
+    sid = tool_registry.call("start_capture", {"target": "app"}, context=ctx)["session_id"]
+    phase = tool_registry.call("mark_phase", {"session_id": sid, "label": "  login  "},
+                               context=ctx)
+    assert phase["label"] == "login"
+    assert datetime.strptime(phase["at"], "%Y-%m-%dT%H:%M:%SZ")
+    assert tool_registry.call("capture_status", {"session_id": sid},
+                              context=ctx)["phases"][0]["at"] == phase["at"]
+
+
+@pytest.mark.parametrize("label", [" ", "\t\n  "])
+def test_tools_mark_phase_rejects_blank_label(tool_registry, ctx, label):
+    sid = tool_registry.call("start_capture", {"target": "app"}, context=ctx)["session_id"]
+    with pytest.raises(ToolError) as info:
+        tool_registry.call("mark_phase", {"session_id": sid, "label": label}, context=ctx)
+    assert info.value.error_type == "bad_param"
+    assert info.value.extra["param"] == "label"
+
+
+def test_tools_mark_phase_rejects_stopped_session(tool_registry, ctx):
+    sid = tool_registry.call("start_capture", {"target": "app"}, context=ctx)["session_id"]
+    tool_registry.call("stop_capture", {"session_id": sid}, context=ctx)
+    with pytest.raises(ToolError) as info:
+        tool_registry.call("mark_phase", {"session_id": sid, "label": "late"}, context=ctx)
+    assert info.value.error_type == "bad_param"
+
+
+def test_mark_phase_label_and_phase_at_documented(tool_registry):
+    label = tool_registry.get("mark_phase").params_schema["properties"]["label"]
+    assert "diff phase_a/phase_b" in label["description"]
+    assert "at" in tool_registry.get("mark_phase").result_schema["properties"]
+
+
+def test_help_json_shows_anti_root(tool_registry):
+    out, err = io.StringIO(), io.StringIO()
+    code = QueryCli(tool_registry, out, err).run(["start_capture", "--help-json"])
+    assert code == 0
+    anti_root = json.loads(out.getvalue())["params_schema"]["properties"]["anti_root"]
+    assert anti_root["type"] == "boolean" and anti_root["default"] is False
+    assert "--anti_root" in anti_root["description"]
 
 
 def test_tools_reject_unknown_protocol(tool_registry, ctx):

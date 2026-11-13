@@ -258,7 +258,12 @@ def _sha(data: bytes) -> str:
 # passes never produced them, so a fingerprint only covers one when it carries
 # a non-default value (a real behaviour change); left at its default it must
 # not perturb the recorded "fields" digest (the ground truth is frozen).
-_FIELDS_ADDED_AFTER_RECORDING = frozenset({"quic_payload", "library"})
+_FIELDS_ADDED_AFTER_RECORDING = frozenset({
+    "quic_payload", "library",
+    # Option 5 (synthetic endpoints for fd-less connections).
+    "endpoints_synthetic", "observed_src_addr", "observed_src_port",
+    "observed_dst_addr", "observed_dst_port", "observed_ss_family",
+})
 
 
 def _is_unrecorded_default(event, name: str, value) -> bool:

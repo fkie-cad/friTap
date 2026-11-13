@@ -214,6 +214,112 @@ def test_diff_rejects_incomplete_or_mixed_modes(registry, ctx, before_after, par
     assert _error(registry, "diff", params, ctx).error_type == "bad_param"
 
 
+@pytest.mark.parametrize("params", [
+    {"tap_a": "a.tap", "session_a": "s1", "tap_b": "b.tap"},     # two sources for side A
+    {"session_a": "s1"},                                         # side B missing
+    {"tap": "a.tap", "session_id": "s1", "phase_a": "x", "phase_b": "y"},
+    {"session_a": "s1", "session_b": "s2", "session_id": "s3", "phase_a": "x", "phase_b": "y"},
+])
+def test_diff_rejects_ambiguous_session_sources(registry, ctx, before_after, params):
+    assert _error(registry, "diff", params, ctx).error_type == "bad_param"
+
+
+# ---------------------------------------------------------------------------
+# diff: session sources
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def sessions(monkeypatch, tmp_path):
+    """Map session ids to taps via the capture manager hook (as read tools resolve them)."""
+    import friTap.agent_api.capture.manager as manager
+
+    table = {"sess-a": tmp_path / "a.tap", "sess-b": tmp_path / "b.tap"}
+
+    def tap_path_for(session_id):
+        if session_id not in table:
+            raise ToolError(f"unknown capture session {session_id!r}", "not_found")
+        return table[session_id]
+
+    monkeypatch.setattr(manager, "tap_path_for", tap_path_for)
+    return table
+
+
+def test_diff_two_sessions_labelled_by_session_id(registry, ctx, before_after, sessions):
+    out = registry.call("diff", {"session_a": "sess-a", "session_b": "sess-b"}, context=ctx)
+    assert (out["a"], out["b"]) == ("sess-a", "sess-b")
+    assert out["summary"] == {"endpoints_a": 2, "endpoints_b": 2,
+                              "added": 1, "removed": 1, "changed": 1}
+
+
+@pytest.mark.parametrize("params, labels", [
+    ({"tap_a": "a.tap", "session_b": "sess-b"}, ("a.tap", "sess-b")),
+    ({"session_a": "sess-a", "tap_b": "b.tap"}, ("sess-a", "b.tap")),
+])
+def test_diff_mixed_tap_and_session_sources(registry, ctx, before_after, sessions,
+                                            params, labels):
+    out = registry.call("diff", params, context=ctx)
+    assert (out["a"], out["b"]) == labels and out["summary"]["changed"] == 1
+
+
+def test_diff_unknown_session_is_not_found(registry, ctx, before_after, sessions):
+    err = _error(registry, "diff", {"tap_a": "a.tap", "session_b": "nope"}, ctx)
+    assert err.error_type == "not_found"
+
+
+def test_diff_phases_from_session(registry, ctx, tmp_path, monkeypatch):
+    import friTap.agent_api.capture.manager as manager
+
+    session_dir = tmp_path / "sessions" / "s1"
+    session_dir.mkdir(parents=True)
+    _write_phased_capture(session_dir)
+    monkeypatch.setattr(manager, "tap_path_for", lambda sid: session_dir / "phased.tap")
+    out = registry.call("diff", {"session_id": "s1", "phase_a": "warmup", "phase_b": "active"},
+                        context=ctx)
+    assert out["mode"] == "phases" and (out["a"], out["b"]) == ("warmup", "active")
+    assert out["summary"]["added"] == 1 and out["summary"]["removed"] == 1
+
+
+# ---------------------------------------------------------------------------
+# diff: phase label validation
+# ---------------------------------------------------------------------------
+
+def _write_phased_capture(directory):
+    _write_tap(directory / "phased.tap", [
+        _http_flow("warm", method="GET", url="/ping", status=200, started=1500.0),
+        _http_flow("act", method="GET", url="/track/55", status=200, started=2500.0),
+    ], keylog=False)
+    (directory / "phases.jsonl").write_text(
+        json.dumps({"t": 1000.0, "label": "warmup"}) + "\n"
+        + json.dumps({"t": 2000.0, "label": "active"}) + "\n", encoding="utf-8")
+
+
+@pytest.mark.parametrize("key, params", [
+    ("phase_a", {"phase_a": "warmpu", "phase_b": "active"}),
+    ("phase_b", {"phase_a": "warmup", "phase_b": "activ"}),
+])
+def test_diff_unknown_phase_label_suggests(registry, ctx, tmp_path, key, params):
+    _write_phased_capture(tmp_path)
+    err = _error(registry, "diff", {"tap": "phased.tap", **params}, ctx)
+    assert err.error_type == "bad_param" and err.extra["param"] == key
+    assert err.extra["known_labels"] == ["warmup", "active"]
+    assert "warmup, active" in err.error and err.hint.startswith("did you mean: ")
+
+
+def test_diff_unrelated_phase_label_lists_valid(registry, ctx, tmp_path):
+    _write_phased_capture(tmp_path)
+    err = _error(registry, "diff", {"tap": "phased.tap", "phase_a": "warmup",
+                                    "phase_b": "zzzzzz"}, ctx)
+    assert err.error_type == "bad_param" and err.hint == "valid: warmup, active"
+
+
+def test_diff_empty_phases_file_is_clean_error(registry, ctx, tmp_path):
+    _write_tap(tmp_path / "phased.tap", [_http_flow("a", url="/x")], keylog=False)
+    (tmp_path / "phases.jsonl").write_text("\nnot json\n", encoding="utf-8")
+    err = _error(registry, "diff",
+                 {"tap": "phased.tap", "phase_a": "warmup", "phase_b": "active"}, ctx)
+    assert err.error_type == "not_found" and "no valid markers" in err.error
+
+
 def test_diff_annotates_host_with_attribution(registry, ctx, tmp_path):
     _write_tap(tmp_path / "empty.tap", [], keylog=False)
     _write_tap(tmp_path / "ga.tap",

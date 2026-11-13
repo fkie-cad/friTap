@@ -30,6 +30,13 @@ def is_internal_event(event: "FriTapEvent") -> bool:
     return type(event).__name__ in INTERNAL_EVENTS
 
 
+def is_hidden_agent_dev_log(event: "FriTapEvent", include_agent_dev_logs: bool) -> bool:
+    """True for an agent developer diagnostic (devlog/console_dev) that stays
+    out of the JSONL output because debug output (-d / -do) is off."""
+    from ..events import is_agent_dev_console
+    return not include_agent_dev_logs and is_agent_dev_console(event)
+
+
 class JsonlOutputHandler(OutputHandler):
     """Writes one JSON object per line for streaming pipelines."""
 
@@ -38,12 +45,15 @@ class JsonlOutputHandler(OutputHandler):
     # plaintext read/write hooks on.
     consumes_plaintext = True
 
-    def __init__(self, output_path: str, include_key_material: bool = False) -> None:
+    def __init__(self, output_path: str, include_key_material: bool = False,
+                 include_agent_dev_logs: bool = False) -> None:
         self._path = output_path
         self._file: Optional[IO] = None
         self._logger = logging.getLogger("friTap.output.jsonl")
         # Raw key_data/payload in KeylogEvent lines only on opt-in (-k / --json-keys).
         self._include_key_material = include_key_material
+        # Agent dev diagnostics (ConsoleEvent origin "agent_dev") only with -d / -do.
+        self._include_agent_dev_logs = include_agent_dev_logs
 
     def setup(self, event_bus: "EventBus") -> None:
         from ..events import FriTapEvent
@@ -53,8 +63,13 @@ class JsonlOutputHandler(OutputHandler):
         self._file, _created = open_shared_output_file(self._path, "w")
         event_bus.subscribe(FriTapEvent, self._on_any_event)
 
+    def _is_excluded(self, event: "FriTapEvent") -> bool:
+        """True for events that never become a JSONL line of this handler."""
+        return (is_internal_event(event)
+                or is_hidden_agent_dev_log(event, self._include_agent_dev_logs))
+
     def _on_any_event(self, event: "FriTapEvent") -> None:
-        if not self._file or is_internal_event(event):
+        if not self._file or self._is_excluded(event):
             return
         self._write_record(self._build_record(event))
 

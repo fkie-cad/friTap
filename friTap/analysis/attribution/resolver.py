@@ -84,8 +84,13 @@ class Attribution:
         }
 
 
-def _normalize_host(host: str) -> str:
-    """Lowercase, strip surrounding whitespace and any trailing dot."""
+def normalize_hostname(host: str) -> str:
+    """Lowercase, strip surrounding whitespace and any trailing dot.
+
+    A bare DNS name: a ``:port`` is NOT stripped (tracker matching relies on
+    that); :func:`friTap.analysis.attribution.sdk.normalize_host` is the
+    port/IPv6-aware wrapper around this core.
+    """
     return host.strip().rstrip(".").lower()
 
 
@@ -156,7 +161,7 @@ class _PublicSuffixList:
 
     def registrable_domain(self, host: str) -> Optional[str]:
         """Return the eTLD+1 of ``host``, or ``None`` if it has none."""
-        labels = _split_labels(_normalize_host(host))
+        labels = _split_labels(normalize_hostname(host))
         if not labels:
             return None
         suffix_len = len(self._public_suffix_labels(labels))
@@ -194,7 +199,7 @@ class TrackerResolver:
         for domain, meta in entries.items():
             if not isinstance(meta, dict):
                 continue
-            normalized[_normalize_host(domain)] = {
+            normalized[normalize_hostname(domain)] = {
                 "owner": meta.get("owner"),
                 "category": meta.get("category"),
             }
@@ -222,7 +227,7 @@ class TrackerResolver:
         result: set = set()
         for raw in first_party_domains:
             registrable = self._psl.registrable_domain(raw)
-            result.add(registrable if registrable else _normalize_host(raw))
+            result.add(registrable if registrable else normalize_hostname(raw))
         return result
 
     def classify(self, host: str, first_party_domains: Iterable[str] = ()) -> Attribution:
@@ -232,7 +237,7 @@ class TrackerResolver:
         :param first_party_domains: domains considered first-party for this
             capture; each is reduced to its registrable domain before matching.
         """
-        normalized = _normalize_host(host)
+        normalized = normalize_hostname(host)
         registrable = self._psl.registrable_domain(normalized)
         entry = self._lookup(normalized, registrable)
         owner = entry["owner"] if entry else None

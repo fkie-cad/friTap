@@ -16,7 +16,7 @@ import pytest
 
 import friTap.friTap as fritap_cli
 from friTap.analysis.digest import SCHEMA as DIGEST_SCHEMA
-from friTap.analysis.digest import build_digest
+from friTap.analysis.digest import build_digest, scan_flows
 from friTap.events import DatalogEvent, ErrorEvent, EventBus, KeylogEvent
 from friTap.exit_codes import EXIT_RUNTIME_ERROR
 from friTap.output import stdout_stream
@@ -167,13 +167,74 @@ def test_digest_validates(digest_tap):
     _assert_valid(_validator(DIGEST_SCHEMA_FILE), digest)
 
 
+def test_masvs_and_attribution_digest_validates(digest_tap):
+    digest = build_digest(digest_tap, masvs=True, attribute=True, first_party=["example.test"])
+    assert any(row.get("masvs") for row in digest["findings"]["top"]), "fixture should map to MASVS"
+    _assert_valid(_validator(DIGEST_SCHEMA_FILE), digest)
+
+
 def test_truncated_digest_validates(digest_tap):
     digest = build_digest(digest_tap, budget_tokens=50, focus="security", protocol="tls")
     assert digest["truncated"] is not False
     _assert_valid(_validator(DIGEST_SCHEMA_FILE), digest)
 
 
+_FB_SDK = {"sdk": "Facebook SDK", "vendor": "Meta", "category": "social"}
+
+
+def test_digest_with_sdk_from_tap_validates(tmp_path):
+    """Regression: host/endpoint ``sdks`` were missing from the strict schema."""
+    flow = _http_flow("sdk-1", host="graph.facebook.com", url="/v1/events")
+    flow.sdk = dict(_FB_SDK)
+    digest = build_digest(_write_tap(tmp_path / "sdk.tap", [flow]))
+    group = next(iter(digest["protocols"].values()))
+    assert group["hosts"][0]["sdks"] == [_FB_SDK]
+    assert group["endpoints"][0]["sdks"] == [_FB_SDK]
+    _assert_valid(_validator(DIGEST_SCHEMA_FILE), digest)
+
+
+def test_digest_with_sdk_and_attribution_validates():
+    """A flow carrying ``sdk`` + two-tier ``attribution`` yields a strict-valid digest.
+
+    ``attribution`` cannot round-trip a ``.tap`` yet, so the flow is digested
+    in memory via :func:`scan_flows`.
+    """
+    flow = _http_flow("sdk-1", host="graph.facebook.com", url="/v1/events")
+    flow.sdk = {"sdk": "OkHttp", "vendor": "Square", "category": "network"}
+    flow.attribution = {
+        "transport": {"module": "libcronet.so", "kind": "cronet"},
+        "originator": dict(_FB_SDK), "confidence": "high",
+        "source": "backtrace", "bucket": "sdk", "mixed": False,
+    }
+    digest = build_digest("(in memory)", attribute=True, scan=scan_flows([flow]))
+    host = next(iter(digest["protocols"].values()))["hosts"][0]
+    assert host["sdks"] == [_FB_SDK] and host["transports"] == ["cronet"]
+    _assert_valid(_validator(DIGEST_SCHEMA_FILE), digest)
+
+
+def test_digest_schema_rejects_malformed_sdk_entry(tmp_path):
+    flow = _http_flow("sdk-1", host="graph.facebook.com", url="/v1/events")
+    flow.sdk = dict(_FB_SDK)
+    digest = build_digest(_write_tap(tmp_path / "sdk.tap", [flow]))
+    next(iter(digest["protocols"].values()))["hosts"][0]["sdks"][0]["extra"] = "x"
+    assert not _validator(DIGEST_SCHEMA_FILE).is_valid(digest)
+
+
 def test_digest_schema_rejects_malformed_ref(digest_tap):
     digest = build_digest(digest_tap)
     next(iter(digest["protocols"].values()))["hosts"][0]["ref"] = "flow:abc"
+    assert not _validator(DIGEST_SCHEMA_FILE).is_valid(digest)
+
+
+def test_digest_schema_accepts_finding_refs(digest_tap):
+    digest = build_digest(digest_tap)
+    row = digest["findings"]["top"][0]
+    assert row["refs"] and row["refs"][0] == row["ref"]
+    row["refs_more"] = 3
+    _assert_valid(_validator(DIGEST_SCHEMA_FILE), digest)
+
+
+def test_digest_schema_rejects_malformed_finding_refs(digest_tap):
+    digest = build_digest(digest_tap)
+    digest["findings"]["top"][0]["refs"] = ["flow:abc"]
     assert not _validator(DIGEST_SCHEMA_FILE).is_valid(digest)

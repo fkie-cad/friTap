@@ -9,7 +9,8 @@
 Parameter flags are generated from the tool's JSON-Schema: string/integer/
 number -> ``--name VALUE`` (``--max-bytes`` and ``--max_bytes`` both work),
 boolean -> ``--name`` / ``--no-name``, enum -> fixed choices, array -> comma
-list and/or repeated flag, object -> JSON string. Sources merge in the order
+list and/or repeated flag (array of objects -> one item per repeated flag, a
+JSON object or a string the tool interprets), object -> JSON string. Sources merge in the order
 ``--params-file`` < ``--json`` < flags.
 
 The context switch ``--allow-secrets`` is the server-side policy; a keylog
@@ -113,6 +114,12 @@ def base_type(prop: dict[str, Any]) -> str:
     return kind
 
 
+def items_allow_objects(items: dict[str, Any]) -> bool:
+    """True when an array's ``items`` schema accepts objects (directly or via ``anyOf``)."""
+    branches = items.get("anyOf", [items])
+    return any(base_type(branch) == "object" for branch in branches)
+
+
 def option_strings(name: str) -> list[str]:
     """``--max-bytes`` plus the literal ``--max_bytes`` alias when they differ."""
     dashed = "--" + name.replace("_", "-")
@@ -125,7 +132,8 @@ def _argument_kwargs(prop: dict[str, Any]) -> dict[str, Any]:
     if kind == "boolean":
         return {"action": argparse.BooleanOptionalAction}
     if kind == "array":
-        return {"action": "append", "metavar": "A,B"}
+        object_items = items_allow_objects(prop.get("items", {}))
+        return {"action": "append", "metavar": "ITEM" if object_items else "A,B"}
     if kind == "object":
         return {"type": _json_value, "metavar": "JSON"}
     kwargs: dict[str, Any] = {"type": _SCALAR_PARSERS.get(kind, str)}
@@ -138,6 +146,8 @@ def _argument_kwargs(prop: dict[str, Any]) -> dict[str, Any]:
 
 def _param_help(name: str, prop: dict[str, Any], required: set[str]) -> str:
     text = prop.get("description", "")
+    if base_type(prop) == "array" and items_allow_objects(prop.get("items", {})):
+        text += " Repeat the flag, one item each (no comma splitting); a JSON object is accepted."
     if name in required:
         text += " (required)"
     if "default" in prop:
@@ -163,7 +173,22 @@ def add_param_flags(parser: argparse.ArgumentParser, schema: dict[str, Any]) -> 
     return flagged
 
 
+def _object_items(name: str, values: list[str]) -> list[Any]:
+    """One item per flag occurrence: a ``{...}`` token is a JSON object, else a string.
+
+    Commas are not split (a GPS fix ``48.1,11.5`` is one value); strings are
+    left for the tool to interpret (e.g. the ``find_values`` shorthand).
+    """
+    items = []
+    for value in values:
+        text = value.strip()
+        items.append(load_json_object(text, f"--{name}") if text.startswith("{") else text)
+    return [item for item in items if item != ""]
+
+
 def _split_array(name: str, values: list[str], items: dict[str, Any]) -> list[Any]:
+    if items_allow_objects(items):
+        return _object_items(name, values)
     convert = _SCALAR_PARSERS.get(base_type(items), str)
     parts = [part.strip() for value in values for part in value.split(",")]
     try:

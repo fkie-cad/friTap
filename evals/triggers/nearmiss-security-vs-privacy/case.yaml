@@ -1,0 +1,25 @@
+schema_version: "1.1"
+name: trigger-nearmiss-security-vs-privacy
+description: 'credentials/API keys: security audit, not privacy audit'
+tags: [trigger, nearmiss]
+runs: 3
+execution:
+  max_turns: 3
+  timeout_seconds: 120
+  allowed_tools: [Skill]
+  prompt: |
+    Check the app traffic for hardcoded API keys, bearer tokens and passwords sent in cleartext - this is for the OWASP MASTG report, not a privacy review.
+graders:
+  - name: fires-fritap-security-audit
+    type: tool_used
+    tool: Skill
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?fritap-security-audit"'
+    min: 1
+    arm: both
+  - name: not-fritap-privacy-audit
+    type: tool_used
+    tool: Skill
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?fritap-privacy-audit"'
+    min: 0
+    max: 0
+    arm: both

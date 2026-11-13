@@ -1,0 +1,18 @@
+schema_version: "1.1"
+name: trigger-telegram-2
+description: 'German-English: decrypt MTProto pcap'
+tags: [trigger, positive]
+runs: 3
+execution:
+  max_turns: 3
+  timeout_seconds: 120
+  allowed_tools: [Skill]
+  prompt: |
+    I have a pcap from Telegram and the MTPROTO keys from friTap. How I can decrypt the MTProto messages offline?
+graders:
+  - name: fires-fritap-telegram
+    type: tool_used
+    tool: Skill
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?fritap-telegram"'
+    min: 1
+    arm: both

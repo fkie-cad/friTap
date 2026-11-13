@@ -1,0 +1,18 @@
+schema_version: "1.1"
+name: trigger-leak-proof-1
+description: 'terse: GAID sent to third parties?'
+tags: [trigger, positive]
+runs: 3
+execution:
+  max_turns: 3
+  timeout_seconds: 120
+  allowed_tools: [Skill]
+  prompt: |
+    does com.weather.free send my advertising id 38400000-8cf0-11bd-b23e-10b96e40000d anywhere? need proof from the capture
+graders:
+  - name: fires-fritap-leak-proof
+    type: tool_used
+    tool: Skill
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?fritap-leak-proof"'
+    min: 1
+    arm: both

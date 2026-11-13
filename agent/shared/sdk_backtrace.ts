@@ -17,15 +17,22 @@
 
 import { attribute_sdk } from "../fritap_agent.js";
 import { Java } from "./javalib.js";
+import { devlog } from "../util/log.js";
 import { sendCallerStack, CallerStackJoin, CallerFrame } from "./shared_structures.js";
+import {
+    forgetSslIdentity, isLayoutLocatorSettled, isSslLayoutUsable, peekSslGeneration, readSslClientRandom, sslGeneration,
+} from "./ssl_identity.js";
+import {
+    CallerStackCache, CallerStackCacheDeps, CapturedFrames, joinHasClientRandom, joinHasTuple, recordJoinFields, safeJoin,
+} from "./caller_stack_cache.js";
+
+export { CallerStackCache, recordJoinFields } from "./caller_stack_cache.js";
 
 /** Cap per stack so a pathological frame count cannot bloat the message. */
 const MAX_FRAMES = 32;
 
-// One capture per SSL object. Keyed by the SSL pointer string so every record of
-// a connection after the first is skipped. Evicted on SSL_free via forgetSsl()
-// (called from the SSL_free scope hook in socket_fd_tracker.ts) so a reused
-// pointer is attributed again. Stays empty while --attribute-sdk is off.
+// Legacy per-SSL* dedup set, superseded by the (SSL*, generation) CallerStackCache
+// below; kept declared (and still cleared by forgetSsl) for compatibility.
 const seenSsl = new Set<string>();
 
 /**
@@ -64,15 +71,31 @@ function captureNativeFrames(context: CpuContext): CallerFrame[] {
     return symbolizeNativeFrames(addrs);
 }
 
-/** Top-down Java class-name stack, capped to MAX_FRAMES; empty when no Java VM.
- *  Every failure is swallowed so a Java problem never breaks native capture. */
-function captureJavaFrames(): string[] {
-    if (typeof Java === "undefined" || !Java.available) return [];
+/**
+ * True only when a Java VM exists AND the current thread is already attached to
+ * it (`vm.tryGetEnv()` non-null). A BoringSSL hook often runs on a pure native
+ * thread (Chromium's network thread): attaching it from inside the hook (what
+ * Java.perform would do) is never allowed.
+ */
+export function currentThreadHasJavaEnv(bridge: any = Java): boolean {
+    try {
+        if (typeof bridge === "undefined" || !bridge || !bridge.available || !bridge.vm) return false;
+        return bridge.vm.tryGetEnv() != null;
+    } catch (_e) {
+        return false;
+    }
+}
+
+/** Top-down Java class-name stack, capped to MAX_FRAMES; empty when no Java VM or
+ *  the current thread is not attached to it. Every failure is swallowed so a Java
+ *  problem never breaks native capture. `bridge` is injectable for tests. */
+export function captureJavaFrames(bridge: any = Java): string[] {
+    if (!currentThreadHasJavaEnv(bridge)) return [];
     const out: string[] = [];
     try {
-        Java.perform(() => {
+        bridge.perform(() => {
             try {
-                const JavaThread = Java.use("java.lang.Thread");
+                const JavaThread = bridge.use("java.lang.Thread");
                 const elems = JavaThread.currentThread().getStackTrace();
                 for (let i = 0; i < elems.length && out.length < MAX_FRAMES; i++) {
                     try { out.push(elems[i].getClassName()); } catch (_e) { /* skip one frame */ }
@@ -83,42 +106,128 @@ function captureJavaFrames(): string[] {
     return out;
 }
 
+/** Linux/Android thread name of `tid` from procfs ("" elsewhere or on error). */
+export function readProcThreadName(tid: number): string {
+    if (Process.platform !== "linux") return "";
+    try {
+        return File.readAllText(`/proc/self/task/${tid}/comm`).trim();
+    } catch (_e) {
+        return "";
+    }
+}
+
 /**
- * Capture the caller stack for `ssl` once, behind the opt-in flag.
+ * A client_random can still arrive for `module` while its layout locator runs, or
+ * once its layout is usable. A settled module with no layout, or with one that is
+ * not usable (e.g. an unconfirmed stock guess on a one-connection app), cannot
+ * produce one, so a held caller_stack falls back to its 5-tuple. A usable layout
+ * that still yields nothing is covered by the cache's offer-count fallback.
+ */
+export function clientRandomMayArrive(module: string): boolean {
+    if (!isLayoutLocatorSettled(module)) return true;
+    return isSslLayoutUsable(module);
+}
+
+const fridaCallerStackDeps: CallerStackCacheDeps = {
+    send: (join, javaFrames, nativeFrames, meta) => sendCallerStack(join, javaFrames, nativeFrames, meta),
+    capture: (context): CapturedFrames => ({
+        native: captureNativeFrames(context as CpuContext),
+        java: captureJavaFrames(),
+    }),
+    now: () => Date.now(),
+    currentThreadId: () => Process.getCurrentThreadId(),
+    pid: () => Process.id,
+    readThreadName: readProcThreadName,
+    clientRandomMayArrive,
+    onDroppedUnsent: (total, reason, ageMs) =>
+        devlog(`[sdk-attribution] dropped an unsent caller_stack (${reason}, held ${ageMs} ms; ${total} total)`),
+};
+
+// One entry per (SSL*, generation); inert (empty) while --attribute-sdk is off.
+const callerStacks = new CallerStackCache(fridaCallerStackDeps);
+
+export interface CallerStackCaptureOptions {
+    /** Module of the hooked TLS function, reported as transport_module and used for the send policy. */
+    transportModule?: string;
+}
+
+/** The join provider's fields, plus the connection's client_random when it is cheaply known. */
+function joinWithClientRandom(ssl: NativePointer, join: () => CallerStackJoin, module: string): CallerStackJoin {
+    const fields = safeJoin(join);
+    if (!joinHasClientRandom(fields)) {
+        try {
+            const cr = readSslClientRandom(ssl, module);
+            if (cr) fields.client_random = cr;
+        } catch (_e) { /* best-effort */ }
+    }
+    return fields;
+}
+
+/**
+ * Capture the caller stack for `ssl` once per (SSL*, generation), behind the opt-in flag.
  *
- * Inert when --attribute-sdk is off (first-line return). On the first plaintext
- * record of each connection it emits ONE additive `caller_stack` message; later
- * records of the same SSL object are skipped (dedup by pointer).
+ * Inert when --attribute-sdk is off (first-line return). Call it from the hook's
+ * onEnter: the frames are unwound there, once. The `caller_stack` message is sent
+ * immediately when the join has a client_random; otherwise it is held and sent by
+ * offerCallerStackJoin() when a record of the connection carries one (or a 5-tuple,
+ * once no client_random can arrive for the module). Sent at most once.
  *
- * @param ssl      SSL object pointer (dedup key).
+ * @param ssl      SSL object pointer (dedup key, with its generation).
  * @param context  CpuContext of the hooked thread (the hook's onEnter context),
  *                 used as the backtrace origin.
  * @param join     Lazy provider of the connection-join fields. Invoked only on
  *                 the first capture of a connection, so no SSL state is read when
  *                 the flag is off or the connection was already seen.
+ * @param opts     Optional transport module of the hooked function.
  */
 export function maybeCaptureCallerStack(
     ssl: NativePointer,
     context: CpuContext,
     join: () => CallerStackJoin,
+    opts?: CallerStackCaptureOptions,
 ): void {
     if (!attribute_sdk) return;
-    const key = ssl.toString();
-    if (seenSsl.has(key)) return;
-    seenSsl.add(key);
-
-    let joinFields: CallerStackJoin;
-    try {
-        joinFields = join();
-    } catch (_e) {
-        joinFields = {};
-    }
-    const nativeFrames = captureNativeFrames(context);
-    const javaFrames = captureJavaFrames();
-    sendCallerStack(joinFields, javaFrames, nativeFrames);
+    const module = opts?.transportModule ?? "";
+    callerStacks.capture({
+        sslKey: ssl.toString(),
+        generation: sslGeneration(ssl),
+        module,
+        context,
+        join: () => joinWithClientRandom(ssl, join, module),
+    });
 }
 
-/** Forget an SSL object (SSL_free) so a reused pointer is attributed again. */
+/**
+ * A plaintext record of `ssl` was built: if its connection's caller stack is still
+ * held, send it once with the record's OWN client_random and 5-tuple (so the host
+ * join keys are byte-identical to the flow's). Inert when --attribute-sdk is off.
+ */
+export function offerCallerStackJoin(ssl: NativePointer, recordMessage: { [key: string]: any }): void {
+    if (!attribute_sdk || !ssl || !callerStacks.hasHeldEntries) return;
+    try {
+        const sslKey = ssl.toString();
+        const generation = sslGeneration(ssl);
+        if (!callerStacks.isHeld(sslKey, generation)) return;
+        const join = recordJoinFields(recordMessage);
+        if (!joinHasClientRandom(join) && !joinHasTuple(join)) return;
+        callerStacks.offer(sslKey, generation, join);
+    } catch (_e) {
+        // best-effort: attribution never breaks a record
+    }
+}
+
+/**
+ * Forget an SSL object (SSL_free): send its held caller_stack if joinable (else
+ * drop it) and start a new generation for the address. The generation is PEEKED,
+ * never created: under --modern the lifecycle hook's forgetSslIdentity() runs
+ * first, and a created generation would miss the freed connection's entry.
+ */
 export function forgetSsl(key: string): void {
     seenSsl.delete(key);
+    try {
+        const ssl = ptr(key);
+        const generation = peekSslGeneration(ssl);
+        if (generation !== null) callerStacks.forget(key, generation);
+        forgetSslIdentity(ssl);
+    } catch (_e) { /* best-effort */ }
 }

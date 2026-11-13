@@ -396,15 +396,16 @@ fritap -do -v --patterns patterns.json target_app
 # Use fixed addresses instead of scanning
 fritap --offsets offsets.json -k keys.log target_app
 
-# Force a full library scan (do not trust cached/known module lists)
-fritap --force-scan --patterns patterns.json -k keys.log target_app
+# Force the BoringSSL pattern scan on a specific module, even if friTap thinks a
+# sibling library already covers it (repeatable; 're:<regex>' or a trailing '*' also work)
+fritap --force-scan libflutter.so --patterns patterns.json -k keys.log target_app
 ```
 
 | Flag          | Purpose                                                                 |
 |---------------|-------------------------------------------------------------------------|
 | `--patterns`  | Supply byte signatures (deep-merged on top of shipped defaults).        |
 | `--offsets`   | Supply fixed addresses/offsets (separate from `--patterns`).            |
-| `--force-scan`| Force a fresh library scan instead of relying on known module lists.    |
+| `--force-scan <module>` | Force the BoringSSL pattern scan on `<module>` even if friTap skips it as covered by a sibling library (e.g. the Cronet APEX split). Repeatable; also `FRITAP_FORCE_SCAN`. |
 | `-do`         | Emit debug output, including per-pattern scan diagnostics.              |
 
 ## Real-world examples

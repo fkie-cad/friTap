@@ -62,6 +62,19 @@ def _tokenize_spawn_command(command: str) -> list[str] | None:
         return None
 
 
+def _pid_target_process_name(state) -> str | None:
+    """The process name the process picker resolved for a numeric-PID target
+    (``state.target_display``, e.g. "Chrome"), else ``None``.
+
+    Attaching to a running process sets ``state.target`` to its PID, which tells
+    the flow collector's transport classifier nothing; the picker already knows
+    the name, so no device round-trip is needed.
+    """
+    target = str(getattr(state, "target", "") or "")
+    display = getattr(state, "target_display", "") or ""
+    return display if target.isdigit() and display else None
+
+
 def _selected_protocols(state) -> list[str]:
     """The TUI state's protocol set, with the primary ``state.protocol`` first.
 
@@ -476,6 +489,8 @@ class CaptureController:
         if session_running:
             # Subscribe for future completed flows during live capture
             self._flow_collector.subscribe(writer.on_flow_event)
+            # Finished Java request contexts (--attribute-sdk) -> .tap records.
+            self._flow_collector.set_request_context_sink(writer.write_request_context)
             self._tap_writer = writer
             self._screen._get_activity_log().log_info(
                 f"Saving capture to: [bold]{path}[/]"
@@ -493,6 +508,8 @@ class CaptureController:
     def stop_tap_recording(self) -> None:
         """Close the active TapWriter if any."""
         if self._tap_writer is not None:
+            if self._flow_collector is not None:
+                self._flow_collector.set_request_context_sink(None)
             try:
                 path = self._tap_writer.path
                 self._tap_writer.close()
@@ -750,7 +767,12 @@ class CaptureController:
                 # keys are recovered by the session-end offline reprocess below.
                 signal_messages = "signal" in _selected_protocols(state)
                 self._flow_collector = FlowCollector(signal_messages=signal_messages)
-                self._flow_collector.set_capture_target(state.target or "")
+                process_name = _pid_target_process_name(state)
+                if process_name:
+                    self._flow_collector.set_capture_target(
+                        state.target or "", process_name=process_name)
+                else:
+                    self._flow_collector.set_capture_target(state.target or "")
                 self._flow_collector.subscribe(self._on_flow_update)
             except ImportError:
                 self._flow_collector = None
@@ -877,35 +899,7 @@ class CaptureController:
 
             # Wire FlowCollector to event bus for data events
             if self._flow_collector is not None:
-                from friTap.events import (
-                    CallerStackEvent,
-                    DatalogEvent,
-                    KeylogEvent,
-                    LibraryDetectedEvent,
-                    OhttpEvent,
-                    SessionEvent,
-                )
-                self._ssl_logger._event_bus.subscribe(
-                    DatalogEvent, self._flow_collector.on_data
-                )
-                # Feed protocol key material to the live decryptor. A no-op unless
-                # the collector was built with signal_messages=True.
-                self._ssl_logger._event_bus.subscribe(
-                    KeylogEvent, self._flow_collector.on_keylog
-                )
-                self._ssl_logger._event_bus.subscribe(
-                    OhttpEvent, self._flow_collector.on_ohttp
-                )
-                self._ssl_logger._event_bus.subscribe(
-                    LibraryDetectedEvent, self._flow_collector.on_library_detected
-                )
-                self._ssl_logger._event_bus.subscribe(
-                    SessionEvent, self._flow_collector.on_session_event
-                )
-                # Opt-in SDK attribution (--attribute-sdk): resolved caller-stack SDK.
-                self._ssl_logger._event_bus.subscribe(
-                    CallerStackEvent, self._flow_collector.on_sdk
-                )
+                self._flow_collector.subscribe_to(self._ssl_logger._event_bus)
                 # Give FlowCollector access to EventBus for emitting FlowEvents
                 self._flow_collector.set_event_bus(self._ssl_logger._event_bus)
 
@@ -1531,6 +1525,8 @@ class CaptureController:
         # Flush flow collector so ACTIVE flows become COMPLETE
         flow_count = 0
         if self._flow_collector is not None:
+            # Also hands the still-live request contexts (--attribute-sdk) to
+            # the .tap writer's sink, which stays registered until it closes.
             self._flow_collector.flush()
             flow_count = len(self._flow_collector.get_flows())
 

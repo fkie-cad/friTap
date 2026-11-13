@@ -53,6 +53,7 @@ class CaptureRequest:
         capture: ``keys`` | ``plaintext`` | ``full`` (what is written to disk).
         duration_s: Capture stops cleanly after this many seconds.
         follow_exec: Spawn mode: follow the target across ``exec()``.
+        anti_root: Android: enable the anti-root-detection hooks (``--anti_root``).
     """
 
     target: str
@@ -66,6 +67,7 @@ class CaptureRequest:
     capture: str = DEFAULT_CAPTURE_MODE
     duration_s: int = DEFAULT_DURATION_S
     follow_exec: bool = True
+    anti_root: bool = False
 
     @property
     def tap_path(self) -> Path:
@@ -94,6 +96,7 @@ def build_argv(req: CaptureRequest, command: Optional[list[str]] = None) -> list
     argv += _output_flags(req)
     argv += ["--duration", str(req.duration_s), "--non-interactive", "-q", "-j", "-"]
     argv += [] if req.follow_exec else ["--no-follow-exec"]
+    argv += ["--anti_root"] if req.anti_root else []
     argv += _option_flags(req.protocol_options)
     return argv + ["--", req.target, *req.args]
 

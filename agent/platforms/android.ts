@@ -1,5 +1,5 @@
 import { hookRegistry, HookRegistry } from "../shared/registry.js";
-import { getModuleNames, ssl_library_loader, hookDynamicLoader, installOhttpHooks, installStealthDynamicLoader, installPairipSafeWatcher, isTlsFamilyRequested } from "../shared/shared_functions.js";
+import { getModuleNames, ssl_library_loader, hookDynamicLoader, installOhttpHooks, installStealthDynamicLoader, installPairipSafeWatcher, isTlsFamilyRequested, loadedModulePath } from "../shared/shared_functions.js";
 import { matchAntiTamper, warnAntiTamper, scanForAntiTamper, bannerAntiTamper } from "../util/anti_tamper.js";
 import { matchNonTLSLibrary, noteNonTLSLibrary } from "../util/non_tls_libs.js";
 import { Platform, PLATFORM_LINUX } from "../shared/shared_structures.js";
@@ -27,7 +27,7 @@ import { s2ntls_execute } from "../legacy/tls/platforms/android/s2ntls_android.j
 import { java_execute } from "../tls/platforms/android/android_java_tls_libs.js";
 import { flutter_execute, flutter_execute_modern } from "../tls/platforms/android/flutter_android.js";
 import { mono_btls_execute, mono_btls_execute_modern } from "../tls/platforms/android/mono_btls_android.js";
-import { patterns, isPatternReplaced, selected_protocols, use_modern, scan_results, library_scan_enabled, quic_only, no_loader_hook, spawned, stealth_loader, pairip_safe } from "../fritap_agent.js"
+import { patterns, isPatternReplaced, selected_protocols, use_modern, scan_results, library_scan_enabled, quic_only, no_loader_hook, spawned, stealth_loader, pairip_safe, attribute_sdk, pcap_enabled } from "../fritap_agent.js"
 import { processScanResults, isModuleHooked, markModuleHooked } from "../shared/library_scanner.js";
 import { buildPairipSafeRegistrations, matchPairipSafeLib, PairipExecutorTable } from "../shared/pairip_safe_libs.js";
 // Unity (statically-linked MbedTLS 3.x): offset-based master-secret scrape,
@@ -51,6 +51,7 @@ import { nss_hpke_execute_android } from "../ohttp/platforms/android/nss_hpke_an
 import { quiche_execute } from "../quic/platforms/android/quiche_android.js";
 import { google_quiche_execute } from "../quic/platforms/android/google_quiche_android.js";
 import { chromium_plaintext_execute } from "../tls/platforms/android/chromium_plaintext_android.js";
+import { installJavaRequestContextHooks, requestContextHooksWanted } from "../shared/java_request_context.js";
 import { neqo_execute } from "../quic/platforms/android/neqo_android.js";
 
 var plattform_name: Platform = PLATFORM_LINUX;
@@ -119,7 +120,7 @@ function install_pattern_based_hooks(){
                 try {
                     pattern_execute(candidate, true);
                     markModuleHooked(candidate, "tls");
-                    send({ contentType: "library_detected", library: candidate, path: "", protocol: "tls" });
+                    send({ contentType: "library_detected", library: candidate, path: loadedModulePath(candidate), protocol: "tls" });
                 } catch (e) {
                     devlog(`pattern_execute(${candidate}) threw: ${e}`);
                 }
@@ -276,6 +277,10 @@ export function load_android_hooking_agent() {
         // not a substring of "libmainlinecronet". Needs its own entry.
         { platform: plattform_name, pattern: /^libmainlinecronet\.[\d.]+\.so$/, hookFn: google_quiche_execute, library: "Google QUICHE (Mainline Cronet APEX)", libraryType: "google_quiche", protocol: "tls", supplementary: true },
         { platform: plattform_name, pattern: /.*monochrome.*\.so/, hookFn: google_quiche_execute, library: "Google QUICHE (Monochrome)", libraryType: "google_quiche", protocol: "tls", supplementary: true },
+        // Android 14+ mainline HttpEngine (android.net.http) statically links Cronet's
+        // QUICHE next to its BoringSSL. `supplementary` lets it coexist with the primary
+        // "httpengine (BoringSSL)" row above, which keeps owning keys + TCP plaintext.
+        { platform: plattform_name, pattern: /.*libhttpengine\.so/, hookFn: google_quiche_execute, library: "Google QUICHE (HttpEngine)", libraryType: "google_quiche", protocol: "tls", supplementary: true },
         // TCP TLS plaintext for the Chromium monoliths, whose BoringSSL is statically linked
         // and stripped: SSL_read/SSL_write are located via ssl_lib.cc error-site anchors
         // (tls/shared/boringssl_plaintext_locator.ts). `supplementary`: keys still come from
@@ -283,6 +288,10 @@ export function load_android_hooking_agent() {
         { platform: plattform_name, pattern: /.*monochrome.*\.so/, hookFn: chromium_plaintext_execute, library: "BoringSSL plaintext (Monochrome)", protocol: "tls", supplementary: true },
         { platform: plattform_name, pattern: /.*libchrome\.so/, hookFn: chromium_plaintext_execute, library: "BoringSSL plaintext (Chrome)", protocol: "tls", supplementary: true },
         { platform: plattform_name, pattern: /.*libwebviewchromium.*\.so/, hookFn: chromium_plaintext_execute, library: "BoringSSL plaintext (WebView Chromium)", protocol: "tls", supplementary: true },
+        // Stripped Cronet (embedded libcronet.<ver>.so and GMS Dynamite's): the Cronet row
+        // above only extracts keys when SSL_* are not exported. Builds that do export them
+        // are skipped inside chromium_plaintext (exportsSslRecordApi), so no double hooks.
+        { platform: plattform_name, pattern: /^libcronet([_.].*)?\.so$/, hookFn: chromium_plaintext_execute, library: "BoringSSL plaintext (Cronet)", protocol: "tls", supplementary: true },
         { platform: plattform_name, pattern: /.*libxul\.so/, hookFn: neqo_execute, library: "Mozilla Neqo (Firefox HTTP/3)", libraryType: "neqo", protocol: "tls", supplementary: true },
         // Hooks contributed by optional, separately bundled units (empty in the
         // public build; a full build's private unit registers its rows before the
@@ -437,6 +446,11 @@ export function load_android_hooking_agent() {
             }
             if (isPatternReplaced()) install_pattern_based_hooks();
         },
+    });
+    // Per-request Java context (--attribute-sdk, -p only). Its own phase, not the TLS-gated "java" phase.
+    if (requestContextHooksWanted({ attribute_sdk, pcap_enabled, pairip_safe, quic_only })) phases.push({
+        label: "java-request-context",
+        fn: () => installJavaRequestContextHooks(),
     });
     // --library-scan is the auto-detect-extra-BoringSSL pass. Deferred to the
     // last phase so it runs AFTER the base hooks (preserving the original

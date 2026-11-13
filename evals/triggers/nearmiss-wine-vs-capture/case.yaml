@@ -1,0 +1,25 @@
+schema_version: "1.1"
+name: trigger-nearmiss-wine-vs-capture
+description: 'Windows app on Linux via Wine: wine-schannel, not capture'
+tags: [trigger, nearmiss]
+runs: 3
+execution:
+  max_turns: 3
+  timeout_seconds: 120
+  allowed_tools: [Skill]
+  prompt: |
+    Capture the HTTPS traffic of a Windows program I run with Wine on my Debian laptop. It uses secur32/Schannel.
+graders:
+  - name: fires-fritap-wine-schannel
+    type: tool_used
+    tool: Skill
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?fritap-wine-schannel"'
+    min: 1
+    arm: both
+  - name: not-fritap-capture
+    type: tool_used
+    tool: Skill
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?fritap-capture"'
+    min: 0
+    max: 0
+    arm: both

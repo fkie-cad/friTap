@@ -178,9 +178,12 @@ class ProtocolLayer:
 class TlsLayer(ProtocolLayer):
     """TLS protocol layer.
 
-    Carries exactly the five fields mirrored from the legacy
+    Carries the five fields mirrored from the legacy
     ``friTap.flow.models.TlsMetadata`` value object, which this layer will
-    eventually replace.
+    eventually replace, plus ``client_random``: the hex ClientHello random the
+    agent stamped on the connection's records (live flows only). Like
+    :attr:`QuicLayer.library` it is serialized only when non-empty, so flows
+    without it keep their pre-existing ``to_dict`` shape.
     """
 
     NAME: ClassVar[str] = "tls"
@@ -190,10 +193,11 @@ class TlsLayer(ProtocolLayer):
     sni: str = ""
     alpn: str = ""
     cipher: str = ""
+    client_random: str = ""
 
     def is_empty(self) -> bool:
         return not (self.library or self.version or self.sni
-                    or self.alpn or self.cipher)
+                    or self.alpn or self.cipher or self.client_random)
 
     def to_dict(self) -> dict:
         d = super().to_dict()
@@ -204,6 +208,8 @@ class TlsLayer(ProtocolLayer):
             "alpn": self.alpn,
             "cipher": self.cipher,
         })
+        if self.client_random:
+            d["client_random"] = self.client_random
         return d
 
     @classmethod
@@ -215,6 +221,7 @@ class TlsLayer(ProtocolLayer):
         layer.sni = d.get("sni", "")
         layer.alpn = d.get("alpn", "")
         layer.cipher = d.get("cipher", "")
+        layer.client_random = d.get("client_random", "")
         return layer
 
 

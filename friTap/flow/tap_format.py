@@ -20,6 +20,20 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional
 
+from friTap.caller_stack_shapes import (
+    REQUEST_CONTEXT_FRAME_LIMIT,
+    REQUEST_CONTEXT_FRAME_TEXT_LIMIT,
+    REQUEST_CONTEXT_TEXT_LIMITS,
+    REQUEST_CONTEXT_URL_LIMIT,
+    bounded_strings,
+    capped_text,
+    finite_float,
+    optional_bool,
+    sanitize_caller_stack,
+    strict_int,
+)
+from friTap.flow.attribution import KIND_PATTERN, sanitize_attribution
+
 if TYPE_CHECKING:
     from friTap.flow.models import Flow
     from friTap.parsers.base import ParseResult
@@ -40,6 +54,11 @@ FLAG_HAS_INDEX = 0x0001
 # decide cheaply (header-only) whether the findings scan is worth running.
 # Additive: old files lack it, so absence means "unknown", not "no findings".
 FLAG_HAS_FINDINGS = 0x0002
+# Set at close() when at least one REC_REQUEST_CONTEXT record was written, so a
+# reader of a closed (indexed) file can skip the request-context scan. Additive
+# like FLAG_HAS_FINDINGS: files written before REC_REQUEST_CONTEXT existed
+# cannot contain such records, so an indexed file without it has none.
+FLAG_HAS_REQUEST_CONTEXTS = 0x0004
 
 # ---------------------------------------------------------------------------
 # Record types (u8)
@@ -49,6 +68,8 @@ REC_FLOW = 0x01
 REC_KEYLOG = 0x02
 REC_META = 0x03
 REC_FINDING = 0x04
+# Per-request Java context that may match no flow; see encode_request_context.
+REC_REQUEST_CONTEXT = 0x05
 REC_FLOW_INDEX = 0x10
 
 # ---------------------------------------------------------------------------
@@ -429,6 +450,108 @@ def decode_finding_record(payload: bytes) -> tuple[str, list[dict]]:
     return d.get("flow_id", ""), d.get("findings", [])
 
 
+# ---------------------------------------------------------------------------
+# REC_REQUEST_CONTEXT: one per-request Java context
+# ---------------------------------------------------------------------------
+
+#: Bounds of a request-context record. Everything in it comes from the target
+#: process (or a hand-crafted .tap), so it is re-bounded on write AND on read.
+#: Text and frame bounds are shared with the router (:mod:`friTap.caller_stack_shapes`).
+MAX_REQUEST_CONTEXT_REDIRECTS = 16
+MAX_REQUEST_CONTEXT_FLOW_IDS = 64
+#: Flow ids are host-generated but an IPv6 5-tuple id exceeds the compact cap.
+MAX_REQUEST_CONTEXT_FLOW_ID_LEN = 256
+#: Accepted HTTP status range (-1 = unknown, as Java stacks report it).
+_REQUEST_CONTEXT_STATUS_RANGE = range(-1, 1000)
+
+#: Escaped/capped string fields -> character limit. The record stores the event's
+#: ``negotiated_protocol`` as ``protocol``; ``stack_kind`` is slug-checked instead.
+_REQUEST_CONTEXT_TEXT_FIELDS = {
+    ("protocol" if name == "negotiated_protocol" else name): limit
+    for name, limit in REQUEST_CONTEXT_TEXT_LIMITS.items() if name != "stack_kind"
+}
+#: List-of-string fields -> (max entries, per-entry character limit).
+_REQUEST_CONTEXT_LIST_FIELDS = {
+    "frames": (REQUEST_CONTEXT_FRAME_LIMIT, REQUEST_CONTEXT_FRAME_TEXT_LIMIT),
+    "redirects": (MAX_REQUEST_CONTEXT_REDIRECTS, REQUEST_CONTEXT_URL_LIMIT),
+    "matched_flow_ids": (MAX_REQUEST_CONTEXT_FLOW_IDS, MAX_REQUEST_CONTEXT_FLOW_ID_LEN),
+}
+_REQUEST_CONTEXT_TIME_FIELDS = ("t_start", "t_end")
+_REQUEST_CONTEXT_BOOL_FIELDS = ("cached", "main_frame")
+#: Originator-claim keys bounded by friTap.flow.attribution.sanitize_attribution.
+_REQUEST_CONTEXT_ATTRIBUTION_KEYS = ("originator", "confidence", "source", "bucket")
+
+
+def _bounded_status(value: Any) -> Optional[int]:
+    """*value* when it is an int HTTP status in range (bools are rejected)."""
+    status = strict_int(value)
+    return status if status in _REQUEST_CONTEXT_STATUS_RANGE else None
+
+
+def _request_context_scalars(value: Mapping) -> dict:
+    """The text, time, status, bool and slug fields of *value*, bounded."""
+    clean: dict = {}
+    for key, limit in _REQUEST_CONTEXT_TEXT_FIELDS.items():
+        if isinstance(value.get(key), str):
+            clean[key] = capped_text(value[key], limit)
+    stack_kind = value.get("stack_kind")
+    if isinstance(stack_kind, str) and KIND_PATTERN.fullmatch(stack_kind):
+        clean["stack_kind"] = stack_kind
+    for key in _REQUEST_CONTEXT_TIME_FIELDS:
+        bounded_time = finite_float(value.get(key))
+        if bounded_time is not None:
+            clean[key] = bounded_time
+    status = _bounded_status(value.get("status"))
+    if status is not None:
+        clean["status"] = status
+    for key in _REQUEST_CONTEXT_BOOL_FIELDS:
+        flag = optional_bool(value.get(key))
+        if flag is not None:
+            clean[key] = flag
+    return clean
+
+
+def sanitize_request_context(value: Any) -> Optional[dict]:
+    """Re-bound an untrusted request-context dict: known keys only, strings escaped
+    and capped, lists capped, claim bounded like ``Flow.attribution``. ``None``
+    without a ``req_id``."""
+    if not isinstance(value, Mapping):
+        return None
+    clean = _request_context_scalars(value)
+    if not clean.get("req_id"):
+        return None
+    for key, (max_entries, text_limit) in _REQUEST_CONTEXT_LIST_FIELDS.items():
+        if isinstance(value.get(key), list):
+            clean[key] = bounded_strings(value[key], max_entries, text_limit)
+    claim = sanitize_attribution(
+        {key: value.get(key) for key in _REQUEST_CONTEXT_ATTRIBUTION_KEYS}
+    ) or {}
+    clean.update({key: claim[key] for key in _REQUEST_CONTEXT_ATTRIBUTION_KEYS if key in claim})
+    return clean
+
+
+def encode_request_context(record: Mapping) -> bytes:
+    """Encode a REC_REQUEST_CONTEXT payload (JSON, bounded by
+    :func:`sanitize_request_context`). Raises ``ValueError`` without a ``req_id``."""
+    clean = sanitize_request_context(record)
+    if clean is None:
+        raise ValueError("request context needs a non-empty string req_id")
+    return json.dumps(clean, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+def decode_request_context(payload: bytes) -> Optional[dict]:
+    """Decode a REC_REQUEST_CONTEXT payload, re-bounded as untrusted input.
+
+    ``None`` for undecodable JSON (incl. pathologically deep nesting) or a
+    record that does not survive :func:`sanitize_request_context`.
+    """
+    try:
+        value = json.loads(payload.decode("utf-8", errors="replace"))
+    except (ValueError, RecursionError):
+        return None
+    return sanitize_request_context(value)
+
+
 def encode_flow(flow: "Flow") -> bytes:
     """Encode a Flow object into a FLOW record payload.
 
@@ -525,6 +648,15 @@ def encode_flow(flow: "Flow") -> bytes:
     # so a flow without it is byte-identical to a pre-attribution record.
     if getattr(flow, "sdk", None):
         meta["sdk"] = flow.sdk
+    # Compact caller stack and the option-5 synthetic-endpoint flag: additive,
+    # written only when set so older readers and older records are unaffected.
+    if getattr(flow, "caller_stack", None):
+        meta["caller_stack"] = flow.caller_stack
+    if getattr(flow, "endpoints_synthetic", False):
+        meta["endpoints_synthetic"] = True
+    # Transport vs originator attribution: additive, written only when set.
+    if getattr(flow, "attribution", None):
+        meta["attribution"] = flow.attribution
     # Non-mutating lookup (encoding is a pure read): layer() returns None when
     # absent rather than attaching an empty TLS layer to every serialized flow.
     tls = flow.layer("tls")
@@ -819,6 +951,11 @@ def decode_flow(payload: bytes) -> "Flow":
     flow.process_name = meta.get("process_name", "")
     flow.package_name = meta.get("package_name", "")
     flow.sdk = meta.get("sdk", None)
+    # Hand-crafted .tap files may carry junk: re-bound the stack, coerce the flag.
+    flow.caller_stack = sanitize_caller_stack(meta.get("caller_stack"))
+    flow.endpoints_synthetic = meta.get("endpoints_synthetic") is True
+    # Untrusted like caller_stack: whitelist keys/enums and cap strings.
+    flow.attribution = sanitize_attribution(meta.get("attribution"))
     flow.hook_function = meta.get("hook_function", "")
     flow.hook_stack = meta.get("hook_stack", "")
     flow.tags = list(meta.get("tags", []))

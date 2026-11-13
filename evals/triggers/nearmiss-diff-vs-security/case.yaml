@@ -1,0 +1,25 @@
+schema_version: "1.1"
+name: trigger-nearmiss-diff-vs-security
+description: 'compare two app versions: diff, not security audit'
+tags: [trigger, nearmiss]
+runs: 3
+execution:
+  max_turns: 3
+  timeout_seconds: 120
+  allowed_tools: [Skill]
+  prompt: |
+    I have v2.3.tap and v2.4.tap of the same app. Which hosts are new in 2.4 and which disappeared?
+graders:
+  - name: fires-fritap-leak-proof
+    type: tool_used
+    tool: Skill
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?fritap-leak-proof"'
+    min: 1
+    arm: both
+  - name: not-fritap-security-audit
+    type: tool_used
+    tool: Skill
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?fritap-security-audit"'
+    min: 0
+    max: 0
+    arm: both

@@ -19,6 +19,7 @@ from friTap.agent_api.schema import (
     TAP_SOURCE_PARAMS,
     object_schema,
     page_params,
+    split_top_level_groups,
     validate,
 )
 from friTap.exit_codes import EXIT_RUNTIME_ERROR, EXIT_USAGE_ERROR
@@ -370,3 +371,24 @@ def test_endpoints_and_findings_default_to_compact_page():
     for tool in ("list_endpoints", "list_findings"):
         limit = registry.get(tool).params_schema["properties"]["limit"]
         assert (limit["default"], limit["maximum"]) == (COMPACT_PAGE_LIMIT, MAX_PAGE_LIMIT) == (20, 200)
+
+
+class TestSplitTopLevelGroups:
+    def test_one_of_group_becomes_a_sentence(self):
+        schema = object_schema({"tap": {"type": "string"}, "session_id": {"type": "string"}},
+                               one_of_required=("tap", "session_id"))
+        flat, note = split_top_level_groups(schema)
+        assert "oneOf" not in flat and flat["properties"] == schema["properties"]
+        assert note == "Give exactly one of: tap, session_id."
+        assert "oneOf" in schema  # the input is not modified
+
+    def test_any_of_group_and_all_of_are_removed(self):
+        schema = {"type": "object", "anyOf": [{"required": ["a"]}, {"required": ["b"]}],
+                  "allOf": [{"required": ["c"]}]}
+        flat, note = split_top_level_groups(schema)
+        assert flat == {"type": "object"}
+        assert note == "Give at least one of: a, b."
+
+    def test_schema_without_groups_is_unchanged(self):
+        schema = object_schema({"x": {"type": "string"}})
+        assert split_top_level_groups(schema) == (schema, "")

@@ -1004,10 +1004,8 @@ def _apply_decoder_isolation_flag(parsed):
     os.environ[ISOLATE_DECODERS_ENV] = "1"
 
 
-def cli():
-    # Initial setup - will be reconfigured after parsing arguments
-    logger = logging.getLogger('friTap')
-    
+def build_capture_parser():
+    """The argparse parser of the main capture CLI (``fritap [options] <target>``)."""
     parser = ArgParser(
         add_help=False,
         description="Decrypts and logs an executables or mobile applications encrypted traffic.",
@@ -1051,7 +1049,7 @@ Offline (read / analyze .tap):
     args.add_argument("-do", "--debug-output", required=False, action="store_const", const=True,
                       help="Activate the debug output only.")
     args.add_argument("-ar", "--anti_root", required=False, action="store_const", const=True, default=False, help="Activate anti root hooks for Android")
-    args.add_argument("-ed", "--enable_default_fd", required=False, action="store_const", const=True, default=False, help="Activate the fallback socket information (127.0.0.1:1234-127.0.0.1:2345) whenever the file descriptor (FD) of the socket cannot be determined")
+    args.add_argument("-ed", "--enable_default_fd", required=False, action="store_const", const=True, default=False, help="Activate the fallback socket information (127.0.0.1:1234-127.0.0.1:2345) whenever the file descriptor (FD) of the socket cannot be determined. The fallback tuple is oriented: writes go 1234->2345, reads 2345->1234. Records whose TLS client_random is known are instead emitted without addresses, so the host assigns each connection its own synthetic tuple")
     args.add_argument("-f", "--full_capture", required=False, action="store_const", const=True, default=False,
                       help="Do a full packet capture instead of logging only the decrypted TLS payload. Set pcap name with -p <PCAP name>")
     args.add_argument("-k", "--keylog", metavar="<path>", required=False,
@@ -1061,7 +1059,10 @@ Offline (read / analyze .tap):
                            "emitting keys, the file is split per protocol as "
                            "<stem>.<proto><ext> (e.g. keys.tls.log, keys.ssh.log).")
     args.add_argument("-l", "--live", required=False, action="store_const", const=True,
-                      help="Creates a named pipe /tmp/sharkfin which can be read by Wireshark during the capturing process")
+                      help="Create a named pipe <tempdir>/fritap_sharkfin.pcapng that Wireshark "
+                           "can read during the capture. The exact path is printed at "
+                           "start; open it with 'wireshark -k -i <path>'. Not supported "
+                           "on Windows.")
     args.add_argument("-p", "--pcap", metavar="<path>", required=False,
                       help="Name of PCAP file to write")
     args.add_argument("--pcap-format", dest="pcap_format", choices=PCAP_FORMAT_CHOICES,
@@ -1147,7 +1148,9 @@ Offline (read / analyze .tap):
     args.add_argument("--offsets", required=False, metavar="<offsets.json>",
                       help="Provide custom offsets for all hooked functions inside a JSON file or a json string containing all offsets. For more details see our example json (offsets_example.json)")
     args.add_argument("--patterns", required=False, metavar="<pattern.json>",
-                  help="Provide custom patterns for module hooking inside a JSON file or a JSON string containing platform-specific patterns. For more details see our provided JSON (pattern.json)")
+                  help="Path to a JSON file with custom byte patterns for module hooking "
+                           "(merged on top of the shipped defaults). Inline JSON strings "
+                           "are not accepted. For the format see the example pattern.json.")
     args.add_argument("--payload_modification", required=False, action="store_const", const=True, default=False,
                       help="Capability to alter the decrypted payload. Be careful here, because this can crash the application.")                  
     args.add_argument("-exp","--experimental", required=False, action="store_const", const=True, default=False,
@@ -1185,9 +1188,13 @@ Offline (read / analyze .tap):
                            "instead of hooking the TLS library — a complementary, "
                            "independently-injected agent. Passed ALONE it is the only "
                            "thing loaded (the normal TLS-hooking agent is skipped) and "
-                           "keys are written to '<target>_memscan.keylog'; combined with "
-                           "-k it shares that keylog, and with -p/-c it runs alongside "
-                           "them. Which scan engine(s) run is derived from --protocol "
+                           "keys are written to '<target>_memscan.keylog' in the current "
+                           "directory; combined with -k it writes its own keylog beside "
+                           "it as '<stem>.memscan<ext>' (e.g. keys.log -> "
+                           "keys.memscan.log), and with -p/-c it runs alongside them. "
+                           "Protocol sidecars (.schannel.unpaired, .rc4.keylog, "
+                           ".mtproto.keylog, .tls_midstream.secrets.jsonl) are written "
+                           "next to that memory-scan keylog. Which scan engine(s) run is derived from --protocol "
                            "and the target platform. The optional value overrides that: "
                            "a pattern FILE overrides/extends the shipped patterns, or an "
                            "ENGINE name (boringssl | schannel | rc4 | mtproto) or "
@@ -1479,6 +1486,14 @@ Offline (read / analyze .tap):
                            "in a separate, restricted worker process, so a decoder exploit "
                            "triggered by captured (attacker-controlled) traffic cannot reach "
                            "the friTap process. Same as FRITAP_ISOLATE_DECODERS=1.")
+    return parser
+
+
+def cli():
+    # Initial setup - will be reconfigured after parsing arguments
+    logger = logging.getLogger('friTap')
+    
+    parser = build_capture_parser()
     parsed = parser.parse_args(_normalize_bare_wine_flag(sys.argv[1:]))
     _claim_stdout_for_json_stream(parsed)
     _apply_decoder_isolation_flag(parsed)
@@ -1994,6 +2009,22 @@ def _looks_like_tap_input(token):
     return bool(token) and not token.startswith("-") and token.endswith(".tap")
 
 
+_SUBCOMMAND_HELP_FLAGS = ("-h", "--help")
+
+
+def _selects_tap_subcommand(argv, name):
+    """True when ``argv`` is ``fritap <name> <file.tap> ...`` or ``fritap <name> -h|--help``.
+
+    The help form is safe to route: a capture of a process named ``<name>``
+    followed by only ``-h`` would just print the capture help, so nothing is
+    lost, and ``fritap analyze --help`` now shows the analyze options. Any
+    other next token (e.g. ``-m``) still falls through to capture.
+    """
+    if len(argv) < 3 or argv[1] != name:
+        return False
+    return _looks_like_tap_input(argv[2]) or argv[2] in _SUBCOMMAND_HELP_FLAGS
+
+
 def _looks_like_pcap_input(token):
     """Return True when ``token`` looks like a pcap/pcapng capture file argument.
 
@@ -2051,7 +2082,8 @@ def _dispatch_special_mode(argv):
       is ``argv[1:]`` (forwarded verbatim to the offline CLI).
     * ``"analyze"``         — ``fritap --analyze ...`` or ``fritap analyze
       capture.tap``: passive offline analysis of an existing ``.tap``. ``payload``
-      is the argument list after the mode token (``argv[2:]``).
+      is the argument list after the mode token (``argv[2:]``). ``fritap
+      analyze -h|--help`` (and the same for ``report``) also routes here.
     * ``"replay"``          — ``fritap -r capture.tap``, ``fritap --replay
       capture.tap`` or ``fritap capture.tap``: open the capture in the TUI.
       ``payload`` is the ``.tap`` path, or ``None`` when ``-r`` was given
@@ -2064,6 +2096,9 @@ def _dispatch_special_mode(argv):
     * ``"q"`` / ``"mcp"`` / ``"serve"`` — agent API: ``fritap q <tool>`` runs one
       registry tool and prints JSON; ``fritap mcp`` / ``fritap serve`` start the
       MCP / REST server. ``payload`` is ``argv[2:]``. See :func:`_agent_api_mode`.
+    * ``"skills"``          — ``fritap skills [list|show|install ...]``: the
+      bundled agent skills (see :mod:`friTap.commands.skills`). ``payload`` is
+      ``argv[2:]``.
     * ``None``              — no special mode; fall through to normal capture.
 
     Disambiguation rule for the bare ``analyze`` subcommand: ``analyze`` is only
@@ -2090,18 +2125,20 @@ def _dispatch_special_mode(argv):
     # followed by a .tap input, so a target named 'analyze' is not hijacked.
     if len(argv) >= 2 and argv[1] == "--analyze":
         return ("analyze", argv[2:])
-    if (len(argv) >= 3 and argv[1] == "analyze"
-            and _looks_like_tap_input(argv[2])):
+    if _selects_tap_subcommand(argv, "analyze"):
         return ("analyze", argv[2:])
     # Report (AI-agent digest): same rule — only when followed by a .tap input.
-    if (len(argv) >= 3 and argv[1] == "report"
-            and _looks_like_tap_input(argv[2])):
+    if _selects_tap_subcommand(argv, "report"):
         return ("report", argv[2:])
     # devices / apps listing: only when every following token is a listing
     # option, so `fritap apps -k keys.log` still captures a process named 'apps'.
     from .commands.devices import is_listing_invocation
     if is_listing_invocation(argv):
         return (argv[1], argv[2:])
+    # skills: list/show/install the bundled agent skills (same guard idea).
+    from .commands.skills import is_skills_invocation
+    if is_skills_invocation(argv):
+        return ("skills", argv[2:])
     # Agent API: `fritap q <tool>|--list`, `fritap mcp`, `fritap serve` — same
     # guard idea, so a target named q/mcp/serve with capture flags still captures.
     agent_mode = _agent_api_mode(argv)
@@ -2178,6 +2215,10 @@ def main():
         if kind in ("devices", "apps"):
             from .commands.devices import run_listing_cli
             return run_listing_cli(kind, payload)
+
+        if kind == "skills":
+            from .commands.skills import run_skills_cli
+            return run_skills_cli(payload)
 
         if kind == "q":
             from .commands.query import run_query_cli

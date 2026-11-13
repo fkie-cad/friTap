@@ -330,9 +330,9 @@ Since friTap depends on Frida, it requires root (or administrator) privileges on
 - System-wide SSL libraries
 - Process attachment requires root
 - Broad library support
-- *SELinux*: On distributions enforcing SELinux (e.g., Fedora, RHEL, Android kernels), Frida may be blocked by mandatory policies. Switch to permissive mode:
+- *SELinux*: On distributions enforcing SELinux (e.g., Fedora, RHEL), Frida may be blocked by mandatory policies. Switch to permissive mode (temporary, resets on reboot):
     ```bash
-    setenforce 0
+    sudo setenforce 0
     ```
 
 ### Windows
@@ -367,6 +367,7 @@ Disabling SIP (Intel & Apple Silicon):
     adb shell pm disable-user --user 0 com.samsung.android.knox.attestation
     adb reboot
     ```
+- *SELinux*: Android enforces SELinux, which can block frida-server or the injection. On a test device, `adb shell su -c setenforce 0` switches to permissive until the next reboot; see [Android troubleshooting](../platforms/android.md#troubleshooting-android-issues).
 
 ### iOS
 - Objective-C SSL implementations

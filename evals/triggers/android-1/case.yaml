@@ -1,0 +1,18 @@
+schema_version: "1.1"
+name: trigger-android-1
+description: 'German-English: Android app traffic on emulator'
+tags: [trigger, positive]
+runs: 3
+execution:
+  max_turns: 3
+  timeout_seconds: 120
+  allowed_tools: [Skill]
+  prompt: |
+    I want to see the traffic from an Android app on my emulator, the app has certificate pinning so mitmproxy does not work. How I do this with friTap?
+graders:
+  - name: fires-fritap-android
+    type: tool_used
+    tool: Skill
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?fritap-android"'
+    min: 1
+    arm: both

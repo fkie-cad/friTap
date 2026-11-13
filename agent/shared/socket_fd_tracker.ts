@@ -55,6 +55,10 @@
 //
 // Remaining limitation: a memory-BIO stack (Conscrypt SSLEngine) does its socket I/O OUTSIDE
 // the SSL call, so no scope ever sees it; such stacks still rely on the thread-last-fd heuristic.
+//
+// BACKENDS: the libc observer state lives in a SocketFdBackend: native (CModule; see
+// native_socket_observer.ts for why), with these JS listeners as fallback. The SSL -> fd
+// cache stays in JS for both; the native backend reports closed fds through a ring.
 
 import { devlog } from "../util/log.js";
 import { SslFdCache } from "./ssl_fd_cache.js";
@@ -62,13 +66,28 @@ import { SslFdCache } from "./ssl_fd_cache.js";
 // set is then always empty). Aliased: this module already exports its own fd-cache
 // forgetSsl(NativePointer).
 import { forgetSsl as forgetCallerStackSsl } from "./sdk_backtrace.js";
+import { forgetSslIdentity } from "./ssl_identity.js";
+import {
+    nativeSocketObserver, fdCloseFunction, CLOSED_FD_CONSUMER, type ClosedFdDrain, MAX_SCOPE_DEPTH, SOCKET_IO_FUNCTIONS,
+    SOCK_STREAM, SOL_SOCKET, SO_TYPE,
+} from "./native_socket_observer.js";
 
-const SOCK_STREAM = 1; // portable across Linux/Android/macOS/iOS
+export type { ClosedFdDrain };
+export { MAX_SCOPE_DEPTH };
 
-// getsockopt(SO_TYPE) level/name differ per platform; SOCK_STREAM itself is portable.
-const IS_DARWIN = Process.platform === "darwin";
-const SOL_SOCKET = IS_DARWIN ? 0xffff : 1;
-const SO_TYPE = IS_DARWIN ? 0x1008 : 3;
+/** Where the libc observer state lives (see BACKENDS in the header). */
+export interface SocketFdBackend {
+    readonly name: "native" | "js";
+    /** libc functions the backend attached listeners to (for the debug log). */
+    readonly hookedFunctions: string[];
+    enterScope(tid: number, ssl: NativePointer): void;
+    /** Pop `ssl`'s scope (and stale frames above it); the fd it did I/O on, or -1. */
+    leaveScope(tid: number, ssl: NativePointer): number;
+    /** The stream fd thread `tid` most recently did I/O on, or -1. */
+    recover(tid: number): number;
+    /** Closed fds the JS SSL -> fd cache must forget (the JS backend forgets them inline). */
+    drainClosedFds(): ClosedFdDrain;
+}
 
 // Known SOCK_STREAM sockets, and known non-stream fds (files, datagram sockets, non-sockets).
 const streamFds = new Set<number>();
@@ -78,6 +97,7 @@ const nonStreamFds = new Set<number>();
 const threadToFd = new Map<number, number>();
 
 let _installed = false;
+let _backend: SocketFdBackend | null = null;
 
 // Lazily-built getsockopt wrapper + scratch buffers, used to classify pre-existing fds.
 let _getsockopt: NativeFunction<number, [number, number, number, NativePointer, NativePointer]> | null = null;
@@ -118,14 +138,74 @@ function classifyStream(fd: number): boolean {
     return false;
 }
 
+/** True once the libc socket-activity observer is armed (see installSocketFdTracker). */
+export function isSocketFdTrackerInstalled(): boolean {
+    return _installed;
+}
+
 /**
  * Install the libc socket-activity observer (idempotent, process-wide). Armed LAZILY by the
- * executor on the first SSL_get_fd()<0; only the first call attaches.
+ * executor on the first SSL_get_fd()<0; only the first call attaches. Known fd-less modules
+ * (statically linked Chromium BoringSSL) arm it EARLY at install, so their first records
+ * already have socket activity to recover; `armedBy` names who armed it, for the debug log.
  */
-export function installSocketFdTracker(): void {
+export function installSocketFdTracker(armedBy = "lazily on first SSL_get_fd()<0"): void {
     if (_installed) return;
     _installed = true;
 
+    const backend = _nativeBackendFactory() ?? createJsBackend();
+    _backend = backend;
+    devlog(`[socket-fd-tracker] armed ${armedBy} (thread->stream-socket-fd ` +
+           "correlation for fd-less peer recovery; the triggering record may be unattributed); " +
+           `backend=${backend.name}; hooked: ${backend.hookedFunctions.join(",") || "none"}.`);
+}
+
+/** Native backend on the shared CModule observer; null when it cannot serve the tracker. */
+function createNativeBackend(): SocketFdBackend | null {
+    const observer = nativeSocketObserver();
+    if (observer === null || !observer.armSocketFdTracking()) return null;
+    return {
+        name: "native",
+        get hookedFunctions() { return observer.hookedFunctions; },
+        enterScope: (tid, ssl) => observer.enterScope(tid, ssl),
+        leaveScope: (tid, ssl) => observer.leaveScope(tid, ssl),
+        recover: (tid) => observer.recover(tid),
+        drainClosedFds: () => observer.drainClosedFds(CLOSED_FD_CONSUMER.socketFdTracker),
+    };
+}
+
+type NativeBackendFactory = () => SocketFdBackend | null;
+let _nativeBackendFactory: NativeBackendFactory = createNativeBackend;
+
+/** Test-only: replace the native backend factory and forget any armed backend. */
+export function resetSocketFdTrackerForTests(nativeFactory: NativeBackendFactory = createNativeBackend): void {
+    _nativeBackendFactory = nativeFactory;
+    _installed = false;
+    _backend = null;
+    streamFds.clear();
+    nonStreamFds.clear();
+    threadToFd.clear();
+    threadScopes.clear();
+    activeScopes = 0;
+    sslToFd.clear();
+    _lostClosedFdsLogged = false;
+}
+
+/** JS backend: the JS libc hooks plus the JS scope stacks. */
+function createJsBackend(): SocketFdBackend {
+    return {
+        name: "js",
+        hookedFunctions: installJsLibcHooks(),
+        enterScope: (tid, ssl) => enterJsScope(tid, ssl),
+        leaveScope: (tid, ssl) => leaveJsScope(tid, ssl.toString()),
+        recover: (tid) => threadToFd.get(tid) ?? -1,
+        drainClosedFds: () => [],            // its close() hook calls forgetFd() inline
+    };
+}
+
+/** JS backend: attach JS listeners to the libc socket functions; returns the hooked names. */
+function installJsLibcHooks(): string[] {
+    const hooked: string[] = [];
     const getsockoptAddr = Module.findGlobalExportByName("getsockopt");
     if (getsockoptAddr) {
         _getsockopt = new NativeFunction(getsockoptAddr, "int", ["int", "int", "int", "pointer", "pointer"]);
@@ -135,15 +215,11 @@ export function installSocketFdTracker(): void {
 
     const socketAddr = Module.findGlobalExportByName("socket");
     const connectAddr = Module.findGlobalExportByName("connect");
-    const closeAddr = Module.findGlobalExportByName("close");
-
-    // All socket I/O entry points: recv/send families AND generic read/write. Every one funnels
-    // through classifyStream(), so the mapping only ever holds TCP fds regardless of which call
-    // a given stack uses for its ciphertext I/O. (Files and datagram sockets classify once and
-    // are then skipped cheaply via the nonStreamFds cache.)
-    const ioFns = ["recvfrom", "recv", "recvmsg", "sendto", "send", "sendmsg", "read", "write"];
+    const closeName = fdCloseFunction();
+    const closeAddr = Module.findGlobalExportByName(closeName);
 
     if (socketAddr) {
+        hooked.push("socket");
         Interceptor.attach(socketAddr, {
             onEnter(args) { (this as any).sockType = args[1].toInt32(); },
             onLeave(retval) {
@@ -155,6 +231,7 @@ export function installSocketFdTracker(): void {
         });
     }
     if (connectAddr) {
+        hooked.push("connect");
         Interceptor.attach(connectAddr, {
             onEnter(args) {
                 const fd = args[0].toInt32();
@@ -168,6 +245,7 @@ export function installSocketFdTracker(): void {
         });
     }
     if (closeAddr) {
+        hooked.push(closeName);
         Interceptor.attach(closeAddr, {
             onEnter(args) {
                 const fd = args[0].toInt32();
@@ -188,9 +266,14 @@ export function installSocketFdTracker(): void {
         });
     }
 
-    for (const name of ioFns) {
+    // All socket I/O entry points: recv/send families AND generic read/write. Every one funnels
+    // through classifyStream(), so the mapping only ever holds TCP fds regardless of which call
+    // a given stack uses for its ciphertext I/O. (Files and datagram sockets classify once and
+    // are then skipped cheaply via the nonStreamFds cache.)
+    for (const name of SOCKET_IO_FUNCTIONS) {
         const addr = Module.findGlobalExportByName(name);
         if (!addr) continue;
+        hooked.push(name);
         Interceptor.attach(addr, {
             onEnter(args) {
                 const fd = args[0].toInt32();
@@ -199,9 +282,7 @@ export function installSocketFdTracker(): void {
             },
         });
     }
-
-    devlog("[socket-fd-tracker] armed lazily on first SSL_get_fd()<0 (thread->stream-socket-fd " +
-           "correlation for fd-less peer recovery; the triggering record may be unattributed).");
+    return hooked;
 }
 
 /**
@@ -209,8 +290,8 @@ export function installSocketFdTracker(): void {
  * Used by BoringSSL/OpenSSL read/write hooks when SSL_get_fd() returns -1.
  */
 export function recoverSocketFd(): number {
-    const fd = threadToFd.get(Process.getCurrentThreadId());
-    return fd === undefined ? -1 : fd;
+    if (_backend === null) return -1;
+    return _backend.recover(Process.getCurrentThreadId());
 }
 
 // ── SSL-scoped attribution (see the header) ──────────────────────────────────────────────
@@ -218,8 +299,7 @@ export function recoverSocketFd(): number {
 /** One fd-less SSL call in progress on a thread: its SSL object and the stream fd it did I/O on. */
 interface SslScope { ssl: string; fd: number; }
 
-/** Bounds: a missed onLeave must not grow a stack forever; the cache must not grow unbounded. */
-export const MAX_SCOPE_DEPTH = 16;
+/** Bound of the SSL -> fd cache. */
 export const MAX_SSL_FD_ENTRIES = 1024;
 
 const threadScopes = new Map<number, SslScope[]>();
@@ -238,6 +318,26 @@ function noteStreamIo(tid: number, fd: number): void {
 
 function cacheSslFd(ssl: string, fd: number): void {
     sslToFd.set(ssl, fd);                    // LRU refresh + eviction, reverse index kept in sync
+}
+
+let _lostClosedFdsLogged = false;
+
+/**
+ * Apply the backend's closed fds to the SSL -> fd cache (native backend; the JS backend forgets
+ * inline). Cheap when nothing was closed: the native drain compares two ring indices.
+ */
+function drainClosedFds(): void {
+    if (_backend === null) return;
+    const closed = _backend.drainClosedFds();
+    if (closed === "lost") {
+        sslToFd.clear();                     // some close() went unreported: no cached fd is safe
+        if (!_lostClosedFdsLogged) {
+            _lostClosedFdsLogged = true;
+            devlog("[socket-fd-tracker] closed-fd ring overflowed; cleared the SSL->fd cache.");
+        }
+        return;
+    }
+    for (const fd of closed) forgetFd(fd);
 }
 
 /** close(fd): the number may be reused for a new connection, so no SSL may keep pointing at it. */
@@ -260,6 +360,7 @@ function forgetFd(fd: number): void {
  */
 export function cachedSslFd(ssl: NativePointer): number {
     if (sslToFd.size === 0) return -1;
+    drainClosedFds();
     return sslToFd.get(ssl.toString()) ?? -1;
 }
 
@@ -270,7 +371,24 @@ export function forgetSsl(ssl: NativePointer): void {
 }
 
 function enterSslScope(ssl: NativePointer): void {
-    const tid = Process.getCurrentThreadId();
+    if (_backend === null) return;
+    _backend.enterScope(Process.getCurrentThreadId(), ssl);
+}
+
+/**
+ * Closes `ssl`'s scope on this thread and returns the stream fd the call did I/O on, caching it
+ * for the SSL object; -1 when it did none (or no scope was open).
+ */
+function closeSslScope(ssl: NativePointer): number {
+    if (_backend === null) return -1;
+    drainClosedFds();
+    const fd = _backend.leaveScope(Process.getCurrentThreadId(), ssl);
+    if (fd >= 0) cacheSslFd(ssl.toString(), fd);
+    return fd;
+}
+
+/** JS backend: push a scope frame for `ssl` on thread `tid`. */
+function enterJsScope(tid: number, ssl: NativePointer): void {
     let stack = threadScopes.get(tid);
     if (stack === undefined) {
         stack = [];
@@ -285,18 +403,17 @@ function enterSslScope(ssl: NativePointer): void {
 }
 
 /**
- * Pops `ssl`'s scope (and any stale frames above it) off this thread's stack and returns the
- * stream fd the call did I/O on, caching it for the SSL object; -1 when it did none.
+ * JS backend: pops `ssl`'s scope (and any stale frames above it) off thread `tid`'s stack and
+ * returns the stream fd the call did I/O on; -1 when it did none. closeSslScope caches it.
  */
-function leaveSslScope(ssl: string): number {
-    const stack = threadScopes.get(Process.getCurrentThreadId());
+function leaveJsScope(tid: number, ssl: string): number {
+    const stack = threadScopes.get(tid);
     if (stack === undefined || !stack.some(scope => scope.ssl === ssl)) return -1;
     let scope: SslScope;
     do {
         scope = stack.pop()!;
         activeScopes--;
     } while (scope.ssl !== ssl);
-    if (scope.fd >= 0) cacheSslFd(ssl, scope.fd);
     return scope.fd;
 }
 
@@ -324,9 +441,8 @@ export function fdOrDeferred(fd: number, ssl: NativePointer): number | null {
  * fd, else -1.
  */
 export function recoveredFd(ssl: NativePointer): number {
-    const key = ssl.toString();
-    let recovered = leaveSslScope(key);
-    if (recovered < 0) recovered = sslToFd.get(key) ?? recoverSocketFd();
+    let recovered = closeSslScope(ssl);
+    if (recovered < 0) recovered = sslToFd.get(ssl.toString()) ?? recoverSocketFd();
     if (recovered >= 0 && !_recoveryLogged) {
         _recoveryLogged = true;
         devlog("[fd-recovery] SSL object exposed no socket fd (SSL_get_fd<0); recovered peer " +
@@ -362,8 +478,15 @@ function attachOnce(address: NativePointer | null, callbacks: InvocationListener
  * Scope the handshake functions of `moduleName` (when exported) for fd-less SSL objects, and
  * drop an SSL's cached fd on SSL_free. `getFd` is the library's SSL_get_fd (or -1 if unknown).
  * Idempotent per address.
+ *
+ * `extra.sslFree` is reserved for a located (non-exported) SSL_free on stripped builds; it is
+ * accepted but not used yet (Chromium invalidation relies on generation + mismatch for now).
  */
-export function installSslScopeHooks(moduleName: string, getFd: (ssl: NativePointer) => number): void {
+export function installSslScopeHooks(
+    moduleName: string,
+    getFd: (ssl: NativePointer) => number,
+    extra?: { sslFree?: NativePointer },
+): void {
     for (const symbol of HANDSHAKE_SYMBOLS) {
         attachOnce(findModuleExport(moduleName, symbol), {
             onEnter(args) {
@@ -373,11 +496,15 @@ export function installSslScopeHooks(moduleName: string, getFd: (ssl: NativePoin
             },
             onLeave() {
                 const ssl = (this as any).scopedSsl;
-                if (ssl) leaveSslScope(ssl.toString());
+                if (ssl) closeSslScope(ssl);
             },
         });
     }
     attachOnce(findModuleExport(moduleName, "SSL_free"), {
-        onEnter(args) { forgetSsl(args[0]); forgetCallerStackSsl(args[0].toString()); },
+        onEnter(args) {
+            forgetSsl(args[0]);
+            forgetCallerStackSsl(args[0].toString());
+            forgetSslIdentity(args[0]);
+        },
     });
 }

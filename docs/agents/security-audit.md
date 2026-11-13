@@ -1,5 +1,10 @@
 # Security audit playbook
 
+!!! tip "Ready-to-use skill"
+    This playbook is also packaged as the `fritap-security-audit` agent skill.
+    Install it with `fritap skills install fritap-security-audit` or the Claude
+    Code plugin, or use it as an MCP prompt; see [Agent skills](skills.md).
+
 A step-by-step recipe for an AI agent (or a human driving the same tools) to
 answer: **what transport-security and secret-exposure weaknesses does this app
 have?** It uses only the [agent API](../api/agent.md) tools, so it works the
@@ -41,10 +46,10 @@ fritap mcp --root ./audit --allow-capture --allow-target 'com.example.app'
    `attached`. If it stays `no_library_seen` after the app made requests,
    stop and retry with other `protocols` / `protocol_options`.
 3. Drive the app through its security-relevant flows and call `mark_phase`
-   **before** each: `launch`, `login`, `token_refresh`, `browse`, `logout`.
-   The `login` / `token_refresh` phases are where credentials and tokens leak.
-4. `stop_capture`. Note the `tap` path and the `phases` (label + time) in the
-   final status.
+   **before** each: `launch`, `login`, `token-refresh`, `browse`, `logout`.
+   The `login` / `token-refresh` phases are where credentials and tokens leak.
+4. `stop_capture`. Note the `tap` path and the `phases` (label, epoch `t`,
+   ISO `at`) in the final status. Labels are lower-case and hyphenated.
 
 ## 3. Overview
 
@@ -79,8 +84,10 @@ fritap mcp --root ./audit --allow-capture --allow-target 'com.example.app'
 1. For each finding, `get_flow {"ref": "f12"}` (or a message ref `f12#m3`)
    with a small `max_bytes` and `fields` (`["request"]`) to see the offending
    bytes — the header carrying the token, the cleartext request line.
-2. Attribute the flow to a phase by comparing its `started` time with the
-   `phases` timestamps from step 2.
+2. Attribute the flow to a phase with its `phase` field (the `mark_phase`
+   label it started in; present when the `phases.jsonl` sidecar sits next to
+   the tap). To compare whole phases, use
+   `diff {"session_id": "...", "phase_a": "launch", "phase_b": "login"}`.
 3. Only pass `show_values: true` when the user explicitly needs the raw value
    (e.g. to confirm a leaked token is the test account's). It needs
    `--allow-values` on the server.

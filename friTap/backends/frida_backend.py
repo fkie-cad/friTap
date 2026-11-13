@@ -589,6 +589,39 @@ class FridaBackend(Backend):
         return {p.pid: p.parameters["path"] for p in processes
                 if isinstance(p.parameters.get("path"), str)}
 
+    def process_name(self, device: Any, pid: int) -> str | None:
+        """Resolve *pid* to a package id or process name (see Backend.process_name).
+
+        ``scope="metadata"`` filtered to one pid is cheap and is the only scope
+        that carries Android's ``applications`` list: in ``minimal`` scope an
+        app process is named by its label ("Chrome"), not its package id
+        ("com.android.chrome"), which the transport classifier needs.
+        """
+        try:
+            for process in device.enumerate_processes(pids=[pid], scope="metadata"):
+                if process.pid == pid:
+                    return self._package_or_process_name(process)
+        except Exception as exc:  # noqa: BLE001 - fall through to /proc below
+            self._logger.debug("enumerate_processes(pid=%s) failed: %s", pid, exc)
+        if getattr(device, "type", None) == "local":
+            return self._local_proc_comm(pid)
+        return None
+
+    @staticmethod
+    def _package_or_process_name(process: Any) -> str | None:
+        applications = (getattr(process, "parameters", None) or {}).get("applications")
+        if isinstance(applications, list) and applications and isinstance(applications[0], str):
+            return applications[0]
+        return getattr(process, "name", None) or None
+
+    @staticmethod
+    def _local_proc_comm(pid: int) -> str | None:
+        try:
+            with open(f"/proc/{pid}/comm", encoding="utf-8", errors="replace") as comm:
+                return comm.read().strip() or None
+        except OSError:
+            return None
+
     def get_device_manager(self) -> Any:
         return frida.get_device_manager()
 

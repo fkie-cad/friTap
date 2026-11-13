@@ -13,6 +13,7 @@
  */
 
 import { activeRecordProtocol } from "./record_protocol.js";
+import { observeKeylogSsl } from "./keylog_ssl_observer.js";
 
 // --- Shared runtime state (live ESM bindings; set once at config-handshake) ---
 // Reads are live, taken at hook-INSTALL time (well after config parse), so the
@@ -183,7 +184,15 @@ function sendWithProtocolTag(message: { [key: string]: any }, protocol: string, 
     }
 }
 
-export function sendKeylog(keylogLine: string): void {
+/**
+ * Emit one NSS keylog line. When the hook knows the line's SSL* (BoringSSL
+ * family), pass it (and the module name when in scope): the line's
+ * client_random is noted for that SSL* BEFORE the keylog_enabled gate, so
+ * plaintext-only captures (-p) still learn the per-SSL* identity. Callers
+ * without an SSL* behave exactly as before.
+ */
+export function sendKeylog(keylogLine: string, ssl?: NativePointer | null, module?: string): void {
+    observeKeylogSsl(keylogLine, ssl, module);
     // Defensive choke point: even if a hook site forgot to honor the
     // keylog_enabled gate at install time, no KeylogEvent leaves the agent
     // when the user requested plaintext-only mode.
@@ -258,6 +267,20 @@ export interface CallerStackJoin {
     src_port?: number;
     dst_port?: number;
     ss_family?: string;
+    /** The connection's TLS client_random (lower-case hex): the primary join key when known. */
+    client_random?: string;
+}
+
+/** Per-capture thread/process metadata of a `caller_stack` message (all optional, additive). */
+export interface CallerStackMeta {
+    /** Process.getCurrentThreadId() of the hooked thread. */
+    tid?: number;
+    /** /proc/self/task/<tid>/comm on Linux/Android, "" elsewhere or on error. */
+    thread_name?: string;
+    /** Process.id */
+    pid?: number;
+    /** Module of the hooked TLS function (e.g. "libwebviewchromium.so"). */
+    transport_module?: string;
 }
 
 /**
@@ -272,14 +295,22 @@ export function sendCallerStack(
     join: CallerStackJoin,
     java_frames: string[],
     native_frames: CallerFrame[],
+    meta?: CallerStackMeta,
 ): void {
     const message: { [key: string]: any } = {
         contentType: "caller_stack",
         ...join,
         java_frames,
         native_frames,
+        ...(meta ?? {}),
     };
     sendWithProtocol(message);
+}
+
+/** Emit a `request_context` message (--attribute-sdk -p only). ALPN travels as `negotiated_protocol`; `protocol` is set by sendWithProtocol. */
+export function sendRequestContext(payload: { [key: string]: any }): void {
+    if (_isShuttingDown) return;
+    sendWithProtocol({ ...payload, contentType: "request_context" });
 }
 
 /**

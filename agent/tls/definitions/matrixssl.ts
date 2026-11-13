@@ -20,6 +20,7 @@ import {
     ExtraHookDef,
 } from "../../core/hook_definition.js";
 import { sendDatalog } from "../../shared/shared_structures.js";
+import { stampRecordLibrary } from "../../shared/record_message.js";
 import { getPortsAndAddresses } from "../../shared/shared_functions.js";
 import { pcap_enabled } from "../../fritap_agent.js";
 import { devlog } from "../../util/log.js";
@@ -57,14 +58,16 @@ function matrixSslSessionIdDecoder(ssl: NativePointer, fns: ResolvedFunctions): 
     }
 }
 
-/** Emits one MatrixSSL plaintext record (MatrixSSL exposes no fd getter: fd -1). */
-function matrixSslEmitter(isRead: boolean, moduleAddrs: { [fn: string]: NativePointer }, resolvedFns: ResolvedFunctions, enableDefaultFd: boolean): MatrixSslEmit {
+/** Emits one MatrixSSL plaintext record (MatrixSSL exposes no fd getter: fd -1), stamped with its module as `library`. */
+function matrixSslEmitter(isRead: boolean, moduleAddrs: { [fn: string]: NativePointer }, resolvedFns: ResolvedFunctions, enableDefaultFd: boolean,
+                          library: string): MatrixSslEmit {
     return (ssl, data, functionName) => {
         try {
             const message = getPortsAndAddresses(-1, isRead, moduleAddrs, enableDefaultFd);
             if (message === null) return;
             message["ssl_session_id"] = matrixSslSessionIdDecoder(ssl, resolvedFns);
             message["function"] = functionName;
+            stampRecordLibrary(message, library);
             sendDatalog(message, data);
         } catch (e) {
             devlog(`[matrixssl] ${isRead ? "read" : "write"} capture error: ${e}`);
@@ -83,7 +86,7 @@ function createMatrixSslReadHook(): ExtraHookDef {
                 return;
             }
             hookMatrixSslReads(addr, moduleAddrs["matrixSslProcessedData"],
-                matrixSslEmitter(true, moduleAddrs, resolvedFns, enableDefaultFd));
+                matrixSslEmitter(true, moduleAddrs, resolvedFns, enableDefaultFd, modName));
         },
     };
 }
@@ -104,7 +107,7 @@ function createMatrixSslWriteHooks(): ExtraHookDef {
                 return;
             }
             hookMatrixSslWrites(getBufAddr, encodeAddr,
-                matrixSslEmitter(false, moduleAddrs, resolvedFns, enableDefaultFd));
+                matrixSslEmitter(false, moduleAddrs, resolvedFns, enableDefaultFd, modName));
         },
     };
 }

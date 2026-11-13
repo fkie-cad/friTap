@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING, Any, Iterable, Iterator
 from friTap.analysis import Finding, run_analyzer_safely, severity_rank
 from friTap.analysis._digest_shapes import (
     MAX_HOST_CHARS,
+    MAX_KEY_CHARS,
     MAX_TEXT_CHARS,
     classify_body,
     header_shapes,
@@ -48,6 +49,8 @@ from friTap.analysis._digest_shapes import (
 )
 from friTap.analysis.filtering import FindingFilter, apply, summarize
 from friTap.analysis.redaction import redact_finding, redact_title
+from friTap.flow.attribution import flow_originator, flow_transport_kind
+from friTap.synthetic_endpoints import flow_endpoints_synthetic, is_synthetic_ip
 
 if TYPE_CHECKING:
     from friTap.flow.models import Flow
@@ -57,6 +60,8 @@ SCHEMA = "fritap.digest/2"
 FOCUS_CHOICES = ("all", "privacy", "security")
 DEFAULT_BUDGET_TOKENS = 1500
 TOP_FINDINGS = 10
+# Distinct flow refs listed per grouped finding row; the rest is counted in ``refs_more``.
+MAX_FINDING_REFS = 10
 
 # Compact placeholder for masked values (one token instead of ~3).
 VALUE_PLACEHOLDER = "\u2026"
@@ -170,21 +175,24 @@ def _flow_bytes(flow: "Flow", summary_size: int) -> int:
 def _flow_host(flow: "Flow") -> str:
     host = getattr(flow.request, "host", "") or getattr(flow.tls, "sni", "") or ""
     if not host:
-        host = _server_endpoint(flow)
+        # A synthetic 198.18.0.0/15 tuple (fd-less record) is not a real host.
+        host = _server_endpoint(flow, skip_synthetic=True)
     host = host.strip().lower()
     if host.endswith(":443"):
         host = host[:-4]
     return safe_untrusted(host, MAX_HOST_CHARS)
 
 
-def _server_endpoint(flow: "Flow") -> str:
+def _server_endpoint(flow: "Flow", skip_synthetic: bool = False) -> str:
     """``addr:port`` of the server side: the end with the lower (service) port.
 
     Read-direction flows can carry swapped src/dst, so ``dst`` alone is not
     reliable; a client's ephemeral port is virtually always the higher one.
+    With *skip_synthetic*, synthetic ``198.18.0.0/15`` addresses are ignored.
     """
     ends = [(flow.dst_port or 0, flow.dst_addr), (flow.src_port or 0, flow.src_addr)]
-    ends = [(port, addr) for port, addr in ends if addr]
+    ends = [(port, addr) for port, addr in ends
+            if addr and not (skip_synthetic and is_synthetic_ip(addr))]
     if not ends:
         return "?"
     port, addr = min(ends, key=lambda end: end[0] or 65536)
@@ -312,6 +320,12 @@ class _Row:
     #: unless --attribute-sdk captured a resolvable backtrace, so a row without
     #: it serializes byte-identically to before.
     sdks: dict = field(default_factory=dict)
+    #: Distinct ``attribution.transport.kind`` values of this row's flows
+    #: (host rows only); serialized only when non-empty.
+    transports: set = field(default_factory=set)
+    #: True once any of the row's flows has synthetic (fd-less) endpoints;
+    #: serialized only when set, so ordinary rows stay byte-identical.
+    endpoints_synthetic: bool = False
 
     def add(self, nbytes: int, started: float) -> None:
         self.count += 1
@@ -321,9 +335,15 @@ class _Row:
 
     def add_sdk(self, flow: "Flow") -> None:
         """Record *flow*'s resolved SDK (if any) on this row, de-duplicated."""
-        sdk = _normalize_sdk(getattr(flow, "sdk", None))
+        sdk = _normalize_sdk(flow_originator(flow))
         if sdk is not None:
             self.sdks.setdefault(sdk["sdk"], sdk)
+
+    def add_transport(self, flow: "Flow") -> None:
+        """Record *flow*'s attributed transport kind (if any) on this row."""
+        kind = flow_transport_kind(flow)
+        if kind is not None:
+            self.transports.add(safe_untrusted(kind, MAX_KEY_CHARS))
 
     def sdk_list(self) -> list[dict]:
         """Distinct SDK dicts for this row, ordered by name (stable output)."""
@@ -354,11 +374,13 @@ class _Aggregator:
         host_row = _row(group.hosts, host, ordinal)
         host_row.add(nbytes, started)
         host_row.add_sdk(flow)
+        host_row.add_transport(flow)
         has_messages = self._add_messages(group, flow, host, started, ordinal)
         if not has_messages and _is_endpoint_request(flow):
             row = _row(group.endpoints, _endpoint_signature(flow, host), ordinal)
             row.add(nbytes, started)
             row.add_sdk(flow)
+            row.endpoints_synthetic |= flow_endpoints_synthetic(flow)
             status = getattr(flow.response, "status_code", 0)
             if status:
                 row.status[str(status)] += 1
@@ -372,7 +394,7 @@ class _Aggregator:
             kind = msg.get("kind") or msg.get("method") or "?"
             if msg.get("method") and msg.get("kind") == "rpc":
                 kind = msg["method"]
-            key = (host, layer_name, str(msg.get("direction", "")), safe_untrusted(kind, 48))
+            key = (host, layer_name, str(msg.get("direction", "")), safe_untrusted(kind, MAX_KEY_CHARS))
             _row(group.messages, key, ordinal, ref=flow_ref(ordinal, index)).add(0, started)
         return found
 
@@ -424,6 +446,8 @@ def _host_rows(hosts: dict, classify: Any | None = None) -> list[dict]:
         _attribute_host(row, host, classify)
         if r.sdks:
             row["sdks"] = r.sdk_list()
+        if r.transports:
+            row["transports"] = sorted(r.transports)
         rows.append(row)
     return sorted(rows, key=lambda d: (-d["flows"], -d["bytes"], d["untrusted"]["host"]))
 
@@ -442,6 +466,8 @@ def _endpoint_rows(endpoints: dict) -> list[dict]:
             row["status"] = dict(sorted(r.status.items()))
         if r.sdks:
             row["sdks"] = r.sdk_list()
+        if r.endpoints_synthetic:
+            row["endpoints_synthetic"] = True
         row["untrusted"] = untrusted
         rows.append(row)
     return sorted(rows, key=lambda d: (-d["count"], -d["bytes"], d["untrusted"]["path"],
@@ -529,9 +555,21 @@ def _shown_title(finding: Finding, show_values: bool) -> str:
     return safe_untrusted(title, 80)
 
 
+def _refs_fields(refs: list[str]) -> dict:
+    """``refs`` (distinct flow refs, first-seen order, capped) plus ``refs_more`` when cut."""
+    fields: dict[str, Any] = {"refs": refs[:MAX_FINDING_REFS]}
+    if len(refs) > MAX_FINDING_REFS:
+        fields["refs_more"] = len(refs) - MAX_FINDING_REFS
+    return fields
+
+
 def finding_rows(findings: list[Finding], show_values: bool,
                  ordinals: dict[str, int], masvs: bool = False) -> list[dict]:
     """Cluster findings by (severity, category, source, title); most severe first.
+
+    ``ref`` is the flow of the cluster's first finding; ``refs`` lists every
+    distinct flow the cluster covers (first-seen order, at most
+    ``MAX_FINDING_REFS``, the remainder counted in ``refs_more``).
 
     Redaction leaves severity/category/source alone, so clustering needs only
     the redacted title; the full :func:`redact_finding` (description) runs once
@@ -546,15 +584,18 @@ def finding_rows(findings: list[Finding], show_values: bool,
         from friTap.analysis.masvs import classify_masvs as classify
 
     clusters: dict[tuple, dict] = {}
+    cluster_refs: dict[tuple, dict[str, None]] = {}
     for finding in findings:
         key = (finding.severity.value, finding.category or "uncategorized", finding.source,
                _shown_title(finding, show_values))
+        ordinal = ordinals.get(finding.flow_id)
+        ref = flow_ref(ordinal) if ordinal else ""
         row = clusters.get(key)
         if row is None:
-            ordinal = ordinals.get(finding.flow_id)
             shown = _presentable(finding, show_values)
+            cluster_refs[key] = {}
             row = clusters[key] = {
-                "ref": flow_ref(ordinal) if ordinal else "",
+                "ref": ref, "refs": [],
                 "count": 0, "severity": key[0], "category": key[1], "source": key[2],
                 "untrusted": {"title": key[3],
                               "description": safe_untrusted(shown.description, MAX_TEXT_CHARS)},
@@ -564,6 +605,10 @@ def finding_rows(findings: list[Finding], show_values: bool,
                 if controls:
                     row["masvs"] = controls
         row["count"] += 1
+        if ref:
+            cluster_refs[key][ref] = None
+    for key, row in clusters.items():
+        row.update(_refs_fields(list(cluster_refs[key])))
     return sorted(clusters.values(),
                   key=lambda r: (severity_rank(r["severity"]), -r["count"], r["untrusted"]["title"]))
 
@@ -832,14 +877,24 @@ def _host_counts(agg: _Aggregator) -> dict[str, int]:
 def _resolve_first_party(first_party, agg: _Aggregator):
     """Resolve a ``first_party`` argument, inferring the set when it is ``"auto"``.
 
-    A list or ``None`` is returned unchanged; the ``"auto"`` sentinel
-    (:data:`friTap.analysis.attribution.AUTO_FIRST_PARTY`) is replaced by the
-    domains :func:`infer_first_party` derives from the digested hosts. The
-    attribution subsystem is imported only when inference is actually requested.
+    ``None`` is returned unchanged; a list or a comma-separated string becomes
+    a domain list (:func:`~friTap.analysis.attribution.normalize_first_party`);
+    the ``"auto"`` sentinel (:data:`friTap.analysis.attribution.AUTO_FIRST_PARTY`)
+    is replaced by the domains :func:`infer_first_party` derives from the
+    digested hosts. The attribution subsystem is imported only when needed.
     """
-    if first_party != "auto":  # attribution.AUTO_FIRST_PARTY; literal keeps the common path import-free
+    if not first_party:
         return first_party
-    from friTap.analysis.attribution import infer_first_party, make_classifier
+    from friTap.analysis.attribution import (
+        AUTO_FIRST_PARTY,
+        infer_first_party,
+        make_classifier,
+        normalize_first_party,
+    )
+
+    first_party = normalize_first_party(first_party)
+    if first_party != AUTO_FIRST_PARTY:
+        return first_party
 
     return infer_first_party(_host_counts(agg), make_classifier(()))
 

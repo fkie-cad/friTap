@@ -1,6 +1,10 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
+    "at": {
+      "description": "ISO-8601 UTC time of the marker (same as t).",
+      "type": "string"
+    },
     "label": {
       "type": "string"
     },

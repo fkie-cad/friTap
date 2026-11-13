@@ -1,0 +1,18 @@
+{
+  "schema": "fritap.sdk_signatures/1",
+  "source": "friTap attribution fixture app (dev/fixtures/attribution_app)",
+  "kind": "fixture",
+  "entry_count": 2,
+  "entries": {
+    "com.fritap.sdkalpha": {
+      "sdk": "FritapAlpha",
+      "vendor": "friTap fixture",
+      "category": "fixture"
+    },
+    "com.fritap.sdkbeta": {
+      "sdk": "FritapBeta",
+      "vendor": "friTap fixture",
+      "category": "fixture"
+    }
+  }
+}

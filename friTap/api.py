@@ -41,14 +41,12 @@ from typing import TYPE_CHECKING, Callable, List, Optional
 
 from .config import DeviceConfig, FriTapConfig, HookingConfig, OutputConfig
 from .events import (
-    CallerStackEvent,
     DatalogEvent,
     EventBus,
     FlowEvent,
     KeylogEvent,
     LibraryDetectedEvent,
     MessageEvent,
-    OhttpEvent,
     SessionEvent,
 )
 from .pcap_utility import PCAP_FORMAT_AUTO, PCAP_FORMAT_PCAPNG
@@ -518,23 +516,19 @@ class FriTap:
                 signal_messages=bool(self._message_callbacks),
             )
             flow_collector.set_capture_target(self._target)
-            event_bus.subscribe(DatalogEvent, flow_collector.on_data)
-            event_bus.subscribe(LibraryDetectedEvent, flow_collector.on_library_detected)
-            event_bus.subscribe(SessionEvent, flow_collector.on_session_event)
-            # Opt-in SDK attribution (--attribute-sdk): resolved caller-stack SDK.
-            event_bus.subscribe(CallerStackEvent, flow_collector.on_sdk)
-            # OHTTP parity with the TUI: attach Signal-over-OHTTP inner payloads.
-            event_bus.subscribe(OhttpEvent, flow_collector.on_ohttp)
+            flow_collector.subscribe_to(event_bus)
             for cb in self._flow_callbacks:
                 event_bus.subscribe(FlowEvent, cb)
-            if self._message_callbacks:
-                # Feed Signal key material to the live decryptor, then deliver
-                # decrypted structured messages to the user callbacks.
-                event_bus.subscribe(KeylogEvent, flow_collector.on_keylog)
-                for cb in self._message_callbacks:
-                    event_bus.subscribe(MessageEvent, cb)
+            # Decrypted structured messages go to the user callbacks.
+            for cb in self._message_callbacks:
+                event_bus.subscribe(MessageEvent, cb)
 
         ssl_log.install_signal_handler()
         ssl_log.start_fritap_session()
+        # A numeric-PID attach resolves the real process name during
+        # start_fritap_session(); re-target this collector with it.
+        resolved_name = getattr(ssl_log, "resolved_process_name", None)
+        if flow_collector is not None and resolved_name:
+            flow_collector.set_capture_target(self._target, process_name=resolved_name)
 
         return FriTapSession(ssl_log, event_bus, flow_collector=flow_collector)

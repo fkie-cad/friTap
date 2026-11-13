@@ -32,6 +32,7 @@ import { goMemmoveArgs, goWriteRecordArgs, isGoStackAbi, GO_TLS_RECORD_TYPE_APPL
 import { devlog, devlog_error, log } from "../../util/log.js";
 import { attachGoFunctionEntry } from "../../shared/go_attach.js";
 import { getPortsAndAddresses } from "../../shared/shared_functions.js";
+import { stampRecordLibrary } from "../../shared/record_message.js";
 import { GO_SYMBOL_CONN_READ, GO_SYMBOL_MEMMOVE, GO_SYMBOL_WRITE_RECORD_LOCKED } from "./go_symbol_resolver.js";
 
 /** Peer/session metadata of one Go record (no fd on a *tls.Conn), or null when unattributable. */
@@ -147,14 +148,16 @@ export const GO_WRITE_LABEL = "Go_Conn_Write";
  * Record metadata for Go plaintext: a *tls.Conn exposes no socket fd (on any OS — a Windows
  * SOCKET included), so records are attributable only with --enable_default_fd, as a
  * synthesized 5-tuple (getPortsAndAddresses(-1, ...)). Without it every record is dropped.
+ * `moduleName` (the hooked Go binary) is stamped as the record's `library` label when given.
  */
-export function goDefaultFdMessageBuilder(enableDefaultFd: boolean): GoRecordMessageBuilder {
+export function goDefaultFdMessageBuilder(enableDefaultFd: boolean, moduleName?: string): GoRecordMessageBuilder {
     return (isRead) => {
         if (!enableDefaultFd) return null;
         const message: { [key: string]: any } | null = getPortsAndAddresses(-1, isRead, {}, enableDefaultFd);
         if (message === null) return null;
         message["ssl_session_id"] = "";
         message["function"] = isRead ? GO_READ_LABEL : GO_WRITE_LABEL;
+        stampRecordLibrary(message, moduleName);
         return message;
     };
 }
@@ -172,7 +175,7 @@ export function installGoPlaintextHooks(moduleName: string, symbols: { [symbol: 
         warnGoPlaintextUnsupported(moduleName);
         return;
     }
-    const buildMessage = goDefaultFdMessageBuilder(enableDefaultFd);
+    const buildMessage = goDefaultFdMessageBuilder(enableDefaultFd, moduleName);
     const usable = (p: NativePointer | undefined): p is NativePointer => !!p && !p.isNull();
     try {
         const writeRecord = symbols[GO_SYMBOL_WRITE_RECORD_LOCKED];

@@ -1,0 +1,18 @@
+schema_version: "1.1"
+name: trigger-privacy-audit-2
+description: 'specific: tracker inventory before consent'
+tags: [trigger, positive]
+runs: 3
+execution:
+  max_turns: 3
+  timeout_seconds: 120
+  allowed_tools: [Skill]
+  prompt: |
+    Audit com.news.daily on the emulator: which analytics and ad SDKs phone home, what user data they get, and does anything go out before the consent dialog is answered. Markdown report please.
+graders:
+  - name: fires-fritap-privacy-audit
+    type: tool_used
+    tool: Skill
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?fritap-privacy-audit"'
+    min: 1
+    arm: both

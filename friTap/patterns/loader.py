@@ -205,45 +205,20 @@ class PatternLoader:
         object.
 
         Validation is **structural** (the nesting and leaf *types* must be
-        right) — that part is fatal. Hex *content* is only advisory: the legacy
-        engine deliberately tolerates empty / placeholder / not-yet-derived
-        entries (``isNonEmptyActionPattern`` skips empties; bad patterns fall
-        back to symbol hooking), and shipped pattern files legitimately carry
-        placeholders. So a malformed hex string warns at debug level but never
-        fails validation — otherwise a perfectly usable legacy file would be
-        dropped just because one entry is a placeholder.
+        right) — that part is fatal. Hex *content* is not: a malformed hex
+        string is logged as a warning and **dropped** from *modules* (in place),
+        while the rest of the file is kept. Dropping matters because the agent
+        treats any non-empty string as a usable pattern and would otherwise pick
+        the broken JSON entry over the library's shipped default pattern. Empty
+        strings stay: they are intentional placeholders the agent already skips
+        (``isNonEmptyActionPattern``). A function whose every pattern was
+        dropped is removed entirely.
         """
         if not isinstance(modules, dict):
             logger.warning("Legacy pattern 'modules' must be a dictionary")
             return False
 
         valid = True
-
-        def check_hex(label, value):
-            # Content-only, advisory. Empty strings are intentional placeholders.
-            if isinstance(value, str) and value.strip() and not _HEX_PATTERN_RE.match(value):
-                logger.debug("Non-hex legacy pattern at %s: %r", label, value)
-
-        def check_leaf(label, leaf):
-            nonlocal valid
-            if isinstance(leaf, str):
-                check_hex(label, leaf)
-            elif isinstance(leaf, list):
-                for i, pat in enumerate(leaf):
-                    check_hex("%s[%d]" % (label, i), pat)
-            elif isinstance(leaf, dict):
-                # Object form — any of primary/fallback/second_fallback may be
-                # present (mirrors the agent's isNonEmptyActionPattern contract).
-                for key in ("primary", "fallback", "second_fallback"):
-                    if key in leaf:
-                        check_hex("%s.%s" % (label, key), leaf[key])
-            else:
-                logger.warning(
-                    "Legacy pattern '%s' must be a hex string, list, or "
-                    "{primary, fallback} object", label
-                )
-                valid = False
-
         for mod_name, mod_data in modules.items():
             if mod_name.startswith("_"):
                 continue
@@ -264,21 +239,66 @@ class PatternLoader:
                 for arch_name, arch_data in platform_data.items():
                     if arch_name.startswith("_"):
                         continue
+                    label = "%s/%s/%s" % (mod_name, platform_name, arch_name)
                     if not isinstance(arch_data, dict):
-                        logger.warning(
-                            "Legacy pattern arch '%s/%s/%s' must be a dictionary",
-                            mod_name, platform_name, arch_name
-                        )
+                        logger.warning("Legacy pattern arch '%s' must be a dictionary", label)
                         valid = False
                         continue
-                    for func_name, leaf in arch_data.items():
-                        if func_name.startswith("_"):
-                            continue
-                        check_leaf(
-                            "%s/%s/%s/%s" % (mod_name, platform_name, arch_name, func_name),
-                            leaf
-                        )
+                    if not PatternLoader._prune_legacy_arch(arch_data, label, logger):
+                        valid = False
         return valid
+
+    @staticmethod
+    def _prune_legacy_arch(arch_data: dict, label: str, logger) -> bool:
+        """Check every function leaf of one legacy arch entry, dropping invalid
+        hex in place. Returns False on a structural (leaf type) error."""
+        valid = True
+        for func_name in list(arch_data):
+            if func_name.startswith("_"):
+                continue
+            func_label = "%s/%s" % (label, func_name)
+            leaf = arch_data[func_name]
+            if not isinstance(leaf, (str, list, dict)):
+                logger.warning(
+                    "Legacy pattern '%s' must be a hex string, list, or "
+                    "{primary, fallback} object", func_label
+                )
+                valid = False
+            elif PatternLoader._prune_legacy_leaf(leaf, func_label, logger):
+                logger.warning("Dropping legacy pattern '%s': no valid hex pattern left",
+                               func_label)
+                del arch_data[func_name]
+        return valid
+
+    @staticmethod
+    def _prune_legacy_leaf(leaf, label: str, logger) -> bool:
+        """Drop invalid hex from *leaf* in place; True when the whole leaf must go
+        (it had invalid hex and nothing valid survived)."""
+        if isinstance(leaf, str):
+            return PatternLoader._is_invalid_hex(leaf, label, logger)
+        if isinstance(leaf, list):
+            kept = [pat for i, pat in enumerate(leaf)
+                    if not PatternLoader._is_invalid_hex(pat, "%s[%d]" % (label, i), logger)]
+            dropped = len(kept) != len(leaf)
+            leaf[:] = kept
+            return dropped and not kept
+        # Object form — any of primary/fallback/second_fallback may be present
+        # (mirrors the agent's isNonEmptyActionPattern contract).
+        keys = [k for k in ("primary", "fallback", "second_fallback") if k in leaf]
+        bad = [k for k in keys
+               if PatternLoader._is_invalid_hex(leaf[k], "%s.%s" % (label, k), logger)]
+        for key in bad:
+            del leaf[key]
+        return bool(bad) and len(bad) == len(keys)
+
+    @staticmethod
+    def _is_invalid_hex(value, label: str, logger) -> bool:
+        """True (and warn) for a non-empty string that is not a hex pattern.
+        Empty strings are intentional placeholders and are not invalid."""
+        if isinstance(value, str) and value.strip() and not _HEX_PATTERN_RE.match(value):
+            logger.warning("Skipping invalid hex in legacy pattern %s: %r", label, value)
+            return True
+        return False
 
     @staticmethod
     def deep_merge(base: dict, override: dict) -> dict:

@@ -129,12 +129,15 @@ test("definition plaintext hooks: onEnter-only, unattributable without --enable_
     call("def_wrl", [], 0, goContext("x64", [addr("conn"), int(23), mem("hello"), int(5), int(5)]));
     assert.deepEqual(take(), [], "no fd and no --enable_default_fd: not attributable");
 
-    // --enable_default_fd: the synthesized 5-tuple (a *tls.Conn exposes no fd).
+    // --enable_default_fd: the synthesized 5-tuple (a *tls.Conn exposes no fd), oriented like a
+    // real peer lookup (I2.1 item 4): a write goes 1234->2345, a read comes back 2345->1234.
     def.extraHooks![0].install(addresses, "app.go1.22", {}, true);
     call("def_wrl", [], 0, goContext("x64", [addr("conn"), int(23), mem("hello"), int(5), int(5)]));
     call("3000", [], 0, goContext("x64", [mem("....."), mem("world"), int(5)]));
     const messages = takeMessages();
-    assert.deepEqual(messages.map((m) => [m.function, m.dst_port]), [["Go_Conn_Write", 2345], ["Go_Conn_Read", 2345]]);
+    assert.deepEqual(messages.map((m) => [m.function, m.src_port, m.dst_port]),
+                     [["Go_Conn_Write", 1234, 2345], ["Go_Conn_Read", 2345, 1234]]);
+    assert.deepEqual(messages.map((m) => m.library), ["app.go1.22", "app.go1.22"], "module threaded as the library label");
 });
 
 test("shared installer (legacy + modern): stripped module without Go symbols installs nothing, never throws", () => {
@@ -156,6 +159,12 @@ test("goDefaultFdMessageBuilder: null without -ed; with -ed the synthesized tupl
     assert.equal(build(true)?.function, "Go_Conn_Read");
     assert.equal(build(false)?.function, "Go_Conn_Write");
     assert.equal(build(false)?.ssl_session_id, "");
+});
+
+test("goDefaultFdMessageBuilder: stamps the Go module as the record's library (absent when not given)", () => {
+    assert.equal(goDefaultFdMessageBuilder(true, "server.go")(true)?.library, "server.go");
+    assert.equal(goDefaultFdMessageBuilder(true, "server.go")(false)?.library, "server.go");
+    assert.equal("library" in (goDefaultFdMessageBuilder(true)(true) ?? {}), false);
 });
 
 test("386/arm (stack ABI): the Go plaintext probes are not installed (keys only)", () => {

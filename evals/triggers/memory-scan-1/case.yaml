@@ -1,0 +1,18 @@
+schema_version: "1.1"
+name: trigger-memory-scan-1
+description: 'terse: heap scan for secrets'
+tags: [trigger, positive]
+runs: 3
+execution:
+  max_turns: 3
+  timeout_seconds: 120
+  allowed_tools: [Skill]
+  prompt: |
+    skip the hooks, just pull the TLS secrets out of the process heap with fritap
+graders:
+  - name: fires-fritap-memory-scan
+    type: tool_used
+    tool: Skill
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?fritap-memory-scan"'
+    min: 1
+    arm: both

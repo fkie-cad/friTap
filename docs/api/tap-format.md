@@ -94,6 +94,7 @@ When `ext_header_len > 0`, the reader parses the following JSON object into
 |---------------------|----------|---------|
 | `FLAG_HAS_INDEX`    | `0x0001` | A FLOW_INDEX record was written and the footer points at it (file was closed cleanly). |
 | `FLAG_HAS_FINDINGS` | `0x0002` | At least one `REC_FINDING` record was written. Lets a reader decide (header-only) whether a findings scan is worthwhile. |
+| `FLAG_HAS_REQUEST_CONTEXTS` | `0x0004` | At least one `REC_REQUEST_CONTEXT` record was written. A closed (indexed) file without it holds none, so `iter_request_contexts()` skips the scan. |
 
 !!! note "Additive flag semantics"
     `FLAG_HAS_FINDINGS` is additive: old files predate it, so its *absence* means
@@ -140,6 +141,7 @@ The 1-byte `type` field selects the payload shape:
 | `REC_KEYLOG`     | `0x02` | JSON `{"key_data", "timestamp"}` — one SSLKEYLOGFILE line + its timestamp. |
 | `REC_META`       | `0x03` | JSON file-level metadata (`schema_version`, `flow_fields_version`, `parse_result_version`, `fritap_version`). Written first. |
 | `REC_FINDING`    | `0x04` | JSON `{"flow_id", "findings": [...]}` — analysis findings bound to a flow. See [the caveat](#flow-record-body-de-duplication). |
+| `REC_REQUEST_CONTEXT` | `0x05` | JSON per-request Java context (`req_id`, `stack_kind`, `url`, `method`, `frames`, `thread`, `t_start`, `t_end`, `status`, `protocol`, `cached`, `error`, `webview_id`, `main_frame`, `redirects`, `originator`, `confidence`, `source`, `matched_flow_ids`, `bucket`). Stored even when it matches no flow; whitelisted and bounded by `sanitize_request_context()` on write and on read (URLs ≤ 2048 chars, ≤ 32 frames, ≤ 16 redirects, ≤ 64 flow ids). At most 20 000 per file. Older readers skip it. |
 | `REC_FLOW_INDEX` | `0x10` | JSON `{"version", "entries": [{"flow_id", "offset"}]}` — written at close so readers can seek directly to each flow. |
 
 ---
@@ -260,6 +262,7 @@ on-demand full-flow loads with chunks and bodies.
 | `read_all_flows()`           | `list[Flow]`    | Full load of every flow (prefer summaries + on-demand for large files). |
 | `read_findings(flow_id)`     | `list[Finding]` | Findings from `REC_FINDING` records (lazy index). |
 | `has_findings()`             | `bool`          | Cheap presence check. |
+| `iter_request_contexts()`    | `Iterator[dict]` | Intact `REC_REQUEST_CONTEXT` records in file order, re-bounded as untrusted input. |
 | `close()`                    | `None`          | Safe to call repeatedly; also a context manager. |
 
 ```python title="Reading a .tap file (offline / CI-runnable)"

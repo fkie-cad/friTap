@@ -335,6 +335,23 @@ def test_get_flow_show_values_and_messages(registry, ctx):
     assert msgs["messages_total"] == 1 and msgs["messages"][0]["ref"] == "f6#m0"
 
 
+def _flow_meta(registry, ctx, ref):
+    return registry.call("get_flow", {"tap": "mixed.tap", "ref": ref, "fields": ["flow"]},
+                         context=ctx)["flow"]
+
+
+def test_get_flow_has_no_phase_without_sidecar(registry, ctx):
+    assert "phase" not in _flow_meta(registry, ctx, "f2")
+
+
+def test_get_flow_phase_from_sidecar(registry, ctx, root):
+    # One marker between f1 (t0) and f2 (t0+1): f1 precedes it, f2 falls inside.
+    (root / "phases.jsonl").write_text(
+        json.dumps({"t": 1_700_000_000.5, "label": "login"}) + "\n", encoding="utf-8")
+    assert "phase" not in _flow_meta(registry, ctx, "f1")
+    assert _flow_meta(registry, ctx, "f2")["phase"] == "login"
+
+
 def test_get_flow_bad_ref_and_cap(registry, ctx):
     err = _error(registry, "get_flow", {"tap": "mixed.tap", "ref": "f99"}, ctx)
     assert err.error_type == "bad_ref" and err.hint

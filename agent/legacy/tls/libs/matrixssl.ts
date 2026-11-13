@@ -1,5 +1,6 @@
 import { readAddresses, getPortsAndAddresses, resolveOffsets } from "../../../shared/shared_functions.js";
 import { sendDatalog } from "../../../shared/shared_structures.js";
+import { stampRecordLibrary } from "../../../shared/record_message.js";
 import { enable_default_fd, pcap_enabled } from "../../../fritap_agent.js";
 import { log } from "../../../util/log.js";
 import { hookMatrixSslReads, hookMatrixSslWrites } from "../../../shared/matrixssl_plaintext.js";
@@ -65,6 +66,7 @@ export class matrix_SSL {
         if (message === null) return;
         message["ssl_session_id"] = this.sessionIdFor(ssl);
         message["function"] = functionName;
+        stampRecordLibrary(message, this.module_name);
         sendDatalog(message, data);
     }
 

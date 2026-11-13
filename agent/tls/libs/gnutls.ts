@@ -1,5 +1,6 @@
 import { readAddresses, getPortsAndAddresses, resolveOffsets } from "../../shared/shared_functions.js";
 import { sendKeylog, sendDatalog } from "../../shared/shared_structures.js";
+import { stampRecordLibrary } from "../../shared/record_message.js";
 import { attachPlaintextWriteHook } from "../../shared/write_hooks.js";
 import { BufferedSendTracker } from "../../shared/write_length.js";
 import { log, devlog, devlog_error } from "../../util/log.js";
@@ -330,6 +331,7 @@ export class GnuTLS {
             var message = getPortsAndAddresses(GnuTLS.gnutls_transport_get_int(args[0]) as number, true, lib_addesses[current_module_name], enable_default_fd)
             message["ssl_session_id"] = GnuTLS.getSslSessionId(args[0])
             message["function"] = "SSL_read"
+            stampRecordLibrary(message, current_module_name)
             this.message = message
             this.buf = args[1]
         },
@@ -357,6 +359,7 @@ export class GnuTLS {
             if (message === null) return null
             message["ssl_session_id"] = GnuTLS.getSslSessionId(args[0])
             message["function"] = "SSL_write"
+            stampRecordLibrary(message, current_module_name)
             return message
         }, GnuTLS.pendingSends)
 

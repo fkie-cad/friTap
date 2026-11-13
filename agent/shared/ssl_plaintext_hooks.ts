@@ -14,9 +14,35 @@ import { enable_default_fd, attribute_sdk } from "../fritap_agent.js";
 import { devlog_error } from "../util/log.js";
 import { sendDatalog } from "./shared_structures.js";
 import { maybeCaptureCallerStack } from "./sdk_backtrace.js";
-import { fdOrDeferred, recoveredFd, installSslScopeHooks } from "./socket_fd_tracker.js";
+import { fdOrDeferred, recoveredFd, installSslScopeHooks, installSocketFdTracker } from "./socket_fd_tracker.js";
 import { buildRecordMessage, buildCallerStackJoin } from "./record_message.js";
 import { bytesWrittenFromRetval, bytesWrittenFromOutParam } from "./write_length.js";
+import { readSslClientRandom } from "./ssl_identity.js";
+import { findModuleExport } from "./module_exports.js";
+import { createBufferedClientRandomDecoder } from "../tls/definitions/shared_factories.js";
+import { prefetchSslLayout } from "./ssl_layout_autolocate.js";
+
+/** client_random of an SSL* via an exported API (lower/upper-case hex), or "" when unknown. */
+export type ClientRandomExport = (ssl: NativePointer) => string;
+
+const SSL_GET_CLIENT_RANDOM = "SSL_get_client_random";
+
+/**
+ * SSL_get_client_random(ssl, out, 32) exported by `moduleName`, wrapped as a
+ * ClientRandomExport, or null when the module does not export it (stripped
+ * Chromium monoliths). Reuses the --modern OpenSSL definition's buffered decoder
+ * (same native signature as agent/tls/definitions/openssl.ts).
+ */
+export function resolveSslGetClientRandomExport(moduleName: string): ClientRandomExport | null {
+    let address: NativePointer | null = null;
+    try { address = findModuleExport(moduleName, SSL_GET_CLIENT_RANDOM); } catch (_e) { address = null; }
+    if (!address) return null;
+    const exportedFunctions = {
+        [SSL_GET_CLIENT_RANDOM]: new NativeFunction(address, "int", ["pointer", "pointer", "int"]),
+    };
+    const decodeClientRandom = createBufferedClientRandomDecoder(SSL_GET_CLIENT_RANDOM);
+    return (ssl: NativePointer) => decodeClientRandom(ssl, exportedFunctions);
+}
 
 /** The hooker state the plaintext hooks read (an OpenSSL_BoringSSL instance). */
 export interface SslPlaintextHost {
@@ -29,6 +55,13 @@ export interface SslPlaintextHost {
     SSL_get_session: any;
     SSL_SESSION_get_id: any;
     getSslSessionId(ssl: NativePointer): string | number;
+    /** SSL_get_fd always returns -1 (no fd getter), so every record is fd-less. */
+    fdLess?: boolean;
+    /**
+     * Optional client_random export override (tests, or a host that already bound
+     * one). Without it the hooks resolve SSL_get_client_random from `moduleName`.
+     */
+    clientRandomViaExport?: ClientRandomExport;
 }
 
 /** Replacement plaintext pushed from the host (readmod / writemod messages). */
@@ -38,6 +71,9 @@ export interface PlaintextModifications {
 }
 
 export class SslPlaintextHooks {
+    /** undefined = not resolved yet; null = the module exports no client_random API. */
+    private clientRandomExport: ClientRandomExport | null | undefined = undefined;
+
     /**
      * @param useBioGetFd rebind SSL_get_fd to BIO_get_fd when falling back to the
      *                    init_addresses module (Apple's libboringssl only).
@@ -48,15 +84,59 @@ export class SslPlaintextHooks {
 
     /**
      * Peer/session metadata for one plaintext record, or null when it cannot be
-     * attributed (no usable fd and no --enable_default_fd, or a non-IP socket).
+     * attributed (a non-IP socket, or no usable fd with neither a known client_random
+     * nor --enable_default_fd). An fd-less record whose client_random is known is
+     * emitted without address fields (buildRecordMessage -> buildEndpointlessRecord).
      */
     buildMessage(fd: number, isRead: boolean, ssl: NativePointer, functionName: string): any | null {
-        if (fd < 0 && !enable_default_fd) return null;
         const host = this.host;
         return buildRecordMessage(
-            { fd, isRead, functionName, methodAddresses: host.addresses[host.module_name], enableDefaultFd: enable_default_fd },
+            {
+                fd, isRead, functionName, methodAddresses: host.addresses[host.module_name],
+                enableDefaultFd: enable_default_fd, library: host.moduleName,
+                // `clientRandom` takes precedence for the stamp; `ssl` lets a held
+                // caller_stack be joined to this record (sdk_backtrace.ts).
+                ssl,
+                clientRandom: () => this.clientRandomFor(ssl),
+            },
             () => ({ ssl_session_id: host.getSslSessionId(ssl) }),
         );
+    }
+
+    /**
+     * client_random of `ssl` (lower-case hex, "" when unknown). Lookup order (design
+     * B4): the shared per-SSL* identity cache -> this module's ssl_st layout ->
+     * SSL_get_client_random -> nothing. A cache hit costs two reads, no hex encode.
+     */
+    clientRandomFor(ssl: NativePointer): string {
+        return readSslClientRandom(ssl, this.host.moduleName, this.exportedClientRandom() ?? undefined);
+    }
+
+    /**
+     * Start the module's ssl_st layout lookup at hook-install time so early records
+     * carry client_random. Gated and once per module (ssl_layout_autolocate.ts), so
+     * calling it from both attachRead and attachWrite costs nothing extra.
+     */
+    private prefetchModuleSslLayout(): void {
+        prefetchSslLayout(this.host.moduleName);
+    }
+
+    /**
+     * An fd-less host has only fd-less records: arm the socket fd tracker at install time
+     * so the first record's socket I/O is observed. Idempotent (installSocketFdTracker).
+     */
+    private armFdTrackerIfFdLess(): void {
+        if (!this.host.fdLess) return;
+        installSocketFdTracker(`early at plaintext hook install (${this.host.moduleName} has no SSL_get_fd)`);
+    }
+
+    /** The module's client_random export, resolved once. */
+    private exportedClientRandom(): ClientRandomExport | null {
+        if (this.clientRandomExport === undefined) {
+            this.clientRandomExport = this.host.clientRandomViaExport
+                ?? resolveSslGetClientRandomExport(this.host.moduleName);
+        }
+        return this.clientRandomExport;
     }
 
     /**
@@ -111,6 +191,8 @@ export class SslPlaintextHooks {
 
     /** SSL_read(ssl, buf, num) -> bytes read. */
     attachRead(address: NativePointer, functionName = "SSL_read"): void {
+        this.armFdTrackerIfFdLess();
+        this.prefetchModuleSslLayout();
         const hooks = this;
         Interceptor.attach(address, {
             onEnter(args: any) {
@@ -121,7 +203,7 @@ export class SslPlaintextHooks {
                     args[0], () => hooks.host.SSL_get_fd(args[0]), true,
                     hooks.host.addresses[hooks.host.module_name], enable_default_fd,
                     () => hooks.host.getSslSessionId(args[0]),
-                ));
+                ), { transportModule: hooks.host.moduleName });
                 this.bufLen = args[2].toInt32();
                 this.buf = args[1];
                 const fd = fdOrDeferred(hooks.host.SSL_get_fd(args[0]), args[0]);
@@ -159,6 +241,8 @@ export class SslPlaintextHooks {
      * retries with the remainder). The caller owns `buf` for the whole synchronous call.
      */
     attachWrite(address: NativePointer, functionName = "SSL_write"): void {
+        this.armFdTrackerIfFdLess();
+        this.prefetchModuleSslLayout();
         const hooks = this;
         Interceptor.attach(address, {
             onEnter(args: any) {
@@ -181,7 +265,7 @@ export class SslPlaintextHooks {
                     args[0], () => hooks.host.SSL_get_fd(args[0]), true,
                     hooks.host.addresses[hooks.host.module_name], enable_default_fd,
                     () => hooks.host.getSslSessionId(args[0]),
-                ));
+                ), { transportModule: hooks.host.moduleName });
                 this.buf = args[1];
                 this.readbytes_ptr = args[3];
                 const fd = fdOrDeferred(hooks.host.SSL_get_fd(args[0]), args[0]);
@@ -236,7 +320,7 @@ export class SslPlaintextHooks {
             ssl, () => this.host.SSL_get_fd(ssl), false,
             this.host.addresses[this.host.module_name], enable_default_fd,
             () => this.host.getSslSessionId(ssl),
-        ));
+        ), { transportModule: this.host.moduleName });
         const fd = fdOrDeferred(this.writeSslFd(ssl, this.host.is_base_hook), ssl);
         if (fd === null) {
             // No socket fd on the SSL object: attribute in onLeave, after this write sent

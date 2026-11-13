@@ -120,8 +120,11 @@ frida-ps
 ### Native Windows Applications
 
 ```powershell
-# Analyze Internet Explorer/Edge
+# Analyze Microsoft Edge (Chromium-based, uses BoringSSL like Chrome)
 fritap -k edge_keys.log msedge.exe
+
+# Analyze Internet Explorer (uses Schannel via WinINet)
+fritap -k ie_keys.log iexplore.exe
 
 # Analyze Chrome
 fritap -k chrome_keys.log "C:\Program Files\Google\Chrome\Application\chrome.exe"
@@ -140,9 +143,9 @@ fritap -k app_keys.log application.exe
 Get-AppxPackage | Select Name, PackageFullName
 
 # Analyze Windows Store apps (requires special handling)
-fritap -k store_app_keys.log -p <PackageFullName>
+fritap -k store_app_keys.log <PackageFullName>
 
-# Example: Microsoft Edge (Store version)
+# Example: legacy EdgeHTML-based Microsoft Edge (Store version 44; uses Schannel)
 fritap -k edge_store_keys.log Microsoft.MicrosoftEdge_44.19041.1266.0_neutral__8wekyb3d8bbwe
 ```
 
@@ -165,7 +168,8 @@ fritap -k security_keys.log SecurityHealthSystray.exe
 # Analyze PowerShell
 fritap -k powershell_keys.log powershell.exe
 
-# Analyze curl (Windows 10+)
+# Analyze the built-in curl (C:\Windows\System32\curl.exe, Windows 10 1803+).
+# It uses Schannel, so keep the default LSASS hook (no --no-lsass).
 fritap -k curl_keys.log curl.exe https://httpbin.org/get
 
 # Python applications
@@ -183,7 +187,7 @@ Understanding Windows' TLS architecture is essential for effective traffic analy
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                    YOUR APPLICATION                             │
-│           (Edge, .NET apps, PowerShell, curl, etc.)             │
+│ (IE, .NET apps, PowerShell, built-in curl.exe, etc.)            │
 └──────────────────────────────┬──────────────────────────────────┘
                                │ SSPI API calls (InitializeSecurityContext, etc.)
                                ▼
@@ -243,13 +247,15 @@ friTap automatically hooks lsass.exe (enabled by default) to intercept:
 **Default behavior (hooks both application and LSASS):**
 ```powershell
 # Captures keys from both the target app AND system-wide Schannel traffic
-fritap -k keys.log firefox.exe
+# (Windows PowerShell 5.1's Invoke-WebRequest uses Schannel)
+fritap -k keys.log powershell.exe
 ```
 
 **Disable LSASS hooking:**
 ```powershell
-# Only hook the target application directly (useful for OpenSSL apps)
-fritap --no-lsass -k keys.log curl.exe
+# Only hook the target application directly (useful for OpenSSL apps,
+# e.g. curl from MSYS2 / Git for Windows / vcpkg rather than System32\curl.exe)
+fritap --no-lsass -k keys.log "C:\msys64\usr\bin\curl.exe"
 
 # Short form
 fritap -nl -k keys.log application.exe
@@ -288,22 +294,27 @@ fritap -nl -k keys.log chrome.exe
 # Firefox uses NSS, not Schannel
 fritap -nl -k keys.log firefox.exe
 
-# curl on Windows may use OpenSSL
-fritap -nl -k keys.log curl.exe
+# The built-in C:\Windows\System32\curl.exe (Windows 10 1803+) uses Schannel:
+# keep the default LSASS hook for it. curl from MSYS2, Git for Windows or vcpkg
+# is usually built with OpenSSL; `curl -V` shows the TLS backend
+# (e.g. "Schannel" vs "OpenSSL/3.x").
+curl -V
+fritap -nl -k keys.log "C:\msys64\usr\bin\curl.exe"
 ```
 
 ### Applications Using Schannel vs Other Libraries
 
 | Application | TLS Library | Needs LSASS Hook |
 |-------------|-------------|------------------|
-| Microsoft Edge | Schannel | Yes (default) |
 | Internet Explorer | Schannel | Yes (default) |
 | .NET Applications | Schannel | Yes (default) |
-| PowerShell | Schannel | Yes (default) |
+| Windows PowerShell 5.1 (`Invoke-WebRequest`) | Schannel | Yes (default) |
 | Windows Update | Schannel | Yes (default) |
+| Microsoft Edge (Chromium) | BoringSSL | No (`--no-lsass`) |
 | Chrome | BoringSSL | No (`--no-lsass`) |
 | Firefox | NSS | No (`--no-lsass`) |
-| curl (OpenSSL build) | OpenSSL | No (`--no-lsass`) |
+| curl (built-in `C:\Windows\System32\curl.exe`) | Schannel | Yes (default) |
+| curl (MSYS2 / Git for Windows / vcpkg, OpenSSL) | OpenSSL | No (`--no-lsass`) |
 | Python (ssl module) | OpenSSL | No (`--no-lsass`) |
 | Java applications | Java SSL | No (`--no-lsass`) |
 
@@ -399,7 +410,7 @@ convention on Windows as on Linux and macOS, so the same hooks apply (amd64 and 
 ### Web Browsers
 
 ```powershell
-# Microsoft Edge
+# Microsoft Edge (Chromium-based, BoringSSL)
 fritap -k edge_keys.log --pcap edge_traffic.pcap msedge.exe
 
 # Google Chrome

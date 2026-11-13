@@ -215,3 +215,20 @@ jobs:
         run: |
           python -c "import friTap; print('friTap', friTap.__version__)"
           python -c "from friTap.backends.frida_backend import FridaBackend; FridaBackend()"
+
+  # Validate the Claude Code plugin + marketplace manifests (.claude-plugin/).
+  # claude-code is pinned so a CLI release cannot turn main red on its own.
+  plugin-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install pinned Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code@2.1.322
+
+      - name: Validate plugin
+        run: claude plugin validate .

@@ -163,15 +163,22 @@ function learnSecretOffset(
         `(len ${secret.length}) in ${moduleName}`);
 }
 
+/** The SSL* (and its module) a recovered line belongs to; sendKeylog notes its client_random. */
+interface RecoveredKeylogOrigin {
+    ssl: NativePointer;
+    module: string;
+}
+
 function emitSecret(
     label: string, clientRandom: string, s3: NativePointer, off: number, len: number,
+    origin?: RecoveredKeylogOrigin,
 ): boolean {
     try {
         const buf = s3.add(off).readByteArray(len);
         if (!buf) return false;
         const u8 = new Uint8Array(buf as ArrayBuffer);
         if (isMostlyZero(u8)) return false;
-        sendKeylog(`${label} ${clientRandom} ${get_hex_string_from_byte_array(u8)}`);
+        sendKeylog(`${label} ${clientRandom} ${get_hex_string_from_byte_array(u8)}`, origin?.ssl, origin?.module);
         return true;
     } catch (e) {
         devlog_debug(`[tls13-recover] emit ${label} failed: ${e}`);
@@ -201,8 +208,9 @@ export function recoverTls13Secrets(moduleName: string, sslPtr: NativePointer): 
     const clientRandom = readClientRandomHex(s3);
     if (!clientRandom) return;
 
-    const okC = emitSecret(LABEL_CLIENT, clientRandom, s3, discovery.clientOff!, discovery.clientLen);
-    const okS = emitSecret(LABEL_SERVER, clientRandom, s3, discovery.serverOff!, discovery.serverLen);
+    const origin: RecoveredKeylogOrigin = { ssl: sslPtr, module: moduleName };
+    const okC = emitSecret(LABEL_CLIENT, clientRandom, s3, discovery.clientOff!, discovery.clientLen, origin);
+    const okS = emitSecret(LABEL_SERVER, clientRandom, s3, discovery.serverOff!, discovery.serverLen, origin);
     if (okC || okS) {
         log(`[*] TLS1.3 attach-recovery: recovered keys for un-witnessed connection ` +
             `(cr=${clientRandom.substring(0, 16)}…)`);

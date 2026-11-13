@@ -93,7 +93,7 @@ export class OpenSSL_BoringSSL_Linux extends OpenSSL_BoringSSL {
 
                 Interceptor.attach(callback_func, {
                     onEnter: function(args: any) {
-                        sendKeylog(args[1].readCString());
+                        sendKeylog(args[1].readCString(), args[0], instance.module_name);
                     }
                 });
             }
@@ -264,7 +264,7 @@ export class OpenSSL_From_Python_Linux extends OpenSSL_BoringSSL {
 
                     Interceptor.attach(callback_func, {
                         onEnter: function (args: any) {
-                            sendKeylog(args[1].readCString());
+                            sendKeylog(args[1].readCString(), args[0], instance.module_name);
                         }
                     });
                 }

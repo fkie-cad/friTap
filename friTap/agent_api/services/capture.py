@@ -20,6 +20,7 @@ from friTap.agent_api.capture.runner import (
 from friTap.agent_api.capture.session import CaptureSession
 from friTap.agent_api.context import ToolContext
 from friTap.agent_api.envelope import ok
+from friTap.agent_api.errors import ToolError
 
 START_SCHEMA = "fritap.capture_start/1"
 STATUS_SCHEMA = "fritap.capture_status/1"
@@ -44,6 +45,7 @@ def request_from_params(params: dict[str, Any]) -> CaptureRequest:
         capture=params.get("capture", DEFAULT_CAPTURE_MODE),
         duration_s=params.get("duration_s", DEFAULT_DURATION_S),
         follow_exec=params.get("follow_exec", True),
+        anti_root=params.get("anti_root", False),
     )
 
 
@@ -67,8 +69,17 @@ def stop_capture(session_id: str) -> dict[str, Any]:
 
 
 def mark_phase(session_id: str, label: str) -> dict[str, Any]:
-    entry = default_manager.get(session_id).mark_phase(label)
+    entry = default_manager.get(session_id).mark_phase(_phase_label(label))
     return ok(PHASE_SCHEMA, {"session_id": session_id, **entry})
+
+
+def _phase_label(label: str) -> str:
+    """The stripped phase label; whitespace-only labels are a ``bad_param``."""
+    stripped = label.strip()
+    if not stripped:
+        raise ToolError("label must not be blank", "bad_param", param="label",
+                        hint="use a short name such as consent-declined")
+    return stripped
 
 
 def list_sessions() -> dict[str, Any]:

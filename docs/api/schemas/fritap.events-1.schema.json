@@ -181,7 +181,11 @@
         },
         "direction": {"type": "string", "examples": ["read", "write"]},
         "src_port": {"type": "integer"},
-        "dst_port": {"type": "integer"}
+        "dst_port": {"type": "integer"},
+        "endpoints_synthetic": {
+          "type": "boolean",
+          "description": "True when the socket tuple is a synthetic 198.18.0.0/15 one (fd-less TLS record), not a real address."
+        }
       }
     }
   }

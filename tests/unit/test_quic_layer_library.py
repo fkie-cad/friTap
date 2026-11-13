@@ -76,6 +76,25 @@ def test_records_own_library_wins_over_last_announcement():
     assert flow.layer("tls").library == "libmonochrome_64.so"
 
 
+def test_tcp_tls_record_keeps_its_module_despite_later_announcement():
+    """Regression (Pixel 5): WebView HTTP/2 flows were labelled with Cronet's module.
+
+    libcronet announced AFTER libwebviewchromium, and TCP-TLS records carried no
+    ``library``, so every new flow fell back to the last announcement. The agent
+    now stamps each record's own module, which must win.
+    """
+    bus, collector = _collector_with_library("libwebviewchromium.so", "tls")
+    bus.emit(LibraryDetectedEvent(library="libcronet.157.0.8103.14.so", protocol="tls"))
+    http2_preface = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+    bus.emit(DatalogEvent(
+        data=http2_preface, function="SSL_write", direction="write",
+        src_addr="10.0.0.2", src_port=52004, dst_addr="142.250.1.1",
+        dst_port=443, protocol="tls", timestamp=1000.0, library="libwebviewchromium.so",
+    ))
+    (flow,) = collector.get_flows()
+    assert flow.layer("tls").library == "libwebviewchromium.so"
+
+
 def test_live_tls_flow_library_unchanged():
     flow = _live_flow("tls", "OpenSSL")
     tls = flow.layer("tls")

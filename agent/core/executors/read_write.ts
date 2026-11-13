@@ -11,6 +11,7 @@ import { fdOrDeferred, recoveredFd } from "../../shared/socket_fd_tracker.js";
 import { buildRecordMessage, buildCallerStackJoin } from "../../shared/record_message.js";
 import { recoverTls13Secrets } from "../../shared/tls13_secret_recovery.js";
 import { BufferedSendTracker, UNKNOWN_WRITE_LENGTH, writtenPayload } from "../../shared/write_length.js";
+import { prefetchSslLayout } from "../../shared/ssl_layout_autolocate.js";
 
 type RecordMessageBuilder = (sslCtx: NativePointer, fd: number) => any | null;
 
@@ -33,7 +34,11 @@ function sslFdOrDeferred(sslCtx: NativePointer, def: HookDefinition, resolvedFns
     return fdOrDeferred(fd, sslCtx);
 }
 
-/** The per-hook record-message builder: everything but the SSL object and fd is fixed at install. */
+/**
+ * The per-hook record-message builder: everything but the SSL object and fd is fixed at install.
+ * A deferred record whose fd stayed unrecovered (-1) but whose client_random is known is kept
+ * without address fields (buildRecordMessage -> buildEndpointlessRecord).
+ */
 function recordMessageBuilder(
     def: HookDefinition,
     resolvedFns: ResolvedFunctions,
@@ -41,11 +46,15 @@ function recordMessageBuilder(
     enableDefaultFd: boolean,
     isRead: boolean,
     label: string,
+    moduleName: string,
 ): RecordMessageBuilder {
     const extractor = def.customAddressExtractor;
     return (sslCtx, fd) => buildRecordMessage(
         {
-            fd, isRead, functionName: label, methodAddresses, enableDefaultFd,
+            fd, isRead, functionName: label, methodAddresses, enableDefaultFd, library: moduleName,
+            // client_random fallback (shared per-SSL* identity) when the decoder below
+            // is missing or returns "": stamped by buildRecordMessage, never overwrites.
+            ssl: sslCtx,
             resolvePeer: extractor ? () => extractor(sslCtx, isRead, resolvedFns, enableDefaultFd) : undefined,
         },
         () => {
@@ -71,7 +80,7 @@ export function installReadHook(
     // Built once at install time (label/moduleName are constant); the hot-path
     // onEnter just hands the precomputed string to the throttled hookBreadcrumb.
     const breadcrumb = `${label} (${moduleName})`;
-    const buildMessage = recordMessageBuilder(def, resolvedFns, methodAddresses, enableDefaultFd, true, label);
+    const buildMessage = recordMessageBuilder(def, resolvedFns, methodAddresses, enableDefaultFd, true, label, moduleName);
 
     const hookAddr = addresses[moduleName][hook.symbol];
     if (!hookAddr || hookAddr.isNull()) return;
@@ -92,7 +101,7 @@ export function installReadHook(
                 def.customAddressExtractor
                     ? () => def.customAddressExtractor!(sslCtx, true, resolvedFns, enableDefaultFd)
                     : undefined,
-            ));
+            ), { transportModule: moduleName });
             this.buf = args[hook.args.bufferArgIndex];
             const fd = sslFdOrDeferred(sslCtx, def, resolvedFns);
             if (fd === null) {
@@ -115,6 +124,8 @@ export function installReadHook(
             sendDatalog(this.message, this.buf.readByteArray(retval));
         },
     });
+    // Start the ssl_st layout lookup now so early records carry client_random (gated, once per module).
+    prefetchSslLayout(moduleName);
 }
 
 export function installWriteHook(
@@ -131,7 +142,7 @@ export function installWriteHook(
     const methodAddresses = addresses[moduleName];
     // Precomputed once (see installReadHook): keeps the hot-path onEnter allocation-free.
     const breadcrumb = `${label} (${moduleName})`;
-    const buildMessage = recordMessageBuilder(def, resolvedFns, methodAddresses, enableDefaultFd, false, label);
+    const buildMessage = recordMessageBuilder(def, resolvedFns, methodAddresses, enableDefaultFd, false, label, moduleName);
 
     const hookAddr = addresses[moduleName][hook.symbol];
     if (!hookAddr || hookAddr.isNull()) return;
@@ -157,7 +168,7 @@ export function installWriteHook(
                 def.customAddressExtractor
                     ? () => def.customAddressExtractor!(sslCtx, false, resolvedFns, enableDefaultFd)
                     : undefined,
-            ));
+            ), { transportModule: moduleName });
             // M2 spike (internally gated/one-shot): for an attached process
             // whose handshake we missed, recover TLS 1.3 traffic secrets from
             // the live ssl->s3 and emit them as keylog lines. No-op unless a

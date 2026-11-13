@@ -1,6 +1,7 @@
 import { get_hex_string_from_byte_array, readAddresses, isSymbolAvailable, getPortsAndAddresses } from "../../../shared/shared_functions.js";
 import { checkNumberOfExports } from "../../shared/shared_functions_legacy.js";
 import { sendKeylog, sendDatalog } from "../../../shared/shared_structures.js";
+import { SslRecordSource, buildEndpointlessSslRecord, finishSslRecord } from "../../../shared/record_message.js";
 import { attachPlaintextWriteHook } from "../../../shared/write_hooks.js";
 import { devlog, devlog_debug, devlog_error } from "../../../util/log.js";
 import { safeKeyLenLogged } from "../../../shared/keylog_length.js";
@@ -9,6 +10,7 @@ import {
     CLIENT_RANDOM_CACHE_MAX,
     tryReadClientRandomAt,
 } from "../../../shared/ssl_struct_walk.js";
+import { sslIdentity } from "../../../shared/ssl_identity.js";
 import { keylog_enabled, pcap_enabled, enable_default_fd } from "../../../fritap_agent.js";
 
 
@@ -50,7 +52,8 @@ export class Cronet {
 
         this.keylog_callback = new NativeCallback(function (ctxPtr: NativePointer, linePtr: NativePointer) {
             devlog("invoking keylog_callback from Cronet ("+ moduleName +")");
-            sendKeylog(linePtr.readCString().toUpperCase());
+            // keylog_callback is (const SSL *ssl, const char *line): ctxPtr is the SSL*.
+            sendKeylog(linePtr.readCString().toUpperCase(), ctxPtr, moduleName);
         }, "void", ["pointer", "pointer"])
 
         try{
@@ -107,6 +110,17 @@ export class Cronet {
     get_client_random_from_ssl_struct(ssl_st_ptr: NativePointer): string {
         if (ssl_st_ptr.isNull()) return "";
 
+        // Shared per-SSL* identity first (ssl_identity.ts): anchor-checked, so it
+        // notices an SSL* address reused for a new connection. Upper-cased to
+        // keep this method's historical output format.
+        const identityCr = sslIdentity(ssl_st_ptr)?.cr;
+        if (identityCr) return identityCr.toUpperCase();
+
+        // Residual risk (pre-existing, kept): this per-address cache has no anchor and
+        // is never cleared on SSL_free, so an SSL* address reused for a new connection
+        // can return the previous connection's cr (or a stale "" miss) when the shared
+        // identity above has no anchored entry. ssl_identity.ts no longer serves its
+        // own anchorless export-derived crs for exactly this reason.
         const cacheKey = ssl_st_ptr.toString();
         const cached = this.clientRandomCache.get(cacheKey);
         if (cached !== undefined) return cached;
@@ -141,6 +155,8 @@ export class Cronet {
                         `[Cronet legacy] client_random recovered via fallback s3 offset 0x${off.toString(16)}`
                     );
                 }
+                // Not noted here: dumpKeys' sendKeylog notes it, and the record path
+                // notes it through the shared SslRecordSource probe (record_message.ts).
                 this.clientRandomCache.set(cacheKey, cr);
                 return cr;
             }
@@ -234,7 +250,7 @@ export class Cronet {
         }
 
         //devlog("invoking ssl_log_secret() from BoringSSL statically linked into Cronet");
-        sendKeylog(labelStr+" "+client_random+" "+secret_key);
+        sendKeylog(labelStr+" "+client_random+" "+secret_key, sslStructPtr, this.module_name);
     }
 
     getSslSessionId(ssl: NativePointer) {
@@ -262,6 +278,17 @@ export class Cronet {
         return session_id
     }
 
+    /** This module's per-SSL lookups for the shared record builder (record_message.ts). */
+    recordSource(): SslRecordSource {
+        return {
+            library: this.module_name,
+            methodAddresses: this.addresses[this.module_name],
+            enableDefaultFd: enable_default_fd,
+            probeClientRandom: (ssl) => this.get_client_random_from_ssl_struct(ssl),
+            sessionFields: (ssl) => ({ ssl_session_id: this.getSslSessionId(ssl) }),
+        };
+    }
+
     install_plaintext_read_hook(){
         if (!pcap_enabled) return;
         if (!this.do_read_write_hooks) return;
@@ -278,7 +305,18 @@ export class Cronet {
                     cronetReadCount++;
                     devlog_debug(`[Cronet legacy SSL_read] call #${cronetReadCount} in ${current_module_name}`);
                 }
+                // Only a sendable record (addressed, endpointless or -ed) sets it below.
+                this.message = null
                 this.fd = instance.SSL_get_fd(args[0])
+                if (this.fd < 0) {
+                    // fd-less: kept without address fields when the client_random is known.
+                    const endpointless = buildEndpointlessSslRecord(instance.recordSource(), args[0], "SSL_read", true)
+                    if (endpointless !== null) {
+                        this.message = endpointless
+                        this.buf = args[1]
+                        return
+                    }
+                }
                 if(this.fd < 0 && enable_default_fd == false) {
                     return
                 }
@@ -287,12 +325,14 @@ export class Cronet {
                 if (message === null) { return; }
                 message["ssl_session_id"] = instance.getSslSessionId(args[0])
                 message["function"] = "SSL_read"
+                finishSslRecord(message, instance.recordSource(), args[0], "SSL_read", true)
                 this.message = message
                 this.buf = args[1]
             },
             onLeave: function (retval: any) {
                 retval |= 0 // Cast retval to 32-bit integer.
-                if (retval <= 0 || (this.fd < 0 && !enable_default_fd)) {
+                // fd-less records unsendable without -ed never set this.message (onEnter).
+                if (retval <= 0) {
                     return
                 }
                 if (this.message) {
@@ -315,6 +355,11 @@ export class Cronet {
         // buffer): emitted in onLeave with the written count only.
         attachPlaintextWriteHook(this.addresses[this.moduleName]["SSL_write"], (args) => {
             var fd = instance.SSL_get_fd(args[0])
+            if (fd < 0) {
+                // fd-less: kept without address fields when the client_random is known.
+                const endpointless = buildEndpointlessSslRecord(instance.recordSource(), args[0], "SSL_write", false)
+                if (endpointless !== null) return endpointless
+            }
             if(fd < 0 && enable_default_fd == false) {
                 return null
             }
@@ -322,6 +367,7 @@ export class Cronet {
             if (message === null) { return null; }
             message["ssl_session_id"] = instance.getSslSessionId(args[0])
             message["function"] = "SSL_write"
+            finishSslRecord(message, instance.recordSource(), args[0], "SSL_write", false)
             return message
         })
     }

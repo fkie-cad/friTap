@@ -32,6 +32,10 @@ demo/
 !llms.txt
 !docs/api/schemas/*.json
 !compat.yml
+# Packaged agent skills (setup.py package_data) and the Claude plugin manifests.
+!friTap/skills/**/*.md
+!.claude-plugin/*.json
+!dev/fixtures/attribution_app/sdk_signatures_fixture.json
 !CONTRIBUTING.md
 !.github/PULL_REQUEST_TEMPLATE.md
 !.github/ISSUE_TEMPLATE/
@@ -224,7 +228,17 @@ tls_libs_Chrome/
 !friTap/analysis/attribution/data/public_suffix_list.dat
 !friTap/plugins/shared_utility/*.js
 !friTap/offline/mtproto/schema/SOURCE.txt
+# claude plugin eval suite (evals/README.md); run output stays ignored below
+!evals/README.md
+!evals/run.sh
+!evals/outcomes/**/*.sh
+!evals/fixtures/FACTS.md
+!evals/fixtures/audit.tap
+!evals/fixtures/phases.jsonl
 # The FULL DuckDuckGo Tracker Radar distillation is CC BY-NC-SA 4.0 — local use
 # only, never committed or published (dev/update_tracker_radar.py writes it).
 # Kept last so no allowlist entry above can re-include it.
 friTap/analysis/attribution/data/trackers_full.json
+
+# claude plugin eval run output
+evals/results/

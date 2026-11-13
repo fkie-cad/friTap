@@ -10,8 +10,8 @@ codebase calls them Schema A and Schema B — see test_pattern_fallback_gate.py)
 * **Schema B** (legacy ``PatternBasedHooking``; the DEFAULT when ``--modern`` is
   off) — an object form under a top-level ``modules`` key:
   ``{"modules": {<module>: {<platform>: {<arch>: {<function>:
-  {"primary": "..", "fallback": ".."}}}}}}``. This is what the repo-root
-  ``pattern.json`` uses, and what the Cronet/Android hooks consume.
+  {"primary": "..", "fallback": ".."}}}}}}``. This is what the Cronet/Android
+  hooks consume. (The repo-root ``pattern.json`` example is Schema A.)
 
 Historically ``PatternLoader.validate`` only understood Schema A and treated a
 Schema-B file as invalid; ``PatternLoader.load`` then *fatally dropped* the user
@@ -34,13 +34,28 @@ def logger():
 
 
 @pytest.fixture
-def legacy_pattern_file(fritap_root):
-    """The shipped repo-root pattern.json — a real Schema-B file."""
-    path = fritap_root / "pattern.json"
-    if not path.exists():
-        pytest.skip("repo-root pattern.json not present")
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+def legacy_pattern_file():
+    """A realistic Schema-B file (real libwarp_mobile.so Dump-Keys patterns)."""
+    return {
+        "modules": {
+            "libwarp_mobile.so": {
+                "android": {
+                    "x64": {
+                        "Dump-Keys": {
+                            "primary": "55 41 57 41 56 41 55 41 54 53 48 83 EC 48 48 8B 47 68",
+                            "fallback": "55 41 57 41 56 41 55 41 54 53 48 83 EC 48",
+                        }
+                    },
+                    "arm64": {
+                        "Dump-Keys": {
+                            "primary": "3F 23 03 D5 FF 43 02 D1 FD 7B 05 A9 F8 5F 06 A9",
+                            "fallback": "3F 23 03 D5 FF C3 01 D1 FD 7B 04 A9",
+                        }
+                    },
+                }
+            }
+        }
+    }
 
 
 @pytest.fixture
@@ -87,11 +102,12 @@ def test_minimal_schema_a_os_layer_validates(logger):
     assert PatternLoader.validate(patterns, logger) is True
 
 
-# --- Schema-B placeholder tolerance (content is advisory, not fatal) -------
+# --- Schema-B placeholder tolerance (content is not fatal) -----------------
 
 def test_schema_b_empty_and_placeholder_leaves_are_tolerated(logger):
     """Legacy files legitimately ship empty / placeholder entries; validation
-    is structural, so these must NOT fail (else the whole file gets dropped)."""
+    is structural, so these must NOT fail (else the whole file gets dropped).
+    The non-hex placeholder itself is pruned (see the drop tests below)."""
     patterns = {
         "modules": {
             "sshd": {
@@ -163,12 +179,11 @@ def test_schema_b_non_dict_arch_is_rejected(logger):
 
 # --- load() forwards the Schema-B user file intact (the core regression) ---
 
-def test_load_keeps_legacy_modules_subtree(fritap_root, logger):
-    pattern_path = fritap_root / "pattern.json"
-    if not pattern_path.exists():
-        pytest.skip("repo-root pattern.json not present")
+def test_load_keeps_legacy_modules_subtree(tmp_path, legacy_pattern_file, logger):
+    pattern_path = tmp_path / "legacy_patterns.json"
+    pattern_path.write_text(json.dumps(legacy_pattern_file), encoding="utf-8")
 
-    source_modules = json.loads(pattern_path.read_text(encoding="utf-8"))["modules"]
+    source_modules = legacy_pattern_file["modules"]
     merged = json.loads(PatternLoader.load(str(pattern_path), logger))
 
     # The legacy modules subtree must survive intact (not dropped to defaults).
@@ -176,3 +191,85 @@ def test_load_keeps_legacy_modules_subtree(fritap_root, logger):
     assert merged["modules"] == source_modules
     # ...and the modern defaults must still be merged in alongside it.
     assert any(k for k in merged if not k.startswith("_") and k != "modules")
+
+
+# --- Schema-B invalid hex is warned about and dropped, the rest kept --------
+
+def _legacy(leaves):
+    return {"modules": {"libx.so": {"android": {"arm64": leaves}}}}
+
+
+def _arch(patterns):
+    return patterns["modules"]["libx.so"]["android"]["arm64"]
+
+
+def test_schema_b_invalid_hex_entry_is_dropped_with_warning(caplog, logger):
+    patterns = _legacy({
+        "Dump-Keys": {"primary": "3F 23 03 D5", "fallback": "11 22 33 ..."},
+        "SSL_Read": "AA 55 FF ...",
+        "SSL_Write": ["55 48 89", "not hex"],
+        "Install-Key-Log-Callback": {"primary": "zz", "fallback": "yy"},
+    })
+    with caplog.at_level(logging.WARNING, logger=logger.name):
+        assert PatternLoader.validate(patterns, logger) is True
+
+    arch = _arch(patterns)
+    assert arch["Dump-Keys"] == {"primary": "3F 23 03 D5"}
+    assert arch["SSL_Write"] == ["55 48 89"]
+    assert "SSL_Read" not in arch
+    assert "Install-Key-Log-Callback" not in arch
+    warned = caplog.text
+    assert "11 22 33 ..." in warned and "not hex" in warned
+    assert "SSL_Read" in warned and "Install-Key-Log-Callback" in warned
+
+
+def test_schema_b_valid_and_empty_entries_are_kept_silently(caplog, logger):
+    leaves = {
+        "Dump-Keys": {"primary": "3F 23 03 D5", "fallback": ""},
+        "SSL_Read": ["55 48 89", "3F ?? 03"],
+        "SSL_Write": "",
+    }
+    patterns = _legacy(json.loads(json.dumps(leaves)))
+    with caplog.at_level(logging.WARNING, logger=logger.name):
+        assert PatternLoader.validate(patterns, logger) is True
+    assert _arch(patterns) == leaves
+    assert caplog.text == ""
+
+
+def test_load_drops_invalid_legacy_hex_but_merges_the_rest(tmp_path, logger):
+    path = tmp_path / "user.json"
+    path.write_text(json.dumps(_legacy({
+        "Dump-Keys": {"primary": "3F 23 03 D5", "fallback": "11 22 ..."},
+        "SSL_Read": "bogus",
+    })), encoding="utf-8")
+    merged = json.loads(PatternLoader.load(str(path), logger))
+    assert _arch(merged) == {"Dump-Keys": {"primary": "3F 23 03 D5"}}
+
+
+# --- the repo-root pattern.json example -------------------------------------
+
+def test_repo_root_pattern_json_is_valid_modern_without_warnings(fritap_root, caplog, logger):
+    path = fritap_root / "pattern.json"
+    patterns = json.loads(path.read_text(encoding="utf-8"))
+    assert "modules" not in patterns, "example should use the modern schema"
+    with caplog.at_level(logging.DEBUG, logger=logger.name):
+        assert PatternLoader.validate(patterns, logger) is True
+        merged = PatternLoader.load(str(path), logger)
+    assert merged is not None
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+    libs = [k for k in patterns if not k.startswith("_")]
+    assert 2 <= len(libs) <= 3
+
+
+def test_repo_root_pattern_json_entries_come_from_shipped_defaults(fritap_root):
+    example = json.loads((fritap_root / "pattern.json").read_text(encoding="utf-8"))
+    defaults = json.loads(
+        (fritap_root / "friTap" / "patterns" / "default_patterns.json").read_text(encoding="utf-8"))
+    for lib, os_map in example.items():
+        if lib.startswith("_"):
+            continue
+        for os_name, arch_map in os_map.items():
+            for arch, funcs in arch_map.items():
+                for func, pats in funcs.items():
+                    assert pats, (lib, os_name, arch, func)
+                    assert set(pats) <= set(defaults[lib][os_name][arch][func])

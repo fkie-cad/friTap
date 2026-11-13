@@ -172,6 +172,17 @@ class ReplayController:
             findings.extend(self._reader.read_findings(summary.flow_id))
         return findings
 
+    def read_request_contexts(self) -> list:
+        """Return the persisted Java request contexts (REC_REQUEST_CONTEXT
+        records, as dicts) of the .tap; empty when none or not loaded.
+
+        Passthrough over :meth:`TapReader.iter_request_contexts` so callers
+        (e.g. the TUI re-export) don't reach into the private reader.
+        """
+        if self._reader is None:
+            return []
+        return list(self._reader.iter_request_contexts())
+
     def has_findings(self) -> bool:
         """True if the .tap file contains any persisted findings."""
         if self._reader is None:

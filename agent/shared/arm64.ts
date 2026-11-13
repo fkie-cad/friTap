@@ -160,6 +160,21 @@ export function isFunctionPrologueWord(insn: number): boolean {
     return false;
 }
 
+/** paciasp: signs the return address; also a BTI call target. */
+export const PACIASP = 0xd503233f;
+/** bti c: call-target landing pad. */
+export const BTI_C = 0xd503245f;
+
+/**
+ * True for the two function-entry landing pads, paciasp and `bti c` (exact words).
+ * Narrower than isFunctionPrologueWord: `bti j` / `bti jc` and pacibsp are not entries
+ * here, so a jump-table target never splits a function.
+ */
+export function isLandingPadWord(insn: number): boolean {
+    const word = insn >>> 0;
+    return word === PACIASP || word === BTI_C;
+}
+
 // ---- register-write analysis (conservative, fail-closed) ------------------
 //
 // writesReg() answers "may this instruction overwrite general-purpose register
@@ -167,8 +182,10 @@ export function isFunctionPrologueWord(insn: number): boolean {
 // clobbered the ADRP's register. A false "yes" only drops a candidate xref
 // (fail closed); a false "no" could accept a wrong one. So every class that is
 // not fully understood answers "yes" whenever ANY of its register fields is
-// `reg`. Writes to SIMD/FP registers with the same number count as writes too
-// (harmless over-rejection).
+// `reg`. Instructions whose destination field names a SIMD/FP register (V0-V31)
+// are NOT GPR writes and answer "no" — but only where the Arm ARM encoding
+// tables pin that down (see simdFpWritesReg and the V-bit handling of the
+// load/store helpers). Anything not pinned down still counts as a write.
 
 /** Instruction-set top-level groups (op0 = bits[28:25]). */
 function isBranchOrSystemGroup(insn: number): boolean {
@@ -196,12 +213,22 @@ function anyLoadStoreField(insn: number, reg: number): boolean {
 function pairWritesReg(insn: number, reg: number): boolean {
     const index = (insn >>> 23) & 0x3; // 01 post-index, 11 pre-index (both write back)
     if ((index === 1 || index === 3) && regRn(insn) === reg) return true;
+    if (isSimdFpTransfer(insn)) return false; // LDP/STP Sn/Dn/Qn: Rt, Rt2 are V registers
     const isLoad = ((insn >>> 22) & 1) === 1;
     return isLoad && (regRd(insn) === reg || regRt2(insn) === reg);
 }
 
+/**
+ * Load/store V bit (bit 26): Rt (and Rt2) name SIMD/FP registers. Only the
+ * base-register writeback (Rn) can then touch a GPR.
+ */
+function isSimdFpTransfer(insn: number): boolean {
+    return ((insn >>> 26) & 1) === 1;
+}
+
 /** LDR/STR single register (bits[29:27] = 111), all addressing modes and atomics. */
 function singleRegisterWritesReg(insn: number, reg: number): boolean {
+    if (isSimdFpTransfer(insn)) return simdFpSingleRegisterWritesReg(insn, reg);
     const rt = regRd(insn);
     const isLoad = ((insn >>> 22) & 0x3) !== 0; // opc 00 = store (STR Q counts as load: fail closed)
     const mode = (insn >>> 10) & 0x3;
@@ -215,27 +242,91 @@ function singleRegisterWritesReg(insn: number, reg: number): boolean {
     return rt === reg || (((insn >>> 11) & 1) === 1 && regRn(insn) === reg);  // LDRAA/LDRAB {!}
 }
 
+/**
+ * LDR/STR Bn/Hn/Sn/Dn/Qn (bits[29:27] = 111, V = 1). Rt is a V register, so
+ * only the imm9 pre/post-index forms (bit24 = 0, bit21 = 0, bits[11:10] = 01
+ * or 11) write a GPR — the base Rn. The register-offset form (bit21 = 1,
+ * bits[11:10] = 10) and unsigned offset (bit24 = 1) never do. bit21 = 1 with
+ * any other bits[11:10] is unallocated for V = 1: fail closed on every field.
+ */
+function simdFpSingleRegisterWritesReg(insn: number, reg: number): boolean {
+    const mode = (insn >>> 10) & 0x3;
+    if (((insn >>> 24) & 1) === 1) return false;                              // unsigned offset
+    if (((insn >>> 21) & 1) === 0) return (mode === 1 || mode === 3) && regRn(insn) === reg;
+    if (mode === 2) return false;                                             // register offset
+    return anyLoadStoreField(insn, reg);
+}
+
 /** Load/store group dispatcher; unknown sub-classes fall back to every field. */
 function loadStoreWritesReg(insn: number, reg: number): boolean {
     const cls = (insn >>> 27) & 0x7; // bits[29:27]
     const simd = ((insn >>> 26) & 1) === 1;
     if (cls === 0b101) return pairWritesReg(insn, reg);
     if (cls === 0b111) return singleRegisterWritesReg(insn, reg);
-    if (cls === 0b011 && ((insn >>> 24) & 1) === 0) return regRd(insn) === reg; // LDR (literal)
+    if (cls === 0b011 && ((insn >>> 24) & 1) === 0) {                         // LDR (literal)
+        return !isSimdFpTransfer(insn) && regRd(insn) === reg;                  // V=1: LDR St/Dt/Qt
+    }
     if (cls === 0b001 && simd && (insn >>> 31) === 0) {                         // LD1..LD4 / ST1..ST4
         return ((insn >>> 23) & 1) === 1 && regRn(insn) === reg;                // post-index writeback
     }
     return anyLoadStoreField(insn, reg); // exclusives, CAS/CASP, LDAPR/STLUR, MTE, ...
 }
 
+/** Data Processing — Scalar Floating-Point and Advanced SIMD: op0 = x111. */
+function isSimdFpDataProcessingGroup(insn: number): boolean {
+    return maskEq(insn, 0x0e000000, 0x0e000000);
+}
+
+/**
+ * AdvSIMD copy: `0 Q op 01110000 imm5 0 imm4 1 Rn Rd` (mask 0x9fe08400 ==
+ * 0x0e000400). Holds UMOV/SMOV (Rd = GPR) next to DUP/INS (Rd = V register);
+ * the whole class is kept as a possible GPR write (fail closed).
+ */
+function isAdvSimdCopy(insn: number): boolean {
+    return maskEq(insn, 0x9fe08400, 0x0e000400);
+}
+
+/**
+ * Conversion between floating-point and integer:
+ * `sf 0 S 11110 ftype 1 rmode opcode 000000 Rn Rd` (mask 0x5f20fc00 ==
+ * 0x1e200000). Holds FCVT{N,P,M,Z,A}{S,U}, FMOV (general) and FJCVTZS.
+ */
+function isFpIntegerConversion(insn: number): boolean {
+    return maskEq(insn, 0x5f20fc00, 0x1e200000);
+}
+
+/**
+ * In the FP<->integer class only opcode (bits[18:16]) 010 SCVTF, 011 UCVTF and
+ * 111 FMOV (general → FP) write a V register; every other opcode (FCVT* to
+ * general, FMOV FP → general, FJCVTZS) writes the GPR Rd.
+ */
+function fpIntegerConversionWritesGpr(insn: number): boolean {
+    const opcode = (insn >>> 16) & 0x7;
+    return opcode !== 0b010 && opcode !== 0b011 && opcode !== 0b111;
+}
+
+/**
+ * SIMD/FP data processing writes a V register, except UMOV/SMOV (AdvSIMD copy)
+ * and the FP → integer conversions, which write the GPR Rd. Everything else in
+ * the group (MOVI, FADD, crypto, across-lanes, FCMP → NZCV, ...) cannot touch
+ * a GPR.
+ */
+function simdFpWritesReg(insn: number, reg: number): boolean {
+    if (isAdvSimdCopy(insn)) return regRd(insn) === reg;
+    if (isFpIntegerConversion(insn)) return fpIntegerConversionWritesGpr(insn) && regRd(insn) === reg;
+    return false;
+}
+
 /**
  * Conservative: true if `insn` may write general-purpose register `reg` (0..30).
- * Data-processing (immediate, register, SIMD/FP, SVE, and anything unallocated)
- * writes only its Rd = bits[4:0], so that is the answer there.
+ * Data-processing (immediate, register, SVE, and anything unallocated) writes
+ * only its Rd = bits[4:0], so that is the answer there; SIMD/FP data
+ * processing is narrowed by simdFpWritesReg.
  */
 export function writesReg(insn: number, reg: number): boolean {
     if (isBranchOrSystemGroup(insn)) return branchOrSystemWritesReg(insn, reg);
     if (isLoadStoreGroup(insn)) return loadStoreWritesReg(insn, reg);
+    if (isSimdFpDataProcessingGroup(insn)) return simdFpWritesReg(insn, reg);
     return regRd(insn) === reg;
 }
 
@@ -303,6 +394,64 @@ export function blTargetOffset(pc: number, insn: number): number | null {
 /** `mov wReg, #imm16` (32-bit MOVZ, no shift) -> imm16, else null. */
 export function movzW(insn: number, reg: number): number | null {
     return maskEq(insn, 0xffe0001f, 0x52800000 | reg) ? (insn >>> 5) & 0xffff : null;
+}
+
+// ---- direct (PC-relative) branch targets ---------------------------------
+
+/** Sign-extend the low `bits` bits of `value`. */
+function signExtend(value: number, bits: number): number {
+    const sign = 2 ** (bits - 1);
+    return value >= sign ? value - 2 * sign : value;
+}
+
+/** B.cond label: imm19 at bits[23:5]. */
+function isBCond(insn: number): boolean {
+    return maskEq(insn, 0xff000010, 0x54000000);
+}
+
+/** CBZ / CBNZ, 32- or 64-bit: imm19 at bits[23:5]. */
+function isCompareAndBranch(insn: number): boolean {
+    return maskEq(insn, 0x7e000000, 0x34000000);
+}
+
+/** TBZ / TBNZ: imm14 at bits[18:5]. */
+function isTestAndBranch(insn: number): boolean {
+    return maskEq(insn, 0x7e000000, 0x36000000);
+}
+
+/**
+ * SIGNED byte offset of a direct non-call branch (B, B.cond, CBZ/CBNZ,
+ * TBZ/TBNZ) from its own address, or null for any other word. BL is excluded
+ * on purpose: a call returns, so it is not a control-flow edge of the caller.
+ */
+export function directBranchOffset(insn: number): number | null {
+    if (isUnconditionalB(insn)) return decodeBLImm(insn);
+    if (isBCond(insn) || isCompareAndBranch(insn)) return signExtend((insn >>> 5) & 0x7ffff, 19) * 4;
+    if (isTestAndBranch(insn)) return signExtend((insn >>> 5) & 0x3fff, 14) * 4;
+    return null;
+}
+
+// ---- register moves ------------------------------------------------------
+//
+// `mov xD, xM` is the alias of ORR (shifted register, 64-bit) with Rn = XZR:
+//   sf=1 opc=01 01010 shift=00 N=0 | Rm[20:16] | imm6[15:10]=0 | Rn[9:5]=31 | Rd[4:0]
+// The mask keeps everything except Rm and Rd, so it matches any register pair
+// but never a shifted/negated ORR or the 32-bit `mov wD, wM`. (`mov xD, sp` is
+// an ADD-immediate alias and is deliberately NOT matched.)
+
+/** `mov xD, xM` (ORR Xd, XZR, Xm with no shift). */
+export function isMovReg64(insn: number): boolean {
+    return maskEq(insn, 0xffe0ffe0, 0xaa0003e0);
+}
+
+/** Source register M of `mov xD, xM`, or null when `insn` is not that move. */
+export function movRegSource(insn: number): number | null {
+    return isMovReg64(insn) ? regRs(insn) : null;
+}
+
+/** Destination register D of `mov xD, xM`, or null when `insn` is not that move. */
+export function movRegDest(insn: number): number | null {
+    return isMovReg64(insn) ? regRd(insn) : null;
 }
 
 // ---- scan-pattern builders (for native Memory.scan "pattern : mask") ----

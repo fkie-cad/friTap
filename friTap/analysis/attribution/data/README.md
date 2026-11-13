@@ -62,10 +62,76 @@ request. Read lazily at runtime; fully offline at import and call time.
   ...). The seed itself is friTap-authored and bundles **no** third-party data.
 - **Category slugs:** `advertising`, `analytics`, `social`, `attribution`,
   `crash_reporting`, `push`, `payment`, `maps`, `networking`, `framework`,
-  `other`.
+  `transport`, `other`.
 - **Matching:** longest dotted-prefix wins and matching is on a dot boundary,
   so `com.google.firebase.crashlytics.*` resolves to Crashlytics rather than
   the broader Firebase entry, and `com.facebookx` never matches `com.facebook`.
+- **Transport entries (`transport_kind`):** an entry may carry an optional
+  `transport_kind`. It marks a module that *carries* traffic (the transport)
+  rather than one that *causes* it (the originator). The dedicated transport
+  entries use `category: "transport"` (libmonochrome, libchrome,
+  libwebviewchromium, libmainlinecronet, libhttpengine, stable_cronet_libssl,
+  libsignal_jni, Google Chrome Framework, chrome.dll, Electron Framework,
+  Chromium Embedded Framework, libcef); the pre-existing `libcronet`
+  (`cronet`) and `libflutter.so` (`flutter`) entries keep their original
+  `sdk`/`vendor`/`category` and only gain `transport_kind`.
+  - **Deny-list:** `classify_frames` never returns a native module whose entry
+    has a `transport_kind` as the originator; it skips it and keeps scanning.
+    Java/ObjC frame matching is unaffected.
+  - **`classify_transport(module, path, process_name, package_name)`** returns
+    `{"module": <basename>, "kind": <kind>}`. It matches the module
+    **basename** case-insensitively: a key matches as a prefix followed by end,
+    `.`, `_` or `-` (so `libmonochrome_64.so` and `libcronet.143.7445.0.so`
+    match); keys ending in `.so`/`.dll` must match exactly. Longest key wins.
+  - **`chrome-or-webview`** (libmonochrome, libchrome) is a sentinel: it
+    resolves to `chrome` when the package or process name (any `:suffix`
+    stripped, case-insensitive) is listed in the top-level
+    `chromium_browser_packages` array, and to `webview` otherwise. Kind
+    `chrome` means "a Chromium-based browser's own network stack", not only
+    Google Chrome: the list covers Chrome (`com.android.chrome`,
+    `com.google.android.apps.chrome`, `org.chromium.chrome`, Frida's friendly
+    name `chrome`, `com.chrome.*` for beta/dev/canary), Brave, Microsoft Edge
+    (`com.microsoft.emmx`, `com.microsoft.emmx.*`), Samsung Internet, Vivaldi,
+    Opera, Kiwi and Yandex. Each item is an exact name or a `prefix*` pattern
+    (a single trailing `*`; `com.chrome.*` does not match `com.chrome`
+    itself). Browsers that render through the system WebView (DuckDuckGo) or
+    are not Chromium (Opera Mini) stay off the list. The array is optional:
+    without it the resolver falls back to the Chrome-only default
+    (`DEFAULT_CHROMIUM_BROWSER_PACKAGES`); `dev/update_sdk_signatures.py`
+    keeps it, sorted and deduplicated.
+  - **GMS Cronet:** kind `cronet` resolves to `gms-cronet` when the module path
+    contains `com.google.android.gms` or `/dynamite` (case-insensitive).
+- **`chromium_internal_hosts`** (top-level list, optional): hosts of
+  Chromium/WebView/Cronet's own background services. Each item is an exact
+  host (`update.googleapis.com`) or a `*.suffix` pattern (`*.gvt1.com` matches
+  `x.gvt1.com`, not `gvt1.com`); matching ignores case, port and a trailing
+  dot. An unattributed flow on a Chromium-family transport whose Host /
+  `:authority` (else TLS SNI) matches gets `attribution.bucket =
+  "chromium-internal"`; a later originator claim drops that bucket. Invalid
+  items are warned about and dropped; a missing key means an empty list.
+  `dev/update_sdk_signatures.py` keeps the list sorted and deduplicated.
+  Bundled entries and why each is internal:
+  - `safebrowsing.googleapis.com`: Safe Browsing list updates and lookups.
+  - `update.googleapis.com`: component updater (Omaha).
+  - `*.gvt1.com`: component/update download CDN (`redirector.gvt1.com`, `edgedl.me.gvt1.com`).
+  - `optimizationguide-pa.googleapis.com`: Optimization Guide hints and models.
+  - `clientservices.googleapis.com`: Finch variations seed.
+  - `content-autofill.googleapis.com`: Autofill server queries.
+  - `dns.google`: Secure DNS (DoH) auto-upgrade.
+  - `clients2.google.com`: extension/CRX updates and crash uploads.
+  - `clients4.google.com`: Chrome sync and background services.
+
+  Deliberately excluded because apps call them directly: `www.gstatic.com`,
+  `accounts.google.com`, `android.clients.google.com`.
+- **Overlays (`FRITAP_SDK_SIGNATURES`):** extra signature files in the same
+  format can be layered over the bundled table. Set
+  `FRITAP_SDK_SIGNATURES=path[:path]` (`os.pathsep`-separated; empty parts are
+  ignored) for the module-level resolver, or pass
+  `SdkResolver(extra_paths=[...])`. Overlay entries win per key; an overlay's
+  `chromium_browser_packages` and `chromium_internal_hosts` are **unioned**
+  with the bundled lists (an overlay may carry only those arrays, no `entries`). A missing or invalid overlay file,
+  or an invalid browser pattern, is logged as a warning and skipped, never
+  fatal.
 - **Optional enrichment (Exodus Privacy):** the canonical package -> tracker
   signature source is [Exodus Privacy](https://reports.exodus-privacy.eu.org/)
   (`https://reports.exodus-privacy.eu.org/api/trackers`; each tracker carries a

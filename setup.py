@@ -86,6 +86,9 @@ setup(
             "plugins/examples/README.md",
             "offline/mtproto/schema/*.tl",
             "offline/mtproto/schema/SOURCE.txt",
+            # Agent skills (Agent Skills format): `fritap skills install`.
+            "skills/*/SKILL.md",
+            "skills/*/references/*.md",
         ],
         # The Wine GDB key-extractor ships its in-gdb script + helpers as data
         # (gdb_script/*.py is loaded via `gdb -x`, never imported as a module).

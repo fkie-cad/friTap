@@ -43,6 +43,7 @@ from friTap.schemas.agent_messages import (  # noqa: E402
     LibraryDetectedMessage,
     NetlogMessage,
     OhttpPlaintextMessage,
+    RequestContextMessage,
     SSHKeylogMessage,
     SSHKeyMessage,
     SSHNewKeysMessage,
@@ -209,6 +210,7 @@ def generate_all() -> str:
         IPSecESPKeysMessage,
         OhttpPlaintextMessage,
         CallerStackMessage,
+        RequestContextMessage,
     ]
 
     parts = [HEADER]

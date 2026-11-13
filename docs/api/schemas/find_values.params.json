@@ -37,48 +37,57 @@
       "type": "string"
     },
     "values": {
-      "description": "Known values (email, ad-id, GPS fix, free string, ...) to search for across decoded traffic.",
+      "description": "Known values (email, ad-id, GPS fix, free string, ...) to search for across decoded traffic: {value, kind, label} objects or VALUE / KIND=VALUE strings.",
       "items": {
-        "additionalProperties": false,
-        "properties": {
-          "kind": {
-            "description": "How to normalize it before searching. Canonical kinds: aaid, android_id, email, free, gps, imei, ip, phone. Aliases: advertising_id/idfa/gaid/adid/idfv -> aaid; geo/geolocation/location -> gps.",
-            "enum": [
-              "aaid",
-              "adid",
-              "advertising_id",
-              "android_id",
-              "email",
-              "free",
-              "gaid",
-              "geo",
-              "geolocation",
-              "gps",
-              "idfa",
-              "idfv",
-              "imei",
-              "ip",
-              "location",
-              "phone"
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "description": "How to normalize it before searching. Canonical kinds: aaid, android_id, email, free, gps, imei, ip, phone. Aliases: advertising_id/idfa/gaid/adid/idfv -> aaid; geo/geolocation/location -> gps.",
+                "enum": [
+                  "aaid",
+                  "adid",
+                  "advertising_id",
+                  "android_id",
+                  "email",
+                  "free",
+                  "gaid",
+                  "geo",
+                  "geolocation",
+                  "gps",
+                  "idfa",
+                  "idfv",
+                  "imei",
+                  "ip",
+                  "location",
+                  "phone"
+                ],
+                "type": "string"
+              },
+              "label": {
+                "description": "A name for this canary in the results.",
+                "minLength": 1,
+                "type": "string"
+              },
+              "value": {
+                "description": "The exact value to trace (never logged).",
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "value",
+              "label"
             ],
-            "type": "string"
+            "type": "object"
           },
-          "label": {
-            "description": "A name for this canary in the results.",
-            "minLength": 1,
-            "type": "string"
-          },
-          "value": {
-            "description": "The exact value to trace (never logged).",
+          {
+            "description": "Shorthand: VALUE (kind free) or KIND=VALUE (e.g. email=alice@example.com), labelled <kind>-<n>.",
             "minLength": 1,
             "type": "string"
           }
-        },
-        "required": [
-          "value",
-          "label"
-        ],
-        "type": "object"
+        ]
       },
       "minItems": 1,
       "type": "array"

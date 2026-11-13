@@ -273,7 +273,7 @@ Emitted when a flow is created, updated, or completed (`on_flow`).
 These are part of the public surface and are emitted by the agent/output
 pipeline; subscribe to them the same way:
 
-- **`ConsoleEvent`** (`message`, `level`) — console log lines from the agent.
+- **`ConsoleEvent`** (`message`, `level`, `origin`) — console log lines from the agent; `origin` is `"agent_dev"` for the agent's developer diagnostics (debug level).
 - **`ErrorEvent`** (`error`, `description`, `stack`, `file`, `line`, `severity`) — agent/hooking errors; `severity` is `"info"`/`"warning"`/`"error"`/`"fatal"`.
 - **`SocketTraceEvent`** (`src_addr`, `src_port`, `dst_addr`, `dst_port`, `ss_family`) — traced socket info.
 - **`DetachEvent`** (`reason`) — emitted when the target process detaches.

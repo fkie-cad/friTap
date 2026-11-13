@@ -11,6 +11,7 @@ import {
     ResolvedFunctions,
 } from "../../core/hook_definition.js";
 import { sendDatalog } from "../../shared/shared_structures.js";
+import { stampRecordLibrary } from "../../shared/record_message.js";
 import { devlog, log } from "../../util/log.js";
 import { pcap_enabled, experimental } from "../../fritap_agent.js";
 import { STANDARD_SOCKET_SYMBOLS } from "./shared_constants.js";
@@ -64,6 +65,7 @@ function emitSecBufferData(
     buffers: CapturedSecBuffer[],
     functionLabel: string,
     isRead: boolean,
+    moduleName: string,
 ): void {
     for (const sb of buffers) {
         if (sb.type !== SECBUFFER_TYPE_DATA) continue;
@@ -71,6 +73,7 @@ function emitSecBufferData(
         try {
             const bytes = sb.bufferPointer.readByteArray(sb.size);
             const message = makeSspiMessage(functionLabel, isRead);
+            stampRecordLibrary(message, moduleName);
             sendDatalog(message, bytes);
         } catch (e) {
             devlog(`[sspi] SecBuffer read error in ${functionLabel}: ${e}`);
@@ -93,7 +96,7 @@ function installSspiPlaintextHooks(
             onLeave() {
                 try {
                     const buffers = parseSecBufferDesc((this as any).pMessage);
-                    emitSecBufferData(buffers, "DecryptMessage", true);
+                    emitSecBufferData(buffers, "DecryptMessage", true, moduleName);
                 } catch (e) {
                     devlog(`[sspi] DecryptMessage onLeave error: ${e}`);
                 }
@@ -111,7 +114,7 @@ function installSspiPlaintextHooks(
                 // plaintext must be captured at onEnter.
                 try {
                     const buffers = parseSecBufferDesc(args[2]);
-                    emitSecBufferData(buffers, "EncryptMessage", false);
+                    emitSecBufferData(buffers, "EncryptMessage", false, moduleName);
                 } catch (e) {
                     devlog(`[sspi] EncryptMessage onEnter error: ${e}`);
                 }

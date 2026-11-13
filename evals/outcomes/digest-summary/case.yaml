@@ -1,0 +1,38 @@
+schema_version: "1.1"
+name: outcome-digest-summary
+description: Summarise a capture from the digest; facts must match evals/fixtures/FACTS.md.
+tags: [outcome]
+runs: 3
+context:
+  scaffold_script: stage_fixture.sh
+execution:
+  max_turns: 15
+  timeout_seconds: 300
+  allowed_tools: [Read, Glob, Skill]
+  prompt: |
+    There's a friTap capture audit.tap in the current directory (app com.example.shop).
+    Give me a short overview: which hosts did the app talk to, and what are the most
+    serious security or privacy findings?
+graders:
+  - name: used-get-digest
+    type: tool_used
+    tool: mcp__plugin_fritap_fritap__get_digest
+    min: 1
+    arm: both
+  - name: names-tracker-host
+    type: regex
+    pattern: 'track\.adnet-metrics\.test'
+    match: contains
+    arm: both
+  - name: facts-correct
+    type: llm
+    focus: last_message
+    weight: 2
+    arm: both
+    criteria: |
+      Ground truth: hosts are api.example-shop.test, cdn.example-shop.test and
+      track.adnet-metrics.test (no others). Most serious findings: a plaintext password
+      in the login JSON body (critical) and a JWT bearer token (high); the email address
+      canary.user@example.test is sent as PII, including to track.adnet-metrics.test.
+      PASS if the answer names all three hosts, the password finding and the email PII,
+      and invents no other hosts or findings. FAIL otherwise.

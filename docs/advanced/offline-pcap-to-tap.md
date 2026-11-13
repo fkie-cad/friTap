@@ -90,7 +90,15 @@ fritap --from-pcap chrome.pcap --keylog chromekeys.log --tap out.tap
 | `--decode-as <rule>` | Raw tshark `-d` Decode-As rule, passed through verbatim. Repeatable. |
 | `--tls-heuristic` | Enable tshark's TLS-over-TCP heuristic dissection (finds TLS on non-standard ports without an explicit `--tls-port`). |
 | `--tshark-path <path>` | Path to the tshark binary. Else auto-discovered (also honors `$FRITAP_TSHARK`). |
-| `--repair-keylog` | Before converting, re-pair `--keylog` secrets whose `client_random` matches no handshake in the capture (e.g. keys dumped from Schannel/lsass) by trial decryption. On a match it writes `<keylog stem>.repaired.keylog` next to the keylog and decrypts with it; otherwise the original keylog is used. |
+| `--repair-keylog` | Before converting, fix `--keylog` by trial decryption against the capture: re-pair secrets whose `client_random` is wrong or `???` (e.g. keys dumped from Schannel/lsass) and correct swapped TLS 1.3 labels. On a match it writes `<keylog stem>.relabeled.keylog` next to the keylog and decrypts with it; the original keylog is left untouched. Otherwise the original keylog is used. |
+
+!!! note "Live captures relabel automatically"
+    A live Windows Schannel full capture (`-k` plus a pcap) runs the same
+    trial-decryption relabel when it stops (opt out with `--no-auto-relabel`),
+    but swaps the result **in place**: the fixed keylog keeps the `-k` name and the raw agent output is
+    kept as `<stem>.raw<ext>` (e.g. `keys.log` → `keys.raw.log`). If the swap
+    fails, the original keylog is kept unchanged and friTap logs where the
+    `.relabeled.keylog` copy is.
 
 !!! tip "Direction labelling on non-standard ports"
     friTap labels `write` (client→server) vs `read` (server→client) by the
@@ -100,6 +108,36 @@ fritap --from-pcap chrome.pcap --keylog chromekeys.log --tap out.tap
 
 This page documents only the offline sub-flags. For the complete `fritap` flag
 reference, see [CLI reference](../api/cli.md).
+
+### Live full capture with `--tap` (`-f --tap`)
+
+Full-capture mode (`-f` / `--full_capture`) records raw packets instead of
+hooking plaintext, so there are no live events to write into a `.tap`. When you
+combine `-f` with `--tap X.tap`, friTap therefore builds `X.tap` **at the end of
+the capture**: once the full-capture pcap, its keylog and its
+`<pcap>.fritap.json` manifest are finalized, it runs this same offline pipeline
+in-process (manifest-aware, so recorded ports and extra keylogs are used).
+
+```bash
+fritap -m -f -p cap.pcap -k keys.log --tap cap.tap com.example.app
+# ... Ctrl-C ...
+# Building cap.tap from full capture cap.pcap ...
+# Wrote cap.tap from the full capture: 74 flow(s), 169 decrypted packet(s) in 0.4s
+```
+
+The `.tap` is written atomically (via a hidden `.cap.tap.<pid>.partial` file),
+so a failed conversion never leaves an empty or half-written `.tap` and never
+overwrites an existing one. The pcap and keylog are never modified. On failure
+(no keys, tshark missing, a tshark resource limit, ...) friTap logs the reason
+and the equivalent manual command, for example:
+
+```bash
+fritap --from-pcap cap.pcap --keylog keys.log --tap cap.tap
+```
+
+The keylog is optional: a plaintext capture or a DSB-embedded `pcapng` still
+converts. All messages go to stderr like the rest of a live capture. The TUI is
+unaffected (it never writes `--tap`).
 
 ---
 
@@ -120,6 +158,41 @@ value you did **not** pass on the command line.
 
 Recognized keys: `keylog`, `tls_ports`, `quic_ports`. A missing or unreadable
 manifest is treated as empty (no error).
+
+A live `-p` capture may also add a `synthetic_endpoints` key. It is
+informational (the offline pipeline does not read it) and is written only when
+some connections had no socket and were given a synthetic tuple (see
+[synthetic endpoints](../api/cli.md#connections-without-a-socket-synthetic-endpoints)):
+
+```json
+{
+  "synthetic_endpoints": {
+    "rewritten": 1, "kept_synthetic": 1, "conflicts": 0,
+    "map": [
+      {
+        "cr": "<client_random hex>",
+        "synthetic": {"client_addr": "198.18.12.34", "client_port": 51234,
+                      "server_addr": "198.19.56.78", "server_port": 443,
+                      "ss_family": "AF_INET"},
+        "real": {"client_addr": "10.0.2.15", "client_port": 40112,
+                 "server_addr": "142.250.74.36", "server_port": 443,
+                 "ss_family": "AF_INET"},
+        "action": "rewritten"
+      }
+    ]
+  }
+}
+```
+
+`action` is one of `rewritten`, `kept_synthetic` (no real tuple learned),
+`conflict` (a real tuple was learned, but another stream already uses it) or
+`not_in_pcap`; `real` is `null` when no real tuple was learned. The three
+counts are disjoint; a row without a real tuple is `kept_synthetic` whether or
+not its stream is in the file. `mapping_overflow` (present only when > 0) counts
+fd-less connections that were pinned after the mapping table was full: they
+have no row and always keep their synthetic tuple. `cr` is the TLS
+client_random, which is sent in clear in the ClientHello and is not key
+material.
 
 **Precedence — explicit always wins:**
 

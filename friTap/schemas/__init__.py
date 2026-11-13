@@ -29,6 +29,7 @@ _AGENT_MESSAGE_NAMES = (
     "KeylogMessage",
     "LibraryDetectedMessage",
     "NetlogMessage",
+    "RequestContextMessage",
     "SSHKeyMessage",
     "SSHNewKeysMessage",
 )
@@ -82,6 +83,7 @@ __all__ = [
     # SDK / caller attribution (opt-in)
     "CallerStackMessage",
     "CallerFrame",
+    "RequestContextMessage",
     # Canonical pipeline events
     "Direction",
     "AddressFamily",

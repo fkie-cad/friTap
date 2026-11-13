@@ -79,7 +79,7 @@ fritap -m -k keys.log com.example.app
 fritap -m --pcap decrypted.pcap com.example.app
 
 # Spawn app and analyze from start
-fritap -m -f com.example.app
+fritap -m -s com.example.app
 ```
 
 ### iOS Analysis
@@ -301,8 +301,15 @@ fritap --enable_default_fd target
 fritap --enable_spawn_gating target
 
 # Full packet capture mode
-fritap --full_capture target
+fritap --full_capture -p full.pcap target
+
+# Full capture + keylog; cap.tap is built from them when the capture ends
+fritap --full_capture -p full.pcap -k keys.log --tap cap.tap target
 ```
+
+With `--full_capture`, `--tap` is produced at the end of the capture from the
+pcap and keylog (see [Live full capture with `--tap`](../advanced/offline-pcap-to-tap.md#live-full-capture-with-tap-f-tap)).
+If that step fails, friTap prints the manual `fritap --from-pcap ... --tap ...` command.
 
 ### Permission Issues
 
