@@ -57,10 +57,21 @@ class CliRun:
         return self.stdout + self.stderr
 
 
-def _run_cli(*argv: str, timeout: float = _RUN_TIMEOUT_SECONDS) -> CliRun:
+def _run_cli(*argv: str, timeout: float = _RUN_TIMEOUT_SECONDS,
+             fail_library_scan: bool = False) -> CliRun:
+    entry_point = ["-m", "friTap.friTap"]
+    if fail_library_scan:
+        entry_point = ["-c", """
+import runpy
+from unittest.mock import patch
+
+with patch("tlslibhunter.TLSLibHunter.from_config",
+           side_effect=RuntimeError("controlled library scan failure")):
+    runpy.run_module("friTap.friTap", run_name="__main__", alter_sys=True)
+"""]
     started = time.monotonic()
     completed = subprocess.run(
-        [sys.executable, "-m", "friTap.friTap", *argv],
+        [sys.executable, *entry_point, *argv],
         capture_output=True,
         text=True,
         timeout=timeout,
@@ -143,17 +154,14 @@ def test_full_capture_without_pcap_exits_two():
 # ``raise Failure`` below it. Both assertions were confirmed to fail against the
 # buggy helper; keep the banner check as the one that says *why*.
 #
-# The *hang* itself is not reproducible here either: with no such process, the
-# fall-through session dies on "process not found" instead of blocking in
-# ``wait_for_completion()``. ``dev/macos_verify/verify.sh`` covers that against
-# a real live target.
+# ``dev/macos_verify/verify.sh`` covers early exit against a live target.
 #
-# A uuid-derived target name cannot match any running process, which keeps these
-# cases CI-safe: no frida-server, no root, no cooperating process needed.
+# tlsLibHunter can match a process whose name is a substring of the target.
+# Inject a scanner failure in the CLI subprocess so these tests never attach
+# to a live process and still exercise the inspector's error handling.
 _CAPTURE_BANNERS = ("Start logging", "Press Ctrl+C to stop logging")
 
-# Well under the 30s subprocess timeout: a failed scan of a nonexistent target
-# is import-time plus one frida enumerate call.
+# Well under the 30s subprocess timeout: the failed scan only needs imports.
 _EARLY_EXIT_BUDGET_SECONDS = 20
 
 
@@ -163,8 +171,8 @@ def _nonexistent_target() -> str:
 
 @pytest.fixture(scope="module")
 def list_libraries_run() -> CliRun:
-    """``fritap -ll <target that cannot exist>`` executed once."""
-    return _run_cli("-ll", _nonexistent_target(), timeout=30)
+    """Run ``fritap -ll`` once with a controlled scan failure."""
+    return _run_cli("-ll", "test-target", timeout=30, fail_library_scan=True)
 
 
 def test_list_libraries_runs_the_inspection(list_libraries_run):
@@ -178,6 +186,7 @@ def test_list_libraries_does_not_start_a_capture_session(list_libraries_run):
 
 def test_list_libraries_exits_two_on_a_failed_scan(list_libraries_run):
     assert list_libraries_run.returncode == 2
+    assert "controlled library scan failure" in list_libraries_run.stderr
 
 
 def test_list_libraries_exits_promptly(list_libraries_run):
@@ -186,10 +195,11 @@ def test_list_libraries_exits_promptly(list_libraries_run):
 
 @pytest.fixture(scope="module")
 def extract_libraries_run(tmp_path_factory) -> CliRun:
-    """``fritap --extract-libraries <dir> <target that cannot exist>``."""
+    """Run ``fritap --extract-libraries`` once with a controlled scan failure."""
     out_dir = tmp_path_factory.mktemp("extracted")
     return _run_cli(
-        "--extract-libraries", str(out_dir), _nonexistent_target(), timeout=30
+        "--extract-libraries", str(out_dir), "test-target", timeout=30,
+        fail_library_scan=True,
     )
 
 
@@ -204,6 +214,7 @@ def test_extract_libraries_does_not_start_a_capture_session(extract_libraries_ru
 
 def test_extract_libraries_exits_two_on_a_failed_scan(extract_libraries_run):
     assert extract_libraries_run.returncode == 2
+    assert "controlled library scan failure" in extract_libraries_run.stderr
 
 
 def test_extract_libraries_exits_promptly(extract_libraries_run):
@@ -265,21 +276,24 @@ def test_headless_filter_passes_validation_and_reaches_the_attach(expression):
 # as it does without --filter.
 @pytest.fixture(scope="module")
 def list_libraries_with_rejected_filter_run() -> CliRun:
-    return _run_cli("-ll", _nonexistent_target(), "--filter", "telegram", timeout=30)
+    return _run_cli("-ll", "test-target", "--filter", "telegram", timeout=30,
+                    fail_library_scan=True)
 
 
 def test_list_libraries_ignores_a_headless_rejected_filter(
         list_libraries_with_rejected_filter_run, list_libraries_run):
     run = list_libraries_with_rejected_filter_run
     assert run.returncode == list_libraries_run.returncode
+    assert "controlled library scan failure" in run.stderr
     assert "Listing loaded libraries" in run.output
     assert "not available in headless mode" not in run.output
     assert "Invalid filter expression" not in run.output
 
 
 def test_extract_libraries_ignores_a_headless_rejected_filter(tmp_path):
-    run = _run_cli("--extract-libraries", str(tmp_path), _nonexistent_target(),
-                   "--filter", "TELE", timeout=30)
+    run = _run_cli("--extract-libraries", str(tmp_path), "test-target",
+                   "--filter", "TELE", timeout=30, fail_library_scan=True)
     assert run.returncode == 2
+    assert "controlled library scan failure" in run.stderr
     assert "Extracting TLS libraries" in run.output
     assert "Invalid filter expression" not in run.output

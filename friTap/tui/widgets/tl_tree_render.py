@@ -76,9 +76,6 @@ def local_time(seconds: float, *, millis: bool = False) -> str:
     return f"{text}.{stamp.microsecond // 1000:03d}" if millis else text
 
 
-_local_time = local_time  # backwards-compatible private name
-
-
 def _escape_char(char: str) -> str:
     if char == "\n":
         return "\\n"
@@ -123,7 +120,7 @@ def is_msg_id_field(name: str) -> bool:
 def format_date_value(value: int) -> str:
     """``1790358548 (2026-09-25 19:49:08)`` for plausible timestamps, else the number."""
     if _MIN_EPOCH < value <= _MAX_EPOCH:
-        when = _local_time(value)
+        when = local_time(value)
         if when:
             return f"{value} [dim]({when})[/]"
     return str(value)
@@ -363,7 +360,7 @@ def render_tl_tree(node: TlNode, *, ref_label: Optional[RefLabelFn] = None,
 
 def _fmt_msg_time(value: Any) -> str:
     if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
-        return _local_time(float(value), millis=True) or str(value)
+        return local_time(float(value), millis=True) or str(value)
     return escape(str(value))
 
 
@@ -450,9 +447,6 @@ def ref_items(value: Any) -> List[Mapping]:
     if isinstance(value, (list, tuple)):
         return [item for item in value if isinstance(item, Mapping)]
     return []
-
-
-_as_items = ref_items  # backwards-compatible private name
 
 
 def _ref_msg_id(value: Any) -> str:

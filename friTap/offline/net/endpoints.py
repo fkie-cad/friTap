@@ -12,11 +12,7 @@ def ss_family(addr: str) -> str:
 
 
 def join_by_direction(segments: Iterable[Tuple[str, bytes]]) -> Dict[str, bytearray]:
-    """Concatenate ``(direction, bytes)`` segments per direction, in order.
-
-    ``"write"`` (client->server) and ``"read"`` (server->client) are always
-    present, in that order (possibly empty); any other direction is appended.
-    """
+    """Concatenate ``(direction, bytes)`` segments per direction in order; ``"write"`` then ``"read"`` are always present, others appended."""
     by_direction: Dict[str, bytearray] = {"write": bytearray(), "read": bytearray()}
     for direction, data in segments:
         by_direction.setdefault(direction, bytearray()).extend(data)
@@ -24,16 +20,13 @@ def join_by_direction(segments: Iterable[Tuple[str, bytes]]) -> Dict[str, bytear
 
 
 def normalize_endpoint(text: Optional[str]) -> Optional[str]:
-    """Canonical ``ip:port`` form of a keylog endpoint hint, or ``None`` if unknown.
+    """Canonical ``ip:port`` of a keylog endpoint hint, or ``None`` if unknown.
 
-    The agent writes IPv6 peers bracketed with all eight groups uncompressed
-    (``[2001:67c:4e8:f004:0:0:0:a]:443``) while scapy reports stream addresses
-    compressed and unbracketed, so both sides go through this one helper before
-    being compared. IPv4 stays ``a.b.c.d:port``; IPv6 becomes ``[compressed]:port``;
-    a v4-mapped IPv6 address (``::ffff:a.b.c.d``) collapses to its IPv4 form. The
-    unknown marker ``-``, blanks, and text without a numeric port yield ``None``
-    (never matched). A host that is not an IP literal is kept verbatim.
-    """
+    The agent writes IPv6 bracketed and uncompressed while scapy reports compressed
+    and unbracketed, so both go through this helper. IPv4 stays ``a.b.c.d:port``,
+    IPv6 becomes ``[compressed]:port``, v4-mapped collapses to IPv4. ``-``, blanks
+    and text without a numeric port give ``None``; a non-IP host is kept verbatim.
+"""
     host, sep, port = (text or "").strip().rpartition(":")
     if not sep or not host or not port.isdigit():
         return None

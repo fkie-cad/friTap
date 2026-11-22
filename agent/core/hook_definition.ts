@@ -72,7 +72,7 @@ export type KeylogApproach =
             moduleName: string,
             resolvedFns: ResolvedFunctions,
             enableDefaultFd: boolean,
-        ) => boolean;
+        ) => boolean | Promise<boolean>;
     }
     | { kind: "none" };
 

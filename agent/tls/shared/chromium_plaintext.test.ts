@@ -9,8 +9,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import "../../shared/frida-test-stubs.js";
 import {
-    installChromiumPlaintextHooks, attachChromiumPlaintextHooks, chromiumPlaintextHost, exportsSslRecordApi,
+    installChromiumPlaintextHooks, attachChromiumPlaintextHooks, chromiumPlaintextHost,
 } from "./chromium_plaintext.js";
+import { exportsSslRecordApi } from "./boringssl_plaintext_resolver.js";
 import { SslPlaintextHooks } from "../../shared/ssl_plaintext_hooks.js";
 import { isSocketFdTrackerInstalled } from "../../shared/socket_fd_tracker.js";
 import { chromium_plaintext_execute } from "../platforms/android/chromium_plaintext_android.js";
@@ -57,4 +58,9 @@ test("exportsSslRecordApi: true when SSL_read or SSL_write is exported, false wh
     assert.equal(exportsSslRecordApi(moduleExporting(["SSL_write"])), true);
     assert.equal(exportsSslRecordApi(moduleExporting(["SSL_CTX_new"])), false);
     assert.equal(exportsSslRecordApi(moduleExporting([])), false);
+});
+
+test("the macOS executor shares the factory's no-pcap contract", async () => {
+    const { chromium_plaintext_execute: macosExecute } = await import("../platforms/macos/chromium_plaintext_macos.js");
+    assert.equal(macosExecute("Google Chrome Framework", true), false);
 });

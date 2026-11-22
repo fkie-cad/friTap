@@ -362,7 +362,7 @@ def test_store_reparse_default_keeps_trailing():
 
 
 # --------------------------------------------------------------------------- #
-# MainScreen._needs_reparse
+# replay_rows.needs_reparse
 # --------------------------------------------------------------------------- #
 
 class _Summary:
@@ -370,9 +370,8 @@ class _Summary:
 
 
 def _needs_reparse():
-    pytest.importorskip("textual")
-    from friTap.tui.screens import main_screen
-    return main_screen._needs_reparse
+    from friTap.flow.replay_rows import needs_reparse
+    return needs_reparse
 
 
 @pytest.mark.parametrize("transport, req_proto, resp_proto, expected", [

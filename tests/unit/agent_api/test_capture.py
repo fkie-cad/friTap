@@ -60,10 +60,15 @@ def test_argv_full_mode_writes_keylog_and_pcap():
     assert argv[argv.index("-p") + 1] == "/s/plain.pcap"
 
 
-def test_argv_follow_exec_false_and_spawn_args_after_separator():
+def test_argv_follow_exec_off_and_spawn_args_after_separator():
     argv = build_argv(_req(target="/bin/curl", args=("-s", "https://x"), follow_exec=False), CMD)
-    assert "--no-follow-exec" in argv
+    assert "--follow-exec" not in argv
     assert argv[-4:] == ["--", "/bin/curl", "-s", "https://x"]
+
+
+def test_argv_follow_exec_default_off_and_opt_in():
+    assert "--follow-exec" not in build_argv(_req(target="/bin/curl"), CMD)
+    assert "--follow-exec" in build_argv(_req(target="/bin/curl", follow_exec=True), CMD)
 
 
 @pytest.mark.parametrize("anti_root,present", [(True, True), (False, False)])

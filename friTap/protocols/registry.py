@@ -56,20 +56,7 @@ class ProtocolRegistry:
         return list(self._handlers.keys())
 
     def get_agent_script_path(self, protocol: str, backend_name: str) -> Optional[str]:
-        """Return the filesystem path to the hook script for a protocol+backend.
-
-        Parameters
-        ----------
-        protocol
-            Protocol name (e.g., 'ssh', 'ipsec', 'tls').
-        backend_name
-            Backend name (e.g., 'gdb', 'lldb').
-
-        Returns
-        -------
-        str or None
-            Absolute path to the script, or None if not found.
-        """
+        """Absolute path to the hook script for a protocol+backend, or ``None``."""
         # Agent directories are siblings of the friTap package at project root
         base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         agent_dir = os.path.join(base_dir, f"agent_{backend_name}")
@@ -79,18 +66,7 @@ class ProtocolRegistry:
         return None
 
     def get_processor(self, protocol: str) -> Optional[Any]:
-        """Return the key processor class for a protocol.
-
-        Parameters
-        ----------
-        protocol
-            Protocol name (e.g., 'ssh', 'ipsec', 'tls').
-
-        Returns
-        -------
-        class or None
-            The processor class (SSHKeyProcessor, IPSecKeyProcessor, TLSKeyProcessor).
-        """
+        """Return the key processor class for a protocol, or ``None``."""
         class_name = self._PROCESSOR_MAP.get(protocol)
         if class_name is None:
             return None
@@ -103,52 +79,35 @@ class ProtocolRegistry:
             return None
 
     def get_compatibility_matrix(self) -> Dict[str, Dict[str, str]]:
-        """Return the full protocol x backend support matrix.
-
-        Returns
-        -------
-        dict
-            Nested dict: {protocol_name: {backend_name: support_level}}.
-        """
+        """Return ``{protocol_name: {backend_name: support_level}}``."""
         matrix = {}
         for name, handler in self._handlers.items():
             matrix[name] = dict(handler.supported_backends)
         return matrix
 
 
-# Companion-protocol expansion: some protocols, when selected, also require
-# others (e.g. a TLS-wrapped protocol pulls in "tls" so the SSLKEYLOGFILE is
-# captured to strip TLS first). Public built-ins add no implications; extension
-# handlers declare theirs via register_protocol_handler(..., implies=[...]).
+# Companion protocols pulled in when a protocol is selected (e.g. a TLS-wrapped
+# one needs "tls" to strip TLS first). Extensions declare theirs via
+# register_protocol_handler(..., implies=[...]).
 PROTOCOL_IMPLIES: dict[str, list[str]] = {}
 
 # Handler factory tables (zero-arg callables returning a fresh ProtocolHandler).
-# Built-ins are public and always available; extensions (optional/private
-# protocols) self-register at runtime via register_protocol_handler() and are
-# discovered by _discover_protocol_extensions(). The public core only ever
-# iterates these tables — it never imports or names an extension's module.
+# Extensions self-register via register_protocol_handler(); the public core only
+# iterates these tables and never names an extension module.
 _BUILTIN_HANDLER_FACTORIES: "dict[str, Callable[[], ProtocolHandler]]" = {}
 _EXTENSION_HANDLER_FACTORIES: "dict[str, Callable[[], ProtocolHandler]]" = {}
 _EXTENSIONS_DISCOVERED = False
 
 
 def register_protocol_handler(name, factory, implies=None) -> None:
-    """Register an extension protocol handler.
-
-    Lets an optional/private protocol add itself to the registry, the CLI
-    ``--protocol`` choices, and companion-protocol expansion WITHOUT the public
-    core importing or naming its module. *factory* is a zero-arg callable
-    returning a fresh :class:`ProtocolHandler`; *implies* lists companion
-    protocol names the handler pulls in.
-    """
+    """Register an extension handler. *factory* returns a fresh handler; *implies* lists companions."""
     _EXTENSION_HANDLER_FACTORIES[name] = factory
     if implies:
         PROTOCOL_IMPLIES[name] = list(implies)
 
 
 def _register_builtin_handler_factories() -> None:
-    """Populate the public built-in factory table (deferred imports keep this
-    module's import light and avoid cycles). Idempotent.
+    """Populate the built-in factory table (deferred imports avoid cycles). Idempotent.
 
     A new built-in must also be added to the protocol allowlist in
     ``scripts/check_public_denylist.sh`` (pinned by
@@ -170,12 +129,9 @@ def _register_builtin_handler_factories() -> None:
 
 
 def _discover_protocol_extensions() -> None:
-    """Import in-tree extension modules under ``protocols/_ext/`` so they
-    self-register. Idempotent.
+    """Import modules under ``protocols/_ext/`` so they self-register. Idempotent.
 
-    A filtered build that omits an extension module simply has nothing to import
-    here — no public code names it, so any protocol can be dropped from a build
-    cleanly. A broken/optional extension is logged and skipped, never fatal.
+    A broken or absent extension is logged and skipped, never fatal.
     """
     global _EXTENSIONS_DISCOVERED
     if _EXTENSIONS_DISCOVERED:
@@ -197,8 +153,7 @@ def _discover_protocol_extensions() -> None:
 
 
 def _all_handler_factories() -> "dict[str, Callable[[], ProtocolHandler]]":
-    """Return built-in + discovered extension factories (an extension never
-    overrides a built-in of the same name)."""
+    """Built-in + extension factories; an extension never overrides a built-in."""
     _register_builtin_handler_factories()
     _discover_protocol_extensions()
     factories = dict(_BUILTIN_HANDLER_FACTORIES)
@@ -208,33 +163,24 @@ def _all_handler_factories() -> "dict[str, Callable[[], ProtocolHandler]]":
 
 
 def available_protocol_names() -> List[str]:
-    """Protocol names available in THIS build (built-ins + registered
-    extensions), sorted. Excludes the meta values ``all``/``auto``. Drives the
-    CLI ``--protocol`` choices so a filtered build advertises only what it ships.
-    """
+    """Sorted protocol names in this build, excluding the meta values ``all``/``auto``."""
     return sorted(_all_handler_factories().keys())
 
 
-# Meta token that selects every registered custom cipher (category
-# "custom_cipher"), e.g. `--protocol custom` → rc4 (+ future aes/chacha).
+# Meta token selecting every custom cipher, e.g. `--protocol custom` -> rc4.
 CUSTOM_GROUP = "custom"
 
 
 def _is_custom_cipher(handler) -> bool:
-    """True if *handler* is a custom cipher. Duck-typed plugin handlers may
-    lack ``category`` (base default: ``"protocol"``)."""
+    """True if *handler* is a custom cipher (duck-typed handlers may lack ``category``)."""
     return getattr(handler, "category", "protocol") == "custom_cipher"
 
 
 def custom_cipher_handlers(include_upcoming: bool = False) -> List[ProtocolHandler]:
-    """Fresh instances of the available handlers whose ``category`` is
-    ``"custom_cipher"``, sorted by name. Single source of truth for the
-    ``custom`` group (one pass: each factory is instantiated once).
+    """Fresh custom-cipher handlers sorted by name; one instantiation per factory.
 
-    *upcoming* (not-yet-announced) ciphers are excluded unless
-    *include_upcoming* is set, so they are neither offered in the TUI nor
-    pulled in by ``--protocol custom``; an explicit ``--protocol <name>``
-    still selects them."""
+    Upcoming ciphers are excluded unless *include_upcoming*; an explicit
+    ``--protocol <name>`` still selects them."""
     handlers = (factory() for factory in _all_handler_factories().values())
     return sorted(
         (
@@ -296,15 +242,7 @@ def expand_protocols(selected) -> set:
 
 
 def create_default_registry(protocols: Optional[List[str]] = None) -> ProtocolRegistry:
-    """Create a registry with built-in (and any registered extension) handlers.
-
-    Parameters
-    ----------
-    protocols
-        Names of protocols to register. ``None`` keeps the historical
-        behaviour of registering everything available, so the no-arg
-        callers (lazy discovery, tests, TUI menu) keep working.
-    """
+    """Create a registry for *protocols* (``None`` = every available handler)."""
     factories = _all_handler_factories()
     known = set(factories)
     selected = set(protocols) if protocols is not None else known
@@ -317,13 +255,9 @@ def create_default_registry(protocols: Optional[List[str]] = None) -> ProtocolRe
             f"known: {sorted(known)}"
         )
 
-    # Expand companion protocols (e.g. a TLS-wrapped protocol also needs the TLS
-    # handler to capture the SSLKEYLOGFILE used to strip TLS before app-layer
-    # decryption). See PROTOCOL_IMPLIES / register_protocol_handler(implies=...).
     selected = expand_protocols(selected)
 
-    # Deterministic registration order: built-ins first (TLS first, so it stays
-    # the auto_detect fallback), then extensions sorted by name.
+    # Built-ins first (TLS first: it is the auto_detect fallback), then extensions by name.
     registry = ProtocolRegistry()
     order = list(_BUILTIN_HANDLER_FACTORIES.keys()) + sorted(_EXTENSION_HANDLER_FACTORIES.keys())
     for name in order:

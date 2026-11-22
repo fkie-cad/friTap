@@ -1,30 +1,20 @@
-"""RC4 core + TLS 1.3 AEAD peeler for the offline RC4 decryptor.
+"""RC4 core (KSA + PRGA) plus re-exports of the TLS 1.3 AEAD peeler.
 
-Two independent crypto layers live here, both ports of the research tools:
+The RC4 cipher is a port of ``research/memory_scan_lsass/tools/rc4_trial_decrypt.py``
+(offline analogue of ``agent/rc4_decrypt.js``). It is pure Python, so standalone
+RC4 works without third-party packages. The known-answer test
+``RC4("Key","Plaintext") == bbf316e8d940af0ad3`` runs at import.
 
-  * The **RC4 stream cipher** (KSA + PRGA) — a byte-for-byte port of
-    ``research/memory_scan_lsass/tools/rc4_trial_decrypt.py`` (which is itself the
-    offline analogue of ``agent/rc4_decrypt.js``). RC4 is symmetric, so the same
-    routine encrypts and decrypts. The shared known-answer test
-    ``RC4("Key","Plaintext") == bbf316e8d940af0ad3`` is asserted at import so a
-    broken RC4 fails loudly rather than mis-decrypting silently. This layer is
-    PURE PYTHON and needs no third-party dependency — standalone RC4-over-TCP
-    works on a ``--no-deps`` install.
-
-  * The **TLS 1.3 AEAD peeler** — now lives in the protocol-neutral
-    :mod:`friTap.offline.tls` package and is RE-EXPORTED here so every existing
-    ``friTap.offline.rc4.crypto`` import keeps working. Used for the pure-Python
-    nested RC4-in-TLS path (and its tests) when a raw TLS traffic secret is
-    supplied instead of driving tshark. It imports the optional ``cryptography``
-    backend **lazily**, so importing this module never requires it;
-    :func:`backend_available` probes for it.
+The TLS 1.3 peeler lives in :mod:`friTap.offline.tls`; its names are re-exported
+here because tests use them through this module. The optional ``cryptography``
+backend is imported lazily; :func:`backend_available` probes for it.
 """
 
 from __future__ import annotations
 
 from typing import List
 
-# Re-exports: the TLS 1.3 record layer moved to friTap.offline.tls (shims only).
+# Re-exports of the TLS 1.3 record layer.
 from ..tls.backend import backend_available  # noqa: F401
 from ..tls.keylog import parse_strict_nss_line
 from ..tls.records import (  # noqa: F401
@@ -50,10 +40,6 @@ from ..tls.tls13 import (  # noqa: F401
 INNER_APPLICATION_DATA = APPLICATION_DATA
 
 
-# --------------------------------------------------------------------------- #
-# RC4 core (same KSA/PRGA as agent/rc4_decrypt.js and rc4_trial_decrypt.py).
-# --------------------------------------------------------------------------- #
-
 def rc4_ksa(key: bytes) -> List[int]:
     """Key-scheduling: build the 256-byte S-box permutation from the key."""
     if not key:
@@ -68,7 +54,7 @@ def rc4_ksa(key: bytes) -> List[int]:
 
 
 def rc4_prga(sbox: List[int], data: bytes) -> bytes:
-    """PRGA over a COPY of the S-box (so a scanned box is not mutated), from i=j=0."""
+    """PRGA from i=j=0 over a copy of the S-box, so a scanned box is not mutated."""
     s = sbox[:]
     out = bytearray(len(data))
     i = j = 0
@@ -85,9 +71,7 @@ def rc4(key: bytes, data: bytes) -> bytes:
     return rc4_prga(rc4_ksa(key), data)
 
 
-# Known-answer test, shared with agent/rc4_decrypt.js (selfTest), the research
-# tool, and tls13_rc4_target.ps1 ($katExp). Running it at import makes a broken
-# RC4 fail loudly rather than mis-decrypt silently.
+# Known-answer test shared with agent/rc4_decrypt.js (selfTest) and tls13_rc4_target.ps1.
 _KAT_KEY, _KAT_PT, _KAT_CT = b"Key", b"Plaintext", bytes.fromhex("bbf316e8d940af0ad3")
 if rc4(_KAT_KEY, _KAT_PT) != _KAT_CT:  # pragma: no cover - a build-time invariant
     raise RuntimeError("RC4 known-answer test failed; the implementation is broken")

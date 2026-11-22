@@ -24,7 +24,7 @@ Usage:
         .start()
     )
 
-    # Live decrypted Signal messages (structured, no byte-wrangling)
+    # Live decrypted Signal messages
     session = (
         FriTap("org.thoughtcrime.securesms")
         .mobile()
@@ -56,12 +56,7 @@ if TYPE_CHECKING:
 
 
 class FriTapSession:
-    """
-    Handle to a running friTap capture session.
-
-    Returned by :meth:`FriTap.start`. Provides methods to interact
-    with or stop the session.
-    """
+    """Handle to a running capture session, returned by :meth:`FriTap.start`."""
 
     def __init__(self, ssl_logger: "SSL_Logger", event_bus: EventBus, flow_collector=None) -> None:
         self._logger_instance = ssl_logger
@@ -78,22 +73,26 @@ class FriTapSession:
         return self._logger_instance.running
 
     def stop(self) -> None:
-        """Gracefully stop the capture session."""
-        self._logger_instance.finish_fritap()
+        """Stop the session with the CLI's teardown (detach, outputs finalized) without exiting the interpreter.
+
+        Calling it again is harmless.
+        """
+        self._logger_instance.stop_fritap_session()
 
     def wait(self) -> None:
-        """Block until the session ends (e.g. process exits)."""
-        while self._logger_instance.running:
-            import time
-            time.sleep(0.1)
+        """Block until the session is stopped or its teardown has completed (e.g. target died)."""
+        logger = self._logger_instance
+        done_event = getattr(logger, "_done_event", None)
+        while logger.running:
+            if done_event is not None and done_event.wait(0.1):
+                return
+            if done_event is None:
+                import time
+                time.sleep(0.1)
 
 
 class FriTap:
-    """
-    Builder-pattern API for configuring and starting a friTap session.
-
-    Each setter method returns ``self`` for chaining.
-    """
+    """Builder for configuring and starting a session; every setter returns ``self``."""
 
     def __init__(self, target: str) -> None:
         self._target = target
@@ -109,8 +108,9 @@ class FriTap:
         self._environment_file: Optional[str] = None
         self._install_lsass_hook = True
         self._proxy_address: Optional[str] = None
+        # Off by default: the embedding program owns SIGINT/SIGTERM.
+        self._install_signal_handler = False
 
-        # Event callbacks registered before start()
         self._keylog_callbacks: List[Callable] = []
         self._data_callbacks: List[Callable] = []
         self._library_callbacks: List[Callable] = []
@@ -120,12 +120,8 @@ class FriTap:
 
         self._logger = logging.getLogger("friTap.api")
 
-        # Script plugins registered before start()
         self._script_plugins: List = []
 
-    # ------------------------------------------------------------------
-    # Device configuration
-    # ------------------------------------------------------------------
 
     def mobile(self, device_id: Optional[str] = None) -> "FriTap":
         """Target a mobile device (USB or by device ID)."""
@@ -154,7 +150,7 @@ class FriTap:
         return self
 
     def follow_exec(self, enable: bool = True) -> "FriTap":
-        """Follow instrumented processes across exec() (default on; ``--no-follow-exec``)."""
+        """Follow instrumented processes across exec(). Auto is off everywhere (Frida fork-child crash)."""
         self._device.follow_exec = enable
         return self
 
@@ -163,16 +159,12 @@ class FriTap:
         self._device.timeout = seconds
         return self
 
-    # ------------------------------------------------------------------
-    # Output configuration
-    # ------------------------------------------------------------------
 
     def pcap(self, path: str) -> "FriTap":
         """Write decrypted traffic to a PCAP file.
 
-        The filename extension decides the container: ``.pcapng`` writes
-        pcapng (with embedded DSB if keys are extracted), anything else classic
-        libpcap. Resets a prior :meth:`pcapng` call (format ``auto``).
+        A ``.pcapng`` extension writes pcapng (with embedded DSB if keys are
+        extracted), anything else libpcap. Resets a prior :meth:`pcapng` call.
         """
         self._output.pcap = path
         self._output.output_format = PCAP_FORMAT_AUTO
@@ -181,9 +173,7 @@ class FriTap:
     def pcapng(self, path: str) -> "FriTap":
         """Write self-decrypting PCAPNG (with DSB), whatever the extension.
 
-        Same as ``--pcap-format pcapng``: the explicit format wins, so
-        ``.pcapng("out.bin")`` writes pcapng; ``.pcapng("a.pcap")`` also writes
-        pcapng and logs a warning about the contradicting extension.
+        Same as ``--pcap-format pcapng``; a contradicting extension only logs a warning.
         """
         self._output.pcap = path
         self._output.output_format = PCAP_FORMAT_PCAPNG
@@ -192,11 +182,10 @@ class FriTap:
     def keylog(self, path: str) -> "FriTap":
         """Write key material in the Wireshark-loadable format for the active protocol.
 
-        The exact format follows the protocol selected via :meth:`protocol`:
-        NSS SSLKEYLOGFILE for TLS, ``<cookie> SHARED_SECRET <hex>`` for SSH.
-        With ``--protocol all|auto`` and multiple protocols emitting keys,
-        ``path`` is split per protocol as ``<stem>.<proto><ext>`` (for example,
-        ``keys.log`` → ``keys.tls.log`` and ``keys.ssh.log``).
+        The format follows :meth:`protocol`: NSS SSLKEYLOGFILE for TLS,
+        ``<cookie> SHARED_SECRET <hex>`` for SSH. With several protocols
+        emitting keys, ``path`` is split as ``<stem>.<proto><ext>``
+        (``keys.log`` -> ``keys.tls.log``, ``keys.ssh.log``).
         """
         self._output.keylog = path
         return self
@@ -211,18 +200,15 @@ class FriTap:
         return self
 
     def tap(self, path: str) -> "FriTap":
-        """Write the decrypted flows to a ``.tap`` capture file (``--tap``).
-
-        The file can be opened with ``fritap --analyze``, ``fritap report`` or the TUI.
-        """
+        """Write the decrypted flows to a ``.tap`` file (``--tap``), openable with ``fritap --analyze`` or the TUI."""
         self._output.tap_output = path
         return self
 
     def json_keys(self, enable: bool = True) -> "FriTap":
-        """Include raw key material (``key_data``) in the JSON output (``--json-keys``).
+        """Include raw ``key_data`` in the JSON output (``--json-keys``).
 
-        Without it (and without :meth:`keylog`) keylog records in the JSON are
-        redacted to their label (and public client_random) with ``"redacted": true``.
+        Otherwise (and without :meth:`keylog`) keylog records are redacted to
+        their label and public client_random with ``"redacted": true``.
         """
         self._output.json_keys = enable
         return self
@@ -242,27 +228,14 @@ class FriTap:
         self._output.full_capture = enable
         return self
 
-    # ------------------------------------------------------------------
-    # Live traffic analysis ("scan")
-    # ------------------------------------------------------------------
 
     def scan(self, spec: str = "all") -> "FriTap":
-        """Enable live passive analysis of captured flows.
-
-        ``spec`` is an analyzer selection: ``"all"`` (default) runs every
-        built-in analyzer, or a comma-separated list of analyzer names
-        (e.g. ``"credentials,ioc"``) selects a subset.
-        """
+        """Enable live passive analysis; ``spec`` is ``"all"`` or comma-separated analyzer names (``"credentials,ioc"``)."""
         self._output.scan = spec
         return self
 
     def analyzer_path(self, path: str) -> "FriTap":
-        """Load an external analyzer for live scanning. Repeatable.
-
-        ``path`` is a ``module`` (auto-discover classes marked
-        ``is_fritap_analyzer = True``) or ``module:Class`` reference. Each
-        call appends another path to the analyzer search list.
-        """
+        """Load an external analyzer (repeatable); ``path`` is ``module`` (classes marked ``is_fritap_analyzer = True``) or ``module:Class``."""
         self._output.scan_analyzer_path = (self._output.scan_analyzer_path or []) + [path]
         return self
 
@@ -284,9 +257,6 @@ class FriTap:
         self._output.scan_show_pii = enable
         return self
 
-    # ------------------------------------------------------------------
-    # Hooking configuration
-    # ------------------------------------------------------------------
 
     def patterns(self, path: str) -> "FriTap":
         """Use pattern-based hooking from a JSON file."""
@@ -314,20 +284,14 @@ class FriTap:
         return self
 
     def force_scan(self, name: str) -> "FriTap":
-        """Force-scan a specific module even when friTap would otherwise skip
-        it due to Cronet-split-topology suppression.
+        """Force-scan a module that Cronet-split-topology suppression would skip (repeatable).
 
-        ``name`` may be a literal module name, a stem prefix (suffix with
-        ``*``) or a regex prefixed with ``re:``.  May be called multiple
-        times.
+        ``name`` is a literal module name, a stem prefix ending in ``*``, or ``re:<regex>``.
         """
         if name and name not in self._hooking.force_scan_modules:
             self._hooking.force_scan_modules.append(name)
         return self
 
-    # ------------------------------------------------------------------
-    # Protocol & backend
-    # ------------------------------------------------------------------
 
     def protocol(self, proto: str) -> "FriTap":
         """Set the target protocol: tls, ipsec, ssh, all, auto."""
@@ -335,11 +299,7 @@ class FriTap:
         return self
 
     def protocols(self, names: List[str]) -> "FriTap":
-        """Select several protocols at once (``--protocol tls,rc4``).
-
-        The first name becomes the primary protocol. An empty list keeps the
-        current selection. A later :meth:`protocol` call replaces it.
-        """
+        """Select several protocols (``--protocol tls,rc4``); the first is primary, an empty list changes nothing."""
         selected = list(dict.fromkeys(name for name in names if name))
         if selected:
             self._protocols = selected
@@ -350,9 +310,6 @@ class FriTap:
         self._backend_name = backend
         return self
 
-    # ------------------------------------------------------------------
-    # Debug
-    # ------------------------------------------------------------------
 
     def debug(self, enable: bool = True) -> "FriTap":
         """Enable debug mode with Chrome Inspector."""
@@ -365,9 +322,6 @@ class FriTap:
         self._debug_output = enable
         return self
 
-    # ------------------------------------------------------------------
-    # Misc
-    # ------------------------------------------------------------------
 
     def custom_script(self, path: str) -> "FriTap":
         """Load a custom Frida script before friTap hooks."""
@@ -384,22 +338,24 @@ class FriTap:
         self._environment_file = path
         return self
 
+    def signal_handler(self, enable: bool = True) -> "FriTap":
+        """Opt in to friTap handling SIGINT/SIGTERM for this session.
+
+        Off by default (the embedder owns its signals). When enabled and
+        :meth:`start` runs on the main thread, those signals act like
+        ``stop()`` and the previous handlers are restored afterwards.
+        """
+        self._install_signal_handler = enable
+        return self
+
     def proxy(self, address: str) -> "FriTap":
         """Redirect connections to a proxy and bypass cert pinning.
 
-        Requires the ``fritap-proxy`` package (``pip install fritap-proxy``).
-
-        Parameters
-        ----------
-        address
-            Proxy address in ``host:port`` format (e.g., ``127.0.0.1:8080``).
+        Requires ``fritap-proxy``; ``address`` is ``host:port``.
         """
         self._proxy_address = address
         return self
 
-    # ------------------------------------------------------------------
-    # Event callbacks
-    # ------------------------------------------------------------------
 
     def on_keylog(self, callback: Callable) -> "FriTap":
         """Register a callback for key material extraction events."""
@@ -424,13 +380,10 @@ class FriTap:
     def on_flow(self, callback: Callable) -> "FriTap":
         """Register a callback for flow events (created, updated, completed).
 
-        The callback receives a :class:`~friTap.events.FlowEvent` with
-        ``flow`` (a :class:`~friTap.flow.models.Flow` object) and
-        ``flow_event_type`` (``"created"``, ``"updated"``, or ``"completed"``).
-
-        Signal-over-OHTTP decrypted inner request/response payloads are attached
-        to the flow (``flow.ohttp_inner_request`` / ``ohttp_inner_response``) at
-        parity with friTap's own TUI.
+        It receives a :class:`~friTap.events.FlowEvent` with ``flow``
+        (:class:`~friTap.flow.models.Flow`) and ``flow_event_type``.
+        Signal-over-OHTTP inner payloads are on ``flow.ohttp_inner_request`` /
+        ``ohttp_inner_response``.
         """
         self._flow_callbacks.append(callback)
         return self
@@ -438,24 +391,17 @@ class FriTap:
     def on_message(self, callback: Callable) -> "FriTap":
         """Register a callback for decrypted, structured chat messages.
 
-        The callback receives a :class:`~friTap.events.MessageEvent` per
-        decrypted message (``sender``, ``direction``, ``kind``, ``body``,
-        ``timestamp``, attachment/quote/reaction flags, and the raw inner
-        ``Content`` bytes), so a third-party UI can render conversations without
-        re-deriving them from raw bytes.
+        It receives a :class:`~friTap.events.MessageEvent` per decrypted message
+        (``sender``, ``direction``, ``kind``, ``body``, ``timestamp``,
+        attachment/quote/reaction flags, raw inner ``Content`` bytes).
 
-        Live coverage is **Signal only** — Telegram/MTProto is not TLS-wrapped
-        and is decrypted offline via
+        Live coverage is Signal only; Telegram/MTProto is decrypted offline via
         :func:`friTap.offline.pcap_to_tap.convert_pcap_to_tap`. A message's key
-        is assumed to arrive before (or with) its bytes (the common live
-        ordering); otherwise it is recovered offline, not live.
+        must arrive before or with its bytes, otherwise it is recovered offline.
         """
         self._message_callbacks.append(callback)
         return self
 
-    # ------------------------------------------------------------------
-    # Build & start
-    # ------------------------------------------------------------------
 
     def build_config(self) -> FriTapConfig:
         """Build the FriTapConfig from the current builder state."""
@@ -476,21 +422,16 @@ class FriTap:
         )
 
     def start(self) -> FriTapSession:
-        """
-        Build the configuration, create an SSL_Logger, wire up
-        the event bus, and start the capture session.
-
-        Returns a :class:`FriTapSession` handle.
-        """
+        """Build the config, create the SSL_Logger, wire the event bus and start; returns the session handle."""
         from .ssl_logger import SSL_Logger
 
         config = self.build_config()
 
-        # Create SSL_Logger with the config (output handlers subscribe to its EventBus)
         ssl_log = SSL_Logger(config=config)
+        # This interpreter belongs to the caller: a target death must finalize
+        # the outputs and end the session, never os._exit the whole program.
+        ssl_log._embedded = True  # see SSL_Logger.set_embedded
 
-        # Register user callbacks on the SSL_Logger's existing event bus
-        # (output handlers are already subscribed to it from _setup_output_handlers)
         event_bus = ssl_log._event_bus
         for cb in self._keylog_callbacks:
             event_bus.subscribe(KeylogEvent, cb)
@@ -501,13 +442,10 @@ class FriTap:
         for cb in self._session_callbacks:
             event_bus.subscribe(SessionEvent, cb)
 
-        # Register user-provided script plugins
         for plugin in self._script_plugins:
             ssl_log._plugin_loader.register_builtin(plugin, event_bus)
 
-        # Wire FlowCollector if on_flow or on_message callbacks are registered.
-        # on_message needs the collector to reassemble decrypted bytes and run
-        # the live Signal decryptor (signal_messages=True enables that path).
+        # on_message needs the collector to reassemble bytes and run the live Signal decryptor.
         flow_collector = None
         if self._flow_callbacks or self._message_callbacks:
             from .flow import FlowCollector
@@ -519,11 +457,13 @@ class FriTap:
             flow_collector.subscribe_to(event_bus)
             for cb in self._flow_callbacks:
                 event_bus.subscribe(FlowEvent, cb)
-            # Decrypted structured messages go to the user callbacks.
             for cb in self._message_callbacks:
                 event_bus.subscribe(MessageEvent, cb)
 
-        ssl_log.install_signal_handler()
+        # Never take over the host's signals unless asked (the CLI's handler
+        # would os._exit the embedding program; the embedded one stops only).
+        if self._install_signal_handler:
+            ssl_log.install_signal_handler()
         ssl_log.start_fritap_session()
         # A numeric-PID attach resolves the real process name during
         # start_fritap_session(); re-target this collector with it.

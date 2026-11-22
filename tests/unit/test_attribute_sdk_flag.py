@@ -99,3 +99,22 @@ class TestCallerStackMessageSchema:
         assert msg.native_frames[0].symbol == "SSL_write"
         # symbol/address are optional and default to None.
         assert msg.native_frames[1].symbol is None
+
+
+def _full_capture_logger(full_capture: bool, plaintext_hooks_disabled: bool = False) -> SSL_Logger:
+    obj = _config_batch_logger(attribute_sdk=True)
+    obj._config.output.full_capture = full_capture
+    obj._config.output.plaintext_hooks_disabled = plaintext_hooks_disabled
+    return obj
+
+
+class TestConfigBatchCarriesFullCapture:
+    def test_false_without_f(self):
+        assert _full_capture_logger(False)._build_config_batch()["full_capture"] is False
+
+    def test_true_with_f(self):
+        assert _full_capture_logger(True)._build_config_batch()["full_capture"] is True
+
+    def test_lsass_helper_never_gets_it(self):
+        batch = _full_capture_logger(True, plaintext_hooks_disabled=True)._build_config_batch()
+        assert batch["full_capture"] is False

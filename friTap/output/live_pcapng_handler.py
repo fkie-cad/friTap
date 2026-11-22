@@ -13,11 +13,10 @@ The setup/connect split prevents the classic FIFO deadlock:
 from __future__ import annotations
 
 import logging
-import os
-import tempfile
 import threading
 from typing import TYPE_CHECKING, Optional
 
+from ..sinks._fifo import cleanup_fifo, make_fifo
 from .base import OutputHandler
 
 if TYPE_CHECKING:
@@ -26,6 +25,9 @@ if TYPE_CHECKING:
 
 class LivePcapngHandler(OutputHandler):
     """PCAPNG with DSB to named FIFO — Wireshark auto-decrypts."""
+
+    # The packets in the pipe are the decrypted DatalogEvents (keys go in DSBs).
+    consumes_plaintext = True
 
     def __init__(self) -> None:
         self._tmpdir: Optional[str] = None
@@ -47,9 +49,7 @@ class LivePcapngHandler(OutputHandler):
 
     def create_fifo(self) -> str:
         """Create the named pipe and return its path."""
-        self._tmpdir = tempfile.mkdtemp()
-        self._fifo_path = os.path.join(self._tmpdir, "fritap_sharkfin.pcapng")
-        os.mkfifo(self._fifo_path)
+        self._tmpdir, self._fifo_path = make_fifo("fritap_sharkfin.pcapng")
         return self._fifo_path
 
     def setup(self, event_bus: "EventBus") -> None:
@@ -150,5 +150,4 @@ class LivePcapngHandler(OutputHandler):
             self._event_bus.unsubscribe(KeylogEvent, self._on_buffered_event)
             self._event_bus.unsubscribe(DatalogEvent, self._on_buffered_event)
 
-        from ..sinks.live_pcapng import _cleanup_fifo
-        _cleanup_fifo(self._fifo_path, self._tmpdir)
+        cleanup_fifo(self._fifo_path, self._tmpdir)

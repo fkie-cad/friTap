@@ -1,10 +1,6 @@
 #!/usr/bin/env python3
 
-"""Legacy compatibility module for friTap.
-
-Contains extracted inline output logic from ssl_logger.py that is
-preserved for backward compatibility when output handlers are not active.
-"""
+"""The non-handler (legacy) capture path: session manager and the SSL_Logger core."""
 
 from .session_manager import SessionManager as SessionManager
 from .ssl_logger_core import SSL_Logger as SSL_Logger

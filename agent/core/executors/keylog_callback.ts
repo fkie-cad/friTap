@@ -92,6 +92,25 @@ function installManualKeyExtraction(
  * reached on a non-null resolved address). The BoringSSL chain uses this signal
  * to decide whether to fall through to the next tier.
  */
+/**
+ * A custom installer may be async (NSS: the keylog-writer locator scans lazily).
+ * A pending install is NOT reported as installed: this returns false now and logs
+ * the final outcome when the promise settles.
+ */
+function settleCustomInstall(result: boolean | Promise<boolean>, moduleName: string): boolean {
+    if (typeof result !== "object" || result === null || typeof (result as Promise<boolean>).then !== "function") {
+        return result as boolean;
+    }
+    (result as Promise<boolean>).then((installed) => {
+        devlog(installed
+            ? `[*] ${moduleName}: async keylog install settled: installed`
+            : `[-] ${moduleName}: async keylog install settled: nothing installed`);
+    }).catch((e) => {
+        devlog(`[-] ${moduleName}: async keylog install rejected: ${e}`);
+    });
+    return false;
+}
+
 export function installKeylogHook(
     def: HookDefinition,
     addresses: { [key: string]: { [fn: string]: NativePointer } },
@@ -108,7 +127,7 @@ export function installKeylogHook(
         case "manual_on_connect":
             return installManualKeyExtraction(keylog, addresses, moduleName, resolvedFns);
         case "custom":
-            return keylog.install(addresses, moduleName, resolvedFns, enableDefaultFd);
+            return settleCustomInstall(keylog.install(addresses, moduleName, resolvedFns, enableDefaultFd), moduleName);
         case "none":
             return false;
     }

@@ -50,6 +50,7 @@ from friTap.analysis.redaction import (
     scrub_values,
 )
 from friTap.analysis.reporters import _sanitize_text
+from friTap.flow.models import put_stream_id
 
 if TYPE_CHECKING:
     from friTap.flow.models import Flow
@@ -81,10 +82,6 @@ _PROTOCOL_FIELDS = frozenset({"method"})
 class FlowRefError(ValueError):
     """A ``--flow`` ref is malformed or names no flow/message of the capture."""
 
-
-# ---------------------------------------------------------------------------
-# Value rendering (redacted unless show_values)
-# ---------------------------------------------------------------------------
 
 def _cap(text: str, max_bytes: int) -> tuple[str, bool]:
     encoded = text.encode("utf-8", errors="replace")
@@ -166,10 +163,6 @@ def _headers(headers: dict, show_values: bool) -> dict[str, str]:
     return shown
 
 
-# ---------------------------------------------------------------------------
-# Sections
-# ---------------------------------------------------------------------------
-
 def _endpoint(addr: str, port: int) -> str:
     if not addr:
         return ""
@@ -203,6 +196,7 @@ def _flow_meta(flow: "Flow", ordinal: int, phases: list[dict] | None = None) -> 
         "bytes": _flow_bytes(flow, 0),
         "untrusted": {"host": _flow_host(flow)},
     }
+    put_stream_id(meta, flow.stream_id)
     phase = _flow_phase(flow, phases)
     if phase is not None:
         meta["phase"] = safe_untrusted(phase, 64)
@@ -297,10 +291,6 @@ def _messages(flow: "Flow", ordinal: int, msg_index: int | None,
                            f"({valid})")
     return rows, total
 
-
-# ---------------------------------------------------------------------------
-# Public entry point
-# ---------------------------------------------------------------------------
 
 def _resolve(ids: list[str], ref: str) -> tuple[int, int | None]:
     """Return ``(ordinal, msg_index)`` for *ref* (``f<N>[#m<k>]`` or a full flow id)."""

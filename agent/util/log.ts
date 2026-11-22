@@ -1,3 +1,11 @@
+// Teardown log capture (detach_report.ts). While releaseAgentHooks runs its
+// teardown, every log variant here (log, devlog and the leveled devlog_*
+// helpers behind emit) goes into the DetachReport instead of being dropped by
+// the shutdown gate below. A plain static import is safe here, unlike
+// the shutdown-state lookup: detach_report.ts is a leaf module with NO imports,
+// so it cannot close a cycle back into log.ts.
+import { captureTeardownLog } from "../shared/detach_report.js";
+
 // Shutdown gate accessor. We resolve shared_structures (which owns the
 // _isShuttingDown binding) via require() rather than a top-level
 // `import { _isShuttingDown }` because log.ts is imported transitively during
@@ -37,6 +45,7 @@ export function _isShuttingDownNow(): boolean {
 }
 
 export function log(str: string) {
+    if (captureTeardownLog("info", str)) return;
     if (_isShuttingDownNow()) return;
     var message: { [key: string]: string } = {}
     message["contentType"] = "console"
@@ -46,6 +55,7 @@ export function log(str: string) {
 
 
 export function devlog(str: string) {
+    if (captureTeardownLog("debug", str)) return;
     if (_isShuttingDownNow()) return;
     var message: { [key: string]: string } = {}
     message["contentType"] = "console_dev"
@@ -130,6 +140,12 @@ export function parseStack(): CallSite {
 }
 
 function emit(level: Level, msg: string, extra?: Record<string, unknown>) {
+  if (typeof msg !== "string" || msg.length === 0) return;
+  // Teardown capture (detach_report.ts): the same "no emit without a message"
+  // rule as the send path, then the line goes to the report instead of the
+  // (dropped) send. No debug gating exists here: devlog_debug always reaches
+  // the host, which demotes it to debug level, so capture is unconditional too.
+  if (captureTeardownLog(level, msg)) return;
   // Shutdown chokepoint for devlog_debug / devlog_info / devlog_warn /
   // devlog_error. Same justification as sendDatalog's gate: once
   // gracefulDetach has fired, every pending callback on the JS message loop
@@ -139,7 +155,6 @@ function emit(level: Level, msg: string, extra?: Record<string, unknown>) {
   if (_isShuttingDownNow()) return;
   const cs = ENABLE_CALLSITE ? parseStack() : {};
   const ts = new Date().toISOString();
-  if (typeof msg !== "string" || msg.length === 0) return;
 
   const file = (cs.file ? String(cs.file).replace(/^.*[\\/]/, "") : undefined);
 

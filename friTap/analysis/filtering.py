@@ -1,34 +1,18 @@
 """
-Findings filtering — a reusable, presentation-agnostic filter layer.
+Findings filtering shared by the CLI, live scan, public API and TUI.
 
-This is the single filtering primitive shared by the CLI (``fritap analyze``),
-the live-scan path, the public API, and the TUI findings viewer. It composes
-the four orthogonal dimensions a finding can be filtered on:
+Criteria (all ANDed; ``None``/empty is a no-op): severity floor, exact
+severities, source, category, confidence floor, and a case-insensitive text
+substring over title/description/evidence.
 
-* **severity** — a floor (``min_severity``); keep findings at least this severe.
-* **source** — the producing analyzer name (``credentials``/``ioc``/``privacy``/...).
-* **category** — the finding's taxonomy bucket (see below).
-* **confidence** — a floor (``min_confidence``).
-* **text** — a case-insensitive substring over title/description/evidence.
+Category taxonomy (``Finding.metadata["category"]``):
 
-All criteria are ANDed together; a ``None``/empty criterion is a no-op, so an
-empty :class:`FindingFilter` matches everything.
+* ``secret``   credentials, API keys, tokens, private key material.
+* ``pii``      personal data (emails, phone, PAN, device IDs, geolocation).
+* ``network``  network indicators (IPs, domains, URLs, hashes, banners).
+* ``protocol`` protocol-level observations (gRPC/protobuf structure).
 
-Category taxonomy
------------------
-Findings carry their category in ``Finding.metadata["category"]`` (a string),
-exposed read-only via :attr:`friTap.analysis.Finding.category`. The canonical
-values are:
-
-* ``secret``   — credentials, API keys, tokens, private key material.
-* ``pii``      — personal data (emails, phone, PAN, device IDs, geolocation, ...).
-* ``network``  — network indicators (IPs, domains, URLs, hashes, server banners).
-* ``protocol`` — protocol-level observations (gRPC/protobuf structure, ...).
-
-Compliance tags ride alongside in ``metadata["compliance"]`` (a list, e.g.
-``["GDPR", "PCI-DSS"]``) and an optional ``metadata["cwe"]``. None of this adds a
-dataclass field, so :class:`~friTap.analysis.Finding` stays frozen and its
-serialization contract is unchanged.
+Compliance tags live in ``metadata["compliance"]`` and ``metadata["cwe"]``.
 
 Usage::
 
@@ -55,12 +39,7 @@ _UNCATEGORIZED = "uncategorized"
 
 
 def split_csv(value: str | None) -> frozenset[str] | None:
-    """Parse a comma-separated CLI value into a frozenset (or ``None``).
-
-    The single source of truth for turning ``--source a,b`` / ``--category x``
-    style options into a :class:`FindingFilter` criterion. Blank/empty input
-    yields ``None`` (a no-op criterion).
-    """
+    """Parse ``--source a,b`` style input into a frozenset; blank gives ``None``."""
     if not value:
         return None
     names = {part.strip() for part in value.split(",") if part.strip()}
@@ -69,19 +48,11 @@ def split_csv(value: str | None) -> frozenset[str] | None:
 
 @dataclass(frozen=True)
 class FindingFilter:
-    """An immutable, composable predicate over :class:`~friTap.analysis.Finding`.
-
-    Every criterion defaults to a no-op, so ``FindingFilter()`` matches all
-    findings. Criteria are ANDed in :meth:`matches`.
+    """Immutable predicate over findings; criteria are ANDed in :meth:`matches`.
 
     Attributes:
-        min_severity: Keep findings at least this severe (string or
-            :class:`~friTap.analysis.Severity`). Unknown values are treated as
-            ``info`` (matching :func:`~friTap.analysis.severity_rank`). This is a
-            *floor* — use ``severities`` for an exact-bucket match.
-        severities: Keep only findings whose exact severity value is in this set
-            (e.g. ``{"high"}`` matches high only, not critical). Complements the
-            ``min_severity`` floor for per-bucket selection.
+        min_severity: Severity floor; unknown values count as ``info``.
+        severities: Exact severity values (``{"high"}`` excludes critical).
         sources: Keep only findings whose ``source`` is in this set.
         categories: Keep only findings whose ``category`` is in this set.
         min_confidence: Keep findings with ``confidence`` at or above this value.
@@ -97,13 +68,7 @@ class FindingFilter:
     text: str | None = None
 
     def is_active(self) -> bool:
-        """True when at least one criterion would actually constrain results.
-
-        An all-default ``FindingFilter()`` is a no-op (matches everything), so it
-        reports ``False`` here — callers use this to distinguish "showing all"
-        from "a real filter is applied". Mirrors the criteria used in
-        :meth:`matches` (``text`` counts only when non-empty).
-        """
+        """True when at least one criterion constrains results (empty ``text`` does not)."""
         return (
             self.min_severity is not None
             or self.severities is not None
@@ -163,21 +128,16 @@ def _walk_contains(value: Any, needle: str) -> bool:
 
 
 def apply(findings: list[Finding], flt: FindingFilter | None) -> list[Finding]:
-    """Return the order-preserving subset of *findings* matching *flt*.
-
-    A ``None`` filter is a no-op and returns the list unchanged (new list).
-    """
+    """Order-preserving subset matching *flt*; ``None`` returns a copy."""
     if flt is None:
         return list(findings)
     return [f for f in findings if flt.matches(f)]
 
 
 def summarize(findings: list[Finding]) -> dict[str, Any]:
-    """Summarize *findings* by total, severity, source, and category.
+    """Count findings by severity, source and category (none -> ``uncategorized``).
 
-    The ``total``/``by_severity``/``by_source`` shape matches
-    :class:`~friTap.analysis.reporters.JsonReporter`'s summary; ``by_category``
-    is additive. Findings without a category are bucketed as ``uncategorized``.
+    ``total``/``by_severity``/``by_source`` match ``JsonReporter``'s summary.
     """
     return {
         "total": len(findings),
@@ -195,13 +155,7 @@ def with_category(
     cwe: str | None = None,
     extra_metadata: dict[str, Any] | None = None,
 ) -> Finding:
-    """Return a copy of *finding* tagged with a category (and optional tags).
-
-    :class:`~friTap.analysis.Finding` is frozen, so this builds a new instance
-    via :func:`dataclasses.replace` with a merged ``metadata`` dict. An existing
-    ``category`` is preserved (not clobbered) so analyzers that already tag a
-    finding keep their more specific value.
-    """
+    """Return a copy tagged with a category; existing metadata keys are never overwritten."""
     from dataclasses import replace
 
     merged: dict[str, Any] = dict(finding.metadata)

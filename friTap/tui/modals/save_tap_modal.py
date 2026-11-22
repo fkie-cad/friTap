@@ -23,11 +23,19 @@ if TEXTUAL_AVAILABLE:
     class SaveTapModal(FriTapModal[Optional[str]]):
         """Modal dialog to choose a filename for saving a .tap capture file."""
 
-        def __init__(self, suggested_name: str = "", **kwargs) -> None:
+        def __init__(
+            self,
+            suggested_name: str = "",
+            directory: "str | Path | None" = None,
+            **kwargs,
+        ) -> None:
             super().__init__(**kwargs)
+            self._directory = Path(directory) if directory else None
             if not suggested_name:
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                 suggested_name = f"capture_{ts}.tap"
+                if self._directory is not None:
+                    suggested_name = str(self._directory / suggested_name)
             self._suggested_name = suggested_name
 
         def compose(self):
@@ -75,5 +83,14 @@ if TEXTUAL_AVAILABLE:
             path = Path(value)
             if path.suffix != ".tap":
                 path = path.with_suffix(".tap")
+            # Join the directory only for a bare name: a typed value that
+            # already has a directory part (e.g. the suggested ``out/x.tap``)
+            # is used as typed.
+            if (
+                self._directory is not None
+                and not path.is_absolute()
+                and path.parent == Path(".")
+            ):
+                path = self._directory / path
 
             self.dismiss(str(path))

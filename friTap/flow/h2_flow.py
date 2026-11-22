@@ -1,18 +1,12 @@
 """Frame-exact HTTP/2 flow attribution for :class:`~.collector.FlowCollector`.
 
-A decrypted TLS record is not an HTTP/2 unit: one record carries frames of
-several multiplexed streams, and one frame (a 16 KiB DATA frame, a large
-HEADERS block) spans several records. Attaching whole records to whichever
-flow produced a ParseResult in that feed — and every result-less record to the
-connection's "active" flow — scattered a stream's DATA over unrelated flows
-and broke the frame alignment :meth:`Flow._extract_h2_body` relies on (it walks
-a flow's per-direction bytes as one frame sequence from offset 0), so bodies
-came out empty or partial.
-
-Instead the parser reports every frame it consumed
-(:meth:`~friTap.parsers.http2.Http2Parser.take_frame_log`) and this mixin gives
-each stream's flow exactly its own complete frames. Every flow's per-direction
-bytes are thereby a frame-aligned sequence again — no ``.tap`` format change.
+A decrypted TLS record is not an HTTP/2 unit: one record carries frames of several
+streams and one frame can span several records. Attaching whole records to one
+flow broke the frame alignment :meth:`Flow._extract_h2_body` relies on (it walks a
+flow's per-direction bytes as one frame sequence from offset 0). The parser
+therefore reports every consumed frame
+(:meth:`~friTap.parsers.http2.Http2Parser.take_frame_log`) and each stream's flow
+gets exactly its own complete frames. No ``.tap`` format change.
 """
 
 from __future__ import annotations
@@ -29,35 +23,26 @@ from .models import Flow, FlowChunk, FlowEventType, FlowState
 
 logger = logging.getLogger(__name__)
 
-# Per-connection cap on remembered stream -> flow routes (oldest dropped). A
+# Per-connection cap on remembered stream -> flow routes (oldest dropped); a
 # dropped route only matters for a late frame of a long-finished stream.
 _MAX_ROUTED_H2_STREAMS = 1024
 
 # Key of connection-level bytes (stream-0 frames, connection preface).
 _CONNECTION_KEY = 0
 
-# Frame types carrying stream payload (DATA, HEADERS, PUSH_PROMISE,
-# CONTINUATION). A late one opens a fresh flow for its stream; any other late
-# frame (RST_STREAM, WINDOW_UPDATE, PRIORITY) joins the control flow.
+# Stream-payload frame types (DATA, HEADERS, PUSH_PROMISE, CONTINUATION): a late
+# one opens a fresh flow; other late frames join the control flow.
 _STREAM_PAYLOAD_FRAME_TYPES = frozenset({0x0, 0x1, 0x5, 0x9})
 
 
 class Http2StreamFlowMixin:
     """Routes each HTTP/2 frame to the flow of the stream it belongs to."""
 
-    # ------------------------------------------------------------------
-    # Classification
-    # ------------------------------------------------------------------
-
     @staticmethod
     def _is_h2_connection(conn) -> bool:
         """True while *conn* runs an HTTP/2 parser that has not failed."""
         return (isinstance(unwrap_parser(conn.parser), Http2Parser)
                 and not getattr(conn.parser, 'failed', False))
-
-    # ------------------------------------------------------------------
-    # Entry point
-    # ------------------------------------------------------------------
 
     def _process_h2_chunk(self, conn, chunk: FlowChunk, event, pending: list) -> None:
         """Feed one plaintext record and attribute its frames. Under lock."""
@@ -67,8 +52,7 @@ class Http2StreamFlowMixin:
             conn.parser.feed(chunk.data, chunk.direction))
         frames = h2.take_frame_log()
         if getattr(conn.parser, 'failed', False):
-            # The parser just died mid-record: keep its raw bytes the legacy
-            # way (whole record on the active flow) from here on.
+            # Parser died mid-record: keep raw bytes whole on the active flow.
             self._attach_whole_chunk(conn, chunk, event, pending)
             return
         conn.h2_last_chunk[chunk.direction] = chunk
@@ -83,23 +67,17 @@ class Http2StreamFlowMixin:
             conn.protocol_stamp_pending = not self._stamp_detected_protocol(conn)
 
     def _attach_whole_chunk(self, conn, chunk: FlowChunk, event, pending: list) -> None:
-        """Legacy placement: the whole record on the connection's active flow."""
+        """Place the whole record on the connection's active flow."""
         flow = self._get_or_create_active_flow(conn, event, pending)
         self._append_chunk(flow, chunk)
         self._append_progress(pending, flow)
 
-    # ------------------------------------------------------------------
-    # Grouping
-    # ------------------------------------------------------------------
-
     @staticmethod
     def _h2_pieces(frames: list, results: list, chunk: FlowChunk) -> dict:
-        """Group this feed's frames into one FlowChunk per destination key.
+        """Group this feed's frames into one FlowChunk per destination key (stream id).
 
-        The key is the frame's stream id. Connection-level frames go to the
-        control result when the feed produced one; otherwise they ride with
-        the record's first stream frame (as they did when whole records were
-        attached), else stay under :data:`_CONNECTION_KEY`.
+        Connection-level frames go to the control result when the feed produced one,
+        else ride with the record's first stream frame, else stay under :data:`_CONNECTION_KEY`.
         """
         if any(result.stream_id == _CONNECTION_KEY for result in results):
             connection_key = _CONNECTION_KEY
@@ -109,11 +87,9 @@ class Http2StreamFlowMixin:
         grouped: dict[int, bytearray] = {}
         for _direction, stream_id, raw in frames:
             grouped.setdefault(stream_id or connection_key, bytearray()).extend(raw)
-        return {key: replace(chunk, data=bytes(data)) for key, data in grouped.items()}
-
-    # ------------------------------------------------------------------
-    # Results
-    # ------------------------------------------------------------------
+        # Key 0 (connection-level bytes) carries no stream id.
+        return {key: replace(chunk, data=bytes(data), stream_id=key or None)
+                for key, data in grouped.items()}
 
     def _apply_h2_result(self, conn, result, piece: Optional[FlowChunk],
                          event, pending: list) -> Flow:
@@ -132,13 +108,11 @@ class Http2StreamFlowMixin:
                                     event, pending: list) -> Flow:
         """Answer the connection's control flow with a server control frame.
 
-        The generic response path attached it to the active (request) flow,
-        completing that request with a SETTINGS "response" before its real
-        response arrived; the real one then landed on an already-written flow
-        and was lost from the ``.tap``. A control flow that already holds a
-        response gets a fresh sibling (not made the active flow). Because it
-        is never the active flow, the protocol label is stamped here directly
-        (a GOAWAY-only connection would otherwise stay unlabelled).
+        Never the generic response path: that attached it to the active request
+        flow, completing it with a SETTINGS "response" before the real one arrived
+        (then lost from the ``.tap``). A control flow already holding a response
+        gets a fresh sibling. Never the active flow, so the protocol label is
+        stamped here (a GOAWAY-only connection would stay unlabelled).
         """
         flow = self._open_h2_control_flow(conn, event, pending)
         self._attach_response(flow, result, piece, event.timestamp, pending)
@@ -147,9 +121,8 @@ class Http2StreamFlowMixin:
     def _open_h2_control_flow(self, conn, event, pending: list) -> Flow:
         """The connection's still-open control flow, created when needed.
 
-        Open means ACTIVE without a response: it has not been written yet and
-        will be at completion (response, idle finalize, flush). Labelled
-        HTTP/2 here since it is usually not the active flow.
+        Open = ACTIVE without a response (written at completion). Labelled HTTP/2
+        here since it is usually not the active flow.
         """
         flow = self._flows.get(conn.h2_control_flow_id or "")
         if flow is None or flow.state != FlowState.ACTIVE or flow.response is not None:
@@ -162,8 +135,7 @@ class Http2StreamFlowMixin:
     def _complete_h2_side_flows(self, conn, ended: float, pending: list) -> None:
         """Complete *conn*'s control and late-stream flows (not the active flow).
 
-        Called when the connection is finalized (idle gap, sweep, eviction),
-        so late frames parked there reach the writers then, not only at flush.
+        Called on connection finalize so late frames reach the writers then, not only at flush.
         """
         side_ids = [conn.h2_control_flow_id, *conn.h2_late_stream_flow_ids]
         for flow_id in side_ids:
@@ -171,10 +143,6 @@ class Http2StreamFlowMixin:
             if flow is not None:
                 self._complete_flow(flow, ended, pending)
         conn.h2_late_stream_flow_ids.clear()
-
-    # ------------------------------------------------------------------
-    # Result-less frames
-    # ------------------------------------------------------------------
 
     def _attach_h2_piece(self, conn, key: int, piece: FlowChunk,
                          event, pending: list) -> None:
@@ -190,11 +158,9 @@ class Http2StreamFlowMixin:
                         event, pending: list) -> Optional[Flow]:
         """The flow of stream *key*; the active flow for an unknown stream.
 
-        An unknown stream (e.g. its HEADERS predate the capture) is pinned to
-        the flow that received its first frame, so its frames stay together.
-        Routes outlive the flow's completion, so a late frame (a client
-        RST_STREAM after the server's END_STREAM, a WINDOW_UPDATE) is still
-        recognized; see :meth:`_h2_late_frame_destination`.
+        An unknown stream (HEADERS predate the capture) is pinned to the flow that
+        received its first frame. Routes outlive flow completion so late frames are
+        still recognised (:meth:`_h2_late_frame_destination`).
         """
         if key == _CONNECTION_KEY:
             if not self._show_control_frames:
@@ -212,11 +178,9 @@ class Http2StreamFlowMixin:
                                    event, pending: list) -> Optional[Flow]:
         """Where frames of an already completed (written) stream flow go.
 
-        Appending to the completed flow would never reach the ``.tap`` (it was
-        handed to the writers at completion, and completed flows are not
-        reopened). Stream payload opens a fresh flow for stream *key*; pure
-        control frames join the connection's open control flow, like other
-        control traffic — dropped while control frames are hidden.
+        Appending to a completed flow would never reach the ``.tap``. Stream
+        payload opens a fresh flow for *key*; pure control frames join the open
+        control flow, or are dropped while control frames are hidden.
         """
         if key != _CONNECTION_KEY and self._carries_stream_payload(data):
             return self._open_h2_late_stream_flow(conn, key, event, pending)
@@ -226,8 +190,7 @@ class Http2StreamFlowMixin:
 
     @staticmethod
     def _carries_stream_payload(data: bytes) -> bool:
-        """True when any frame in *data* (complete frames, the last possibly
-        truncated) is a DATA/HEADERS/PUSH_PROMISE/CONTINUATION frame."""
+        """True when any frame in *data* (last possibly truncated) is DATA/HEADERS/PUSH_PROMISE/CONTINUATION."""
         offset = 0
         while offset + 4 <= len(data):
             if data[offset + 3] in _STREAM_PAYLOAD_FRAME_TYPES:
@@ -238,8 +201,8 @@ class Http2StreamFlowMixin:
     def _open_h2_late_stream_flow(self, conn, key: int, event, pending: list) -> Flow:
         """A fresh flow for stream *key*, now its route, labelled HTTP/2.
 
-        It is not the active flow, so the connection's finalize completes it
-        (see :meth:`_complete_h2_side_flows`); flush completes it otherwise.
+        Not the active flow: connection finalize completes it (see
+        :meth:`_complete_h2_side_flows`), else flush.
         """
         flow = self._make_flow(conn, event)
         pending.append((FlowEventType.CREATED, flow))
@@ -257,18 +220,12 @@ class Http2StreamFlowMixin:
         while len(routes) > _MAX_ROUTED_H2_STREAMS:
             routes.popitem(last=False)
 
-    # ------------------------------------------------------------------
-    # Flush
-    # ------------------------------------------------------------------
-
     def _attach_h2_leftovers(self, conn, pending: Optional[list] = None) -> None:
         """Place bytes the parser still held at flush (truncated last frame).
 
-        Must run right after ``conn.parser.flush()``. They go to their
-        stream's flow (else the active flow) stamped like the newest record of
-        their direction; without either they are dropped. If that flow already
-        completed they take the late-frame route instead (CREATED events of
-        flows opened for them go to *pending*).
+        Must run right after ``conn.parser.flush()``. They go to their stream's flow
+        (else the active flow) stamped like the newest record of their direction,
+        else are dropped; if that flow completed they take the late-frame route.
         """
         h2 = unwrap_parser(conn.parser)
         if not isinstance(h2, Http2Parser):
@@ -276,15 +233,16 @@ class Http2StreamFlowMixin:
         pending = [] if pending is None else pending
         for direction, stream_id, raw in h2.take_frame_log():
             template = conn.h2_last_chunk.get(direction)
+            piece = (replace(template, data=raw, stream_id=stream_id or None)
+                     if template is not None else None)
             flow = (self._flows.get(conn.h2_stream_flows.get(stream_id, ""))
                     or self._flows.get(conn.active_flow_id or ""))
-            if template is not None and flow is not None:
-                flow = self._h2_leftover_destination(
-                    conn, flow, stream_id, replace(template, data=raw), pending)
-            if template is None or flow is None:
+            if piece is not None and flow is not None:
+                flow = self._h2_leftover_destination(conn, flow, stream_id, piece, pending)
+            if piece is None or flow is None:
                 logger.debug("Dropping %d unattributed HTTP/2 bytes at flush", len(raw))
                 continue
-            self._append_chunk(flow, replace(template, data=raw))
+            self._append_chunk(flow, piece)
 
     def _h2_leftover_destination(self, conn, flow: Flow, stream_id: int,
                                  piece: FlowChunk, pending: list) -> Optional[Flow]:
@@ -296,8 +254,7 @@ class Http2StreamFlowMixin:
 
     @staticmethod
     def _h2_event_like(flow: Flow, chunk: FlowChunk) -> SimpleNamespace:
-        """The event fields a new flow is built from, taken from *flow*'s
-        endpoints and *chunk* (flush has no event of its own)."""
+        """Event fields for a new flow, from *flow*'s endpoints and *chunk* (flush has no event)."""
         return SimpleNamespace(
             timestamp=chunk.timestamp, direction=chunk.direction,
             function=chunk.function, protocol=flow.transport,

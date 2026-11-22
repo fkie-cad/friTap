@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Mapping, Optional
 
 from rich.markup import escape
 
-from friTap.tui.widgets.tl_tree_render import (  # noqa: F401  (RowOfFn/RefLabelFn re-exported)
+from friTap.tui.widgets.tl_tree_render import (
     U64_MASK,
     RefLabelFn,
     RowOfFn,

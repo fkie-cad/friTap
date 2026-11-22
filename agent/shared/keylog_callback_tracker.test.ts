@@ -14,7 +14,9 @@ import assert from "node:assert/strict";
 // Side-effect import: defines Process/Memory/Interceptor/etc. BEFORE the module loads.
 import "./frida-test-stubs.js";
 // Reads the Frida globals only at call time, so the per-test overrides below apply.
-import { createKeylogCallbackTracker, restoreTrackedKeylogCallbacks } from "./keylog_callback_tracker.js";
+import {
+    createKeylogCallbackTracker, restoreTrackedKeylogCallbacks, retainedKeylogCallbackCount, sslCtxExDataClassIndex,
+} from "./keylog_callback_tracker.js";
 
 const G = globalThis as any;
 G.send = G.send ?? ((_msg: any) => { });
@@ -23,6 +25,7 @@ class FakePtr {
     constructor(private readonly value: string) { }
     toString() { return this.value; }
     isNull() { return this.value === "0x0"; }
+    toInt32() { return parseInt(this.value, 16) | 0; }
     equals(other: any) { return other !== null && other !== undefined && other.toString() === this.value; }
 }
 const p = (v: string) => new FakePtr(v);
@@ -38,13 +41,26 @@ const listeners = new Map<string, Array<(args: any[]) => void>>();
 const attachThrowsFor = new Set<string>();
 // module name -> { symbol name -> address }.
 const modules = new Map<string, Record<string, string>>();
+// module name -> imports reported by enumerateImports() (absent = no such API).
+const moduleImports = new Map<string, Array<{ name: string; address?: FakePtr; module?: string }>>();
 
-G.Process.findModuleByName = (name: string) => {
+function fakeModule(name: string): any {
     const symbols = modules.get(name);
     if (symbols === undefined) return null;
     const lookup = (sym: string) => (symbols[sym] !== undefined ? p(symbols[sym]) : null);
-    return { name, findExportByName: lookup, findSymbolByName: lookup };
+    const mod: any = { name, path: `/fake/lib/${name}`, findExportByName: lookup, findSymbolByName: lookup };
+    const imports = moduleImports.get(name);
+    if (imports !== undefined) mod.enumerateImports = () => imports;
+    return mod;
+}
+G.Process.findModuleByName = (name: string) => fakeModule(name);
+G.Process.findModuleByAddress = (address: FakePtr) => {
+    for (const [name, symbols] of modules) {
+        if (Object.values(symbols).includes(address.toString())) return fakeModule(name);
+    }
+    return null;
 };
+G.Process.enumerateModules = () => Array.from(modules.keys()).map(fakeModule);
 G.NativeFunction = function (address: FakePtr) {
     const impl = nativeImpl.get(address.toString());
     if (impl === undefined) throw new Error(`no native impl at ${address}`);
@@ -80,6 +96,15 @@ function defineModule(name: string, base: number, symbols: string[]): Record<str
 
 const FULL = ["SSL_CTX_set_keylog_callback", "SSL_CTX_get_keylog_callback", "SSL_CTX_free", "SSL_CTX_up_ref"];
 
+/** A fake libcrypto exporting `symbols`; OpenSSL_version_num returns `version`. */
+function defineLibcrypto(name: string, base: number, symbols: string[], version: number): Record<string, string> {
+    const table: Record<string, string> = {};
+    symbols.forEach((sym, i) => { table[sym] = "0x" + (base + i * 0x10).toString(16); });
+    modules.set(name, table);
+    if (table["OpenSSL_version_num"] !== undefined) nativeImpl.set(table["OpenSSL_version_num"], () => version);
+    return table;
+}
+
 const OUR_CB = p("0xc0de");
 const APP_CB = p("0xa99");
 
@@ -95,6 +120,22 @@ const trackerC = createKeylogCallbackTracker("libC.so", p(modC["SSL_CTX_set_keyl
 // Scenario D: SSL_CTX_free exists but Interceptor.attach on it throws.
 const modD = defineModule("libD.so", 0x4000, FULL);
 attachThrowsFor.add(modD["SSL_CTX_free"]);
+// Scenario E: Homebrew OpenSSL 3.x -- libssl imports CRYPTO_free_ex_data from
+// a separate libcrypto: destruction is observed (F1), SSL_CTX_up_ref inlined.
+const cryptoE = defineLibcrypto("libcrypto.3.dylib", 0x5000, ["CRYPTO_free_ex_data", "OpenSSL_version_num"], 0x30600040);
+moduleImports.set("libssl.3.dylib", [
+    { name: "CRYPTO_free", module: "/fake/lib/libcrypto.3.dylib" },
+    { name: "CRYPTO_free_ex_data", address: p(cryptoE["CRYPTO_free_ex_data"]), module: "/fake/lib/libcrypto.3.dylib" },
+]);
+const modE = defineModule("libssl.3.dylib", 0x6000, FULL);
+const trackerE = createKeylogCallbackTracker("libssl.3.dylib", p(modE["SSL_CTX_set_keylog_callback"]), OUR_CB, true);
+// Scenario F: BoringSSL shared libcrypto (Android system libssl.so): the marker
+// export rules F1 out, the refcount fallback restores at refs 0.
+const cryptoF = defineLibcrypto("libcrypto.so", 0x7000,
+    ["CRYPTO_free_ex_data", "OpenSSL_version_num", "CRYPTO_BUFFER_new"], 0x1010107f);
+moduleImports.set("libssl.so", [{ name: "CRYPTO_free_ex_data", address: p(cryptoF["CRYPTO_free_ex_data"]) }]);
+const modF = defineModule("libssl.so", 0x8000, FULL);
+const trackerF = createKeylogCallbackTracker("libssl.so", p(modF["SSL_CTX_set_keylog_callback"]), OUR_CB, true);
 let trackerD: any = null;
 let trackerDError: unknown = null;
 try {
@@ -114,12 +155,50 @@ test("full symbols: install writes our callback and hooks free + up_ref once", (
     assert.equal(listeners.get(modA["SSL_CTX_free"])!.length, 1);
 });
 
-test("full symbols: up_ref keeps the CTX alive across one free; last free drops it", () => {
+test("full symbols: up_ref keeps the CTX alive across one free; refs 0 restores in SSL_CTX_free", () => {
     trackerA.install(p("0xa3"));
     callHooked(modA["SSL_CTX_up_ref"], p("0xa3"));   // refs 2
     callHooked(modA["SSL_CTX_free"], p("0xa3"));     // refs 1 -> still tracked
+    assert.ok(ctxField.get("0xa3")!.equals(OUR_CB));
     trackerA.install(p("0xa4"));
-    callHooked(modA["SSL_CTX_free"], p("0xa4"));     // refs 0 -> dropped, never restored
+    callHooked(modA["SSL_CTX_free"], p("0xa4"));     // refs 0 -> restored now (CTX alive in onEnter)
+    assert.ok(ctxField.get("0xa4")!.isNull());
+});
+
+test("observed destruction (OpenSSL 3.x libcrypto): frees with inlined up_ref keep the CTX tracked", () => {
+    assert.equal(listeners.get(cryptoE["CRYPTO_free_ex_data"])!.length, 1);
+    trackerE.install(p("0xe1"));
+    callHooked(modE["SSL_CTX_free"], p("0xe1"));     // connection 1's SSL_free
+    callHooked(modE["SSL_CTX_free"], p("0xe1"));     // connection 2's SSL_free
+    assert.ok(ctxField.get("0xe1")!.equals(OUR_CB)); // still ours, still tracked
+    trackerE.install(p("0xe2"));
+    callHooked(cryptoE["CRYPTO_free_ex_data"], p("0x0"), p("0xe1"));  // CRYPTO_EX_INDEX_SSL: ignored
+    callHooked(cryptoE["CRYPTO_free_ex_data"], p("0x1"), p("0xe2"));  // final SSL_CTX_free of 0xe2
+});
+
+test("BoringSSL libcrypto: no destruction hook, refcount fallback restores at refs 0", () => {
+    assert.equal(listeners.get(cryptoF["CRYPTO_free_ex_data"]), undefined);
+    trackerF.install(p("0xf1"));
+    callHooked(modF["SSL_CTX_free"], p("0xf1"));
+    assert.ok(ctxField.get("0xf1")!.isNull());
+});
+
+test("class index policy: only OpenSSL 1.1.0 .. 3.x without BoringSSL markers", () => {
+    const none = () => false;
+    assert.equal(sslCtxExDataClassIndex(none, 0x30600040), 1);
+    assert.equal(sslCtxExDataClassIndex(none, 0x1010117f), 1);
+    assert.equal(sslCtxExDataClassIndex(none, 0x1000214f), null);   // 1.0.2: index 2
+    assert.equal(sslCtxExDataClassIndex(none, 0x20000000), null);   // LibreSSL
+    assert.equal(sslCtxExDataClassIndex(none, 0x40000000), null);   // 4.x: unverified
+    assert.equal(sslCtxExDataClassIndex(none, null), null);
+    assert.equal(sslCtxExDataClassIndex((n) => n === "CRYPTO_BUFFER_new", 0x1010107f), null);
+});
+
+test("every keylog callback handed to a tracker is retained once, for the script's lifetime", () => {
+    const before = retainedKeylogCallbackCount();
+    assert.equal(before, 1);                          // all scenarios share OUR_CB
+    createKeylogCallbackTracker("libA.so", p(modA["SSL_CTX_set_keylog_callback"]), p("0xbeef"), true);
+    assert.equal(retainedKeylogCallbackCount(), 2);
 });
 
 test("null ctx is ignored", () => {
@@ -161,12 +240,16 @@ test("restore puts previous callbacks back and seals the registry", () => {
     assert.ok(ctxField.get("0xa1")!.isNull());              // restored to NULL
     assert.ok(ctxField.get("0xa2")!.equals(APP_CB));        // skipped: not ours
     assert.ok(ctxField.get("0xa3")!.isNull());              // alive via up_ref, restored
-    assert.ok(ctxField.get("0xa4")!.equals(OUR_CB));        // freed: left alone
+    assert.ok(ctxField.get("0xa4")!.isNull());              // restored at refs 0, not re-drained
     assert.ok(ctxField.get("0xa5")!.equals(APP_CB));        // restored to the app's cb
     assert.ok(ctxField.get("0xb1")!.isNull());              // no getter: blind restore
     assert.ok(ctxField.get("0xc1")!.equals(OUR_CB));        // untracked (no SSL_CTX_free)
     assert.ok(ctxField.get("0xd1")!.equals(OUR_CB));        // untracked (free hook failed)
-    assert.deepEqual(result, { restored: 4, skipped: 1 });
+    assert.ok(ctxField.get("0xe1")!.isNull());              // live CTX (F1): restored
+    assert.ok(ctxField.get("0xe2")!.equals(OUR_CB));        // destroyed (F1): left alone
+    assert.ok(ctxField.get("0xf1")!.isNull());              // restored earlier at refs 0
+    assert.deepEqual(result, { restored: 5, skipped: 1 });
+    assert.equal(retainedKeylogCallbackCount(), 2);         // detach never releases them
 
     assert.equal(trackerA.sealed, true);
     trackerA.install(p("0xa6"));

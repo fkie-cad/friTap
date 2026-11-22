@@ -1,11 +1,8 @@
-"""
-Shared user-facing hints for MTProto-transport captures (mtproto + telegram).
+"""Shared user-facing hints for MTProto-transport captures (mtproto + telegram).
 
-MTProto's obfuscated transport normally needs each connection captured from
-byte 0, so attach mode misses already-open connections — unless memory
-scanning (-ms) recovers their live keys (Tier E). The same wording is emitted
-by the mtproto/telegram CLI handlers and the TUI, so it lives here once.
-Callers add their own tag/capitalisation and choose their own severity.
+The obfuscated transport needs each connection captured from byte 0, so attach
+mode misses open connections unless memory scanning (-ms) recovers their live
+keys (Tier E). The CLI handlers and TUI share this wording; callers add their own tag and severity.
 """
 
 from __future__ import annotations

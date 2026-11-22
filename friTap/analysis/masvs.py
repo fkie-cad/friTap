@@ -1,20 +1,13 @@
-"""
-OWASP MASVS v2.1 control mapping for friTap findings.
+"""OWASP MASVS v2.1 control mapping for friTap findings.
 
-Maps a :class:`~friTap.analysis.Finding` to the Mobile Application Security
-Verification Standard controls it bears on, so an agent can report in a
-standard vocabulary (plan item #18). This is pure, offline and **additive**: it
-derives control ids from a finding's ``metadata["check"]`` (set by the
-TLS-hygiene analyzer) and its ``category`` (plus a couple of cheap keyword
-refinements), and never mutates the finding.
+Maps a :class:`~friTap.analysis.Finding` to MASVS controls from its
+``metadata["check"]`` (set by the TLS-hygiene analyzer) and ``category``, plus
+a few keyword refinements. Pure, offline, never mutates the finding, and applied
+only on opt-in (the ``masvs`` flag on ``get_digest`` / ``list_findings``).
+Control ids are the stable MASVS v2.1 ids (https://mas.owasp.org/MASVS/).
 
-It is applied only on explicit opt-in (the ``masvs`` flag on ``get_digest`` /
-``list_findings``), so default tool output is unchanged. The control ids are
-the stable MASVS v2.1 identifiers (reference: https://mas.owasp.org/MASVS/).
-
-The mapping is deliberately conservative: findings with no defensible control
-(generic network IOCs, protocol observations) return an empty list and are left
-untagged rather than forced into a bucket.
+Conservative: findings with no defensible control (generic network IOCs,
+protocol observations) map to ``[]``.
 """
 
 from __future__ import annotations

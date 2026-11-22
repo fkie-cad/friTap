@@ -19,6 +19,7 @@ import {
     addImm64ScanPattern, ldrU64ScanPattern,
     isADR, decodeADRImm, adrTopByteForTarget, regRt2, regRs,
     isUnconditionalB, isAnyReturn, isIndirectBranch, isBLRAuth, isTrap, endsFallThrough, writesReg,
+    isLDRSWimmU, decodeLDRSWImm, isADDreg64, isSUBreg64, regRm,
 } from "./arm64.js";
 
 // Real instruction words read out of Apple's /usr/lib/libboringssl.dylib on
@@ -373,4 +374,19 @@ test("directBranchOffset is null for calls, returns and plain instructions", () 
     assert.equal(directBranchOffset(0x9400001c), null);                   // bl
     assert.equal(directBranchOffset(0xd65f03c0), null);                   // ret
     assert.equal(directBranchOffset(0xaa0003f3), null);                   // mov x19, x0
+});
+
+// Words from Facebook 588 libcoldstart.so (Fizz relative-vtable call + deriveSecret prologue).
+test("relative-vtable call words: ldrsw slot, add reg, sub reg", () => {
+    assert.equal(isLDRSWimmU(0xb980154b), true);                         // ldrsw x11, [x10, #0x14]
+    assert.equal(decodeLDRSWImm(0xb980154b), 0x14);
+    assert.equal(decodeLDRSWImm(0xb9800928), 0x8);                       // ldrsw x8, [x9, #8]
+    assert.equal(isLDRSWimmU(0xb9402309), false);                        // ldr w9, [x24, #0x20]
+    assert.equal(isADDreg64(0x8b0b0149), true);                          // add x9, x10, x11
+    assert.equal(regRn(0x8b0b0149), 10);
+    assert.equal(regRm(0x8b0b0149), 11);
+    assert.equal(isADDreg64(0x8b0b2149), false);                         // add x9, x10, x11, lsl #8
+    assert.equal(isADDreg64(0x910030a6), false);                         // add x6, x5, #0xc
+    assert.equal(isSUBreg64(0xcb030088), true);                          // sub x8, x4, x3
+    assert.equal(isSUBreg64(0x8b030088), false);
 });

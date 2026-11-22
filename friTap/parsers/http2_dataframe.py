@@ -1,19 +1,13 @@
 """Stateless, HPACK-free HTTP/2 DATA-frame harvesting (plugin-facing).
 
-Modern Signal (libsignal-net, 8.14.3) runs its chat socket as WebSocket *over*
-HTTP/2 (SNI ``grpc.chat.signal.org``; tshark hierarchy ``http2 → websocket →
-data``). To recover the WebSocket byte stream from a TLS-decrypted HTTP/2
-connection we only need the DATA frames — never the HPACK-compressed HEADERS —
-so this module deliberately avoids any HPACK dependency.
+Signal (libsignal-net) runs its chat socket as WebSocket over HTTP/2 (tshark:
+``http2 -> websocket -> data``). Recovering that byte stream needs only the DATA
+frames, never the HPACK-compressed HEADERS, so this module has no HPACK dependency.
+It groups DATA per stream-id; ``friTap.flow.models.Flow._extract_h2_body`` reads
+one stream via :func:`http2_data_for_stream`.
 
-It is the single stateless DATA walker: it groups DATA per stream-id (the
-WebSocket lives on one stream while control frames flow on stream 0 and
-others), and ``friTap.flow.models.Flow._extract_h2_body`` reads one stream
-through :func:`http2_data_for_stream`.
-
-Functions never raise: on a malformed/truncated frame they stop early and
-report ``degraded=True`` so the caller can record it (``SignalStats.add_degraded``)
-and still use whatever was harvested.
+Functions never raise: on a malformed or truncated frame they stop early and
+report ``degraded=True`` (``SignalStats.add_degraded``), keeping what was harvested.
 """
 
 from __future__ import annotations
@@ -29,13 +23,6 @@ from .http2_constants import (
     unpack_frame_header,
 )
 
-# RFC 7540 §3.5 connection preface: a client connection opens with this
-# 24-byte sequence before the first SETTINGS frame. It may or may not be
-# present in a TLS-follow buffer (tshark's ``follow,tls,raw`` of the client
-# direction does include it; the server direction never does), so we skip it
-# only when seen rather than relying on it for detection. ``HTTP2_PREFACE`` and
-# :func:`unpack_frame_header` are defined in :mod:`.http2_constants` and
-# re-exported here.
 
 _FRAME_HEADER_LEN = HTTP2_FRAME_HEADER_LEN
 _FRAME_TYPE_DATA = 0x00
@@ -51,13 +38,10 @@ def _strip_preface(buf: bytes) -> bytes:
 
 
 def looks_like_http2(buf: bytes) -> bool:
-    """Return True when *buf* begins with a parseable HTTP/2 frame.
+    """True when *buf* begins with a parseable HTTP/2 frame.
 
-    Skips the connection preface if present, then validates the 9-byte frame
-    header at offset 0: the type byte must be a known frame type (<= 0x09) and
-    the declared length must not exceed the remaining buffer. This is enough to
-    distinguish HTTP/2 framing from a raw RFC 6455 WebSocket frame (which would
-    decode to an implausible type byte) or HTTP/1.1 text.
+    Skips the preface, then needs a known frame type (<= 0x09) and a length that
+    fits the buffer; that rejects raw RFC 6455 WebSocket frames and HTTP/1.1 text.
     """
     buf = _strip_preface(buf)
     if len(buf) < _FRAME_HEADER_LEN:
@@ -73,11 +57,7 @@ def looks_like_http2(buf: bytes) -> bool:
 
 @dataclass(frozen=True)
 class H2FrameHeader:
-    """The first HTTP/2 frame header of a buffer (see :func:`describe_frame_header`).
-
-    ``available`` is how many payload bytes follow the header in the buffer;
-    it is smaller than ``length`` for a truncated (partially captured) frame.
-    """
+    """The first HTTP/2 frame header of a buffer; ``available`` is the payload bytes present (< ``length`` when truncated)."""
 
     length: int
     frame_type: int
@@ -94,15 +74,12 @@ class H2FrameHeader:
 
 
 def describe_frame_header(raw: bytes) -> Optional[H2FrameHeader]:
-    """Describe the first HTTP/2 frame header in *raw*, or ``None``.
+    """Describe the first frame header in *raw*, or ``None``; never raises.
 
-    Skips the connection preface if it leads (so ``PRI * HTTP/2.0`` is never
-    misread as a frame of type 0x20), requires a full 9-byte header, accepts
-    the standard frame types (<= 0x09) plus the registered extension types in
-    :data:`HTTP2_EXTENSION_FRAME_TYPE_NAMES` (ALTSVC, ORIGIN, PRIORITY_UPDATE)
-    and masks the reserved stream-id bit. Any other type is treated as
-    garbage, not a frame. Unlike :func:`looks_like_http2` a truncated payload is allowed:
-    ``available`` reports what is present. Never raises.
+    Skips a leading preface (``PRI * HTTP/2.0`` is not a frame), requires 9 header
+    bytes, accepts standard types (<= 0x09) and the extension types in
+    :data:`HTTP2_EXTENSION_FRAME_TYPE_NAMES`, masks the reserved stream-id bit.
+    Unlike :func:`looks_like_http2` a truncated payload is allowed.
     """
     buf = _strip_preface(raw)
     if len(buf) < _FRAME_HEADER_LEN:
@@ -133,21 +110,13 @@ def _walk_data_frames(
     sink: Callable[[int, memoryview, int], None],
     skip_unknown_types: bool = False,
 ) -> bool:
-    """Feed every DATA payload in *buf* to ``sink(stream_id, payload, frame_end)``.
+    """Feed every DATA payload in *buf* to ``sink(stream_id, payload, frame_end)``; returns ``degraded``.
 
-    The single HTTP/2 DATA-frame walker: skips the preface if present, honors
-    the PADDED flag (0x8; the first payload byte is the pad length and the
-    trailing padding is stripped) and skips non-DATA frames. Payloads are
-    memoryview slices so callers copy the bytes exactly once. ``frame_end`` is
-    the frame's exclusive end offset in the ORIGINAL *buf* (preface included).
-    Never raises — on a bad header or a truncated trailing frame it stops.
-
-    A frame type above 0x09 is a desync stop by default (the Signal decoder's
-    mid-stream heuristic). With *skip_unknown_types* such a frame is skipped
-    like any non-DATA frame (RFC 9113 §5.5: unknown types MUST be ignored);
-    its declared length must still fit the buffer.
-
-    Returns ``degraded``.
+    The single DATA walker: skips the preface, strips PADDED padding (flag 0x8) and
+    skips non-DATA frames. Payloads are memoryview slices (callers copy once);
+    ``frame_end`` is the exclusive end in the ORIGINAL *buf*. A type above 0x09 is a
+    desync stop (Signal mid-stream heuristic), unless *skip_unknown_types* skips it
+    (RFC 9113 §5.5; its length must still fit).
     """
     stripped = _strip_preface(buf)
     preface_len = len(buf) - len(stripped)
@@ -187,16 +156,9 @@ def _walk_data_frames(
 
 
 def group_http2_data_by_stream(buf: bytes) -> Tuple[Dict[int, bytes], bool]:
-    """Harvest HTTP/2 DATA payloads from *buf*, grouped by stream-id.
+    """Concatenate DATA payloads per stream-id in arrival order: ``({stream_id: data}, degraded)``.
 
-    Walks the frame sequence (after skipping the preface if present) and
-    concatenates, per stream-id and in arrival order, the payloads of every
-    DATA frame (type 0x0). Honors the PADDED flag (0x8): the first payload byte
-    is the pad length and the trailing padding is stripped. Non-DATA frames are
-    skipped. Never raises — on a bad header or a truncated trailing frame it
-    stops and returns ``degraded=True``.
-
-    Returns ``({stream_id: concatenated_data}, degraded)``.
+    Skips the preface, strips PADDED padding, ignores non-DATA frames.
     """
     streams, _ends, degraded = group_http2_data_ends_by_stream(buf)
     return streams, degraded
@@ -205,14 +167,10 @@ def group_http2_data_by_stream(buf: bytes) -> Tuple[Dict[int, bytes], bool]:
 def group_http2_data_ends_by_stream(
     buf: bytes,
 ) -> Tuple[Dict[int, bytes], Dict[int, List[Tuple[int, int]]], bool]:
-    """:func:`group_http2_data_by_stream` plus where each DATA frame ended.
+    """:func:`group_http2_data_by_stream` plus frame ends: ``(streams, ends, degraded)``.
 
-    Returns ``(streams, ends, degraded)``. ``ends[stream_id]`` lists, per DATA
-    frame of that stream in arrival order, ``(stream_end, buf_end)``: the
-    exclusive end of the frame's payload in the concatenated stream bytes and
-    the exclusive end of the frame itself in *buf*. That lets a caller map a
-    position in a stream back to the *buf* bytes (and so the capture) that
-    delivered it.
+    ``ends[stream_id]`` lists ``(stream_end, buf_end)`` per DATA frame, mapping a
+    position in the stream back to the *buf* bytes that delivered it.
     """
     streams: Dict[int, bytearray] = {}
     ends: Dict[int, List[Tuple[int, int]]] = {}
@@ -227,14 +185,10 @@ def group_http2_data_ends_by_stream(
 
 
 def http2_data_for_stream(buf: bytes, stream_id: int) -> Tuple[bytes, bool]:
-    """Concatenate the DATA payloads of *stream_id* in *buf*, in arrival order.
+    """DATA payloads of *stream_id* in arrival order: ``(data, degraded)``.
 
-    ``stream_id == 0`` means "every stream": all DATA payloads are kept in
-    wire order, interleaving included. Same walk and ``degraded`` semantics as
-    :func:`group_http2_data_by_stream`, except that frames of unknown type
-    (> 0x09: PRIORITY_UPDATE, ALTSVC, ORIGIN, GREASE) are skipped, not a stop.
-
-    Returns ``(data, degraded)``.
+    ``stream_id == 0`` keeps every stream in wire order. Unlike the grouping
+    functions, unknown frame types (> 0x09: PRIORITY_UPDATE, ALTSVC, ORIGIN, GREASE) are skipped, not a stop.
     """
     data = bytearray()
 

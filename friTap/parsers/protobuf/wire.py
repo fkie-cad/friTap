@@ -94,6 +94,7 @@ def decode_varint(data: bytes, offset: int) -> tuple[int, int]:
     Returns ``(value, new_offset)``.
     Raises :class:`ValueError` on truncation or >10 bytes.
     """
+    # Same 10-byte limit as flat.read_varint; this one puts the offset in its error messages.
     result = 0
     shift = 0
     start = offset

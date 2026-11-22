@@ -5,11 +5,9 @@
 from __future__ import annotations
 
 import logging
-import os
-import tempfile
 from typing import TYPE_CHECKING, Optional
 
-from .live_pcapng import _cleanup_fifo
+from ._fifo import cleanup_fifo, make_fifo
 from .pcap import PcapSink
 
 if TYPE_CHECKING:
@@ -41,9 +39,7 @@ class LiveWiresharkSink:
 
     def create_fifo(self) -> str:
         """Create the named pipe and return its path."""
-        self._tmpdir = tempfile.mkdtemp()
-        self._fifo_path = os.path.join(self._tmpdir, "fritap_sharkfin")
-        os.mkfifo(self._fifo_path)
+        self._tmpdir, self._fifo_path = make_fifo("fritap_sharkfin")
         return self._fifo_path
 
     def open(self) -> None:
@@ -73,4 +69,4 @@ class LiveWiresharkSink:
                 self._logger.debug("FIFO close error (expected): %s", e)
             self._inner = None
 
-        _cleanup_fifo(self._fifo_path, self._tmpdir)
+        cleanup_fifo(self._fifo_path, self._tmpdir)

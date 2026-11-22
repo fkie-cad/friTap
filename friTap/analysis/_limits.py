@@ -1,10 +1,7 @@
-"""
-Shared resource limits for analyzers.
+"""Shared resource limits for analyzers.
 
-Analyzer input is attacker-controlled (decrypted traffic, possibly malware),
-so every analyzer bounds the work it does per body and the number of findings
-it emits per flow. The constants and small helpers here are the single source
-of truth for those bounds.
+Input is attacker-controlled (decrypted traffic, possibly malware), so every
+analyzer bounds per-body work and findings per flow with these constants.
 """
 
 from __future__ import annotations
@@ -39,14 +36,14 @@ _PRINTABLE_CONTROL_BYTES = frozenset({9, 10, 13})
 
 
 def bounded_text(body: bytes | str, limit: int = MAX_SCAN_BYTES) -> str:
-    """Return at most *limit* units of *body* as text (UTF-8, lossy)."""
+    """At most *limit* units of *body* as lossy UTF-8 text."""
     if isinstance(body, str):
         return body[:limit]
     return body[:limit].decode("utf-8", errors="replace")
 
 
 def clip(value: Any, limit: int = MAX_DISPLAY_CHARS) -> str:
-    """Coerce *value* to ``str`` and truncate it to *limit* chars (with '...')."""
+    """``str(value)`` truncated to *limit* chars plus '...'."""
     text = value if isinstance(value, str) else str(value)
     if len(text) <= limit:
         return text
@@ -69,10 +66,10 @@ def _is_protobuf_like(data: bytes) -> bool:
 
 
 def looks_binary(data: bytes) -> bool:
-    """True when more than 30% of the first 4 KiB are non-printable.
+    """True when over 30% of the first 4 KiB is non-printable.
 
-    Counted on the UTF-8 decoding so multi-byte text (non-ASCII languages)
-    stays "printable" while invalid byte sequences count as binary.
+    Counted on the UTF-8 decoding: multi-byte text stays printable, invalid
+    sequences count as binary.
     """
     window = data[:_BINARY_SNIFF_BYTES].decode("utf-8", errors="replace")
     if not window:
@@ -91,12 +88,10 @@ def _is_nonprintable_char(ch: str) -> bool:
 
 
 def is_binary_body(body: bytes, content_type: str = "") -> bool:
-    """Decide whether *body* should be skipped by free-text detectors.
+    """True when free-text detectors should skip *body*.
 
-    Only media/compressed types are skipped when a content type is declared;
-    every other declared type (text, protobuf, gRPC, octet-stream, unknown)
-    stays in scope. Without a content type, a body is skipped only when it
-    looks binary (>30% non-printable) and is not protobuf-like.
+    With a content type only media/compressed types are skipped; without one,
+    only a body that looks binary and is not protobuf-like.
     """
     if not body:
         return False
@@ -106,10 +101,9 @@ def is_binary_body(body: bytes, content_type: str = "") -> bool:
 
 
 def safe_json_loads(data: bytes | str, max_bytes: int = MAX_JSON_BYTES) -> Any:
-    """Parse JSON defensively; return ``None`` when oversized or invalid.
+    """Parse JSON defensively; ``None`` when oversized, invalid or too deeply nested.
 
-    Catches ``RecursionError`` (deeply nested input) and ``ValueError`` (which
-    covers ``JSONDecodeError`` and Python's int-string-length limit).
+    ``ValueError`` also covers Python's int-string-length limit.
     """
     if len(data) > max_bytes:
         return None

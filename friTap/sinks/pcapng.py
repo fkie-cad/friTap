@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 from typing import IO, TYPE_CHECKING, Callable, List, Optional
 
+from ..capture_time import arrival_time
 from ..output.dedup import KeyDeduplicator
 from ..output.pcapng_blocks import (
     EPB_FLUSH_INTERVAL,
@@ -28,8 +29,8 @@ if TYPE_CHECKING:
 class PcapngSink:
     """Writes PCAPNG with embedded Decryption Secrets Blocks.
 
-    Implements the Sink protocol. Uses event.timestamp for accurate
-    packet timestamps instead of time.time() at write time.
+    Implements the Sink protocol. Stamps packets with the event's arrival
+    time (see friTap.capture_time), not time.time() at write time.
     """
 
     def __init__(
@@ -105,12 +106,12 @@ class PcapngSink:
         self._pending_keys.clear()
 
     def _write_epb(self, event: "DataCanonical") -> None:
-        """Write Enhanced Packet Block using event.timestamp."""
+        """Write Enhanced Packet Block stamped with the event's arrival time."""
         if not self._file:
             return
         # One EPB per segment: oversized records are split to fit an IP packet,
         # and an invalid record yields no packets (nothing is written).
-        t_us = int(event.timestamp * 1_000_000)
+        t_us = int(arrival_time(event) * 1_000_000)
         for packet in build_framed_packets(event, self._tracker):
             self._write_packet_block(packet, t_us)
 

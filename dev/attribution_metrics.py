@@ -43,7 +43,7 @@ import os
 import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 from urllib.parse import urlsplit
 
 if __name__ == "__main__":  # run as a script: make this checkout's friTap importable
@@ -141,6 +141,7 @@ class WireFlow:
     wire_protocol: str = ""
     decoded: bool = False
     client_random: Optional[str] = None
+    stream_id: Optional[int] = None
     attribution: Optional[Attribution] = None
     fields_present: frozenset = frozenset()
     transport_kind: str = ""
@@ -403,6 +404,7 @@ def to_wire_flow(flow: Any) -> WireFlow:
         host=host, path=path, decoded=decoded,
         wire_protocol=wire_protocol_label(_get(request, "protocol")),
         client_random=flow_client_random(flow),
+        stream_id=getattr(flow, "stream_id", None),
         attribution=flow_attribution(flow),
         fields_present=attribution_fields_present(flow),
         transport_kind=transport_kind(flow),
@@ -668,14 +670,31 @@ def compute_metrics(matched: list[MatchedRequest], client_random_field: bool,
     return metrics
 
 
+def group_metrics_by(matched: list[MatchedRequest], label_of: Callable[[MatchedRequest], str],
+                     client_random_field: bool, sdk_map: Optional[dict[str, str]] = None) -> dict:
+    """Metrics per group label returned by *label_of*."""
+    groups: dict[str, list[MatchedRequest]] = defaultdict(list)
+    for m in matched:
+        groups[label_of(m)].append(m)
+    return {name: compute_metrics(items, client_random_field, sdk_map)
+            for name, items in sorted(groups.items())}
+
+
 def group_metrics(matched: list[MatchedRequest], key: str,
                   client_random_field: bool, sdk_map: Optional[dict[str, str]] = None) -> dict:
     """Metrics per value of GTRequest attribute *key* (e.g. ``sdk``)."""
-    groups: dict[str, list[MatchedRequest]] = defaultdict(list)
-    for m in matched:
-        groups[str(getattr(m.gt, key) or "?")].append(m)
-    return {name: compute_metrics(items, client_random_field, sdk_map)
-            for name, items in sorted(groups.items())}
+    return group_metrics_by(matched, lambda m: str(getattr(m.gt, key) or "?"),
+                            client_random_field, sdk_map)
+
+
+def request_protocol(matched: MatchedRequest) -> str:
+    """GT protocol as ``h1``/``h2``/``h3``; WebView reports none, so fall back to
+    the matched flows' wire protocol when they agree."""
+    label = wire_protocol_label(matched.gt.protocol)
+    if label:
+        return label
+    wire = {f.wire_protocol for f in matched.flows if f.wire_protocol}
+    return wire.pop() if len(wire) == 1 else "?"
 
 
 def _connection_summary(conn_id: str, items: list[MatchedRequest],
@@ -689,6 +708,7 @@ def _connection_summary(conn_id: str, items: list[MatchedRequest],
             map_sdk(f.attribution.name, sdk_map) if f.attribution else "(none)"
             for f in flows)),
         "verdicts": dict(Counter(m.verdict for m in items)),
+        "stream_ids": sorted({f.stream_id for f in flows if f.stream_id is not None}),
     }
 
 
@@ -735,12 +755,26 @@ def attribution_counts(flows: list[WireFlow]) -> dict:
     return report
 
 
+def stream_attribution(flows: list[WireFlow]) -> dict:
+    """Attribution over per-request flows (one per HTTP stream), not per GT request."""
+    streams = [f for f in flows if f.decoded]
+    attributed = sum(1 for f in streams if f.attribution)
+    report = {"streams": len(streams), "attributed": attributed,
+              "pct_attributed": pct(attributed, len(streams))}
+    with_stream_id = sum(1 for f in streams if f.stream_id is not None)
+    if with_stream_id:
+        # Only taps written with per-chunk stream ids carry it.
+        report["with_stream_id"] = with_stream_id
+    return report
+
+
 def fields_report(flows: list[WireFlow]) -> dict:
     """Which per-flow fields exist in this capture (detected, not assumed)."""
     report = {
         "flows": len(flows),
         "connection_id": sum(1 for f in flows if f.connection_id),
         CLIENT_RANDOM_ATTR: sum(1 for f in flows if f.client_random),
+        "stream_id": sum(1 for f in flows if f.stream_id is not None),
     }
     for name in ATTRIBUTION_FIELDS:
         report[name] = sum(1 for f in flows if name in f.fields_present)
@@ -804,13 +838,15 @@ def build_report(gt: GroundTruth, flows: list[WireFlow], sdk_map: dict[str, str]
         "overall": compute_metrics(matched, cr_field, sdk_map),
         "by_transport": group_metrics(matched, "transport", cr_field, sdk_map),
         "by_sdk": group_metrics(matched, "sdk", cr_field, sdk_map),
+        "by_protocol": group_metrics_by(matched, request_protocol, cr_field, sdk_map),
+        "streams": stream_attribution(flows),
         "wire": wire_leftovers(flows, matched),
         "mixed_connections": mixed_connections(matched, sdk_map),
         "has_attribution_data": has_attribution_data(flows),
     }
     if not records:  # no request-context data: coverage is unknown, not 0%
         for metrics in (report["overall"], *report["by_transport"].values(),
-                        *report["by_sdk"].values()):
+                        *report["by_sdk"].values(), *report["by_protocol"].values()):
             metrics["pct_ctx"] = metrics["pct_ctx_ok"] = None
     report.update(attribution_counts(flows))
     report["wrong_high"] = report["overall"]["hi_wrong"]
@@ -845,16 +881,32 @@ ATTRIBUTION_COUNT_KEYS = ("by_source", "by_transport_kind", "buckets")
 
 
 def format_table(report: dict) -> list[str]:
-    """Readable table rows: overall, then per transport, then per sdk."""
+    """Readable table rows: overall, then per transport, protocol and sdk."""
     header = f"{'group':<26}" + "".join(f"{c:>8}" for c, _ in TABLE_COLUMNS) + "  wire"
     rows = [("overall", report["overall"])]
     rows += [(f"transport:{k}", v) for k, v in report["by_transport"].items()]
+    rows += [(f"protocol:{k}", v) for k, v in report.get("by_protocol", {}).items()]
     rows += [(f"sdk:{k}", v) for k, v in report["by_sdk"].items()]
     lines = [header, "-" * len(header)]
     for name, m in rows:
         cells = "".join(f"{_fmt(m.get(key))[:7]:>8}" for _, key in TABLE_COLUMNS)
         lines.append(f"{name:<26}{cells}  {_protocol_cell(m['wire_protocol'])}")
     return lines
+
+
+def _format_streams(streams: Optional[dict]) -> str:
+    if not streams:
+        return "streams (per-request flows): -"
+    line = (f"streams (per-request flows): {streams['attributed']} of {streams['streams']} "
+            f"attributed ({_fmt(streams['pct_attributed'])}%)")
+    if streams.get("with_stream_id"):
+        line += f", {streams['with_stream_id']} with stream id"
+    return line
+
+
+def _format_stream_ids(detail: dict) -> str:
+    stream_ids = detail.get("stream_ids")
+    return f" streams={stream_ids}" if stream_ids else ""
 
 
 def format_extras(report: dict) -> list[str]:
@@ -864,11 +916,13 @@ def format_extras(report: dict) -> list[str]:
         "wire: " + ", ".join(f"{k}={v}" for k, v in report["wire"].items()),
         "fields present (flows with value): " + ", ".join(
             f"{k}={v}" for k, v in report["fields_present"].items()),
+        _format_streams(report.get("streams")),
         f"mixed connections: {mixed['mixed']} of "
         f"{mixed['connections_with_matches']} connections with matches",
     ]
     lines += [f"  {d['connection_id']}: sdks={d['gt_sdks']} "
-              f"attributed_as={d['attributed_as']}" for d in mixed["details"]]
+              f"attributed_as={d['attributed_as']}{_format_stream_ids(d)}"
+              for d in mixed["details"]]
     if "by_confidence" in report["overall"]:
         lines.append(f"by confidence: {report['overall']['by_confidence']}")
     lines += [f"{key.replace('_', ' ')}: {report[key]}"

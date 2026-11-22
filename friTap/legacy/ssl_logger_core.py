@@ -1,40 +1,41 @@
 #!/usr/bin/env python3
 
-import calendar
-import functools
-import ipaddress
 import json
 import logging
 import os
 import queue
 import re
-import socket
-import struct
-import subprocess
-import tempfile
 import threading
 import time
-from collections import deque
-from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, List, NamedTuple, Optional, Tuple
+from typing import TYPE_CHECKING
 
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
 from ..about import __version__
+from ..agent_socket_fields import (  # noqa: F401 - re-exported (message_router, message_handler, legacy/__init__, tests)
+    DEFAULT_SS_FAMILY,
+    FILTERABLE_SS_FAMILIES,
+    KNOWN_SS_FAMILIES,
+    MISSING_ADDRESS,
+    coerce_port,
+    get_addr_string,
+    normalize_ss_family,
+    resolve_ss_family,
+    sanitize_raw_addr,
+)
 from ..backends.base import (
     BackendName,
     BackendScriptLoadTimeout,
     BackendTransportError,
     ScriptRuntime,
 )
-from ..config import FriTapConfig, effective_script_load_timeout
+from ..config import FriTapConfig, effective_script_load_timeout, resolve_follow_exec
 from ..constants import AGENT_ABI_VERSION, SSL_READ, SSL_WRITE
 from ..events import (
     AntiTamperDetectedEvent,
     DatalogEvent,
-    DetachEvent,
     EventBus,
     HookBreadcrumbEvent,
     InstrumentEvent,
@@ -42,75 +43,33 @@ from ..events import (
     LibraryDetectedEvent,
     PlatformReportEvent,
     ScriptLoadedEvent,
-    SessionEvent,
-    SocketTraceEvent,
 )
-from ..exit_codes import EXIT_OK, EXIT_RUNTIME_ERROR, EXIT_TARGET_DETACHED
 from ..fritap_utility import setup_fritap_logging, sha256_file
 from ..pcap import PCAP
-from ..text_safety import safe_terminal_text
-from .exec_follow import HeldExecWatchdog, ProcessTracker, ResumeWorker
+from .exec_follow import agent_abi_reporter
+from .ssl_logger_agent_config import AgentConfigMixin
+from .ssl_logger_crash import IOS_CRASH_REPORT_CLOCK_TOLERANCE, CrashReportMixin  # noqa: F401 - re-exported for tests
+from .ssl_logger_following import ProcessFollowingMixin
+from .ssl_logger_messages import (  # noqa: F401 - ByteBudgetQueue / MESSAGE_QUEUE_* re-exported for tests
+    MESSAGE_QUEUE_DROP_LOG_INTERVAL,
+    MESSAGE_QUEUE_MAX_BYTES,
+    MESSAGE_QUEUE_MAX_MESSAGES,
+    AgentMessagesMixin,
+    ByteBudgetQueue,
+)
+from .ssl_logger_outputs import OutputsMixin, _PluginSessionShim  # noqa: F401 - re-exported via friTap.ssl_logger
+from .ssl_logger_session import SessionLifecycleMixin
+from .ssl_logger_state import (  # noqa: F401 - re-exported for tests
+    UNKNOWN_TARGET_OS,
+    TargetOS,
+    _InstrumentRequest,
+)
+from .ssl_logger_teardown import TeardownMixin
+from .ssl_logger_wine import WINE_BASENAMES, WineMixin  # noqa: F401 - re-exported for friTap.friTap
 
 if TYPE_CHECKING:
     # Annotation-only; the runtime import stays function-local in _build_script_context.
     from ..plugins.script_context import ScriptContext
-
-
-@dataclass(slots=True)
-class _InstrumentRequest:
-    """A gated child/spawned process waiting for the instrument worker.
-
-    Carries only plain values: the process it describes may already be gone by
-    the time the worker gets to it, and nothing here may need the frida object.
-    """
-    pid: int
-    label: str
-    identifier: object = None
-    # False for processes that were never Frida-suspended (the Wine process
-    # watcher attaches to running processes): there is nothing to Frida-resume.
-    resume: bool = True
-    # True for the exec'd image of a process friTap already instruments (child
-    # gating, origin "exec", same pid): the new image replaces that process's
-    # session -- for the target, the main session -- instead of joining the
-    # capture as an extra child.
-    exec_handover: bool = False
-    # How the instrumented process is watched across exec() (see
-    # SSL_Logger._watch_process): True as the main target (its loss ends the
-    # capture), False as a child (its loss never does), None when it is not
-    # watched (followed by other means, e.g. the Wine process watcher).
-    watch_as_main: Optional[bool] = None
-
-
-class TargetOS(NamedTuple):
-    """What frida reports about the target platform: ``os.id`` plus ``access``.
-
-    Empty strings mean "we could not find out" (no device yet, backend error) —
-    the crash path must degrade quietly rather than raise, so there is no
-    exception and no sentinel object to special-case.
-
-    ``access`` is the distinction that trips people up: frida reports
-    ``"jailed"`` for a **Gadget-injected app**, NOT for "the device is not
-    jailbroken". A jailed target means friTap is talking to one app that embeds
-    frida-gadget instead of a device-wide frida-server, so it cannot spawn
-    arbitrary apps. frida 17 ALSO reports ``"jailed"`` for a USB device with
-    no frida-server running at all (ADB-only fallback) — while ``"full"`` means a device-wide frida-server (the
-    usual jailbroken setup). Crash-report retrieval is unaffected either way:
-    ``idevicecrashreport`` talks to usbmuxd, not to frida.
-    """
-
-    os_id: str = ""
-    access: str = ""
-
-
-#: Unknown platform — returned by _query_os_id() whenever the lookup fails.
-UNKNOWN_TARGET_OS = TargetOS()
-
-#: How far *before* the session start friTap still accepts an iOS crash report
-#: as "ours" (seconds). Report timestamps come from the device clock and are
-#: often naive local times, so an exact host-side cut-off would discard the very
-#: report we need; a small negative tolerance only widens the window, and the
-#: process-name + pid matching in friTap.ios keeps the extra window harmless.
-IOS_CRASH_REPORT_CLOCK_TOLERANCE = 120.0
 
 try:
     import hexdump  # pylint: disable=g-import-not-at-top
@@ -127,76 +86,6 @@ here = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 FULL_AGENT_BUNDLE_NAME = "fritap_agent_full.js"
 FULL_AGENT_BUNDLE_SIDECAR_SUFFIX = ".src"
 
-# Wine launcher basenames. Module-level so the CLI layer can share it without
-# reaching through the (patchable) SSL_Logger class.
-WINE_BASENAMES = ("wine", "wine64", "wine32", "wine-preloader", "wine64-preloader")
-
-# Frida message queue bounds. The count cap alone lets a hostile or runaway
-# agent park up to MESSAGE_QUEUE_MAX_MESSAGES x (payload size) bytes in this
-# process, so queued payload bytes are budgeted too. Both caps share the same
-# policy: the Frida callback never blocks (that could stall the target) -- a
-# message that does not fit is dropped and counted.
-# Breadcrumb the agent sends after its synchronous top-level init succeeded.
-AGENT_INIT_COMPLETE_BREADCRUMB = "agent-init: complete"
-
-MESSAGE_QUEUE_MAX_MESSAGES = 10000
-MESSAGE_QUEUE_MAX_BYTES = 256 * 1024 * 1024
-MESSAGE_QUEUE_DROP_LOG_INTERVAL = 10.0
-
-
-def _queued_message_size(item) -> int:
-    """Approximate bytes held by a queued ``(message, data)`` pair.
-
-    Counts the attached binary data plus the string/bytes values of the
-    message payload (shallow, so the estimate stays O(fields)).
-    """
-    message, data = item
-    size = len(data) if isinstance(data, (bytes, bytearray, memoryview)) else 0
-    payload = message.get("payload") if isinstance(message, dict) else None
-    values = payload.values() if isinstance(payload, dict) else (payload,)
-    for value in values:
-        if isinstance(value, (str, bytes, bytearray)):
-            size += len(value)
-    return size
-
-
-class ByteBudgetQueue(queue.Queue):
-    """A :class:`queue.Queue` that also caps the total queued payload bytes.
-
-    ``put`` raises :class:`queue.Full` immediately when the item would exceed
-    the byte budget, whatever ``block`` says -- callers already treat Full as
-    "drop", and waiting on bytes would hold up Frida's message thread. The
-    size recorded at enqueue time is the one released at dequeue time, so the
-    running total never drifts. (Concurrent producers may overshoot the budget
-    by at most one message each.)
-    """
-
-    def __init__(self, maxsize: int = 0, max_bytes: int = MESSAGE_QUEUE_MAX_BYTES):
-        super().__init__(maxsize)
-        self.max_bytes = max_bytes
-        self.queued_bytes = 0
-        self._item_sizes: deque = deque()
-
-    def put(self, item, block=True, timeout=None):
-        size = _queued_message_size(item)
-        with self.mutex:
-            over_budget = self.queued_bytes + size > self.max_bytes
-        if over_budget:
-            raise queue.Full
-        super().put(item, block, timeout)
-
-    # _put / _get run under self.mutex (queue.Queue contract).
-    def _put(self, item):
-        size = _queued_message_size(item)
-        super()._put(item)
-        self._item_sizes.append(size)
-        self.queued_bytes += size
-
-    def _get(self):
-        item = super()._get()
-        self.queued_bytes -= self._item_sizes.popleft()
-        return item
-
 
 def _full_bundle_in_sync(full_bundle, public_bundle):
     """True if the full bundle's sidecar hash matches the public bundle."""
@@ -205,49 +94,16 @@ def _full_bundle_in_sync(full_bundle, public_bundle):
             expected = fh.read().strip().lower()
         return bool(expected) and expected == sha256_file(public_bundle)
     except (OSError, ValueError):
-        # Missing/unreadable file, or a garbled (non-UTF-8) sidecar
-        # (UnicodeDecodeError is a ValueError): treat as out of sync.
+        # Missing, unreadable or non-UTF-8 sidecar (UnicodeDecodeError is a ValueError).
         return False
-
-
-def _schannel_keylog_candidates(config, protocol_registry):
-    """Return the TLS keylog files an SChannel relabel pass should repair.
-
-    The LSASS worker (``hook_lsass`` in friTap.py) builds its own SSL_Logger
-    from the raw ``-k`` value with the default single ``tls`` protocol, so it
-    always writes the SChannel secrets to the BASE ``-k`` path, never to a
-    ``<stem>.<proto><ext>`` split file. ``pcap_obj.keylog_path`` is not usable
-    for this: under a multi-protocol split (``--protocol tls,rc4``) it holds
-    whichever split handler was set up last (e.g. ``keys.rc4.log``).
-
-    This session's own TLS keys go to its TLS split file when the keylog is
-    split, so that file is repaired too. Non-TLS split files (rc4, ssh, ...)
-    are never candidates.
-    """
-    base_keylog = config.output.keylog
-    if not base_keylog:
-        return []
-    candidates = [base_keylog]
-    try:
-        from ..output.factory import active_keylog_paths
-        protocols = list(getattr(config, "protocols", None) or ["tls"])
-        tls_keylog = active_keylog_paths(
-            base_keylog, protocols, protocol_registry).get("tls")
-    except Exception:  # noqa: BLE001 - best-effort discovery
-        tls_keylog = None
-    if tls_keylog and tls_keylog != base_keylog:
-        candidates.append(tls_keylog)
-    return candidates
 
 
 def _release_lsass_keylog_writer(logger):
     """Stop the separate LSASS worker session so it releases the shared ``-k`` file.
 
-    The LSASS SSL_Logger (``hook_lsass`` in friTap.py) keeps its own
-    KeylogOutputHandler open on the base keylog (and its pcap/json handlers on the
-    shared -p/--json files) until it is torn down; the CLI otherwise only stops it
-    from an ``atexit`` hook that ``os._exit`` skips.
-    Idempotent (a no-op when no LSASS hook runs) and never raises.
+    The LSASS SSL_Logger (``hook_lsass`` in friTap.py) holds the keylog and the shared
+    -p/--json handlers open until torn down; the CLI only stops it from an ``atexit``
+    hook that ``os._exit`` skips. Idempotent and never raises.
     """
     try:
         from ..friTap import cleanup_lsass_hook
@@ -257,85 +113,50 @@ def _release_lsass_keylog_writer(logger):
                      exc_info=True)
 
 
-def _drop_still_open_keylogs(logger, pcap_name, keylog_paths):
-    """Return the *keylog_paths* no writer in this process still holds open.
+class _PayloadModWatcher(FileSystemEventHandler):
+    """-pm: push ./readmod.bin / ./writemod.bin to the main agent when modified.
 
-    The ``-k`` file is shared (refcounted) by the main and the LSASS session's
-    keylog handlers, so it is only really closed once BOTH released it. A path
-    still open here would be renamed under a live writer (its later keys would
-    land in the ``.raw`` backup; Windows refuses the rename outright), so it is
-    skipped with a warning and left unchanged.
+    The agent's ``recv("readmod"|"writemod")`` expects the bytes as a hex string.
+    ``self.script`` is looked up at event time so an exec'd image's new main agent is reached.
     """
-    from ..output.shared_keylog_writer import is_keylog_path_open
-    closed = []
-    for path in keylog_paths:
-        if is_keylog_path_open(path):
-            logger.warning(
-                "SChannel keylog auto-relabel skipped for %s: the keylog is still "
-                "open by another friTap session. The keylog was kept unchanged; "
-                "to fix it manually, run: fritap --from-pcap %s --keylog %s "
-                "--repair-keylog", path, pcap_name, path)
-        else:
-            closed.append(path)
-    return closed
 
+    _FILES = (("readmod", "./readmod.bin"), ("writemod", "./writemod.bin"))
 
-def _warn_relabel_not_applied(logger, pcap_name, keylog_path, relabeled_path, error):
-    """Tell the user the relabel could not be written and how to apply it by hand."""
-    logger.warning(
-        "SChannel keylog auto-relabel could not replace %s (%s); the original keylog "
-        "was kept unchanged. The relabeled copy is at %s. To redo the fix manually, "
-        "run: fritap --from-pcap %s --keylog %s --repair-keylog",
-        keylog_path, error, relabeled_path, pcap_name, keylog_path)
+    def __init__(self, ssl_logger):
+        super().__init__()
+        self._ssl_logger = ssl_logger
 
+    def on_any_event(self, event):
+        if event.event_type != "modified":
+            return
+        for msg_type, path in self._FILES:
+            if msg_type in event.src_path:
+                self._post_file(msg_type, path)
+                return
 
-def _swap_in_relabeled_keylog(logger, pcap_name, keylog_path, relabeled_path, raw_backup):
-    """Move *keylog_path* to *raw_backup* and *relabeled_path* into its place.
-
-    Returns ``True`` on success. On an ``OSError`` (e.g. Windows' PermissionError
-    for a file another handle still holds open) the original keylog is kept (or
-    restored from the backup), a warning with the manual command is logged, and
-    ``False`` is returned.
-    """
-    try:
-        os.replace(keylog_path, raw_backup)
-    except OSError as e:
-        _warn_relabel_not_applied(logger, pcap_name, keylog_path, relabeled_path, e)
-        return False
-    try:
-        os.replace(relabeled_path, keylog_path)
-    except OSError as e:
+    def _post_file(self, msg_type, path):
+        logger = self._ssl_logger
+        script = getattr(logger, "script", None)
+        if script is None:
+            return
         try:
-            os.replace(raw_backup, keylog_path)
-        except OSError:
-            logger.warning("Could not restore %s; the original keylog is at %s",
-                           keylog_path, raw_backup)
-        _warn_relabel_not_applied(logger, pcap_name, keylog_path, relabeled_path, e)
-        return False
-    return True
+            with open(path, "rb") as f:
+                buffer = f.read()
+            logger._backend.post_message(script, msg_type, buffer.hex())
+        except Exception as e:  # noqa: BLE001 - never kill the watchdog thread
+            logger.logger.error(f"Watcher error: {e}")
 
 
-def _relabel_one_schannel_keylog(logger, tshark_bin, pcap_name, keylog_path):
-    """Trial-decrypt-relabel one keylog in place, keeping ``<stem>.raw<ext>``."""
-    from ..offline.keylog_coverage import relabel_keylog
-    result = relabel_keylog(
-        tshark_bin, pcap_name, keylog_path,
-        progress=lambda m: logger.debug("relabel: %s", m))
-    if not result.repaired_path:
-        logger.debug("SChannel keylog auto-relabel (%s): %s", keylog_path, result.message)
-        return
-    stem, ext = os.path.splitext(keylog_path)
-    raw_backup = f"{stem}.raw{ext or '.keylog'}"
-    if not _swap_in_relabeled_keylog(logger, pcap_name, keylog_path,
-                                     result.repaired_path, raw_backup):
-        return
-    logger.info(
-        "SChannel keylog relabeled by trial decryption (%s); raw agent output saved "
-        "to %s. Load %s directly in Wireshark.",
-        result.message, os.path.basename(raw_backup), os.path.basename(keylog_path))
-
-
-class SSL_Logger():
+class SSL_Logger(
+    AgentConfigMixin,
+    AgentMessagesMixin,
+    OutputsMixin,
+    ProcessFollowingMixin,
+    SessionLifecycleMixin,
+    TeardownMixin,
+    CrashReportMixin,
+    WineMixin,
+):
 
     LEVEL_MAP = {
         "debug": logging.DEBUG,
@@ -349,7 +170,6 @@ class SSL_Logger():
     }
 
     def __init__(self, app=None, pcap_name=None, verbose=False, spawn=False, keylog=False, enable_spawn_gating=False, spawn_gating_all=False, enable_child_gating=False, mobile=False, live=False, environment_file=None, debug_mode=False,full_capture=False, socket_trace=False, host=False, offsets=None, debug_output=False, experimental=False, anti_root=False, payload_modification=False,enable_default_fd=False, patterns=None, custom_hook_script=None, json_output=None, install_lsass_hook=True, timeout=None, config: "FriTapConfig | None" = None):
-        # Build or accept a FriTapConfig
         if config is not None:
             self._config = config
         elif app is not None:
@@ -371,25 +191,47 @@ class SSL_Logger():
 
         self._cleanup_done = False
         self._tui_mode = False
+        # Set by an embedding host (the API's FriTapSession, the TUI) whose
+        # interpreter must outlive the session; see _owns_process_exit().
+        self._embedded = False
 
-        # Set up logging (shared helper fixes bug where special_logger was hardcoded to INFO)
         self.logger, self.special_logger = setup_fritap_logging(
             debug=self._config.debug, debug_output=self._config.debug_output
         )
 
-        # Check for hexdump availability
         if hexdump is None:
             self.logger.warning("Unable to import hexdump module! Hexdump functionality will be disabled.")
 
-        # Runtime state (mutable, not config)
+        self._init_queues_and_workers()
+        self._init_process_following()
+        self._init_target_state()
+        self._init_event_bus_and_backend()
+        self._init_protocol_registry()
+
+        from .session_manager import SessionManager
+        self._session_manager = SessionManager(self)
+
+        from ..message_router import MessageRouter
+        self._message_router = MessageRouter(self._event_bus, active_protocol=list(self._config.protocols))
+        self._open_learned_offsets()
+
+        self._install_display_filter()
+        self._init_capture_tracking()
+        self._init_live_scan_state()
+        self._init_session_data()
+
+        self.init_fritap()
+
+    def _init_queues_and_workers(self) -> None:
+        """Runtime flags, the bounded Frida message queue and the instrument queue."""
         self.pcap_obj = None
         self.script = None
         self.own_message_handler = None
         self.running = True
         self._done_event = threading.Event()
 
-        # Message queue: decouples Frida callback from processing to prevent
-        # GIL contention that freezes the TUI under high message rates.
+        # Decouples the Frida callback from processing; avoids GIL contention
+        # that freezes the TUI under high message rates.
         self._message_queue: queue.Queue = ByteBudgetQueue(
             maxsize=MESSAGE_QUEUE_MAX_MESSAGES, max_bytes=MESSAGE_QUEUE_MAX_BYTES)
         self._consumer_stop = threading.Event()
@@ -398,28 +240,28 @@ class SSL_Logger():
         self._queue_drops_reported = 0
         self._queue_drop_logged_at = 0.0
 
-        # Instrumentation queue: child/spawn gating events arrive on Frida's
-        # own event thread, where instrument() must never run — it blocks in
-        # script.load() for as long as the agent takes to install its hooks.
+        # Child/spawn gating events arrive on Frida's own event thread, where
+        # instrument() must never run: it blocks in script.load() while the
+        # agent installs its hooks.
         self._instrument_queue: queue.Queue = queue.Queue(maxsize=256)
         self._instrument_stop = threading.Event()
         self._instrument_thread: threading.Thread | None = None
         self._instrument_thread_lock = threading.Lock()
-        # Every pid friTap holds suspended and still owes a resume: the spawned
-        # target (until its resume) and each gated child/spawn (from the gating
-        # event until the worker, the drain or the rejection path resumes it).
-        # Teardown resumes whatever is left (see _resume_suspended_pids).
+        # Every pid friTap holds suspended and still owes a resume (the spawned
+        # target, each gated child/spawn). Teardown resumes whatever is left
+        # (see _resume_suspended_pids).
         self._suspended_pids: set = set()
         self._suspended_pids_lock = threading.Lock()
-        self._init_process_following()
+
+    def _init_target_state(self) -> None:
+        """Per-target state: process, device, loaded data files, traced sockets."""
         self.target_threads = None
         self.tmpdir = None
         self.filename = ""
         self.startup = True
         self.process = None
         self.pid = None
-        # Process name resolved after a numeric-PID attach (see
-        # apply_resolved_process_name); None for name targets / spawn.
+        # Set after a numeric-PID attach (see apply_resolved_process_name).
         self.resolved_process_name = None
         self.device = None
         self.keylog_file = None
@@ -435,38 +277,36 @@ class SSL_Logger():
         self.traced_Socket_Set = set()
         self.traced_scapy_socket_Set = set()
         self._live_handler = None
-        # The hooked-key (TLS) KeylogOutputHandler, kept so readers resolve its
-        # lazily opened file at call time (see _live_keylog_file()).
+        # -f --attribute-sdk request-context writer (_attach_request_context_sidecar).
+        self._request_context_sidecar = None
+        # Kept so readers resolve its lazily opened file at call time (_live_keylog_file).
         self._tls_keylog_handler = None
 
-        # Event bus for decoupled event handling
+    def _init_event_bus_and_backend(self) -> None:
+        """The event bus, the output-handler list and the instrumentation backend."""
         self._event_bus = EventBus()
         self._output_handlers = []
         self._handlers_active = False
         from ..backends import get_backend
         self._backend = get_backend(self._config.backend)
 
-        # Protocol registry and handler. ``auto`` keeps every built-in
-        # registered so the agent can swap on LibraryDetectedEvent; an
-        # explicit selection narrows the registry to just that handler so
-        # we don't load hooks the user didn't ask for.
+    def _init_protocol_registry(self) -> None:
+        """The protocol registry and active handler; raises on an unregistered protocol."""
+        # "auto" and "all" install the same hooks (only the user confirmation
+        # differs) and keep every built-in registered so a LibraryDetectedEvent
+        # can swap the active handler; an explicit selection loads only its hooks.
         from ..protocols.registry import create_default_registry
-        # "all" and "auto" are UX twins per the CLI: same hooks installed,
-        # only the user-confirmation differs. Both build the full registry
-        # so any subsequent LibraryDetectedEvent can swap the active handler.
         if self._config.protocol in ("auto", "all"):
             self._protocol_registry = create_default_registry()
-            self._detected_libraries = set()  # tracks libraries detected by agent
-            # Start with TLS as default; will be refined via LibraryDetectedEvent
+            self._detected_libraries = set()
+            # TLS is the default until a LibraryDetectedEvent refines it.
             self._protocol_handler = self._protocol_registry.get("tls") \
                 or next(iter(self._protocol_registry.get_all()), None)
         else:
-            # Foundation F1 — multi-protocol selection: register EVERY selected
-            # protocol's handler (e.g. ["tls", "rc4"]) so all their hooks,
-            # keylog formatters and pcap wiring are available. The primary
-            # (first) selection stays the "active" handler for the single-handler
-            # call sites (pcap protocol, auto-detect fallback). A single
-            # selection reduces to exactly the previous behaviour.
+            # Register every selected protocol's handler (e.g. ["tls", "rc4"]) so
+            # all their hooks, keylog formatters and pcap wiring exist. The first
+            # selection stays the active handler for single-handler call sites
+            # (pcap protocol, auto-detect fallback).
             self._protocol_registry = create_default_registry(list(self._config.protocols))
             self._detected_libraries = set()
             self._protocol_handler = self._protocol_registry.get(self._config.protocol)
@@ -476,27 +316,18 @@ class SSL_Logger():
                     "available: " + ", ".join(self._protocol_registry.list_protocols())
                 )
 
-        # Validate protocol-backend compatibility for EACH selected protocol's
-        # handler (not just the primary). auto/all resolve to no single handler
-        # and are skipped inside validate_protocol_backend.
+        # Validate every selected handler, not just the primary; auto/all
+        # resolve to no single handler and are skipped inside the validator.
         for _proto_name in self._config.protocols:
             _proto_handler = self._protocol_registry.get(_proto_name)
             if _proto_handler is not None:
                 self._config.validate_protocol_backend(_proto_handler, _proto_name)
 
-        # Session manager (extracted for file length management)
-        from .session_manager import SessionManager
-        self._session_manager = SessionManager(self)
-
-        # Message router (extracted for file length management)
-        from ..message_router import MessageRouter
-        self._message_router = MessageRouter(self._event_bus, active_protocol=list(self._config.protocols))
-
-        # Wire display filter if configured. Every headless entry point (CLI
-        # and API users constructing SSL_Logger directly) passes through here,
-        # so the headless policy is enforced once: an invalid expression or one
-        # using flow-only fields (which would drop every data event) is logged
-        # and not installed.
+    def _install_display_filter(self) -> None:
+        """Install the headless display filter when one is configured."""
+        # Every headless entry point passes through here, so the policy is
+        # enforced once: an invalid expression, or one using flow-only fields
+        # (which would drop every data event), is logged and not installed.
         if self._config.output.filter_expression:
             try:
                 from ..filter.pipeline_filter import build_headless_filter
@@ -512,65 +343,56 @@ class SSL_Logger():
             except Exception as e:
                 self.logger.warning("Invalid filter expression: %s", e)
 
-        # Always track detected libraries (needed for exit hint message)
+    def _init_capture_tracking(self) -> None:
+        """Event-bus subscriptions plus the capture and crash-attribution state they feed."""
         self._event_bus.subscribe(LibraryDetectedEvent, self._on_library_detected)
 
-        # Track whether ANY key material was captured this session, from any
-        # source. `_detected_libraries` (above) is only populated by the native
-        # LibraryDetectedEvent path, so key-producing paths that never emit that
-        # event — the Java Secret-Chat/E2E hooks and the memory-scan engine —
-        # would leave it empty and wrongly trigger the "No <PROTO> libraries were
-        # detected" exit hint even after a successful capture. Every keylog
-        # producer emits a KeylogEvent on this same bus (message_router, the
-        # memory-scan engine, the SSH/custom-protocol extractors), so a single
-        # subscription here is an accurate, source-agnostic "did we get keys?".
+        # `_detected_libraries` is only filled by the native LibraryDetectedEvent
+        # path, so key paths that never emit it (Java Secret-Chat/E2E hooks, the
+        # memory-scan engine) would wrongly trigger the "No <PROTO> libraries were
+        # detected" exit hint. Every keylog producer emits a KeylogEvent, so one
+        # subscription gives a source-agnostic "did we get keys?".
         self._captured_any_secret = False
         self._event_bus.subscribe(KeylogEvent, self._on_keylog_captured)
         self._event_bus.subscribe(DatalogEvent, self._on_traffic_captured)
 
-        # Crash attribution: remember the last hook the agent reported entering,
-        # so on_detach can name it if the target dies inside a hook. Stored in
-        # memory only — never printed (works regardless of -v).
+        # Crash attribution: the last hook the agent reported entering, so
+        # on_detach can name it if the target dies inside a hook. Memory only.
         self._last_hook_breadcrumb = ""
-        # Set once the agent reports "agent-init: complete"; afterwards a script
-        # error is a non-fatal runtime exception (see _is_fatal_script_error).
+        # After "agent-init: complete" a script error is non-fatal (_is_fatal_script_error).
         self._agent_init_complete = False
         self._crash_reported = False
         self._event_bus.subscribe(HookBreadcrumbEvent, self._on_hook_breadcrumb)
-        # Platform report: the agent tells us which platform branch it selected.
-        # Always logged (see _on_platform_report) and, under --probe, also the
-        # acknowledgement that proves the loaded bundle understands probe mode.
+        # The agent's platform-branch report; under --probe it also proves the
+        # loaded bundle understands probe mode.
         self._platform_report = None
         self._platform_report_received = threading.Event()
         self._event_bus.subscribe(PlatformReportEvent, self._on_platform_report)
-        # Remember if a known anti-tamper runtime (e.g. PairIP) was reported, so a
-        # later process-terminated crash can be attributed to it (fkie-cad/friTap#64).
+        # A reported anti-tamper runtime (e.g. PairIP), so a later
+        # process-terminated crash can be attributed to it.
         self._anti_tamper_seen = ""
         self._event_bus.subscribe(AntiTamperDetectedEvent, self._on_anti_tamper_detected)
-        # Full native crash captured out-of-band via the device 'process-crashed'
-        # signal (carries frida's Crash with a native backtrace/report), so the
-        # later 'detached' handler can report the REAL cause even when the detach
-        # itself has no crash object attached.
+        # Native crash captured via the device 'process-crashed' signal, so the
+        # later 'detached' handler can report the real cause when the detach
+        # carries no crash object.
         self._pending_crash = None
-        # iOS crash-report state, filled by _enrich_crash_log_ios() so the
-        # guidance block can quote the decoded terminator.
+        # Filled by _enrich_crash_log_ios() for the guidance block.
         self._ios_crash_report = None
         self._ios_crash_verdict = None
-        # Lower bound for "this crash report belongs to this friTap run".
-        # Recorded in the constructor rather than in start_fritap_session()
-        # because the constructor is the one place every entry point (CLI, TUI,
-        # programmatic use, gated children) goes through, and being slightly too
-        # early is the safe direction: it only widens the window, whereas a
-        # timestamp taken too late would discard the report we are looking for.
+        # Filled by _enrich_crash_log_macos().
+        self._macos_crash_report = None
+        # Lower bound for "this crash report belongs to this run". Taken in the
+        # constructor because every entry point goes through it; too early only
+        # widens the window, too late would discard the report we want.
         self._session_start_time = time.time()
 
-        # FlowCollector created lazily — only when a plugin or TUI accesses it.
-        # The TUI creates its own FlowCollector in capture_controller.py.
+    def _init_live_scan_state(self) -> None:
+        """Lazy FlowCollector slot and the live passive-analysis state."""
+        # Created lazily, only when a plugin or the TUI asks (the TUI makes its own).
         self._flow_collector = None
 
-        # Live passive-analysis ("scan") state. Populated by _setup_live_scan()
-        # only when --scan is requested. Completed flows are enqueued onto a
-        # bounded queue and drained by a daemon worker thread so analyzers never
+        # Live --scan state, set up by _setup_live_scan(). Completed flows go
+        # onto a bounded queue drained by a daemon thread, so analyzers never
         # run on the Frida callback thread.
         self._scan_plugins = []
         self._scan_queue = None
@@ -578,7 +400,8 @@ class SSL_Logger():
         self._scan_stop = threading.Event()
         self._scan_drop_count = 0
 
-        # JSON session data
+    def _init_session_data(self) -> None:
+        """The JSON session document skeleton."""
         self.session_data = {
             "friTap_version": __version__,
             "session_info": {
@@ -602,11 +425,29 @@ class SSL_Logger():
             }
         }
 
-        self.init_fritap()
+    def cleanup(self, live=False, socket_trace=False, full_capture=False, debug_output=False, debug=False,
+                *, exit_process=True):
+        """TeardownMixin.cleanup, then mark the teardown finished for wait_for_completion.
 
-    # ---------------------------------------------------------------
-    # Config property accessors (backward-compatible attribute access)
-    # ---------------------------------------------------------------
+        Only the call that ran the steps marks it; a repeated call returns at once.
+        On the CLI cleanup() usually ends in os._exit, so the mark matters only
+        when it returns (or for the main thread waiting meanwhile)."""
+        runs_teardown = not getattr(self, "_cleanup_done", False)
+        try:
+            return super().cleanup(live, socket_trace, full_capture, debug_output, debug,
+                                   exit_process=exit_process)
+        finally:
+            if runs_teardown:
+                self._teardown_finished.set()
+
+    def _detach_with_cli_timeout(self) -> None:
+        """Teardown's detach step, then a check that the target survived it.
+
+        Wraps TeardownMixin's step: a target that crashes on the detach would
+        otherwise end in a clean-looking exit (see CrashReportMixin).
+        """
+        super()._detach_with_cli_timeout()
+        self._report_crash_after_detach()
 
     @property
     def debug(self) -> bool:
@@ -642,8 +483,7 @@ class SSL_Logger():
 
     @property
     def target_argv(self) -> "list[str] | None":
-        # Original argv tokens for spawn mode (None for attach / programmatic
-        # configs); spawn uses this to avoid re-splitting target_app on spaces.
+        # Original argv tokens for spawn mode (None otherwise); avoids re-splitting target_app on spaces.
         return self._config.target_argv
 
     @property
@@ -688,14 +528,12 @@ class SSL_Logger():
 
     @property
     def exec_following_requested(self) -> bool:
-        """Every instrumented process is followed across exec() (spawned or
-        attached target, instrumented children) unless --no-follow-exec."""
-        return bool(getattr(self._config.device, "follow_exec", True))
+        """Exec() is followed (target and children) only with --follow-exec; see config.resolve_follow_exec."""
+        return resolve_follow_exec(self._config.device)
 
     @property
     def gates_children(self) -> bool:
-        """Whether instrumented sessions gate their children: an exec() is only
-        caught that way, and --enable_child_gating instruments the children."""
+        """Whether instrumented sessions gate their children (exec() is only caught that way)."""
         return self.exec_following_requested or bool(self.enable_child_gating)
 
     @property
@@ -748,57 +586,12 @@ class SSL_Logger():
 
     @property
     def probe(self) -> bool:
-        """--probe: dry run — report the platform branch, install no hooks."""
+        """--probe: dry run that reports the platform branch and installs no hooks."""
         return bool(getattr(self._config.hooking, 'probe', False))
-
-    def _on_library_detected(self, event):
-        """Handle library detection events.
-
-        Always tracks detected libraries (for exit hint). When
-        ``--protocol auto`` is active, the first non-TLS protocol
-        detected (e.g. IPSec, SSH) causes the protocol handler to be
-        switched so that key formatting and PCAP DLT are appropriate.
-        """
-        lib_name = event.library
-        if lib_name and lib_name not in self._detected_libraries:
-            self._detected_libraries.add(lib_name)
-            self.logger.debug("Library detected — %s (protocol=%s, path=%s)", lib_name, event.protocol,
-                              getattr(event, "path", "") or "-")
-
-            # Only switch protocol handler when in auto-detect / install-everything mode
-            if self._config.protocol in ("auto", "all"):
-                matched = self._protocol_registry.auto_detect(list(self._detected_libraries))
-                if matched and matched[0].name != self._protocol_handler.name:
-                    self._protocol_handler = matched[0]
-                    self.logger.info("Auto-detect: switched protocol handler to %s", self._protocol_handler.name)
-
-    def _on_keylog_captured(self, event):
-        """Note that at least one key was captured this session (any source).
-
-        Used to suppress the misleading "No <PROTO> libraries were detected"
-        exit hint when keys were actually produced by a path that does not emit
-        a LibraryDetectedEvent (Java Secret-Chat/E2E hooks, the memory-scan
-        engine). Intentionally cheap and idempotent.
-        """
-        self._captured_any_secret = True
-
-    _captured_any_data = False
-
-    def _on_traffic_captured(self, event):
-        """Note that plaintext was captured this session (cheap, idempotent)."""
-        self._captured_any_data = True
-
-    def _capture_produced_output(self) -> bool:
-        """The capture started and already produced keys or plaintext: a target
-        that ends now did its work rather than failing to start."""
-        return self.capture_started() and (
-            getattr(self, "_captured_any_secret", False) or self._captured_any_data)
 
     def init_fritap(self):
         self.agent_script = "fritap_agent.js"
-        # Optional bundle override (see _resolve_agent_bundle_path). Logged once here so a
-        # full-build run visibly confirms which bundle was loaded; generic, names
-        # no protocol.
+        # Logged once so a run visibly confirms an overridden bundle (see _resolve_agent_bundle_path).
         _bundle_override = os.environ.get("FRITAP_AGENT_BUNDLE")
         if _bundle_override:
             self.logger.info("Loading agent bundle from FRITAP_AGENT_BUNDLE override: %s",
@@ -839,7 +632,7 @@ class SSL_Logger():
                         self.logger.info("  [%s] %s (%s)", lib["library_type"], lib["name"],
                                          lib.get("detected_version") or "unknown version")
 
-        # Resolve protocol processor and agent script for non-Frida backends
+        # Non-Frida backends need the protocol processor and its own agent script.
         self._processor = None
         self._agent_script_path = None
         if self._config.backend != BackendName.FRIDA:
@@ -850,2086 +643,14 @@ class SSL_Logger():
                 self._config.protocol, self._config.backend
             )
 
-        # Set up output handlers (new modular path)
         self._setup_output_handlers()
         self._handlers_active = True
-
-    def _remember_tls_keylog_handler(self, handler) -> None:
-        """Keep the hooked-key keylog handler; a ``tls`` one beats other splits.
-
-        The memory-scan handler is never kept (it is not the ``-k`` keylog).
-        """
-        if self._is_memory_scan_handler(handler):
-            return
-        current = getattr(self, "_tls_keylog_handler", None)
-        if current is None or not self._is_tls_keylog_handler(current):
-            self._tls_keylog_handler = handler
-
-    @staticmethod
-    def _is_tls_keylog_handler(handler) -> bool:
-        formatter = getattr(handler, "_formatter", None)
-        return getattr(formatter, "protocol", None) == "tls"
-
-    def _live_keylog_file(self):
-        """The keylog handle as it is NOW (handler-owned when handlers are active)."""
-        handler = getattr(self, "_tls_keylog_handler", None)
-        if handler is not None:
-            return handler._file
-        return getattr(self, "keylog_file", None)
-
-    def _live_keylog_path(self):
-        """The hooked-key keylog path (handler path, else the ``-k`` option)."""
-        handler = getattr(self, "_tls_keylog_handler", None)
-        if handler is not None:
-            return handler._path
-        return getattr(self, "keylog", None)
-
-    @staticmethod
-    def _is_memory_scan_handler(handler) -> bool:
-        """Whether *handler* is the heap scanner's (``-ms``) keylog writer."""
-        formatter = getattr(handler, "_formatter", None)
-        return getattr(formatter, "protocol", None) == "memscan"
-
-    def _record_memory_scan_keylogs(self):
-        """Hand the memory-scan keylog paths to the PCAP object for the manifest."""
-        if self.pcap_obj is None or not hasattr(self.pcap_obj, "set_memory_scan_keylogs"):
-            return
-        from ..memory_scanning import memory_scan_protocol_keylogs
-        mapping = memory_scan_protocol_keylogs(self._config)
-        if mapping:
-            self.pcap_obj.capture_protocol = self.protocol
-            self.pcap_obj.set_memory_scan_keylogs(mapping)
-        # Advertise the engine's intended mid-stream secret-bundle path so the
-        # manifest reader uses the writer's actual path (incl. the CWD-literal
-        # fallback) rather than recomputing it from the keylog stem. Best-effort.
-        engine = getattr(self, "_memory_scan_engine", None)
-        if engine is not None and hasattr(self.pcap_obj, "set_tls_midstream_secrets_path"):
-            try:
-                self.pcap_obj.set_tls_midstream_secrets_path(
-                    engine.intended_tls_secret_bundle_path())
-            except Exception as e:
-                self.logger.debug(
-                    f"mid-stream secrets path advertisement skipped: {e}")
-
-    def _hand_endpoint_pinner_to_pcap(self):
-        """Give the PCAP object the router's option-5 pinner for the -p rewrite at stop."""
-        router = getattr(self, "_message_router", None)
-        pinner = getattr(router, "endpoint_pinner", None)
-        if self.pcap_obj is None or pinner is None \
-                or not hasattr(self.pcap_obj, "set_endpoint_pinner"):
-            return
-        self.pcap_obj.set_endpoint_pinner(pinner)
-
-    def _finalize_plaintext_pcap(self, full_capture):
-        """Rewrite the closed -p pcap's safe synthetic streams.
-
-        Runs only after the output handlers closed the file; never for -f (a
-        different file and finalize path) or the LSASS helper session.
-        """
-        output = getattr(getattr(self, "_config", None), "output", None)
-        if (self.pcap_obj is None or full_capture or not self._handlers_active
-                or getattr(output, "auxiliary_session", False)):
-            return
-        finalize = getattr(self.pcap_obj, "finalize_plaintext_capture", None)
-        if callable(finalize):
-            finalize()
-
-    def _seed_known_server_ports(self):
-        """Seed explicit capture-time TLS/QUIC server ports into the manifest.
-
-        Honors an explicit ``--tls-port``/``--quic-port`` given at capture time
-        (when present on the output config) so the manifest's ``tls_ports`` /
-        ``quic_ports`` are populated even for a pure ``--full_capture`` that
-        never observes a non-standard/loopback server (e.g. 127.0.0.1:8443).
-        Fully guarded and side-effect-free when the ports are unset.
-        """
-        if self.pcap_obj is None or not hasattr(self.pcap_obj, "set_known_tls_ports"):
-            return
-        output_cfg = getattr(self._config, "output", None)
-        tls_ports = getattr(output_cfg, "tls_ports", None)
-        quic_ports = getattr(output_cfg, "quic_ports", None)
-        if tls_ports:
-            self.pcap_obj.set_known_tls_ports(tls_ports)
-        if quic_ports:
-            self.pcap_obj.set_known_quic_ports(quic_ports)
-
-    def _setup_output_handlers(self):
-        """Create and register output handlers based on config."""
-        from ..output.factory import OutputHandlerFactory
-        self._output_handlers, live_info = OutputHandlerFactory.create_handlers(
-            self._config, self.pcap_obj, self._protocol_handler,
-            self.session_data, self.logger,
-            protocol_registry=self._protocol_registry,
-        )
-        if live_info:
-            self.tmpdir = live_info.get('tmpdir')
-            self.filename = live_info.get('filename')
-
-        # Setup handlers on event bus (non-blocking for live handler)
-        from ..output import KeylogOutputHandler
-        from ..output.live_autodecrypt_handler import LiveAutoDecryptHandler
-        from ..output.live_pcapng_handler import LivePcapngHandler
-        from ..output.live_wireshark_handler import LiveWiresharkHandler
-        for handler in self._output_handlers:
-            handler.setup(self._event_bus)
-            if isinstance(handler, KeylogOutputHandler):
-                # NOTE: the handler opens its file lazily on the first key, so this
-                # snapshot is normally None. Readers needing the live handle use
-                # _live_keylog_file() / _live_keylog_path() instead.
-                self.keylog_file = handler._file
-                self._remember_tls_keylog_handler(handler)
-                # Propagate the keylog file path into the pcap object so the
-                # capture manifest ('keylog' branch in PCAP._write_capture_manifest)
-                # is actually populated; PCAP.keylog_path is otherwise never set.
-                # Also propagate the active protocol so the manifest can record a
-                # protocol-specific keylog field (e.g. "mtproto_keylog") and the
-                # offline pipeline routes the keys to the right decryptor.
-                # The memory-scan handler is NOT a hooked-key keylog: it is
-                # recorded separately below so the manifest can point each
-                # protocol at the scanner's real file (e.g. the .mtproto sidecar)
-                # instead of the TLS-only memscan keylog.
-                if self.pcap_obj is not None:
-                    if not self._is_memory_scan_handler(handler):
-                        self.pcap_obj.keylog_path = handler._path
-                    self.pcap_obj.capture_protocol = self.protocol
-            if isinstance(handler, (LivePcapngHandler, LiveAutoDecryptHandler, LiveWiresharkHandler)):
-                self._live_handler = handler
-        self._record_memory_scan_keylogs()
-        self._hand_endpoint_pinner_to_pcap()
-
-        # Load plugins
-        from ..plugins.loader import PluginLoader
-        self._plugin_loader = PluginLoader()
-        self._plugin_shim = _PluginSessionShim(self._event_bus)
-        self._plugin_loader.load_all(self._plugin_shim)
-
-        # Register legacy --custom_script as a ScriptPlugin
-        if self.custom_hook_script is not None:
-            from ..plugins.legacy_custom_script import LegacyCustomScriptPlugin
-            legacy_plugin = LegacyCustomScriptPlugin(self.custom_hook_script)
-            self._plugin_loader.register_builtin(legacy_plugin, self._plugin_shim)
-
-        # Memory scanning (--memory-scan / -ms) is a first-class friTap capability,
-        # NOT a plugin: build the MemoryScanEngine here and drive it directly from
-        # instrument()/detach/cleanup (see self._memory_scan_engine below). It
-        # injects a separate, host-driven heap secret-scanner agent
-        # (fritap_memscan.js) with its own poll loop and, on Windows, its own
-        # lsass.exe session. When passed alone, instrument() skips the main
-        # TLS-hooking agent and only the scanner runs; combined with -k/-p/-c it
-        # runs alongside them. The engine remains reachable through the plugin
-        # system via friTap.memory_scanning.MemoryScanScriptPlugin, but the core
-        # does not register it as a plugin.
-        if getattr(self._config.hooking, "memory_scan", False):
-            from ..memory_scanning import build_memory_scan_engine
-            self._memory_scan_engine = build_memory_scan_engine(self._config)
-            # Bottom-up signal: if the scan agent dies on its own (target killed /
-            # ANR'd) the poll loop calls this back. In memory-scan-only runs that
-            # means the capture is effectively over, so end it instead of leaving
-            # the session (and the TUI) stuck in "capturing".
-            self._memory_scan_engine.set_scan_ended_callback(
-                self._on_memory_scan_ended)
-        else:
-            self._memory_scan_engine = None
-
-
-    def _on_hook_breadcrumb(self, event: "HookBreadcrumbEvent") -> None:
-        """Remember the last hook the agent reported entering (crash attribution)."""
-        if event.marker:
-            self._last_hook_breadcrumb = event.marker
-            if event.marker == AGENT_INIT_COMPLETE_BREADCRUMB:
-                self._agent_init_complete = True
-
-    def _on_platform_report(self, event: "PlatformReportEvent") -> None:
-        """Log the platform branch the agent selected, and ack it for probe mode.
-
-        Logged at INFO *unconditionally* — not gated on -v/--debugoutput —
-        because "which platform code path ran, and did the agent get that far?"
-        is the first question on every instrumentation-crash report
-        (fkie-cad/friTap#65), and a user who is already crashing cannot be
-        expected to know they need a second flag to see it. One line only.
-        """
-        self._platform_report = event
-        self.logger.info(
-            "Agent platform report: %s (target=%s, agent ABI %s)",
-            event.platform or "unknown platform",
-            event.target or "unknown",
-            event.abi,
-        )
-        self._platform_report_received.set()
-
-    def wait_for_platform_report(self, timeout: float = 3.0) -> bool:
-        """Block up to *timeout* seconds for the agent's platform report.
-
-        Returns True when the report arrived (possibly before this call), False
-        on timeout. Reports travel through the message queue and are routed on
-        the consumer thread, so even a report the agent sent during
-        ``script.load()`` may land slightly after instrumentation returns.
-        """
-        return self._platform_report_received.wait(timeout)
-
-    def _on_anti_tamper_detected(self, event: "AntiTamperDetectedEvent") -> None:
-        """Remember a detected anti-tamper runtime so a later process-terminated
-        crash can be attributed to it (fkie-cad/friTap#64)."""
-        self._anti_tamper_seen = event.name or event.library or "anti-tamper protection"
-
-    _WINE_BASENAMES = WINE_BASENAMES
-
-    def _is_android_target(self) -> bool:
-        """Cached check: is the Frida device an Android target?
-
-        Used to gate the speculative PairIP/libpairipcore.so hypothesis in the
-        crash handler — PairIP is Android-only, so the hint is actively
-        misleading on Linux/Wine/macOS/Windows targets.
-        """
-        cached = getattr(self, "_android_target_cached", None)
-        if cached is not None:
-            return cached
-        result = False
-        try:
-            device = getattr(self, "device", None)
-            if device is not None:
-                params = device.query_system_parameters()
-                result = (params.get("os", {}).get("id", "") or "").lower() == "android"
-        except Exception:
-            result = False
-        self._android_target_cached = result
-        return result
-
-    def _query_os_id(self) -> TargetOS:
-        """Cached ``(os_id, access)`` of the frida target, e.g. ``("ios", "full")``.
-
-        Deliberately cached in its own attribute instead of reusing
-        ``_android_target_cached``: that flag is a *boolean* answer to a
-        different question and is set by callers/tests to neutralize the Android
-        enrichment, so folding both lookups into it would couple them.
-
-        Read through the backend abstraction (``query_system_parameters``, see
-        ``frida_backend._collect_context`` for the same non-raising probe), with
-        a direct device call as fallback for loggers built without a backend.
-        Never raises: an unusable device yields :data:`UNKNOWN_TARGET_OS`.
-        """
-        cached = getattr(self, "_target_os_cached", None)
-        if cached is not None:
-            return cached
-        result = UNKNOWN_TARGET_OS
-        try:
-            params = self._query_system_parameters()
-            os_info = params.get("os", {}) if isinstance(params, dict) else {}
-            result = TargetOS(
-                os_id=str(os_info.get("id", "") or "").lower(),
-                access=str(params.get("access", "") or "").lower(),
-            )
-        except Exception:
-            result = UNKNOWN_TARGET_OS
-        self._target_os_cached = result
-        return result
-
-    def _query_system_parameters(self) -> dict:
-        """Raw frida system parameters for the current device (may raise)."""
-        device = getattr(self, "device", None)
-        if device is None:
-            return {}
-        backend = getattr(self, "_backend", None)
-        if backend is not None:
-            return backend.query_system_parameters(device) or {}
-        return device.query_system_parameters() or {}
-
-    def _is_ios_target(self) -> bool:
-        """Cached check: is the Frida device an iOS target?
-
-        Mirrors :meth:`_is_android_target` and gates the iOS crash-report
-        enrichment plus the iOS-specific guidance, both of which are actively
-        misleading on any other platform.
-        """
-        return self._query_os_id().os_id == "ios"
-
-    def _target_is_wine(self) -> bool:
-        """Was the spawn target a Wine launcher binary?
-
-        Inspects the argv[0] basename of :meth:`_wine_target_argv`.
-        """
-        argv = self._wine_target_argv()
-        if not argv:
-            return False
-        import os as _os
-        return _os.path.basename(argv[0]).lower() in self._WINE_BASENAMES
-
-    def _wine_target_argv(self) -> list:
-        """The target's argv: ``target_argv``, else ``target_app`` shlex-split
-        (older configs only carry the space-joined string; an unbalanced quote
-        falls back to a plain whitespace split)."""
-        if self.target_argv:
-            return list(self.target_argv)
-        app = self.target_app or ""
-        import shlex
-        try:
-            return shlex.split(app, posix=True)
-        except ValueError:
-            return app.split()
-
-    def _parse_crash_cause(self, report, summary):
-        """Best-effort ``(signal, abort_message)`` extraction from a frida
-        ``Crash.report``/``.summary`` or an Android tombstone / logcat crash
-        dump. Either element may be ``None``. The abort message is collapsed to
-        a single line so it is usable in a one-line headline.
-        """
-        text = "\n".join(t for t in (summary, report) if t)
-        if not text:
-            return None, None
-        sig = None
-        m = re.search(r"signal\s+\d+\s+\((SIG[A-Z]+)\)", text)
-        if m:
-            sig = m.group(1)
-        else:
-            # Fallback: match only real fatal signal names, not any SIG* token —
-            # a bare r"\bSIG[A-Z]{3,}\b" also matches the word "SIGNAL" and would
-            # report a bogus cause.
-            m = re.search(
-                r"\b(SIGSEGV|SIGABRT|SIGILL|SIGBUS|SIGFPE|SIGTRAP|SIGSYS|SIGKILL|SIGQUIT)\b",
-                text)
-            if m:
-                sig = m.group(1)
-        abort = None
-        # Capture to end-of-line rather than up to the next apostrophe: ART abort
-        # messages can contain single quotes (e.g. "Check failed: ... 'Lcom/foo;'"),
-        # and [^']* would truncate at the first inner quote.
-        m = re.search(r"Abort message:\s*(.+)", text)
-        if m:
-            abort = m.group(1).strip().strip("'").strip()
-        else:
-            m = re.search(r"(JNI DETECTED ERROR[^\n]*)", text)
-            if m:
-                abort = m.group(1).strip()
-        if abort:
-            abort = " ".join(abort.split())
-        return sig, abort
-
-    @staticmethod
-    def _write_crash_section(writer, title, body):
-        """Append a titled section to the crash debug log; no-op without a
-        writer and never raises (best-effort forensics on a dead process)."""
-        if writer is None or not body.strip():
-            return
-        try:
-            writer.write(f"\n===== {title} =====\n{body}\n")
-        except Exception:
-            pass
-
-    # Clock slack when comparing device timestamps with the session start.
-    CRASH_EVIDENCE_CLOCK_TOLERANCE = 60.0
-    # logcat "threadtime" line: "MM-DD HH:MM:SS.mmm  PID  TID LEVEL TAG: msg".
-    _LOGCAT_THREADTIME_RE = re.compile(
-        r"^\s*(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?\s+(\d+)\s+\d+\s")
-    _TOMBSTONE_TIMESTAMP_RE = re.compile(
-        r"^Timestamp:\s*(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})(?:\.\d+)?([+-]\d{4})?",
-        re.MULTILINE)
-
-    def _crash_evidence_since(self, device_clock=None) -> Optional[float]:
-        """Epoch, in the DEVICE's clock, before which device crash evidence
-        cannot belong to this run; ``None`` (no time filtering) without a
-        session start or a device clock reading.
-
-        *device_clock* is the ``(device_epoch, host_epoch)`` pair of
-        :meth:`_read_device_clock`: the device and host clocks may disagree, so
-        the host session start is shifted onto the device's timeline.
-        """
-        start = getattr(self, "_session_start_time", None)
-        if not start or device_clock is None:
-            return None
-        device_epoch, host_epoch = device_clock
-        return start + (device_epoch - host_epoch) - self.CRASH_EVIDENCE_CLOCK_TOLERANCE
-
-    @staticmethod
-    def _read_device_clock(andy):
-        """``((device_epoch, host_epoch), device_utc_offset)`` read from the
-        device, or ``(None, None)`` when its clock cannot be determined."""
-        get_clock = getattr(andy, "get_device_clock", None)
-        try:
-            host_before = time.time()
-            reading = get_clock() if get_clock is not None else None
-            host_epoch = (host_before + time.time()) / 2
-        except Exception:
-            return None, None
-        if not reading:
-            return None, None
-        device_epoch, utc_offset = reading
-        return (float(device_epoch), host_epoch), int(utc_offset)
-
-    @staticmethod
-    def _logcat_line_epoch(month, day, hour, minute, second, utc_offset,
-                           now=None) -> Optional[float]:
-        """Epoch of a year-less logcat timestamp, read as wall-clock time at
-        *utc_offset* seconds east of UTC (the DEVICE's offset). A date in the
-        future belongs to the previous year; *now* is the device's epoch."""
-        now = now if now is not None else time.time()
-        year = time.gmtime(now + utc_offset).tm_year
-        for candidate_year in (year, year - 1):
-            try:
-                stamp = calendar.timegm(
-                    (candidate_year, month, day, hour, minute, second, 0, 0, 0)) - utc_offset
-            except (OverflowError, ValueError):
-                return None
-            if stamp <= now + 86400:
-                return stamp
-        return None
-
-    @classmethod
-    def _crash_buffer_lines_for(cls, crash_buf: str, pid, since: Optional[float],
-                                utc_offset: Optional[int] = None,
-                                now: Optional[float] = None) -> str:
-        """The ``logcat -b crash`` lines that belong to *pid*'s crash in this run.
-
-        Kept: lines logged by *pid* itself (libc's "Fatal signal ...") and by the
-        crash_dump process that writes *pid*'s report (its "pid: <pid>, tid: ..."
-        header names it), and only when not older than *since* (device epoch).
-        Lines are timed with the device's *utc_offset*; without it (or without
-        *since*) only the pid filter applies. Without a pid nothing can be
-        attributed, so nothing is kept.
-        """
-        if not crash_buf or not pid:
-            return ""
-        parsed = []
-        for line in crash_buf.splitlines():
-            m = cls._LOGCAT_THREADTIME_RE.match(line)
-            if m:
-                parsed.append((line, tuple(int(g) for g in m.groups())))
-        header = re.compile(rf"\bpid:\s*{int(pid)}\b")
-        writers = {fields[5] for line, fields in parsed if header.search(line)}
-        time_filter = since is not None and utc_offset is not None
-        kept = []
-        for line, (month, day, hour, minute, second, line_pid) in parsed:
-            if line_pid != int(pid) and line_pid not in writers:
-                continue
-            if time_filter:
-                stamp = cls._logcat_line_epoch(
-                    month, day, hour, minute, second, utc_offset, now)
-                if stamp is not None and stamp < since:
-                    continue
-            kept.append(line)
-        return "\n".join(kept)
-
-    @classmethod
-    def _tombstone_predates(cls, tombstone: str, since: Optional[float],
-                            utc_offset: Optional[int] = None) -> bool:
-        """True when the tombstone's ``Timestamp:`` is older than *since*
-        (device epoch). A timestamp without its own offset is read at the
-        device's *utc_offset*; with neither, it cannot be placed: False."""
-        if since is None or not tombstone:
-            return False
-        m = cls._TOMBSTONE_TIMESTAMP_RE.search(tombstone)
-        if not m:
-            return False
-        try:
-            if m.group(2):
-                stamp = datetime.strptime(m.group(1) + m.group(2),
-                                          "%Y-%m-%d %H:%M:%S%z").timestamp()
-            elif utc_offset is not None:
-                stamp = calendar.timegm(
-                    time.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")) - utc_offset
-            else:
-                return False
-        except (ValueError, OverflowError):
-            return False
-        return stamp < since
-
-    def _enrich_crash_log_android(self, crash, writer):
-        """Pull the on-device tombstone and ``logcat -b crash`` for the crashed
-        process into the debug log, and parse the ART signal / abort message from
-        them (frida's own report often lacks the ART "Abort message"). Returns
-        ``(signal, abort_message)``. No-op (``(None, None)``) off-Android or
-        without root; fully guarded so it never raises into the crash path.
-
-        Device I/O (log buffers, tombstone layout) lives on the :class:`Android`
-        platform class; this method only correlates, records, and parses so the
-        same retrieval helpers stay reusable by any other crash handler.
-        """
-        if not self._is_android_target():
-            return None, None
-        try:
-            existing = getattr(self.pcap_obj, "android_Instance", None) if self.pcap_obj else None
-            if existing is not None:
-                andy = existing
-            else:
-                from ..android import Android
-                serial = self.device_id or getattr(self.device, "id", None)
-                andy = Android(device_id=serial)
-            if not andy.adb_check_root():
-                if writer is not None:
-                    writer.write("\n# Android crash enrichment skipped: device not rooted\n")
-                return None, None
-        except Exception:
-            return None, None
-
-        pid = self.pid or (getattr(crash, "pid", None) if crash is not None else None)
-        keep = (self.target_app or "").split()[-1] if self.target_app else ""
-        sig = abort = None
-
-        # logcat crash buffer: holds the ART 'Fatal signal' + 'Abort message'
-        # almost immediately after the crash (no tombstone-write race).
-        # Device timestamps are in the device's timezone and clock: compare in
-        # the device's own timeline (or not at all when it cannot be read).
-        device_clock, utc_offset = self._read_device_clock(andy)
-        since = self._crash_evidence_since(device_clock)
-        device_now = device_clock[0] if device_clock else None
-        crash_buf = andy.get_crash_logcat()
-        if crash_buf:
-            # The crash buffer is device-wide and keeps entries for hours: only
-            # lines of OUR process (or of the crash_dump writing its report)
-            # from THIS session may name the cause, else an unrelated, older
-            # SIGSEGV of another app is reported as ours.
-            ours = self._crash_buffer_lines_for(
-                crash_buf, pid, since, utc_offset, device_now)
-            self._write_crash_section(
-                writer, "logcat -b crash", ours or (
-                    f"# no crash-buffer entries for pid {pid} since the session "
-                    "started (unrelated entries ignored)"))
-            s, a = self._parse_crash_cause(ours, None)
-            sig, abort = sig or s, abort or a
-
-        # newest tombstone, correlated to our process (pid / cmdline) by the
-        # Android platform layer so an unrelated app's dump is not attached.
-        tombstone_path, tombstone = andy.get_latest_tombstone(pid, keep)
-        if tombstone and self._tombstone_predates(tombstone, since, utc_offset):
-            self._write_crash_section(
-                writer, f"tombstone {tombstone_path}",
-                "# ignored: written before this session started")
-            tombstone = ""
-        if tombstone:
-            self._write_crash_section(writer, f"tombstone {tombstone_path}", tombstone)
-            s, a = self._parse_crash_cause(tombstone, None)
-            sig, abort = sig or s, abort or a
-
-        if writer is not None:
-            try:
-                writer.flush()
-            except Exception:
-                pass
-        return sig, abort
-
-    @staticmethod
-    def _parse_crash_cause_ios(report) -> Tuple[Optional[str], Optional[str]]:
-        """Adapt a parsed iOS crash report to the ``(signal, abort_message)``
-        pair the crash headline already knows how to render.
-
-        A pure adapter on purpose: all parsing and decoding lives in
-        :mod:`friTap.ios`, this only picks the two fields the existing headline
-        consumes. ``signal`` prefers the POSIX signal name and falls back to the
-        Mach exception type (an iOS report may carry only the latter);
-        ``abort_message`` is the strongest human-readable evidence in the report.
-        """
-        if report is None:
-            return None, None
-        collapse = lambda text: " ".join(str(text or "").split())  # noqa: E731
-        signal_name = collapse(getattr(report, "signal", "")) or \
-            collapse(getattr(report, "exception_type", ""))
-        abort = (
-            collapse(getattr(report, "termination_reason", ""))
-            or collapse(getattr(report, "asi", ""))
-            or collapse(getattr(report, "exception_subtype", ""))
-        )
-        return signal_name or None, abort or None
-
-    def _enrich_crash_log_ios(self, crash, writer):
-        """Pull the ReportCrash ``.ips`` report for the crashed iOS process into
-        the debug log and parse the signal / termination reason from it. Returns
-        ``(signal, abort_message)``. No-op (``(None, None)``) off iOS or without
-        libimobiledevice; fully guarded so it never raises into the crash path.
-
-        Sibling of :meth:`_enrich_crash_log_android`: the device I/O and report
-        knowledge live on :class:`friTap.ios.IOS`, this method only correlates,
-        records and parses, and additionally remembers the decoded verdict so the
-        guidance block below can quote it.
-        """
-        if not self._is_ios_target():
-            return None, None
-        try:
-            from ..ios import IOS
-            # Same device resolution as the Android path: an explicit --mobile/
-            # device id wins, otherwise the frida device's own id (the UDID).
-            serial = self.device_id or getattr(self.device, "id", None)
-            helper = IOS(device_id=serial)
-            if not helper.check_idevicecrashreport_availability():
-                if writer is not None:
-                    writer.write(
-                        "\n# iOS crash enrichment skipped: idevicecrashreport not available\n")
-                return None, None
-        except Exception:
-            return None, None
-
-        try:
-            pid = self.pid or (getattr(crash, "pid", None) if crash is not None else None)
-            process_name = (self.target_app or "").split()[-1] if self.target_app else ""
-            # newer_than keeps an old, unrelated crash from being presented as
-            # this run's crash (reports accumulate on the device for weeks).
-            newer_than = (getattr(self, "_session_start_time", None) or time.time()) \
-                - IOS_CRASH_REPORT_CLOCK_TOLERANCE
-            report = helper.get_latest_crash_report(
-                process_name, pid=pid, newer_than=newer_than)
-            if report is None:
-                return None, None
-            self._ios_crash_report = report
-            self._write_crash_section(
-                writer, f"iOS crash report {report.path}", report.raw)
-            summary, verdict = helper.describe_crash(report)
-            self._ios_crash_verdict = verdict
-            self._write_crash_section(writer, "iOS crash summary", summary)
-            if writer is not None:
-                try:
-                    writer.flush()
-                except Exception:
-                    pass
-            return self._parse_crash_cause_ios(report)
-        except Exception:
-            self.logger.debug("iOS crash enrichment failed", exc_info=True)
-            return None, None
-
-    @staticmethod
-    def _ios_crash_guidance(breadcrumb, verdict, spawn, access="") -> List[str]:
-        """Return the user-facing guidance lines for a dead iOS target.
-
-        Pure so the wording stays testable: the caller only logs the lines. The
-        order is deliberate — *where* the agent was (the breadcrumb) first,
-        because it separates "friTap never installed a hook" from "a hook broke
-        the app"; then *why* the OS killed the process (the decoded terminator);
-        then what to try next.
-        """
-        breadcrumb = breadcrumb or ""
-        lines = ["iOS target died while friTap was instrumenting it."]
-
-        # (a) Breadcrumb verdict. Wording kept in sync with
-        # friTap.friTap._script_load_timeout_hints so both places tell the user
-        # the same story about the same marker.
-        if breadcrumb.startswith("agent-init"):
-            lines.append(
-                f"  The agent died before any hook was installed "
-                f"(last agent stage: {breadcrumb})."
-            )
-        elif breadcrumb.startswith("install-phase"):
-            lines.append(
-                f"  The agent died while installing hooks "
-                f"(last agent stage: {breadcrumb})."
-            )
-        elif breadcrumb:
-            lines.append(f"  Last agent stage: {breadcrumb}.")
-        else:
-            lines.append("  The agent never reported a startup stage.")
-
-        # (b) Decoded reason from the ReportCrash .ips (friTap.ios.decode_terminator).
-        if verdict is not None:
-            lines.append(f"  Crash report says: {getattr(verdict, 'verdict', verdict)}")
-            next_step = getattr(verdict, "next_step", "")
-            if next_step:
-                lines.append(f"  -> {next_step}")
-        else:
-            lines.append(
-                "  No iOS crash report could be decoded (install libimobiledevice "
-                "and keep the device connected so friTap can pull the ReportCrash "
-                ".ips file)."
-            )
-
-        # (c) Concrete retries.
-        if spawn:
-            lines.append(
-                "  -> Start the app yourself, then ATTACH friTap (run WITHOUT -s): "
-                "spawn-time instrumentation of a gated app is the most fragile "
-                "path on iOS."
-            )
-        else:
-            lines.append(
-                "  -> friTap was attaching (no -s), so the app was already up: "
-                "retry the other way round (spawn with -s) to instrument before "
-                "the app's own startup work runs."
-            )
-        lines.append(
-            "  -> Re-run with --probe to isolate the failing agent stage."
-        )
-        lines.append(
-            "  -> Re-run with `fritap --modern`: the modern path does not write "
-            "into the SSL_CTX struct at all, so if that run survives, the crash "
-            "is a wrong keylog-callback offset for this library build."
-        )
-        if access == "jailed":
-            lines.append(
-                "  Note: frida reports jailed access. Either no frida-server is "
-                "running on the device (frida-core fell back to its ADB/USB-only "
-                "mode) — start it, e.g. via the TUI's Server Check -> Install "
-                "or `afrim` — or the target is a "
-                "frida-gadget-injected app: then spawning other apps is not "
-                "possible, so relaunch the Gadget-patched app manually and "
-                "re-check that it was re-signed with the Gadget embedded."
-            )
-        elif access == "full":
-            lines.append(
-                "  Note: frida reports full device access (device-wide "
-                "frida-server). Verify frida-server itself is healthy and "
-                "properly signed (`frida-ps -Ua`) before blaming the hooks."
-            )
-        return lines
-
-    def _report_target_crash(self, reason: str, crash=None) -> None:
-        """Surface an unexpected target-process death clearly to the user.
-
-        A crash inside an instrumented hook, or a native abort in the target's
-        own code during friTap-instrumented startup, reaches us as a detach with
-        reason ``process-terminated`` (and otherwise only as a cryptic "Backend
-        transport error: the connection is closed"). Capture the REAL cause:
-        frida's ``Crash`` object carries a native backtrace/report, and on
-        Android we additionally pull the tombstone + ``logcat -b crash``.
-        Everything is written to a debug log (opened on demand, even without
-        --debug). Sets a flag so the synchronous transport-error handler does
-        not also print the cryptic line.
-        """
-        self._crash_reported = True
-        crumb = self._last_hook_breadcrumb
-
-        # Arm the debug log up-front so every line below (and the raw crash
-        # report) is persisted, even when the user did not pass --debug.
-        log_path = None
-        writer = None
-        try:
-            from ..fritap_utility import (
-                attach_file_handlers,
-                get_debug_log_writer,
-                open_debug_log,
-            )
-            log_path = open_debug_log()
-            attach_file_handlers()
-            writer = get_debug_log_writer()
-        except Exception:
-            pass
-
-        # Cause from frida's Crash object (cross-platform: Linux/Windows/macOS).
-        crash_report = getattr(crash, "report", None) if crash is not None else None
-        crash_summary = getattr(crash, "summary", None) if crash is not None else None
-        if writer is not None and crash_report:
-            try:
-                writer.write("\n===== NATIVE CRASH REPORT (frida) =====\n")
-                writer.write(str(crash_report) + "\n")
-                writer.write("=======================================\n")
-            except Exception:
-                pass
-        # Never let cause extraction abort this method before the headline is
-        # emitted: _crash_reported is already True, so a raise here would leave
-        # the user with neither the crash headline nor the transport-error hint.
-        try:
-            signal_name, abort_msg = self._parse_crash_cause(crash_report, crash_summary)
-        except Exception:
-            signal_name, abort_msg = None, None
-            self.logger.debug("crash cause parsing failed", exc_info=True)
-
-        # Android enrichment (tombstone + logcat) — also parses the ART abort
-        # message that frida's report may lack. Never raises into this path.
-        try:
-            enrich_sig, enrich_abort = self._enrich_crash_log_android(crash, writer)
-            signal_name = signal_name or enrich_sig
-            abort_msg = abort_msg or enrich_abort
-        except Exception:
-            self.logger.debug("android crash enrichment failed", exc_info=True)
-
-        # iOS enrichment (ReportCrash .ips) — same posture as the Android branch,
-        # so signal/abort fall back through both platforms and neither can raise.
-        try:
-            enrich_sig, enrich_abort = self._enrich_crash_log_ios(crash, writer)
-            signal_name = signal_name or enrich_sig
-            abort_msg = abort_msg or enrich_abort
-        except Exception:
-            self.logger.debug("ios crash enrichment failed", exc_info=True)
-
-        # Headline: report the real cause when we have one; otherwise decide
-        # between a suspected hook crash and a plain, expected exit using the
-        # breadcrumb. A crumb that names a real hook means a hook WAS in flight;
-        # an "agent-init*" crumb (incl. "agent-init: complete") or an empty crumb
-        # means no hook was executing — so the process almost certainly just
-        # exited (e.g. a short-lived download target that finished), NOT crashed.
-        have_real_cause = bool(signal_name or abort_msg)
-        # A clean, expected exit: no crash evidence, ATTACH mode, and the agent had
-        # fully initialised ("agent-init: complete") with no hook in flight — the
-        # short-lived-target case (e.g. a download script that finished). An empty or
-        # partial breadcrumb means the target went away before init completed, which
-        # is a crash (especially in spawn mode), so it keeps the hook-crash hypothesis
-        # and all the crash guidance below. This narrow carve-out is the only change
-        # from the previous blanket "crashed inside a hook" fallback.
-        clean_exit = (not have_real_cause and not self.spawn
-                      and crumb == "agent-init: complete")
-        # Hooks are only blamed on evidence: frida delivered a Crash (or a
-        # signal / abort was recovered) AND, for the "inside a hook" wording,
-        # the native report names an instrumented module. A bare
-        # 'process-terminated' (external kill -9, system ANR kill, normal exit)
-        # carries no such evidence and is reported neutrally.
-        crash_evidence = have_real_cause or crash is not None
-        plain_termination = not crash_evidence and not clean_exit
-        hook_module = (self._instrumented_module_in_crash(crash_report, crumb)
-                       if crash_evidence else None)
-        headline = self._crash_headline(
-            signal_name, abort_msg, crash_evidence, clean_exit, hook_module, crumb)
-        # Quoted by _report_death_before_capture as the specific reason.
-        self._termination_headline = headline
-        # A clean exit is informational, not an error — and skips the crash-only
-        # guidance and the "crash report" pointer emitted below. A plain
-        # termination is a warning: something ended the target, no proof of a crash.
-        if clean_exit:
-            self.logger.info(headline)
-        elif plain_termination:
-            self.logger.warning(headline)
-        else:
-            self.logger.error(headline)
-
-        # Platform-aware guidance. No longer spawn-only: the fkie-cad/friTap#65
-        # reporter was ATTACHING, and an attach-mode crash used to get no
-        # guidance at all. Only claim anti-tamper when there is real evidence —
-        # never guess PairIP for a normal app. Skipped entirely on a clean exit.
-        if reason == "process-terminated" and not clean_exit:
-            if self._is_ios_target():
-                # iOS first: its crash report is far more specific than any
-                # of the heuristics below, and it exists in attach mode too.
-                ios_report = getattr(self, "_ios_crash_report", None)
-                if ios_report is not None:
-                    self.logger.error("iOS crash report: %s", ios_report.summary)
-                for line in self._ios_crash_guidance(
-                        crumb, getattr(self, "_ios_crash_verdict", None), self.spawn,
-                        self._query_os_id().access):
-                    self.logger.error(line)
-            elif self.spawn:
-                if self._anti_tamper_seen:
-                    self.logger.error(
-                        f"Anti-tamper protection was detected in this process "
-                        f"({self._anti_tamper_seen}). It self-destructs when friTap's hooks "
-                        f"are present during startup.")
-                    self.logger.error(
-                        "  -> Spawn (-s) capture is unreliable on such apps even with "
-                        "--no-loader-hook, because the TLS-library hooks themselves are "
-                        "present during the startup integrity scan.")
-                    self.logger.error(
-                        "  -> Start the app first, then ATTACH friTap (run WITHOUT -s). "
-                        "See fkie-cad/friTap#64.")
-                elif self._target_is_wine():
-                    import os as _os
-                    running_as_root = False
-                    try:
-                        running_as_root = _os.geteuid() == 0
-                    except Exception:
-                        running_as_root = False
-                    if running_as_root:
-                        self.logger.error(
-                            "Hint: target was launched via Wine and friTap is running as "
-                            "root. The most common cause is sudo + a user-owned WINEPREFIX "
-                            "(Wine refuses the prefix and exits before any TLS hook runs).")
-                        self.logger.error(
-                            "  -> Recommended: drop sudo and run friTap as your desktop user "
-                            "(ensure `sysctl kernel.yama.ptrace_scope=0` so Frida can attach).")
-                        self.logger.error(
-                            "  -> Alternative: set WINEPREFIX=/root/.wine so Wine creates a "
-                            "fresh root-owned prefix. See docs/platforms/wine.md.")
-                    else:
-                        self.logger.error(
-                            "Hint: Wine target terminated unexpectedly. Common Wine causes: "
-                            "(a) the target is a single-instance app (e.g. VLC) that handed "
-                            "off to an existing instance and exited; (b) the spawned binary "
-                            "needs a prefix init (`wine wineboot`); (c) an early-startup "
-                            "anti-cheat / DRM aborted.")
-                        self.logger.error(
-                            "  -> Try attach mode: start the app yourself with `wine ...`, "
-                            "then `fritap -k keys.log your_app.exe`. See "
-                            "docs/platforms/wine.md.")
-                else:
-                    # No confirmed anti-tamper and not Wine.
-                    if plain_termination and self._capture_produced_output():
-                        # A short-lived target (e.g. curl) that exited after doing
-                        # its work: nothing to fix, so no attach-mode advice.
-                        pass
-                    elif plain_termination:
-                        # No crash evidence: do not guess a hook crash or PairIP.
-                        self.logger.warning(
-                            "  -> If nothing stopped the target externally, try starting "
-                            "the app first, then ATTACH friTap (run WITHOUT -s). "
-                            "See fkie-cad/friTap#64.")
-                    elif have_real_cause:
-                        # The real cause is in the headline above — do NOT guess
-                        # PairIP. The breadcrumb is only a weak hint (it may have run
-                        # on a different thread than the one that actually crashed).
-                        if crumb:
-                            self.logger.error(
-                                f"  Note: the last agent hook activity was '{crumb}', but it may "
-                                f"have run on a different thread and be unrelated to the crash above.")
-                        self.logger.error(
-                            "  -> Spawn-time instrumentation can destabilize fragile app startup. "
-                            "Try starting the app first, then ATTACH friTap (run WITHOUT -s). "
-                            "See fkie-cad/friTap#64.")
-                    elif self._is_android_target():
-                        # No concrete cause captured on Android — an anti-tamper
-                        # self-destruct (e.g. Google PairIP / libpairipcore.so) is a
-                        # reasonable hypothesis, surfaced only as a possibility.
-                        self.logger.error(
-                            "This may be an anti-tamper protection (e.g. Google PairIP / "
-                            "libpairipcore.so) self-destructing in response to friTap's hooks "
-                            "during app startup.")
-                        self.logger.error(
-                            "  -> Try starting the app first, then ATTACH friTap (run WITHOUT -s). "
-                            "See fkie-cad/friTap#64.")
-                    else:
-                        self.logger.error(
-                            "  -> Spawn-time instrumentation can destabilize fragile app startup. "
-                            "Try starting the app first, then ATTACH friTap (run WITHOUT -s). "
-                            "See fkie-cad/friTap#64.")
-
-        # On a clean exit, skip the crash-report pointer and the fatal "crashed"
-        # ErrorEvent: the process simply ended, so there is nothing to report and
-        # nothing should mark the session as crashed.
-        if not clean_exit:
-            if log_path and plain_termination:
-                self.logger.warning(f"Hook activity written to: {log_path}")
-            elif log_path:
-                self.logger.error(f"Full crash report + hook activity written to: {log_path}")
-            # Only crash evidence makes this an error. A target that was killed
-            # or simply exited is a lifecycle event: the DetachEvent emitted by
-            # on_detach (and the exit code) already carries it, so it must not
-            # also show up as a fatal agent-side `error` record.
-            if crash_evidence:
-                try:
-                    from ..events import ERROR_SEVERITY_FATAL, ErrorEvent
-                    self._event_bus.emit(ErrorEvent(
-                        error="Target process crashed",
-                        description=headline,
-                        severity=ERROR_SEVERITY_FATAL,
-                    ))
-                except Exception:
-                    pass
-
-    # Native-report markers of friTap's own injected code (agent / Gum
-    # trampolines): a crash with one of these on the stack happened in a hook.
-    _FRIDA_AGENT_STACK_MARKERS = ("frida-agent", "frida-gadget", "frida_agent_main",
-                                  "gum-js-loop", "gumjs")
-
-    def _instrumented_module_names(self, crumb: str) -> List[str]:
-        """Modules friTap instrumented: detected libraries + the breadcrumb's
-        module (``"pattern-scan: libssl.so"`` -> ``libssl.so``). Read-only, no
-        Frida calls (runs on the fritap-detach thread)."""
-        names = list(self._FRIDA_AGENT_STACK_MARKERS)
-        try:
-            detected = list(getattr(self, "_detected_libraries", None) or ())
-        except RuntimeError:  # set mutated concurrently by the router thread
-            detected = []
-        names.extend(os.path.basename(str(lib)) for lib in detected if lib)
-        if crumb and ":" in crumb:
-            tail = crumb.rsplit(":", 1)[1].strip()
-            if re.search(r"\.(so|dll|dylib)\b", tail):
-                names.append(os.path.basename(tail))
-        return [n for n in names if n]
-
-    def _instrumented_module_in_crash(self, crash_report, crumb: str) -> Optional[str]:
-        """The first instrumented module named in the native crash report, if any."""
-        if not crash_report:
-            return None
-        report = str(crash_report).lower()
-        for name in self._instrumented_module_names(crumb):
-            if name.lower() in report:
-                return name
-        return None
-
-    @staticmethod
-    def _crash_headline(signal_name, abort_msg, crash_evidence, clean_exit,
-                        hook_module, crumb) -> str:
-        """One-line verdict for an unexpected target death (see
-        ``_report_target_crash`` for how the inputs are derived)."""
-        if signal_name or abort_msg:
-            cause = signal_name or "native crash"
-            if abort_msg:
-                cause += f": {abort_msg}"
-            headline = f"Target process terminated unexpectedly — {cause}"
-            if hook_module:
-                headline += f" (native stack in instrumented module {hook_module})"
-            return headline
-        if clean_exit:
-            return ("Target process exited "
-                    "(no crash detected; last agent stage: agent-init: complete)")
-        if not crash_evidence:
-            headline = ("Target process terminated (no crash evidence; possibly "
-                        "killed/force-stopped)")
-            return headline + (f" (last agent stage: {crumb})" if crumb else "")
-        if hook_module:
-            headline = ("Target process terminated unexpectedly — it crashed inside an "
-                        f"instrumented hook (native stack in {hook_module})")
-            return headline + (f" (last instrumented: {crumb})" if crumb else "")
-        headline = "Target process terminated unexpectedly — native crash (cause not decoded)"
-        return headline + (f" (last agent stage: {crumb})" if crumb else "")
-
-    def on_process_crashed(self, crash) -> None:
-        """Device ``process-crashed`` handler.
-
-        Fires (with frida's full :class:`Crash` — native backtrace/report) when a
-        spawned target crashes. Stash it so the subsequent ``detached`` report
-        can name the real cause even if the detach's own crash argument is None.
-
-        ``process-crashed`` is a *device-wide* signal, so ignore crashes from
-        unrelated processes: only stash when the crash's pid matches our target
-        (both pids known). Otherwise a co-incident crash of another app on the
-        same device would be misattributed to our target — the exact failure
-        this crash-attribution path exists to prevent.
-        """
-        crash_pid = getattr(crash, "pid", None) if crash is not None else None
-        if self.pid is not None and crash_pid is not None and crash_pid != self.pid:
-            return
-        self._pending_crash = crash
-
-    def on_detach(self, reason, crash=None):
-        if not self.running:
-            return
-
-        if reason == "application-requested":
-            return
-
-        # The target exec()ed: its old image's session ends here, while the new
-        # image arrives as an exec child (or is re-attached) and takes over.
-        if reason == "process-replaced" and self._on_process_replaced(self.pid):
-            return
-
-        # A native crash inside a hook (or a native abort in the target during
-        # instrumented startup) arrives as 'process-terminated'. Make it explicit
-        # instead of letting it surface only as a transport error. Prefer the
-        # frida Crash captured out-of-band by on_process_crashed when the detach
-        # itself carries none.
-        if reason == "process-terminated":
-            self._report_target_crash(reason, crash or self._pending_crash)
-            # Consumed — do not let a stale Crash leak into a later detach.
-            self._pending_crash = None
-
-        phase = self._claim_detach_classification(reason)
-        if phase == self._PHASE_RESUMING:
-            # The resume is still running and needs Frida's event loop, which
-            # this callback occupies: never wait for it here. The resuming
-            # thread classifies this detach and finishes it once it returns.
-            return
-        self._finish_detach(reason, captured=phase == self._PHASE_CAPTURING)
-
-    def _finish_detach(self, reason, captured: bool) -> None:
-        """Classify a detach (exit 1 before the capture, else 3) and end the session."""
-        if not captured:
-            self._report_death_before_capture(f"detached: {reason}")
-        self._mark_unexpected_detach()
-        self._event_bus.emit(DetachEvent(reason=reason))
-        self._end_session(reason)
-
-    # ------------------------------------------------------------------
-    # Capture start point: separates a startup failure (exit 1) from a target
-    # that went away during the capture (exit 3)
-    # ------------------------------------------------------------------
-
-    # Capture phases. Only a session started through begin_startup() has a
-    # "before the capture" phase; every other path (API, Wine watcher, tests)
-    # counts as capturing, as before.
-    _PHASE_STARTUP = "startup"
-    _PHASE_RESUMING = "resuming"
-    _PHASE_CAPTURING = "capturing"
-    _capture_phase = _PHASE_CAPTURING
-    _death_before_capture = False
-
-    @property
-    def _capture_start_lock(self) -> threading.Lock:
-        """Per-instance lock guarding only the capture phase fields. It is never
-        held across a call into Frida (see :meth:`start_capture`). Created
-        lazily (``dict.setdefault`` is atomic) so ``SSL_Logger.__new__``
-        instances used by the tests have one too."""
-        return self.__dict__.setdefault("_capture_start_lock_obj", threading.Lock())
-
-    def begin_startup(self) -> None:
-        """Enter the startup phase: spawn/attach, agent load, hook install."""
-        with self._capture_start_lock:
-            self._capture_phase = self._PHASE_STARTUP
-            self._deferred_detach_reason = None
-
-    def start_capture(self, start=None) -> None:
-        """Run *start* (the spawned target's resume) and mark the capture as started.
-
-        The resume runs OUTSIDE the lock: it needs Frida's event loop, and a
-        detach callback arriving meanwhile runs on that loop. Such a detach
-        is only recorded (:meth:`on_detach` returns at once) and classified
-        here once the resume's outcome is known: if the resume succeeded the
-        target died during the capture (exit 3); if it raised, the startup
-        failed (exit 1) and the capture never counts as started.
-        """
-        with self._capture_start_lock:
-            self._capture_phase = self._PHASE_RESUMING
-        succeeded = False
-        try:
-            if start is not None:
-                start()
-            succeeded = True
-        finally:
-            with self._capture_start_lock:
-                self._capture_phase = (
-                    self._PHASE_CAPTURING if succeeded else self._PHASE_STARTUP)
-                deferred_reason = getattr(self, "_deferred_detach_reason", None)
-                self._deferred_detach_reason = None
-            if deferred_reason is not None:
-                self._finish_deferred_detach(deferred_reason, succeeded)
-
-    def _claim_detach_classification(self, reason) -> str:
-        """Return the capture phase a detach arrived in; during a resume, record
-        *reason* for :meth:`start_capture` to finish. Never blocks on Frida."""
-        with self._capture_start_lock:
-            if self._capture_phase == self._PHASE_RESUMING:
-                self._deferred_detach_reason = reason
-            return self._capture_phase
-
-    def _finish_deferred_detach(self, reason, captured: bool) -> None:
-        """Finish a detach recorded during the resume. The exit status is
-        decided here, synchronously, so no teardown can exit before it; the
-        teardown itself runs on its own thread, as the detach callback's would."""
-        if not captured:
-            self._report_death_before_capture(f"detached: {reason}")
-        self._mark_unexpected_detach()
-        threading.Thread(
-            target=self._finish_detach, args=(reason, True),
-            name="fritap-deferred-detach",
-        ).start()
-
-    def capture_started(self) -> bool:
-        with self._capture_start_lock:
-            return self._capture_phase == self._PHASE_CAPTURING
-
-    def _report_death_before_capture(self, cause) -> None:
-        """The target (or the connection to it) went away before the capture
-        started: a startup failure, so exit 1 — not 3, which means the target
-        went away while it was being captured."""
-        if not self.set_exit_status(EXIT_RUNTIME_ERROR):
-            return  # an earlier failure was already reported
-        self._death_before_capture = True
-        what = "spawned" if self.spawn else "attached"
-        headline = getattr(self, "_termination_headline", None)
-        if headline:
-            cause = f"{cause}; {headline}"
-        message = (
-            f"The {what} target {self.target_app} (pid {self.pid}) went away before "
-            f"the capture started ({cause}), while friTap was still preparing it "
-            "(agent load, hook install or the -t/--timeout wait, before the resume). "
-            "Nothing was captured.")
-        hint = ("Usual causes: the app was killed or force-stopped by the system "
-                "(Android kills an app that does not finish starting within ~10 s), "
-                "it exited on its own, or it crashed while being instrumented.")
-        self.logger.error("%s %s", message, hint)
-        try:
-            from ..output.stdout_stream import note_runtime_error
-            note_runtime_error("TargetDetachedBeforeCapture", message, hint)
-        except Exception:  # noqa: BLE001 - reporting must not break the detach path
-            pass
-
-    def _mark_unexpected_detach(self) -> None:
-        """Record EXIT_TARGET_DETACHED as the process exit status when the
-        target went away on its own (not during a user/--duration stop).
-
-        Stays out of the way once a teardown is running: a detach that arrives
-        because friTap itself is stopping is not "unexpected". An earlier
-        status (e.g. 128+SIGTERM) is kept by set_exit_status's first-wins rule."""
-        if getattr(self, "_cleanup_done", False):
-            return
-        session_manager = getattr(self, "_session_manager", None)
-        if getattr(session_manager, "_exit_signal_received", False):
-            return
-        self.set_exit_status(EXIT_TARGET_DETACHED)
-
-    # Upper bound on how long a scanner-driven end of session may take to reach
-    # the flushed state before the waiting thread gives up and lets the main
-    # thread exit anyway. Generous: the final pcap/DSB/manifest pass of a long
-    # capture legitimately takes a while, and it is only hit on a wedge.
-    SESSION_END_WEDGE_TIMEOUT = 120.0
-
-    # Guards only the claim of the once-flag below; class-level so bare
-    # ``SSL_Logger.__new__`` instances (used throughout the tests) have it too.
-    _SESSION_END_CLAIM_LOCK = threading.Lock()
-
-    # Process exit status used by cleanup()'s final os._exit. 0 unless a
-    # termination signal other than SIGINT (e.g. the SIGTERM that
-    # ScriptErrorHandler sends on an agent error) started the teardown.
-    # Written only through set_exit_status().
-    _exit_status = 0
-    # Class-level (like _SESSION_END_CLAIM_LOCK): writers run on the main
-    # thread, the signal handler, Frida's detach callback and the --duration timer.
-    _EXIT_STATUS_LOCK = threading.Lock()
-
-    def set_exit_status(self, code: int) -> bool:
-        """Propose the process exit status (see ``friTap/exit_codes.py``).
-
-        Rule: **the first non-zero status wins**; later proposals never
-        override it, and ``EXIT_OK`` never overrides anything. So whichever of
-        detach (3), runtime error (1) or a non-SIGINT signal (128+signum)
-        happened first is what the process exits with — e.g. a runtime error
-        reported after the target already died stays 3, and a SIGTERM sent to
-        a session whose target already detached stays 3 as well. Ctrl+C /
-        SIGINT / ``--duration`` propose 0 and therefore keep any earlier
-        failure. Returns True when *code* became the exit status.
-        """
-        if code == EXIT_OK:
-            return False
-        with self._EXIT_STATUS_LOCK:
-            if self._exit_status != EXIT_OK:
-                return False
-            self._exit_status = code
-            return True
-
-    def _claim_session_end(self) -> bool:
-        """Atomically claim the end-of-session teardown. True for the first
-        caller only — every later caller must leave the teardown alone."""
-        with self._SESSION_END_CLAIM_LOCK:
-            if getattr(self, "_session_end_claimed", False):
-                return False
-            self._session_end_claimed = True
-            return True
-
-    def _end_session(self, reason) -> bool:
-        """The one, idempotent end-of-session teardown for a target that is gone.
-
-        Shared by the frida detach (``on_detach``) and the memory scanner ending
-        (``_on_memory_scan_ended``). Both can fire for the same target death on
-        different threads; only the first caller tears down, the second returns
-        ``False`` at once. The teardown flushes the pcap, runs ``cleanup()`` —
-        which writes the final pcap, DSB and manifest and only THEN sets
-        ``_done_event`` — before the wedge-prone frida detach (friTap#64).
-        """
-        if not self._claim_session_end():
-            self.logger.debug(
-                "session end (%s) already in progress; skipping", reason)
-            return False
-        self._notify_session_detach()
-        self.logger.info(f"Target process stopped: {reason}")
-        self._log_session_end(reason)
-        self.pcap_cleanup(self.full_capture,self.mobile,self.pcap_name)
-        self.cleanup(self.live,self.socket_trace,self.full_capture,self.debug_output)
-        return True
-
-    def _end_session_bounded(self, reason) -> None:
-        """Run :meth:`_end_session` on a worker thread, bounded by
-        ``SESSION_END_WEDGE_TIMEOUT``.
-
-        If the teardown wedges before it reaches the flushed state (a frida
-        unload on the dead session, friTap#64), set ``_done_event`` anyway so
-        the main thread still exits — degrading to the raw capture rather than
-        hanging forever. A post-flush wedge is already covered: ``_done_event``
-        was set by then.
-        """
-        worker = threading.Thread(
-            target=self._end_session, args=(reason,),
-            name="fritap-session-end", daemon=True,
-        )
-        worker.start()
-        worker.join(self.SESSION_END_WEDGE_TIMEOUT)
-        if worker.is_alive() and not self._done_event.is_set():
-            self.logger.warning(
-                "session teardown did not finish within %.0fs; exiting without "
-                "the final capture pass", self.SESSION_END_WEDGE_TIMEOUT)
-            self._done_event.set()
-
-    def _notify_session_detach(self) -> None:
-        """Tell the script plugins and the memory-scan engine the target is gone."""
-        # Build the detach ScriptContext once and share it between the plugin
-        # loader and the memory-scan engine (both want the same snapshot).
-        detach_ctx = None
-        # Notify script plugins of detach
-        if hasattr(self, '_plugin_loader') and self.process and self.device:
-            detach_ctx = self._build_script_context(
-                self.process, self.device,
-                getattr(self, '_last_runtime', ScriptRuntime.QJS),
-            )
-            self._plugin_loader.detach_all(detach_ctx)
-
-        # Stop the memory-scan engine on detach (mirrors the plugins' detach_all).
-        if getattr(self, "_memory_scan_engine", None) is not None:
-            try:
-                if detach_ctx is None:
-                    detach_ctx = self._build_script_context(
-                        self.process, self.device,
-                        getattr(self, '_last_runtime', ScriptRuntime.QJS),
-                    )
-                self._memory_scan_engine.stop(detach_ctx)
-            except Exception:  # noqa: BLE001 - teardown must not break detach
-                self.logger.debug("memory-scan: engine stop() failed", exc_info=True)
-
-    def _to_datetime(self, ts):
-        # support numeric timestamp (seconds or millis) or iso string
-        if ts is None:
-            return None
-        try:
-            # if float/int — detect likely ms vs s
-            if isinstance(ts, (int, float)):
-                # if ts looks like milliseconds (>= 1e12 typical for ms), convert
-                if ts > 1e12:
-                    return datetime.fromtimestamp(ts / 1000.0)
-                # if ts looks like seconds (reasonable range)
-                if ts > 1e9:  # seconds since epoch
-                    return datetime.fromtimestamp(ts)
-            # fallback: try parse ISO string
-            return datetime.fromisoformat(str(ts))
-        except Exception:
-            return None
-
-    def _short_file(self, path: str | None) -> str | None:
-        if not path:
-            return None
-        p = str(path)
-        # strip url-ish prefixes frida sometimes uses
-        for pref in ("frida://", "file://"):
-            if p.startswith(pref):
-                p = p[len(pref):]
-        return os.path.basename(p) or p
-
-    def print_fritap_message(self, message: dict, data: bytes):
-        from ..error_handler import ScriptErrorHandler
-        ScriptErrorHandler.format_fritap_message(
-            message, data, self.LEVEL_MAP,
-            self._to_datetime, self._short_file, self.logger
-        )
-
-    def handle_frida_script_error(self, message: dict):
-        from ..error_handler import ScriptErrorHandler
-        ScriptErrorHandler.handle(
-            message, self._event_bus, self.session_data,
-            self._session_data_lock, self.json_output, self.debug_output, self.logger,
-            fatal=self._is_fatal_script_error(message),
-        )
-
-    def _is_fatal_script_error(self, message: dict) -> bool:
-        """Does this Frida ``error`` message leave the agent unable to work?
-
-        Fatal: an error before the agent finished initialising (startup
-        handshake still open, or no ``agent-init: complete`` breadcrumb yet --
-        a fatal init stage rethrows to the top level during script load), or
-        an error the agent explicitly flags ``fatal``. Anything after a
-        completed init is an exception in a deferred callback (Java.perform,
-        setTimeout, an Interceptor hook): the script keeps running, so ending
-        the run would only detach mid-hook-install and risk crashing the target.
-        """
-        if message.get("fatal") is True:
-            return True
-        if getattr(self, "startup", False):
-            return True
-        return not getattr(self, "_agent_init_complete", False)
-
-    def temp_fifo(self):
-        self.tmpdir = tempfile.mkdtemp()
-        self.filename = os.path.join(self.tmpdir, 'fritap_sharkfin')  # Temporary filename
-        try:
-            os.mkfifo(self.filename)  # Create FIFO
-        except OSError as e:
-            self.logger.error(f'Failed to create FIFO: {e}')
-            return None
-        return self.filename
-
-
-    # Agent payload fields that are printed verbatim by the console handlers
-    # (EventBus console sink and the legacy inline handler).
-    _AGENT_CONSOLE_FIELDS = ("console", "console_dev")
-
-    @classmethod
-    def _neutralize_console_text(cls, payload: dict) -> None:
-        """Escape terminal control sequences in agent console text in place,
-        before either the EventBus or the legacy handler prints it."""
-        for field in cls._AGENT_CONSOLE_FIELDS:
-            if field in payload:
-                payload[field] = safe_terminal_text(payload[field])
-
-    @staticmethod
-    def _validated_socket_fields(payload: dict):
-        """``(src, src_port, dst, dst_port, family)`` from an agent payload,
-        validated; ``None`` when the endpoints must not become filter hosts
-        (non-IP family such as AF_UNIX, or a missing/malformed address)."""
-        family, addr_family = resolve_ss_family(payload.get("ss_family"))
-        if addr_family not in FILTERABLE_SS_FAMILIES:
-            return None
-        src_addr = get_addr_string(payload.get("src_addr"), family)
-        dst_addr = get_addr_string(payload.get("dst_addr"), family)
-        if not src_addr or not dst_addr:
-            return None
-        return (src_addr, coerce_port(payload.get("src_port")),
-                dst_addr, coerce_port(payload.get("dst_port")), family)
-
-    def _track_traced_socket(self, payload: dict) -> None:
-        """Record a socket for --socket_tracing / --full_capture (consumed by
-        cleanup() to build BPF and display filters)."""
-        fields = self._validated_socket_fields(payload)
-        if fields is None:
-            return
-        src_addr, src_port, dst_addr, dst_port, family = fields
-        host_pair = frozenset({
-            "src_addr": src_addr, "dst_addr": dst_addr, "ss_family": family
-        }.items())
-        if self.full_capture:
-            self.traced_scapy_socket_Set.add(host_pair)
-        if self.socket_trace:
-            self._event_bus.emit(SocketTraceEvent(
-                src_addr=src_addr,
-                src_port=src_port,
-                dst_addr=dst_addr,
-                dst_port=dst_port,
-                ss_family=family,
-            ))
-            self.traced_Socket_Set.add(frozenset({
-                "src_addr": src_addr, "dst_addr": dst_addr,
-                "src_port": src_port, "dst_port": dst_port,
-                "ss_family": family
-            }.items()))
-            self.traced_scapy_socket_Set.add(host_pair)
-
-    def on_fritap_message(self, job, message, data):
-        """Callback for errors and messages sent from injected agent script.
-        Logs captured packet data received from JavaScript to the console and/or a
-        pcap file. See https://www.frida.re/docs/messages/ for more detail on
-        the message protocol.
-        Args:
-        message: A dictionary containing the message "type" and other fields
-            dependent on message type.
-        data: The string of captured decrypted data or the caputured decryption keys
-        """
-
-
-        """
-        This offers the possibility to work with the JobManger() from the AndroidFridaManager project.
-        """
-        if self.script is None and job is not None:
-            self.script = job.script
-
-        msg_type = message.get('type')
-
-        if msg_type == 'error':
-            self.handle_frida_script_error(message)
-            return
-
-        if msg_type != 'send':
-            return
-
-        payload = message.get('payload')
-
-        # Startup handshake: the agent blocks in recv().wait() until answered.
-        # It is normally answered synchronously on the Frida callback thread
-        # (see _internal_callback_wrapper); this path keeps the responder
-        # reachable for the AndroidFridaManager integration, whose
-        # own_message_handler forwards messages straight here instead.
-        if isinstance(payload, str):
-            if self._answer_startup_handshake(payload, getattr(job, 'script', None)):
-                return
-
-        if not isinstance(payload, dict) or "contentType" not in payload:
-            return
-
-        self._neutralize_console_text(payload)
-
-        # Emit events through the event bus for all content types
-        self._emit_event_from_payload(payload, data)
-
-        if self._handlers_active:
-            # Socket trace / full capture set tracking (consumed by cleanup())
-            if (self.socket_trace or self.full_capture) and "src_addr" in payload:
-                self._track_traced_socket(payload)
-            return  # Output handlers process events via EventBus
-
-        # Legacy path: inline output handling
-        from .message_handler import handle_message_legacy
-        handle_message_legacy(self, payload, data, message)
-
-    # ------------------------------------------------------------------
-    # Startup handshake
-    # ------------------------------------------------------------------
-
-    def _build_config_batch(self) -> dict:
-        """Build the single-round-trip startup configuration for the agent.
-
-        Pure with respect to the session: reads only ``self`` / ``self._config``
-        and posts nothing, so it can be rebuilt for every script that asks.
-        """
-        from ..output.key_material import json_key_material_enabled
-        return {
-            'offsets': self.offsets_data,
-            'patterns': self.pattern_data,
-            'socket_tracing': self.socket_trace,
-            'defaultFD': self.enable_default_fd,
-            'experimental': self.experimental,
-            'protocol_select': ",".join(getattr(self._config, 'protocols', None) or [self.protocol]),
-            'install_lsass_hook': self.install_lsass_hook,
-            'use_modern': getattr(self, 'use_modern', False),
-            'library_scan': self.scan_results_data,
-            'library_scan_enabled': self._config.hooking.library_scan,
-            'ohttp_enabled': getattr(self._config.hooking, 'ohttp_enabled', True),
-            'quic_capture_mode': getattr(self._config.hooking, 'quic_capture_mode', 'stream'),
-            'quic_only': getattr(self._config.hooking, 'quic_only', False),
-            # --no-loader-hook: skip the inline android_dlopen_ext loader
-            # trampoline (PairIP/anti-tamper SIGSEGV avoidance, friTap#64).
-            'no_loader_hook': getattr(self._config.hooking, 'no_loader_hook', False),
-            # Spawn state lets the agent auto-skip the loader hook only in
-            # spawn mode (where it trips PairIP's startup scan); attach keeps it.
-            'spawned': bool(self._config.device.spawn),
-            # --lean-wine: trim the Wine agent load (defer the full-module
-            # Memory.scan sweep) so it installs fast when injected into a freshly-
-            # created Wine process early, before its first TLS. Set by the Wine
-            # process-watcher route, which attaches each new network-service
-            # process the instant it appears (fkie-cad/friTap#52).
-            'lean_wine': bool(getattr(self, '_wine_lean', False)),
-            # EXPERIMENTAL: hardware-breakpoint loader watch (no linker patch).
-            'stealth_loader': getattr(self._config.hooking, 'stealth_loader', False),
-            # --pairip-safe: minimal symbol-only keylog on BoringSSL libs;
-            # skip loader hook, pattern scan, Java & OHTTP (friTap#64).
-            'pairip_safe': getattr(self._config.hooking, 'pairip_safe', False),
-            # --probe: dry run. The agent reports the platform branch it picked
-            # and the hooks it would install, then stops before installing any
-            # of them (fkie-cad/friTap#65 diagnostics).
-            'probe': bool(getattr(self._config.hooking, 'probe', False)),
-            # --boringssl-anchor-only: force the last-resort BoringSSL anchor
-            # locator (tier 4) by skipping the pattern tier (debugging aid).
-            'force_anchor_locator': bool(getattr(self._config.hooking, 'force_anchor_locator', False)),
-            # --attribute-sdk: capture the caller backtrace once per connection
-            # at the first TLS plaintext hook and emit it as an additive
-            # `caller_stack` message (SDK/app attribution). OFF by default; when
-            # off the agent's TLS hot path is byte-for-byte unchanged.
-            'attribute_sdk': bool(getattr(self._config.hooking, 'attribute_sdk', False)),
-            # Override for the HTTP/3 egress-headers chain layer. "auto" keeps
-            # the winner-takes-all fallback; anything else forces a specific
-            # layer so chain validation tests can exercise lower tiers on
-            # builds where the primary layer would otherwise always win.
-            'quic_egress_headers_layer': getattr(self._config.hooking, 'quic_egress_headers_layer', 'auto'),
-            # Mirrors the -do / --debugoutput CLI flag so the agent can
-            # cheaply skip expensive debug-only enumeration (e.g. listing all
-            # symbol-table candidates for a chain label) when the user did
-            # not ask for debug output. Without this gate every attach would
-            # walk the full Cronet/libmonochrome dynsym (~hundreds of MB).
-            'debug_output': bool(getattr(self._config, 'debug_output', False)),
-            # In full-capture (-f) mode the raw packets are taken by the external
-            # tcpdump/scapy thread and the in-agent plaintext datalog is discarded
-            # by message_handler (`... and not full_capture`), so don't install the
-            # plaintext read/write hooks at all — only the key-extraction hooks run.
-            # Wire key kept as 'pcap_enabled'; it means "install the plaintext
-            # hooks", which every handler declaring consumes_plaintext needs
-            # (-p, --tap, -j -), see OutputHandlerFactory.plaintext_hooks_needed.
-            'pcap_enabled': self._plaintext_hooks_needed(),
-            # Symmetric counterpart to pcap_enabled. When the user requested only -p
-            # (plaintext pcap) without -k, the agent must skip every key-extraction
-            # path — otherwise it floods the channel with KeylogEvents and burns
-            # the pattern-scan budget on connections we don't care about. In -f mode
-            # this stays driven by -k: keys are needed to decrypt the full capture.
-            # --json-keys also asks for keys (raw, into the -j output) without -k;
-            # same predicate the JSON handlers' redaction policy uses.
-            'keylog_enabled': json_key_material_enabled(self._config.output),
-            # Generic, protocol-agnostic feature-config passthrough. Keys
-            # are opt-in feature names (never a protocol literal): e.g.
-            # 'scan_region' drives the public memory-scan engine
-            # (agent/shared/scan/), and a private protocol binding reads
-            # its own sub-keys from the same bag. Empty unless a feature
-            # was requested, so the default wire shape is unchanged.
-            'extensions': (
-                {'scan_region': self._config.hooking.scan_keys_region}
-                if getattr(self._config.hooking, 'scan_keys_region', None)
-                else {}
-            ),
-        }
-
-    def _answer_startup_handshake(self, payload, script, answered=None) -> bool:
-        """Answer one blocking startup-handshake request from the agent.
-
-        Returns True when ``payload`` was a handshake request that we replied
-        to, meaning the caller must neither enqueue nor route it any further.
-
-        ``script`` is the script that asked. Replying on it rather than on
-        ``self.script`` matters as soon as more than one script exists:
-        ``instrument()`` overwrites ``self.script``, so a reply for the parent's
-        in-flight handshake would otherwise be posted to a freshly created
-        child script — leaving the parent blocked in ``recv().wait()`` forever.
-
-        ``config_batch`` and ``anti`` are answered unconditionally. The old
-        one-shot ``self.startup`` gate made every script after the first hang,
-        because the terminal ``anti`` reply cleared it. The flag still gates the
-        legacy per-field channels, whose replies genuinely only make sense once.
-
-        ``answered`` is an optional set that receives the name of each request
-        answered — a cheap observation hook for callers and tests.
-        """
-        if not isinstance(payload, str):
-            return False
-
-        target = script if script is not None else self.script
-        if target is None:
-            self.logger.warning(
-                "Cannot answer startup handshake '%s': no script to reply on", payload
-            )
-            return False
-
-        if payload == 'config_batch':
-            self._backend.post_message(target, 'config_batch', self._build_config_batch())
-            if answered is not None:
-                answered.add(payload)
-            return True
-
-        if payload == 'anti':
-            # Terminal request of the handshake: the agent resumes its
-            # top-level once this lands, which is what unblocks script.load().
-            self._backend.post_message(target, 'antiroot', self.anti_root)
-            self.startup = False
-            if answered is not None:
-                answered.add(payload)
-            return True
-
-        if self.startup:
-            from .message_handler import handle_startup_legacy
-            if handle_startup_legacy(self, payload, target):
-                if answered is not None:
-                    answered.add(payload)
-                return True
-
-        # An unrecognised string is not ours: report it unanswered so the caller
-        # keeps routing it rather than silently swallowing agent output. Warn,
-        # because the agent only ever sends bare strings to ask a question — if
-        # it is blocked on one we cannot answer, it blocks forever, and that is
-        # precisely the failure this responder exists to prevent.
-        self.logger.warning(
-            "Unanswered agent handshake request '%s' — the agent may be waiting "
-            "on a channel this friTap version does not know. Rebuild the agent "
-            "bundle with ./dev/compile_agent.sh if it is out of step.", payload
-        )
-        return False
-
-    def _emit_event_from_payload(self, payload: dict, data: bytes) -> None:
-        """Parse an agent message payload and emit the corresponding event."""
-        self._message_router.route(payload, data)
-
-    def on_child_added(self, child):
-        """Route a gated child; never block here.
-
-        Runs on Frida's event thread: instrumentation goes to the worker, a
-        resume to the resumer thread (same pattern as the updated frida-python
-        child_gating.py example, which uses Reactor.schedule()).
-        """
-        origin = getattr(child, "origin", None)
-        if origin == "exec" and self._tracker.is_tracked(child.pid):
-            path = getattr(child, "path", None) or getattr(child, "identifier", None)
-            self._on_exec_image(child.pid, path)
-        elif not self._gates_only_to_follow_exec:
-            self._enqueue_instrumentation(child.pid, "child process",
-                                          getattr(child, "identifier", None),
-                                          watch_as_main=False)
-        else:
-            # Gating is on only to follow exec(): a fork/spawn child was not
-            # asked for (no --enable_child_gating), so it runs on untouched.
-            self._resume_untouched(child.pid, origin)
-
-    # ------------------------------------------------------------------
-    # Exec following: every instrumented process, across exec()
-    # ------------------------------------------------------------------
-    #
-    # Each process friTap instruments -- the spawned or attached target and,
-    # with --enable_child_gating, every instrumented child or spawned process --
-    # is watched by _watch_process before its agent loads: child gating on its
-    # session, a detach handler, and the held-exec watchdog. When it exec()s
-    # (e.g. Homebrew's python3 launcher, or git's fork child becoming
-    # git-remote-https), Frida ends the old image's session with
-    # 'process-replaced' and reports the new image as a child of origin "exec"
-    # with the SAME pid, held suspended. The worker instruments that image and
-    # it replaces the old session (for the target: the main session; the
-    # outputs never close). Both events may arrive in either order (the detach
-    # runs on its own thread), so they are matched per pid by count.
-
-    # How long a 'process-replaced' waits for its exec'd image before the
-    # process counts as gone (e.g. exec into an image Frida cannot gate, such
-    # as an Apple platform binary). For the target that ends the capture.
-    EXEC_HANDOVER_TIMEOUT = 5.0
-
-    def _init_process_following(self) -> None:
-        """Create the exec-following and resume helpers (see __init__)."""
-        self._tracker = ProcessTracker()
-        self._held_exec_watchdog = HeldExecWatchdog(
-            self._query_process_paths, self._on_held_exec_image)
-        self._resumer = ResumeWorker(self._resume_and_untrack)
-
-    @property
-    def _gates_only_to_follow_exec(self) -> bool:
-        """Sessions are gated only to follow exec(): fork/spawn children they
-        report were not asked for (no --enable_child_gating).
-
-        Decided by the options alone: every gated session (the target, a
-        spawn-gated process, an exec'd image) is then gated for exec() only,
-        whether or not the target's own gating succeeded."""
-        return self.exec_following_requested and not self.enable_child_gating
-
-    def follow_exec_of(self, process) -> bool:
-        """Watch the target's own session (spawn or attach mode) for exec() and,
-        with --enable_child_gating, for children. True when it is gated.
-
-        With --enable_child_gating a gating failure propagates as before;
-        otherwise gating is only a means to follow exec(), and without it a
-        'process-replaced' is followed by re-attaching (see
-        _on_process_replaced). The detach handler is SessionManager's.
-        """
-        pid = getattr(self, "pid", None)
-        if pid is None:
-            pid = getattr(process, "pid", None)
-        return self._gate_and_track(process, pid, is_main=True,
-                                    required=self.enable_child_gating)
-
-    def _gate_and_track(self, session, pid, is_main, required=False) -> bool:
-        """Gate *session*'s children when asked to, track *pid* and, when gated,
-        watch it for held exec images. True when it is gated."""
-        gated = self._gate_children_of(session, required=required)
-        self._tracker.track(pid, session=session, is_main=is_main, gated=gated)
-        if gated:
-            self._held_exec_watchdog.watch(pid)
-        return gated
-
-    def _gate_children_of(self, session, required=False) -> bool:
-        """Turn child gating on for *session* when exec following or
-        --enable_child_gating asks for it; True when it is on."""
-        if not self.gates_children:
-            return False
-        try:
-            self._backend.enable_child_gating(session)
-        except Exception:
-            if required:
-                raise
-            self.logger.debug("child gating unavailable for this session; an exec() "
-                              "of it is followed by re-attaching", exc_info=True)
-            return False
-        return True
-
-    def _watch_process(self, session, pid, is_main) -> None:
-        """Watch a freshly attached process before its agent loads, so a death
-        during the load and its own exec() are already caught. The target's
-        exec'd image becomes the main session."""
-        self._gate_and_track(session, pid, is_main=is_main)
-        if is_main:
-            self.process = session
-            self._backend.on_detached(session, self.on_detach)
-        else:
-            self._watch_child_detach(session, pid)
-
-    def _watch_child_detach(self, session, pid) -> None:
-        handler = functools.partial(self._on_child_detached, pid, session)
-        try:
-            self._backend.on_detached(session, handler)
-        except Exception:  # noqa: BLE001 - a child's detach is informational
-            self.logger.debug("cannot watch child pid %s for detach", pid, exc_info=True)
-
-    def _on_child_detached(self, pid, session, reason, crash=None) -> None:
-        """An instrumented child's session ended: a hand-over when it exec()ed,
-        otherwise the child is gone. Never the end of the capture."""
-        if reason == "process-replaced" and self._on_process_replaced(pid):
-            return
-        if self._forget_process(pid, session):
-            self.logger.debug("Instrumented child pid %s detached (%s)", pid, reason)
-
-    def _forget_process(self, pid, session=None) -> bool:
-        forgotten = self._tracker.forget(pid, session)
-        if forgotten:
-            self._held_exec_watchdog.forget(pid)
-        return forgotten
-
-    def _on_exec_image(self, pid, path) -> None:
-        """An instrumented process exec()ed and Frida holds its new image:
-        instrument it (the worker resumes it), or with --no-follow-exec let it
-        run untouched."""
-        self._tracker.note_image(pid)
-        self._held_exec_watchdog.note_exec(pid)
-        entry = self._tracker.get(pid)
-        if entry is None or not self.exec_following_requested:
-            self._resume_untouched(pid, "exec")
-            return
-        self.logger.info("%s pid %s exec()ed %s; following it",
-                         "Target" if entry.is_main else "Child", pid, path)
-        self._enqueue_instrumentation(pid, "exec'd image", path, exec_handover=True,
-                                      watch_as_main=entry.is_main)
-
-    def _on_process_replaced(self, pid) -> bool:
-        """The old image's 'process-replaced' detach. True when it is a hand-over
-        to the exec'd image (no teardown); False when exec is not followed."""
-        entry = self._tracker.get(pid)
-        if entry is None or not self.exec_following_requested:
-            return False
-        if not entry.gated:
-            # Nothing holds the new image: attach to it at once. Its first
-            # instants run uninstrumented (gating, when available, avoids that).
-            self.logger.info("pid %s exec()ed; re-attaching to its new image", pid)
-            self._enqueue_instrumentation(pid, "exec'd image", None, resume=False,
-                                          exec_handover=True, watch_as_main=entry.is_main)
-            return True
-        self.logger.debug("pid %s replaced by exec(); handing over", pid)
-        if self._tracker.note_replaced(pid):
-            timer = threading.Timer(self.EXEC_HANDOVER_TIMEOUT,
-                                    self._on_exec_handover_timeout, args=(pid,))
-            timer.name = "fritap-exec-handover"
-            timer.daemon = True
-            timer.start()
-        return True
-
-    def _on_exec_handover_timeout(self, pid) -> None:
-        """No exec'd image arrived for a 'process-replaced': the process is gone
-        from friTap's view. For the target the capture ends like any detach."""
-        if (not self._tracker.awaiting_image(pid) or not self.running
-                or getattr(self, "_cleanup_done", False)):
-            return
-        entry = self._tracker.get(pid)
-        if entry is None or not entry.is_main:
-            self.logger.warning(
-                "Child pid %s exec()ed an image friTap could not follow (no exec "
-                "child within %.0fs).", pid, self.EXEC_HANDOVER_TIMEOUT)
-            self._forget_process(pid)
-            return
-        self.logger.error(
-            "Target pid %s exec()ed an image friTap could not follow (no exec "
-            "child within %.0fs; e.g. an Apple platform binary).",
-            pid, self.EXEC_HANDOVER_TIMEOUT)
-        self._mark_unexpected_detach()
-        self._event_bus.emit(DetachEvent(reason="process-replaced"))
-        self._end_session("process-replaced")
-
-    def _query_process_paths(self, pids):
-        return self._backend.process_paths(self.device, pids)
-
-    def _on_held_exec_image(self, pid, path) -> None:
-        """The watchdog found an exec'd image Frida holds but never announced
-        (see HeldExecWatchdog): take it over like an announced one."""
-        if not self._tracker.is_tracked(pid):
-            return
-        self.logger.warning(
-            "pid %s exec()ed %s but Frida never reported the new image (the process "
-            "closed Frida's descriptors before exec(), e.g. Python's subprocess "
-            "with close_fds=True); taking it over now.", pid, path)
-        self._on_exec_image(pid, path)
-
-    def _on_failed_handover(self, request, exc) -> None:
-        if request.watch_as_main:
-            self._end_after_failed_handover(request.pid, exc)
-            return
-        self.logger.warning("Could not instrument the exec'd image of child pid %s "
-                            "(%s); it runs uninstrumented.", request.pid, exc)
-        self._forget_process(request.pid)
-
-    def _end_after_failed_handover(self, pid, exc) -> None:
-        """The exec'd image could not be instrumented: it now runs without
-        friTap, so the capture ends (on its own thread — the worker that calls
-        this is joined by the teardown)."""
-        if isinstance(exc, BackendTransportError):
-            # The new image died while its agent loaded: the target went away
-            # during the capture.
-            self._mark_unexpected_detach()
-        else:
-            self.logger.error(
-                "Could not instrument the exec'd image of pid %s (%s); it keeps "
-                "running uninstrumented and the capture ends here.", pid, exc)
-            self.set_exit_status(EXIT_RUNTIME_ERROR)
-        threading.Thread(target=self._end_session, args=("exec hand-over failed",),
-                         name="fritap-session-end", daemon=True).start()
-
-    def _resume_untouched(self, pid, origin) -> None:
-        """Let a gated process friTap does not instrument run on. Tracked until
-        resumed, so a teardown racing the resume still resumes it."""
-        self.logger.debug("Resuming %s child pid %s uninstrumented", origin or "?", pid)
-        self._track_suspended(pid)
-        self._resume_off_event_thread(pid)
-
-    def _handle_child_added(self, child):
-        """Forward a queued child to the instrument worker.
-
-        Kept as the queue-consumer-side entry point for a child that reaches
-        friTap off the Frida event thread. It must not instrument inline: this
-        runs on the queue-consumer thread, and instrument() blocks in script.load()
-        waiting for a handshake reply — which, before the reply moved onto the
-        Frida callback thread, only this very thread could have delivered.
-        """
-        self._enqueue_instrumentation(child.pid, "child process",
-                                      getattr(child, "identifier", None),
-                                      watch_as_main=False)
-
-    def on_spawn_added(self, spawn):
-        # Runs on Frida's device event thread: decide here, instrument on the
-        # worker. If spawn_gating_all is set, instrument ALL spawned processes
-        # (old behavior); otherwise filter by target app identifier.
-        if self.spawn_gating_all or self._should_instrument_spawn(spawn.identifier):
-            self.logger.info(f"Instrumenting spawned process with pid {spawn.pid}. Name: {spawn.identifier}")
-            self._enqueue_instrumentation(spawn.pid, "spawned process", spawn.identifier,
-                                          watch_as_main=False)
-        else:
-            # Resume unrelated processes immediately to prevent them from hanging
-            # (off the event thread: see _resume_off_event_thread).
-            self.logger.debug(f"Skipping unrelated spawn with pid {spawn.pid}. Name: {spawn.identifier}")
-            self._resume_off_event_thread(spawn.pid)
-
-    # ------------------------------------------------------------------
-    # Gated instrumentation worker
-    # ------------------------------------------------------------------
-
-    def _enqueue_instrumentation(self, pid, label, identifier=None, resume=True,
-                                 exec_handover=False, watch_as_main=None):
-        """Hand a gated process to the serial instrument worker. ``resume=False``
-        for a process that is already running (not Frida-gated);
-        ``exec_handover`` for the exec'd image of an instrumented process;
-        ``watch_as_main`` how it is watched across exec() (see _watch_process)."""
-        if resume:
-            self._track_suspended(pid)
-        if not self.running or self._instrument_stop.is_set():
-            # Teardown already started: instrumenting now would resurrect the
-            # worker we just joined. Resume so nothing is left suspended.
-            # ``running`` alone is not enough: the detach/cleanup teardown stops
-            # the worker FIRST and clears ``running`` only near its end, and an
-            # exec'd image (child gating, origin "exec") is reported right after
-            # the 'process-replaced' detach that starts that teardown. Instrumenting
-            # it then meant friTap os._exit()ed with the process still parked at
-            # Frida's spawn breakpoint — on macOS it died with EXC_BREAKPOINT in
-            # dyld4::RuntimeState::notifyObjCInit.
-            self._resume_rejected_gated(pid, label, resume)
-            return
-
-        request = _InstrumentRequest(pid=pid, label=label, identifier=identifier,
-                                     resume=resume, exec_handover=exec_handover,
-                                     watch_as_main=watch_as_main)
-        queue_full = False
-        with self._instrument_thread_lock:
-            # Re-checked under the lock _stop_instrument_thread sets the stop
-            # under: a request is either queued before the stop (then the worker
-            # or the drain resumes it) or rejected here — never queued after the
-            # drain, and never reviving a worker the teardown already joined.
-            accepted = self.running and not self._instrument_stop.is_set()
-            if accepted:
-                self._start_instrument_thread_locked()
-                try:
-                    self._instrument_queue.put_nowait(request)
-                except queue.Full:
-                    queue_full = True
-        if not accepted:
-            self._resume_rejected_gated(pid, label, resume)
-        elif queue_full:
-            # Never leave the process suspended just because we are backed up:
-            # a gated app that is never resumed is killed by the OS watchdog
-            # (0x8badf00d on iOS) and looks like a friTap crash.
-            self.logger.warning(
-                "Instrumentation queue full — %s pid %s not instrumented", label, pid
-            )
-            if resume:
-                self._resume_off_event_thread(pid)
-
-    def _resume_rejected_gated(self, pid, label, resume):
-        """Resume a gated process that arrived while the capture is stopping."""
-        self.logger.debug("Capture stopping — resuming %s pid %s uninstrumented",
-                          label, pid)
-        if resume:
-            self._resume_off_event_thread(pid)
-
-    def _resume_off_event_thread(self, pid) -> None:
-        """Resume *pid* on the resumer thread (see ResumeWorker).
-
-        The gating callbacks run on Frida's event loop, and a synchronous
-        ``device.resume()`` there deadlocks it (verified live: a fork child
-        resumed inline from 'child-added' hung the target and every later Frida
-        call). The pid stays tracked until the resume returned, so a teardown
-        racing the resumer still resumes it (a second resume is harmless).
-        """
-        self._resumer.submit(pid)
-
-    def _resume_and_untrack(self, pid) -> None:
-        self._resume_quietly(pid)
-        self._untrack_suspended(pid)
-
-    def _start_instrument_thread(self):
-        """Start the serial worker that instruments gated processes.
-
-        Serial rather than a pool: every instrument() writes ``self.script``,
-        so two concurrent instrumentations would race for it. Separate from the
-        message-consumer thread so a slow agent load can never stall message
-        processing (nor deadlock against it).
-        """
-        with self._instrument_thread_lock:
-            self._start_instrument_thread_locked()
-
-    def _start_instrument_thread_locked(self):
-        """Body of :meth:`_start_instrument_thread`; caller holds the lock."""
-        if self._instrument_thread is not None:
-            return
-        self._instrument_stop.clear()
-        self._instrument_thread = threading.Thread(
-            target=self._process_instrument_requests, daemon=True,
-            name="fritap-instrument",
-        )
-        self._instrument_thread.start()
-
-    def _process_instrument_requests(self):
-        """Drain the instrumentation queue one process at a time."""
-        while not self._instrument_stop.is_set():
-            try:
-                request = self._instrument_queue.get(timeout=0.1)
-            except queue.Empty:
-                continue
-            try:
-                self._instrument_gated_process(request)
-            except Exception:
-                # One unusable child must not end gating for every later one.
-                self.logger.exception(
-                    "Failed to instrument %s pid %s", request.label, request.pid
-                )
-
-    def _instrument_gated_process(self, request):
-        """Instrument one gated process, then resume it no matter what.
-
-        The resume lives in a ``finally`` deliberately: resuming only on success
-        strands the app suspended forever whenever attach or load fails, which
-        the platform then reports as a watchdog kill rather than as friTap's
-        failure to instrument.
-        """
-        try:
-            self.logger.info("Attached to %s with pid %s", request.label, request.pid)
-            session = self._backend.attach(self.device, str(request.pid))
-            if request.watch_as_main is not None:
-                self._watch_process(session, request.pid, request.watch_as_main)
-            self.instrument(session, self.own_message_handler)
-        except Exception as exc:
-            if not request.exec_handover:
-                raise
-            self._on_failed_handover(request, exc)
-        finally:
-            if request.resume:
-                self._resume_suspended(request.pid)
-
-    # ------------------------------------------------------------------
-    # Suspended-pid bookkeeping: one set, one lock, every resume path
-    # ------------------------------------------------------------------
-
-    def _track_suspended(self, pid) -> None:
-        """Record *pid* as suspended by friTap (spawned or gated, not yet resumed)."""
-        with self._suspended_pids_lock:
-            self._suspended_pids.add(pid)
-
-    def _untrack_suspended(self, pid) -> None:
-        """Forget *pid* after it was resumed by a path outside this bookkeeping."""
-        with self._suspended_pids_lock:
-            self._suspended_pids.discard(pid)
-
-    def _resume_suspended(self, pid) -> None:
-        """Resume *pid* (logging, never raising) and stop tracking it."""
-        self._untrack_suspended(pid)
-        self._resume_quietly(pid)
-
-    def _resume_suspended_pids(self) -> None:
-        """Teardown: resume every pid friTap still holds suspended.
-
-        Covers the spawned target when a Ctrl+C / SIGTERM lands before its
-        resume (agent load, the -t/--timeout wait): the signal handler runs
-        cleanup() and os._exit()s, and a Frida-spawned macOS process left at the
-        dyld breakpoint dies with EXC_BREAKPOINT/SIGTRAP, reported as the
-        target's crash. Also covers a gated process a still-busy worker has not
-        resumed: ``_stop_instrument_thread`` waits only 5 s, while one attach +
-        bounded script load can take far longer (and cannot finish at all when
-        the teardown runs on Frida's callback thread). The worker's own
-        ``finally`` may resume it as well; a second resume is harmless.
-        """
-        with self._suspended_pids_lock:
-            pids = sorted(self._suspended_pids)
-            self._suspended_pids.clear()
-        for pid in pids:
-            if pid == self.pid and not self._death_before_capture:
-                self.logger.warning(
-                    "Capture stopped before the spawned pid %s was resumed — resuming "
-                    "it uninstrumented so it is not left suspended.", pid)
-            else:
-                self.logger.debug("Resuming gated pid %s still suspended at teardown", pid)
-            self._resume_quietly(pid)
 
     def _load_script_bounded(self, script) -> None:
         """Load an agent script under the configured time bound.
 
-        The backend raises ``BackendScriptLoadTimeout`` without a breadcrumb —
-        it has no view of the agent's progress trail — so the last reported
-        stage is attached here, where it is known, and the CLI can name the
-        stage the agent died in instead of just reporting a timeout.
+        The backend cannot see the agent's progress trail, so the last reported stage is
+        attached to its ``BackendScriptLoadTimeout`` here for the CLI to name.
         """
         try:
             self._backend.load_script(
@@ -2943,11 +664,9 @@ class SSL_Logger():
     def _build_script_context(self, process, device, runtime) -> "ScriptContext":
         """Build the plugin-facing :class:`ScriptContext` snapshot.
 
-        ``ScriptContext`` is the deliberate seam between plugins and the host,
-        so everything a plugin needs is resolved *here* rather than looked up by
-        the plugin — including the ``script.load()`` bound, which plugins share
-        with the main agent because a wedged plugin script is just as
-        uncancellable and one user-facing knob is easier to reason about.
+        It is the seam between plugins and the host, so everything is resolved here, including
+        the ``script.load()`` bound, which plugins share with the main agent (a wedged plugin
+        script is just as uncancellable).
         """
         from ..plugins.script_context import ScriptContext
 
@@ -2959,146 +678,10 @@ class SSL_Logger():
             script_load_timeout=effective_script_load_timeout(self._config),
         )
 
-    def _resume_quietly(self, pid):
-        """Resume a gated process, logging rather than raising on failure."""
-        try:
-            self._backend.resume(self.device, pid)
-        except Exception as exc:
-            # The process may simply have died already — never mask the
-            # instrumentation error this runs alongside.
-            self.logger.warning("Failed to resume pid %s: %s", pid, exc)
-
-    def _drain_instrument_queue(self):
-        """Resume every gated process still waiting for the stopped worker.
-
-        The worker tests the stop event only at the top of its loop while each
-        iteration costs an attach plus a bounded script load, so pending requests
-        routinely outlive it: a multi-process target enqueues several, the stop
-        flag is set while the worker is busy with one, and the rest are never
-        looked at again. Each of those requests names a process that is still
-        *suspended* — and a gated process nobody resumes is killed by the OS
-        watchdog (``0x8badf00d`` on iOS) and reported as the app's own crash
-        rather than as friTap's abandoned queue.
-
-        So this resumes instead of instrumenting, mirroring
-        ``_enqueue_instrumentation``'s teardown branch: by the time we get here
-        the session the instrumentation would need is already going away, and
-        "uninstrumented but running" is the outcome the rest of this file's gating
-        code is written to guarantee. Like ``_drain_message_queue`` it runs during
-        cleanup and must therefore never raise.
-        """
-        resumed = 0
-        while True:
-            try:
-                request = self._instrument_queue.get_nowait()
-            except queue.Empty:
-                break
-            if not request.resume:
-                continue
-            try:
-                self._resume_suspended(request.pid)
-                resumed += 1
-            except Exception:
-                # _resume_quietly already logs instead of propagating; this is
-                # the belt-and-braces guarantee that teardown never raises.
-                self.logger.exception("Failed to drain a queued instrument request")
-        if resumed:
-            self.logger.debug(
-                "Resumed %d gated process(es) still queued at teardown", resumed
-            )
-
-    def _stop_instrument_thread(self):
-        """Signal the instrument worker to stop, wait for it, then drain.
-
-        The drain comes strictly after the join: while the worker is still alive
-        it competes for the same queue, and anything it wins there is
-        instrumented and resumed by ``_instrument_gated_process`` anyway.
-        """
-        self._held_exec_watchdog.stop()  # finds no more images to hand to the worker
-        with self._instrument_thread_lock:
-            # Set under the lock so _enqueue_instrumentation's locked check sees
-            # either "not stopping" (and queues before the drain) or "stopping".
-            self._instrument_stop.set()
-            thread = self._instrument_thread
-            self._instrument_thread = None
-        if thread is not None:
-            thread.join(timeout=5)
-        self._drain_instrument_queue()
-        self._resume_suspended_pids()
-
-    def _should_instrument_spawn(self, identifier):
-        """Check if a spawned process should be instrumented based on its identifier."""
-        if not identifier:
-            return False
-
-        # For mobile (Android/iOS), identifier is the package name
-        # e.g., "com.example.app" or "com.example.app:service"
-        if self.mobile:
-            return identifier.startswith(self.target_app)
-
-        # For desktop, check if target app name is contained in the identifier
-        # The identifier could be a path or executable name
-        target_name = self.target_app.split()[-1] if ' ' in self.target_app else self.target_app
-        # Handle paths: extract base name for comparison
-        if '/' in target_name:
-            target_name = target_name.split('/')[-1]
-        if '\\' in target_name:
-            target_name = target_name.split('\\')[-1]
-
-        return target_name.lower() in identifier.lower()
-
-
-    def _describe_pattern_source(self):
-        """Describe where the byte patterns handed to the agent came from.
-
-        ``PatternLoader.load`` always merges ``friTap/patterns/default_patterns.json``,
-        so ``pattern_data`` is non-None on a completely ordinary run. Reporting
-        that as "pattern provided by pattern.json" implied the user had supplied
-        a file they never passed. Only ``--patterns`` (``self.patterns``) tells
-        the two cases apart.
-        """
-        if self.patterns:
-            return (
-                f"Using byte patterns from {self.patterns}, merged over "
-                "friTap's bundled default patterns, for hooking"
-            )
-        return "Using friTap's bundled default byte patterns for hooking"
-
     def _is_memory_scan_only(self) -> bool:
-        """Whether this run loads only the heap scanner (see
-        :func:`friTap.config.memory_scan_only`)."""
+        """Whether this run loads only the heap scanner (:func:`friTap.config.memory_scan_only`)."""
         from ..config import memory_scan_only
         return memory_scan_only(self._config)
-
-    def _on_memory_scan_ended(self) -> None:
-        """Handle the memory-scan agent ending unexpectedly (bottom-up signal).
-
-        Runs on the scanner's poll thread. In a memory-scan-only run the scanner
-        IS the capture, so its death (target killed / ANR'd) means the run is over
-        — request a stop so the normal teardown runs and the UI leaves the
-        capturing state. In a combined hook+scan run the main capture is still
-        live, so only log it and keep going.
-        """
-        if not self._is_memory_scan_only():
-            self.logger.warning(
-                "memory-scan: heap scanner ended early; main capture continues")
-            return
-        self.logger.info(
-            "memory-scan: scanner ended (target gone) — stopping capture")
-        # TUI: its capture worker loops on SSL_Logger.running, so clearing the flag
-        # ends the loop and drives the normal teardown + STOPPED transition.
-        if self._tui_mode:
-            self.request_stop()
-            return
-        # Headless/CLI: the main thread blocks in wait_for_completion() on
-        # _done_event and then os._exit()s, so friTap.py's own cleanup never runs
-        # — and a force-stopped / ANR'd target delivers no frida detach. Run the
-        # SAME once-guarded teardown on_detach uses, so the final pcap, DSB and
-        # .fritap.json manifest are written before _done_event is set. Bounded,
-        # because a frida unload on the dead session can wedge (friTap#64). Do
-        # not request_stop() first: clearing `running` would make a concurrent
-        # on_detach bail out early instead of deferring to the shared guard.
-        self._end_session_bounded("memory-scan-ended")
 
     def instrument(self, process, own_message_handler):
         runtime = ScriptRuntime.QJS
@@ -3112,12 +695,10 @@ class SSL_Logger():
             runtime = ScriptRuntime.V8
         self._last_runtime = runtime
 
-        # When -ms is passed alone, the main TLS-hooking agent has nothing to do:
-        # skip creating/loading it and let only the memory-scan plugin run.
-        # A supplied own_message_handler, however, only makes sense against the
-        # MAIN agent (it consumes its messages), so treating it as a capture
-        # surface here keeps the main agent — and returns a live script to the
-        # API caller — instead of returning None alongside the mem-scan plugin.
+        # With -ms alone the main TLS-hooking agent has nothing to do, so only
+        # the memory scan runs. An own_message_handler consumes the MAIN agent's
+        # messages, so it keeps that agent (and returns a live script to the
+        # API caller).
         memory_scan_only = self._is_memory_scan_only() and own_message_handler is None
 
         script = None
@@ -3125,8 +706,8 @@ class SSL_Logger():
 
         if not memory_scan_only:
             script_string = self.get_agent_script()
-            # Before load, not after: a stale bundle's failures happen *during*
-            # script.load(), so the RPC-based check below it can be too late.
+            # Before load: a stale bundle fails during script.load(), too late
+            # for the RPC-based check below.
             self._warn_on_stale_agent_bundle(script_string)
             if self.debug_output:
                 self.logger.debug(f"loading friTap agent script: {self.agent_script}")
@@ -3137,28 +718,34 @@ class SSL_Logger():
             if self.pattern_data is not None:
                 self.logger.info(self._describe_pattern_source())
         else:
-            # Reached by -ms with no agent-backed surface (full capture's pcap
-            # comes from tcpdump, so -f -p -ms lands here too) or by an explicit
-            # memory-only extraction method (hooking.intercept=False).
+            # Reached by -ms with no agent-backed output (-f takes its pcap from
+            # tcpdump) or by a memory-only extraction method (hooking.intercept=False).
             self.logger.info(
                 "memory-scan only (no hook-backed output requested; -f captures "
                 "traffic via tcpdump): skipping the main friTap agent; the heap "
                 "secret-scanner supplies the key material."
             )
 
-        # Build ScriptContext for plugins (needed in both paths).
         context = self._build_script_context(process, self.device, runtime)
 
-        # Phase 1: BEFORE_MAIN script plugins (e.g. legacy --custom_script)
+        # BEFORE_MAIN script plugins (e.g. --custom_script).
         if hasattr(self, '_plugin_loader'):
             self._plugin_loader.instrument_all(context, order=ScriptLoadOrder.BEFORE_MAIN)
 
+        # self.script is the MAIN target's agent only (the one graceful_detach,
+        # the detach report and the unload address). Child agents live in _child_agents.
+        is_main = self._is_main_target(process)
+
         if not memory_scan_only:
-            # Keep a local handle: self.script is overwritten by the next
-            # instrument() call (gated child/spawn), and every step below must
-            # keep operating on the script it just created.
+            # Local handle: the steps below must act on the script just created, whichever process it is.
             script = self._backend.create_script(process, script_string, runtime=runtime)
-            self.script = script
+            if is_main:
+                self.script = script
+            else:
+                self._register_child_agent(process, script)
+            tracker = getattr(self, "_tracker", None)
+            if tracker is not None:
+                tracker.note_script(process, script)
 
             if self.debug and self._backend.version_at_least(16):
                 self._backend.enable_debugger(script, debug_port)
@@ -3170,29 +757,25 @@ class SSL_Logger():
                 self._backend.on_message(script, self._internal_callback_wrapper(script))
             self._load_script_bounded(script)
 
-            # Best-effort JS<->Python ABI sanity check (non-fatal; warns on a
-            # stale or mismatched bundle). Only meaningful on the Frida backend.
-            self._check_agent_abi()
+            # Non-fatal ABI check of self.script (the main agent); a child runs
+            # the same bundle.
+            if is_main:
+                self._check_agent_abi()
 
-            # Emit ScriptLoadedEvent for main friTap script
             self._event_bus.emit(ScriptLoadedEvent(
                 script_name=self.agent_script, plugin_name="", load_order="main",
             ))
-        else:
+        elif is_main:
             # No main agent this run; the memory-scan plugin owns the session.
             self.script = None
 
-        # Phase 3: AFTER_MAIN script plugins
+        # AFTER_MAIN script plugins.
         if hasattr(self, '_plugin_loader'):
             self._plugin_loader.instrument_all(context, order=ScriptLoadOrder.AFTER_MAIN)
 
-        # Memory-scan engine: start AFTER the main agent hooks are in place
-        # (its scan loop is independent and owns its own script/session). This is
-        # the direct, core-driven counterpart of the old AFTER_MAIN plugin.
-        # Isolate its failures: as a plugin it ran under PluginLoader.instrument_all,
-        # which caught and logged per-plugin errors so one bad agent never aborted
-        # the run. The heap scanner is complementary/best-effort, so a start failure
-        # must not take down the main capture — surface it and carry on.
+        # Started after the main agent hooks are in place; it owns its own
+        # script/session. The heap scanner is best-effort, so a start failure
+        # is logged and must not take down the main capture.
         if getattr(self, "_memory_scan_engine", None) is not None:
             try:
                 self._memory_scan_engine.start(context)
@@ -3202,132 +785,16 @@ class SSL_Logger():
                     exc_info=True,
                 )
 
-        # Emit InstrumentEvent
         self._event_bus.emit(InstrumentEvent(
             target=self.target_app, backend=self._backend.name,
         ))
 
-        #script.post({'type':'readmod', 'payload': '0x440x410x53'})
         if self.payload_modification:
-            class ModWatcher(FileSystemEventHandler):
-                def __init__(self, process):
-
-                    self.process = process
-
-                def on_any_event(self, event):
-                    try:
-                        if(event.event_type == "modified" and ("readmod" in event.src_path)):
-                            with open("./readmod.bin", "rb") as f:
-                                buffer = f.read()
-                                self._backend.post_message(self.script, 'readmod', buffer.hex())
-                        elif(event.event_type == "modified" and ("writemod" in event.src_path)):
-                            with open("./writemod.bin", "rb") as f:
-                                buffer = f.read()
-                                self._backend.post_message(self.script, 'writemod', buffer.hex())
-                    except RuntimeError as e:
-                        self.logger.error(f"Watcher error: {e}")
-
-
-
-            self.logger.debug("Init watcher")
-            event_handler = ModWatcher(process)
-
-            self._observer = Observer()
-            self._observer.schedule(event_handler, os.getcwd())
-            self._observer.start()
+            # One watcher per session, started on the first instrument() only
+            # (children are instrumented through here too).
+            self._start_payload_mod_watcher()
 
         return script
-
-
-    @staticmethod
-    def _validate_patterns(patterns: dict) -> bool:
-        """Validate pattern data structure and hex format.
-
-        Expected structure: {lib_name: {arch: {function: [pattern_str, ...]}}}
-        Pattern format: hex bytes separated by spaces, ? wildcards allowed.
-        """
-        from ..patterns.loader import PatternLoader
-        return PatternLoader.validate(patterns)
-
-    def _load_offsets_data(self):
-        """Read ``--offsets`` (a file path, else an inline JSON string).
-
-        The raw text is forwarded to the agent, which ``JSON.parse``s it and
-        silently drops the offsets on failure — so an existing file whose
-        content is not valid JSON gets a clear warning here.
-        """
-        try:
-            with open(self.offsets, "r") as offset_file:
-                self.offsets_data = offset_file.read()
-        except FileNotFoundError:
-            try:
-                json.loads(self.offsets)
-                self.offsets_data = self.offsets
-            except ValueError as e:
-                self.logger.error(f"Log error, defaulting to auto-detection: {e}")
-            return
-        self._warn_if_offsets_not_json()
-
-    def _warn_if_offsets_not_json(self):
-        try:
-            json.loads(self.offsets_data)
-        except ValueError as e:
-            self.logger.warning(
-                f"--offsets file '{self.offsets}' is not valid JSON ({e}); "
-                "the agent will ignore these offsets and fall back to "
-                "auto-detection. See offsets_example.json for the format.")
-
-    def load_patterns(self):
-        """Load patterns: auto-load defaults, then deep-merge user patterns on top.
-
-        Merge is granular: only the specific library/ABI/function entries
-        in the user file override defaults. Everything else stays intact.
-        """
-        from ..patterns.loader import PatternLoader
-        self.pattern_data = PatternLoader.load(self.patterns, self.logger)
-
-    def _apply_sibling_coverage_suppression(self, scan_results: list[dict]) -> None:
-        """Detect Cronet-split-topology and suppress redundant pattern scans.
-
-        When ``--library-scan`` is on, lsLibHunter reports every loaded TLS
-        library.  Some Cronet builds ship BoringSSL in a sibling module
-        (e.g. ``stable_cronet_libssl.so``) while the higher-level runtime
-        (``libmainlinecronet.<ver>.so``) merely imports it.  Pattern-scanning
-        the runtime module is futile by construction.  This helper annotates
-        such modules with ``covered_by_sibling`` (consumed by the agent's
-        library_scanner) and strips matching entries from ``self.pattern_data``
-        so the agent's auto-registered pattern hooks never schedule.
-
-        Users can opt back in to scanning via ``--force-scan <name>`` (or the
-        ``FRITAP_FORCE_SCAN`` env var, comma-separated).
-        """
-        from ..protocols.tls_handler import covered_by_sibling, strip_covered_modules
-
-        force_set = self._config.hooking.force_scan_modules or ()
-        covered = covered_by_sibling(scan_results, force_scan_modules=force_set)
-        if not covered:
-            return
-
-        for entry in scan_results:
-            name = entry.get("name")
-            if name in covered:
-                entry["covered_by_sibling"] = covered[name]
-
-        self.logger.info(
-            "Cronet split topology detected; skipping %d redundant scan(s): %s",
-            len(covered), ", ".join(covered.keys()),
-        )
-        self.pattern_data = strip_covered_modules(
-            self.pattern_data, covered, force_scan_modules=force_set
-        )
-
-    def _deep_merge(self, base: dict, override: dict) -> dict:
-        """Deep merge two dicts. Override values win on conflict.
-
-        Recurses into nested dicts so only leaf values are replaced.
-        """
-        from ..patterns.loader import PatternLoader
-        return PatternLoader.deep_merge(base, override)
 
     def start_fritap_session_instrumentation(self, own_message_handler, process):
         self.process = process
@@ -3341,7 +808,7 @@ class SSL_Logger():
     @staticmethod
     def _parse_proxy_address(addr: str) -> tuple:
         """Parse host:port string, handling IPv6 bracket notation."""
-        # IPv6 bracket notation: [::1]:8080
+        # IPv6 bracket form: [::1]:8080
         if addr.startswith("["):
             bracket_end = addr.find("]")
             if bracket_end == -1 or bracket_end + 1 >= len(addr) or addr[bracket_end + 1] != ":":
@@ -3384,1118 +851,44 @@ class SSL_Logger():
         )
         self.logger.info("Proxy redirect active: connections -> %s:%d", host, port)
 
-    def connect_live(self) -> bool:
-        """Connect the live Wireshark FIFO handler.
-
-        Emits LiveReadyEvent (so the TUI can launch Wireshark), waits
-        briefly for the launch, then blocks until Wireshark connects to
-        the FIFO or times out.
-
-        Call this AFTER wiring any event subscribers (e.g. TuiOutputHandler)
-        so they receive the LiveReadyEvent. Idempotent: no-op if no live
-        handler or already connected.
-
-        Returns True if connected (or not in live mode), False on timeout.
-        """
-        if self._live_handler is None:
-            return True
-
-        live_handler = self._live_handler
-        self._live_handler = None  # Consume — idempotent
-
-        from ..events import LiveReadyEvent
-        self._event_bus.emit(LiveReadyEvent(fifo_path=self.filename))
-
-        time.sleep(1.0)  # Give event loop time to process Wireshark launch
-
-        connected = live_handler.connect(timeout=30)
-        if connected:
-            from ..events import WiresharkConnectedEvent
-            self._event_bus.emit(WiresharkConnectedEvent(fifo_path=self.filename))
-            return True
-
-        from ..events import LiveConnectionFailedEvent
-        self._event_bus.emit(LiveConnectionFailedEvent(
-            fifo_path=self.filename,
-            reason="Wireshark did not connect within 30 seconds",
-        ))
-        self._output_handlers.remove(live_handler)
-        live_handler.close()
-        return False
-
-    def _start_consumer_thread(self):
-        """Start background thread that drains the message queue."""
-        if self._consumer_thread is not None:
-            return
-        self._consumer_stop.clear()
-        self._consumer_thread = threading.Thread(
-            target=self._consume_messages, daemon=True, name="fritap-msg-consumer"
-        )
-        self._consumer_thread.start()
-
-    def _emit_router_error(self, exc: Exception, where: str) -> None:
-        """Surface a frida-thread routing error as an EventBus ErrorEvent.
-
-        The traceback already hit the debug-log file via logger.exception;
-        this additionally emits an ``ErrorEvent(severity="error")`` so the
-        TUI activity log and any other subscriber observe the failure.
-        Never raises.
-        """
-        try:
-            import traceback as _tb
-
-            from friTap.events import ERROR_SEVERITY_ERROR, ErrorEvent
-            self._event_bus.emit(ErrorEvent(
-                error=f"{type(exc).__name__} in message router ({where})",
-                description=str(exc),
-                stack="".join(_tb.format_exception(type(exc), exc, exc.__traceback__)),
-                severity=ERROR_SEVERITY_ERROR,
-            ))
-        except Exception:
-            self.logger.debug("Failed to emit router ErrorEvent", exc_info=True)
-
-    def _consume_messages(self):
-        """Process queued Frida messages on a dedicated thread.
-
-        This keeps the Frida callback thread free (instant put_nowait)
-        and gives the TUI thread fair GIL access via the 0.1 s timeout.
-        """
-        while not self._consumer_stop.is_set():
-            try:
-                message, data = self._message_queue.get(timeout=0.1)
-            except queue.Empty:
-                continue
-            try:
-                self.on_fritap_message(None, message, data)
-            except Exception as exc:
-                # Frida-side message handlers run on a dedicated thread.
-                # An uncaught exception here used to be debug-only and
-                # would silently drop messages; upgrade to logger.exception
-                # so the traceback always hits the debug log file, and
-                # emit an ErrorEvent so the TUI's activity log + EventBus
-                # subscribers see the failure too.
-                self.logger.exception("Error processing queued frida message")
-                self._emit_router_error(exc, "consume")
-
-    def _drain_message_queue(self):
-        """Process all remaining queued messages before PCAP is closed."""
-        drained = 0
-        while True:
-            try:
-                message, data = self._message_queue.get_nowait()
-            except queue.Empty:
-                break
-            try:
-                self.on_fritap_message(None, message, data)
-                drained += 1
-            except Exception as exc:
-                self.logger.exception("Error draining queued frida message")
-                self._emit_router_error(exc, "drain")
-        if drained and (self.debug_output or self.debug):
-            self.logger.debug("Drained %d queued messages before cleanup", drained)
-        if self._queue_drop_count:
-            self.logger.warning(
-                "Message queue overflow: %d messages dropped during capture",
-                self._queue_drop_count,
-            )
-
-    def _stop_consumer_thread(self):
-        """Signal the consumer thread to stop and wait for it."""
-        self._consumer_stop.set()
-        if self._consumer_thread is not None:
-            self._consumer_thread.join(timeout=5)
-            self._consumer_thread = None
-        self._drain_message_queue()
-
-    # ------------------------------------------------------------------
-    # Live passive analysis ("scan") of observed traffic
-    # ------------------------------------------------------------------
-
-    # Bound the in-flight scan queue so a slow analyzer can never grow memory
-    # without limit. When full, completed flows are dropped (and counted)
-    # rather than blocking the capture / Frida callback thread.
-    _SCAN_QUEUE_MAXSIZE = 2048
-
-    def _signal_live_selected(self) -> bool:
-        """True when 'signal' is among the configured capture protocols.
-
-        Enables live Signal message decoding on the flow collector even when no
-        passive-analysis (--scan) plugins are active.
-        """
-        if getattr(self._config, "protocol", None) == "signal":
-            return True
-        protocols = getattr(self._config, "protocols", None) or []
-        return "signal" in protocols
-
-    def apply_resolved_process_name(self, name: str) -> None:
-        """Pass the process name resolved after a numeric-PID attach to every
-        flow collector this logger can reach: its own (live scan / Signal) and
-        any output handler owning one (``--tap``). Re-setting the capture
-        target re-classifies flows already stamped with the PID-only name.
-        """
-        self.resolved_process_name = name
-        if self._flow_collector is not None:
-            self._flow_collector.set_capture_target(self._config.target, process_name=name)
-        for handler in getattr(self, "_output_handlers", []):
-            set_process_name = getattr(handler, "set_process_name", None)
-            if callable(set_process_name):
-                set_process_name(name)
-
-    def _setup_live_scan(self):
-        """Wire up live passive analysis of observed traffic, if requested.
-
-        Must be called BEFORE instrumentation starts so no completed flows are
-        missed. Subscribes a lightweight handler that ENQUEUES completed flows
-        onto a bounded queue; a daemon worker thread drains it and runs the
-        analyzers off the Frida callback thread. No-op when neither --scan nor
-        live Signal decoding is requested.
-        """
-        scan_spec = getattr(self._config.output, "scan", None)
-        signal_live = self._signal_live_selected()
-        if not scan_spec and not signal_live:
-            return
-
-        try:
-            from ..analysis import AnalyzerPlugin
-            from ..analysis.registry import resolve_analyzers
-            from ..events import FlowEvent
-            from ..flow.collector import FlowCollector
-            from ..flow.models import FlowEventType
-
-            # Passive-analysis plugins are only built when --scan is set.
-            if scan_spec:
-                # Forward reveal_pii so the privacy analyzer keeps raw values
-                # when --scan-show-pii is set; other analyzers ignore the opt.
-                # Redaction is still enforced at the reporter layer in
-                # _finalize_live_scan.
-                reveal_pii = getattr(self._config.output, "scan_show_pii", False)
-                analyzer_path = getattr(self._config.output, "scan_analyzer_path", None)
-                self._scan_plugins = [
-                    AnalyzerPlugin(a)
-                    for a in resolve_analyzers(
-                        scan_spec, analyzer_path=analyzer_path, reveal_pii=reveal_pii
-                    )
-                ]
-
-            # Nothing to wire when --scan resolved to no plugins and live Signal
-            # decoding was not requested.
-            if not self._scan_plugins and not signal_live:
-                return
-
-            # Mirror the TUI wiring (capture_controller.py): give the collector
-            # the event bus and subscribe it to the data/ohttp/library events.
-            # ``signal_messages`` turns on live Signal message decoding, which
-            # only catches keys arriving before/at the DATA; late keys are
-            # recovered by the session-end offline reprocess (_maybe_reprocess_signal).
-            if self._flow_collector is None:
-                self._flow_collector = FlowCollector(
-                    event_bus=self._event_bus, signal_messages=signal_live
-                )
-            self._flow_collector.set_event_bus(self._event_bus)
-            self._flow_collector.subscribe_to(self._event_bus)
-            self._flow_collector.set_capture_target(self._config.target)
-
-            # The bounded queue + daemon worker only make sense with passive
-            # analysis plugins; a signal-only collector needs none of it.
-            if self._scan_plugins:
-                # Bounded queue + daemon worker so analyzers never run inline on
-                # the Frida callback thread.
-                self._scan_queue = queue.Queue(maxsize=self._SCAN_QUEUE_MAXSIZE)
-                self._scan_stop.clear()
-
-                def _enqueue_completed_flow(event):
-                    if event.flow_event_type != FlowEventType.COMPLETED or event.flow is None:
-                        return
-                    try:
-                        self._scan_queue.put_nowait(event.flow)
-                    except queue.Full:
-                        self._scan_drop_count += 1
-
-                self._event_bus.subscribe(FlowEvent, _enqueue_completed_flow)
-
-                self._scan_thread = threading.Thread(
-                    target=self._scan_worker, name="fritap-scan", daemon=True,
-                )
-                self._scan_thread.start()
-                self.logger.info(
-                    "Passive analysis enabled (%s) — analyzing observed traffic",
-                    ", ".join(p.name for p in self._scan_plugins),
-                )
-        except Exception as e:
-            # A scan setup failure must never break normal capture.
-            self.logger.warning("Could not enable passive analysis: %s", e)
-            self._scan_plugins = []
-            self._scan_queue = None
-            self._scan_thread = None
-
-    def _scan_worker(self):
-        """Daemon worker: drain completed flows and run them through analyzers."""
-        while not (self._scan_stop.is_set() and self._scan_queue.empty()):
-            try:
-                flow = self._scan_queue.get(timeout=0.25)
-            except queue.Empty:
-                continue
-            for plugin in self._scan_plugins:
-                try:
-                    plugin.analyze(flow)
-                except Exception:
-                    self.logger.debug("Analyzer raised on flow", exc_info=True)
-            self._scan_queue.task_done()
-
-    def _finalize_live_scan(self):
-        """Flush, drain, and render passive-analysis findings. Never raises."""
-        if not self._scan_plugins:
-            return
-        try:
-            from ..analysis.filtering import FindingFilter, apply, split_csv
-            from ..commands.analyze import _REPORTER_REGISTRY
-
-            # Flush still-active flows so they complete and get enqueued.
-            if self._flow_collector is not None:
-                try:
-                    self._flow_collector.flush()
-                except Exception:
-                    self.logger.debug("FlowCollector flush failed", exc_info=True)
-
-            # Signal the worker to drain and stop, then wait for it to finish.
-            # We must not read plugin.findings while the worker thread is still
-            # calling plugin.analyze() -> findings.extend() on the same lists.
-            self._scan_stop.set()
-            if self._scan_thread is not None:
-                self._scan_thread.join(timeout=10)
-                if self._scan_thread.is_alive():
-                    self.logger.warning(
-                        "Passive-analysis worker did not finish draining within "
-                        "10s; reported findings may be incomplete",
-                    )
-
-            # Snapshot each plugin's findings with list() — a single GIL-atomic
-            # copy — so that even if the worker is still alive we never iterate a
-            # list it is concurrently extending (which would raise "list changed
-            # size during iteration"). The worst case is a few not-yet-appended
-            # findings are omitted, which the warning above already flags.
-            findings = []
-            for plugin in self._scan_plugins:
-                findings.extend(list(plugin.findings))
-
-            min_sev = getattr(self._config.output, "scan_min_severity", "info")
-            min_conf = getattr(self._config.output, "scan_min_confidence", 0.0)
-            sources = split_csv(getattr(self._config.output, "scan_source", None))
-            categories = split_csv(getattr(self._config.output, "scan_category", None))
-            flt = FindingFilter(
-                min_severity=min_sev,
-                sources=sources,
-                categories=categories,
-                min_confidence=min_conf or None,
-            )
-            findings = apply(findings, flt)
-
-            show_pii = getattr(self._config.output, "scan_show_pii", False)
-            report_fmt = getattr(self._config.output, "scan_report", "table")
-            reporter = _REPORTER_REGISTRY.get(report_fmt, _REPORTER_REGISTRY["table"])(
-                redact_pii=not show_pii
-            )
-            meta = {"analyzers": [p.name for p in self._scan_plugins]}
-            rendered = reporter.report(findings, meta)
-
-            report_out = getattr(self._config.output, "scan_report_out", None)
-            if report_out:
-                with open(report_out, "w", encoding="utf-8") as fh:
-                    fh.write(rendered)
-                self.logger.info("Passive-analysis report written to %s", report_out)
-            else:
-                self.special_logger.info("\n%s", rendered)
-
-            if self._scan_drop_count:
-                self.logger.warning(
-                    "Passive analysis dropped %d completed flows (queue full)",
-                    self._scan_drop_count,
-                )
-        except Exception as e:
-            self.logger.warning("Passive-analysis finalization failed: %s", e)
-
-    def _pid_is_wine(self, pid) -> bool:
-        """Does the mapped memory of ``pid`` look like a Wine process?
-
-        Used for attach mode, where argv[0] is a bare PID/name and the
-        argv-basename check in :meth:`_target_is_wine` cannot see Wine.
-        """
-        try:
-            with open(f"/proc/{int(pid)}/maps") as handle:
-                data = handle.read().lower()
-        except (OSError, ValueError):
-            return False
-        markers = (
-            "wine-preloader", "wine64-preloader", "/wine/", "/wine64",
-            "ntdll.dll.so", "ntdll.so",
-        )
-        return any(marker in data for marker in markers)
-
-    def _resolve_wine_attach_pid(self):
-        """Resolve an attach target to a numeric PID for the gdb extractor.
-
-        For a non-numeric name we scan /proc for a process whose cmdline contains
-        the name as a LITERAL substring (not a `pgrep -f` regex, which would treat
-        ``.`` etc. as metacharacters), preferring one that actually looks like a
-        Wine process so we don't attach to a short-lived launcher that then exits.
-        A ``wine <exe>`` launch command never appears verbatim in a running app's
-        cmdline, so for a Wine target we then retry with the exe path and its
-        basename (Wine processes only).
-        """
-        if self.pid:
-            return self.pid
-        app = (self.target_app or "").strip()
-        if app.isdigit():
-            return int(app)
-        if not app:
-            return None
-        procs = list(self._iter_proc_cmdlines())  # one /proc snapshot for all needles
-        wine_cache = {}
-
-        def is_wine(pid):
-            if pid not in wine_cache:
-                wine_cache[pid] = self._pid_is_wine(pid)
-            return wine_cache[pid]
-
-        wine_pid, fallback = self._find_proc_by_cmdline(
-            procs, lambda cmdline: app in cmdline, is_wine,
-        )
-        if wine_pid is not None:
-            return wine_pid
-        for needle in self._wine_exe_needles(app):
-            wine_pid, _ = self._find_proc_by_cmdline(
-                procs, self._cmdline_matcher(needle), is_wine,
-            )
-            if wine_pid is not None:
-                return wine_pid
-        return fallback
-
-    @staticmethod
-    def _find_proc_by_cmdline(procs, matches, is_wine):
-        """``(wine_pid, fallback_pid)`` for the first of *procs* (``(pid,
-        cmdline)`` pairs) whose cmdline *matches* (a predicate): the first one
-        *is_wine* accepts, and the first of any kind."""
-        fallback = None
-        for pid, cmdline in procs:
-            if not matches(cmdline):
-                continue
-            if is_wine(pid):
-                return int(pid), fallback
-            fallback = fallback or int(pid)
-        return None, fallback
-
-    @staticmethod
-    def _path_basename(path):
-        """Last component of a Windows or POSIX *path*."""
-        return re.split(r"[\\/]", path)[-1]
-
-    @classmethod
-    def _cmdline_matcher(cls, needle):
-        """Predicate for an exe *needle*: a path is matched as a substring, a
-        bare basename only as a whole cmdline token's basename (case-insensitive),
-        so ``a.exe`` does not match ``data.exe``."""
-        if re.search(r"[\\/]", needle):
-            return lambda cmdline: needle in cmdline
-        wanted = needle.lower()
-        return lambda cmdline: any(
-            cls._path_basename(token).lower() == wanted for token in cmdline.split()
-        )
-
-    def _wine_exe_needles(self, app):
-        """Exe path and basename of a ``wine <exe>`` target, for the attach retry.
-        Empty for a non-Wine target or one without an ``.exe`` argument."""
-        if not self._target_is_wine():
-            return []
-        exe = self._wine_target_exe()
-        if exe is None:
-            return []
-        basename = self._path_basename(exe)
-        return [n for n in dict.fromkeys((exe, basename)) if n and n != app]
-
-    def _wine_target_exe(self):
-        """First argument after the Wine launcher ending in ``.exe``
-        (case-insensitive), skipping launcher forms such as ``start /unix``;
-        None if there is none (e.g. ``wine cmd /c``)."""
-        for arg in self._wine_target_argv()[1:]:
-            if arg.lower().endswith(".exe"):
-                return arg
-        return None
-
-    @staticmethod
-    def _wine_extractor_module():
-        """The ``agent_gdb.wine.wine_key_extract`` module. In a source checkout
-        that was never installed, the repo root is added to ``sys.path`` so the
-        sibling ``agent_gdb`` package is importable; ImportError if still not."""
-        import importlib
-        name = "agent_gdb.wine.wine_key_extract"
-        try:
-            return importlib.import_module(name)
-        except ImportError:
-            import sys as _sys
-            repo_root = os.path.dirname(
-                os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            )
-            if repo_root not in _sys.path:
-                _sys.path.insert(0, repo_root)
-            return importlib.import_module(name)
-
-    @classmethod
-    def _wine_pattern_translator(cls):
-        """The ``agent_gdb.wine.pattern_translate`` module (importable once
-        :meth:`_wine_extractor_module` has put ``agent_gdb`` on the path)."""
-        import importlib
-        cls._wine_extractor_module()
-        return importlib.import_module("agent_gdb.wine.pattern_translate")
-
-    def _user_patterns_path(self):
-        """The ``--patterns`` path, or None (also when hooking config lacks it)."""
-        return getattr(self._config.hooking, "patterns", None)
-
-    def _wine_gdb_patterns_file(self):
-        """``--patterns`` in the flat format the Wine gdb script reads: a flat
-        file as is, a v2 file translated to a temp file, else None (warned)."""
-        user_path = self._user_patterns_path()
-        if not user_path:
-            return None
-        return self._wine_pattern_translator().wine_patterns_for_gdb(
-            user_path, self.logger,
-        )
-
-    def _discard_wine_gdb_patterns(self, gdb_patterns):
-        """Remove a temp file made by :meth:`_wine_gdb_patterns_file`."""
-        if gdb_patterns:
-            self._wine_pattern_translator().discard_translated_patterns(
-                gdb_patterns, self._user_patterns_path(),
-            )
-
-    @classmethod
-    def _iter_proc_cmdlines(cls):
-        """``(pid, cmdline)`` for each readable /proc process, skipping friTap
-        itself and its ancestors: a ``sudo fritap ... wine app.exe`` parent
-        carries the target string in its own cmdline."""
-        wke = cls._wine_extractor_module()
-        return wke.iter_proc_cmdlines(exclude=wke.own_process_lineage())
-
-    def _should_use_wine_gdb(self) -> bool:
-        """True when this is a LOCAL Linux Wine target to hand to the GDB-based
-        key extractor (``agent_gdb/wine``) instead of Frida.
-
-        Frida's Wine support is experimental; the GDB extractor is the reliable
-        path. gdb and Frida both need ptrace, so for a Wine target we drive gdb
-        and skip Frida entirely. Only applies to a local Linux host driving a
-        local target — not mobile, not a remote device, not a non-Linux host.
-        """
-        import platform
-        if platform.system() != "Linux":
-            return False
-        if self.mobile or self.device_id or self.host:
-            return False
-
-        mode = self.wine_mode
-        if mode == "off":
-            return False
-        if mode == "on":
-            return True  # user forces the GDB Wine route on a local Linux target
-
-        # auto: an explicit `--backend frida` means the user wants the Frida path
-        # (e.g. the experimental Wine agent), so don't hijack it to GDB.
-        if self.backend_explicit and self._config.backend == BackendName.FRIDA:
-            return False
-
-        try:
-            if self._target_is_wine():
-                return True
-        except Exception:
-            return False
-        if not self.spawn:  # attach mode: inspect the live process maps
-            return self._attach_target_is_wine()
-        return False
-
-    def _attach_target_is_wine(self) -> bool:
-        """Attach mode: does the resolved target process look like Wine? The
-        PID is cached for :meth:`_run_wine_gdb_session`. A missing Wine
-        extractor means False: a non-Wine attach must never fail on this path."""
-        try:
-            pid = self._resolve_wine_attach_pid()
-        except ImportError as exc:
-            self.logger.debug("Wine extractor unavailable, skipping Wine check: %s", exc)
-            return False
-        self._wine_attach_pid = pid
-        return pid is not None and self._pid_is_wine(pid)
-
-    # ------------------------------------------------------------------
-    # Wine + Frida with a host-side process watcher (fkie-cad/friTap#52)
-    # ------------------------------------------------------------------
-
-    def _wine_chromium_modules(self):
-        """Chromium-family BoringSSL modules (libcef.dll, chrome.dll, Electron
-        .exe, ...) of this Wine target, resolved once. Spawn: searched next to
-        the launched exe on disk. Attach: taken from the target's mappings."""
-        cached = getattr(self, "_wine_chromium_cache", None)
-        if cached is not None:
-            return cached
-        mods = []
-        try:
-            from ..wine_chromium import find_chromium_modules, wine_path_to_unix
-            if self.spawn:
-                exe = self._wine_target_exe()
-                if exe:
-                    unix = wine_path_to_unix(exe, os.environ.get("WINEPREFIX"))
-                    if os.path.isfile(unix):
-                        mods = find_chromium_modules(unix)
-            else:
-                pid = getattr(self, "_wine_attach_pid", None) or self._resolve_wine_attach_pid()
-                if pid is not None:
-                    mods = self._chromium_modules_in_maps(pid)
-        except Exception as exc:
-            self.logger.debug("Chromium module discovery failed: %s", exc)
-        self._wine_chromium_cache = mods
-        return mods
-
-    @staticmethod
-    def _chromium_modules_in_maps(pid):
-        """Chromium-family BoringSSL module files mapped into ``pid``."""
-        from ..wine_chromium import CHROMIUM_MODULE_NAMES, ELECTRON_EXE_MIN_SIZE
-        try:
-            with open(f"/proc/{int(pid)}/maps") as fh:
-                lines = fh.read().splitlines()
-        except (OSError, ValueError):
-            return []
-        found = []
-        for line in lines:
-            parts = line.split(None, 5)
-            if len(parts) < 6:
-                continue
-            path = parts[5]
-            name = os.path.basename(path).lower()
-            if path in found:
-                continue
-            if name in CHROMIUM_MODULE_NAMES:
-                found.append(path)
-            elif name.endswith(".exe"):
-                try:
-                    if os.path.getsize(path) >= ELECTRON_EXE_MIN_SIZE:
-                        found.append(path)
-                except OSError:
-                    pass
-        return found
-
-    def _should_use_wine_frida_watch(self) -> bool:
-        """True for a LOCAL Linux Wine target that should run on Frida with the
-        Wine process watcher instead of the GDB extractor.
-
-        Chosen in ``--wine auto`` when the target ships Chromium-embedded
-        BoringSSL (CEF / Chrome / Electron / Qt WebEngine — the launchers of
-        fkie-cad/friTap#52): those do TLS in a child process, which only this
-        route follows, and their key hook is the shared agent's tier-4 anchor
-        locator. An explicit ``--backend frida`` on a Wine target also lands here
-        (Frida cannot spawn the ``wine`` shell wrapper itself). ``--wine on``
-        keeps forcing GDB, ``--wine off`` keeps the plain Frida path.
-        """
-        import platform
-        if platform.system() != "Linux":
-            return False
-        if self.mobile or self.device_id or self.host:
-            return False
-        if self.wine_mode != "auto" or self._config.backend != BackendName.FRIDA:
-            return False
-        try:
-            is_wine = self._target_is_wine() if self.spawn else self._attach_target_is_wine()
-        except Exception:
-            return False
-        if not is_wine:
-            return False
-        if self.backend_explicit:
-            return True
-        return bool(self._wine_chromium_modules())
-
-    def _run_wine_frida_watch_session(self, own_message_handler=None):
-        """Run a Wine target on Frida, following its processes from the host.
-
-        Spawn: Wine is launched normally (as the GDB route does) and a
-        :class:`~friTap.wine_process_watcher.WineProcessWatcher` hands every new
-        app process of the prefix (browser, network service, helpers — not
-        renderers/GPU) to the instrument worker. Attach: the target is
-        instrumented, and with ``--enable_child_gating`` its later processes too.
-        Chromium modules are pre-resolved on the host so no process has to scan.
-        """
-        from ..wine_chromium import chromium_offsets, merge_offsets
-        from ..wine_process_watcher import (
-            WineProcessWatcher,
-            current_pids,
-            process_wine_prefix,
-        )
-        wke = self._wine_extractor_module()
-
-        self.logger.info(
-            "Wine target with Chromium-embedded BoringSSL — using Frida with a "
-            "Wine process watcher (child processes are followed)."
-            if self._wine_chromium_modules() else
-            "Wine target — using Frida with a Wine process watcher."
-        )
-        if not self.experimental:
-            # The Wine agent (PE-module rows, LdrLoadDll hook) is gated behind
-            # --experimental; this route is meaningless without it.
-            self._config.hooking.experimental = True
-        # Lean Wine agent load: the watcher attaches each new network-service
-        # process early (before its first TLS), so the agent must load fast
-        # without the full-module Memory.scan sweep (fkie-cad/friTap#52). Drives
-        # the `lean_wine` key in the config batch.
-        self._wine_lean = True
-        # Load the SLIM Wine bundle (frida-java/objc bridges excluded): a smaller
-        # bundle injects reliably into a freshly-created Chromium network service,
-        # which is what lets us attach it early enough to catch its first TLS
-        # handshakes. The full bundle's bridge bytes made early injection break
-        # the young service ~half the time. The operator FRITAP_AGENT_BUNDLE
-        # override still wins (checked first in _resolve_agent_bundle_path).
-        wine_bundle = os.path.join(here, "fritap_agent_wine.js")
-        if os.path.isfile(wine_bundle):
-            self.agent_script = "fritap_agent_wine.js"
-            self._resolved_agent_bundle = wine_bundle
-            self.logger.info("Using slim Wine agent bundle: %s", wine_bundle)
-        else:
-            self.logger.warning(
-                "Slim Wine agent bundle not found (%s); using the full bundle — "
-                "early network-service capture may be unreliable. Rebuild with "
-                "./dev/compile_agent.sh.", wine_bundle)
-        if os.geteuid() != 0 and wke.ptrace_scope() != 0:
-            self.logger.warning(
-                "kernel.yama.ptrace_scope=%d: Wine re-parents the app's processes, so "
-                "attaching to them needs ptrace_scope=0 (sudo sysctl "
-                "kernel.yama.ptrace_scope=0) or root.", wke.ptrace_scope(),
-            )
-
-        mods = self._wine_chromium_modules()
-        if mods:
-            extra = chromium_offsets(mods)
-            for name, entry in extra.items():
-                self.logger.info(
-                    "Pre-resolved ssl_log_secret in %s at rva %s",
-                    name, entry["ssl_log_secret"]["address"],
-                )
-            missing = [m for m in mods if os.path.basename(m) not in extra]
-            for path in missing:
-                self.logger.info("No ssl_log_secret pre-resolved for %s; the agent will scan it", path)
-            self.offsets_data = merge_offsets(self.offsets_data, extra)
-
-        if self.device is None:
-            self.device = self._backend.get_device()
-        self.connect_live()
-        self._setup_live_scan()
-        self._start_consumer_thread()
-        self._start_instrument_thread()
-
-        def on_new(pid, label):
-            self.logger.info("Wine process %s (pid %d): instrumenting", label, pid)
-            self._enqueue_instrumentation(
-                pid, f"Wine process {label}", label, resume=False,
-            )
-
-        launcher = None
-        if self.spawn:
-            argv = self._wine_target_argv()
-            rest = argv[1:] if argv else []
-            if not rest:
-                self.logger.error(
-                    "Wine spawn target has no executable (expected e.g. `wine app.exe`)."
-                )
-                self._done_event.set()
-                return None, None
-            run_as = wke.sudo_invoker()
-            prefix_problem = wke.wine_prefix_problem(run_as)
-            if prefix_problem:
-                self.logger.error("%s", prefix_problem)
-                self._done_event.set()
-                return None, None
-            home = run_as.home if run_as is not None else os.path.expanduser("~")
-            prefix = os.environ.get("WINEPREFIX") or os.path.join(home, ".wine")
-            # settle_seconds=0: attach each network-service process the instant
-            # it is ready, to catch its first TLS handshake. The slim Wine bundle
-            # (bridges excluded) makes such early injection reliable; a settle
-            # would miss a one-shot startup handshake (fkie-cad/friTap#52).
-            watcher = WineProcessWatcher(on_new, prefix=prefix, exclude=current_pids(),
-                                         settle_seconds=0.0)
-            self._wine_watcher = watcher
-            watcher.start()
-            launcher = subprocess.Popen(
-                [argv[0], *rest], start_new_session=True,
-                **wke._run_as_popen_kwargs(run_as, os.environ),
-            )
-            self._track_wine_proc(launcher)
-        else:
-            pid = getattr(self, "_wine_attach_pid", None) or self._resolve_wine_attach_pid()
-            if pid is None:
-                self.logger.error(
-                    "Could not determine a PID to attach to for Wine target %r.",
-                    self.target_app,
-                )
-                self._done_event.set()
-                return None, None
-            self.pid = int(pid)
-            watcher = None
-            if self.enable_child_gating:
-                watcher = WineProcessWatcher(
-                    on_new, prefix=process_wine_prefix(pid), exclude=current_pids(),
-                    settle_seconds=0.0,
-                )
-                self._wine_watcher = watcher
-                watcher.start()
-            # The already-running attach target is instrumented directly (its
-            # past TLS can't be recovered); its future network-service children
-            # are attached early by the watcher above.
-            on_new(int(pid), "attach target")
-        self._wine_watcher = watcher
-        self._wine_watch_monitor(launcher, watcher, attach_pid=None if self.spawn else self.pid)
-        return None, None
-
-    def _wine_watch_monitor(self, launcher, watcher, attach_pid=None):
-        """Finish the session once the Wine app is gone: the launcher exited
-        and no instrumented process is alive (spawn), or the attach target
-        and every followed process exited (attach)."""
-        def alive_targets():
-            alive = watcher.alive_reported() if watcher is not None else set()
-            if attach_pid is not None and os.path.exists(f"/proc/{attach_pid}"):
-                alive.add(attach_pid)
-            return alive
-
-        def _monitor():
-            idle = 0
-            while self.running and not self._done_event.is_set():
-                time.sleep(1.0)
-                launcher_alive = launcher is not None and launcher.poll() is None
-                if launcher_alive or alive_targets():
-                    idle = 0
-                    continue
-                idle += 1
-                if idle >= 3:
-                    self.logger.info("All Wine app processes exited; finishing.")
-                    if watcher is not None:
-                        watcher.stop()
-                    self.request_stop()
-                    self._wine_watch_finish()
-                    return
-
-        threading.Thread(target=_monitor, daemon=True, name="fritap-wine-monitor").start()
-
-    def _wine_watch_finish(self):
-        """Flush and signal completion for the watcher route (mirrors the
-        normal detach path closely enough for the CLI wait loop)."""
-        try:
-            self.finish_fritap()
-        except Exception as exc:
-            self.logger.debug("finish_fritap after Wine watch: %s", exc)
-        self._done_event.set()
-
-    def _run_wine_gdb_session(self, own_message_handler=None):
-        """Run GDB-based TLS key extraction for a Wine target (no Frida).
-
-        Arguments are validated synchronously (so a bad target is reported before
-        returning), then the blocking gdb session runs on a background daemon
-        thread — start_fritap_session must return promptly (``wait_for_completion``
-        blocks on ``_done_event``, and programmatic callers such as api.py expect a
-        quick return). Only key material is extracted; decrypted-plaintext capture
-        is not available on this path. Returns ``(None, None)`` to match the
-        ``start_session`` return contract. The gdb/Wine process is tracked so
-        :meth:`cleanup` can tear it down on Ctrl-C (see ``_terminate_wine_gdb``).
-        """
-        wke = self._wine_extractor_module()
-
-        self.logger.info(
-            "Wine target detected on Linux — using the GDB-based key extractor "
-            "(Frida injection skipped)."
-        )
-
-        self._log_wine_output_support()
-
-        keylog = self.keylog
-        if not keylog:
-            keylog = os.path.abspath("wine_sslkeys.log")
-            self.logger.warning("No keylog file given (-k); writing keys to %s", keylog)
-        else:
-            self.logger.info("Logging Wine TLS keys to %s", keylog)
-        # Remembered so the full-capture finalize can embed these keys (DSB);
-        # gdb appends, so only bytes past the current size belong to this run.
-        self._wine_keylog_path = keylog
-        self._wine_keylog_offset = self._file_size(keylog)
-
-        # Resolve the invocation synchronously so argument/target errors return
-        # before we start a thread.
-        if self.spawn:
-            # Launch Wine normally (full wineserver/services bootstrap) and
-            # attach: gdb-spawning Wine deadlocks its cold boot on the wow64
-            # layout. Needs kernel.yama.ptrace_scope=0 (see docs).
-            argv = self._wine_target_argv()
-            rest = argv[1:] if argv else []
-            if not rest:
-                self.logger.error(
-                    "Wine spawn target has no executable (expected e.g. `wine app.exe`)."
-                )
-                self._done_event.set()
-                return None, None
-            # Wine refuses a prefix it does not own, so under sudo the Wine
-            # process itself is dropped back to the invoking user.
-            run_as = wke.sudo_invoker()
-            if run_as is not None:
-                self.logger.info(
-                    "Running as root via sudo; launching Wine as %s (uid %d) so it can use "
-                    "that user's prefix.", run_as.user, run_as.uid,
-                )
-            prefix_problem = wke.wine_prefix_problem(run_as)
-            if prefix_problem:
-                self.logger.error("%s", prefix_problem)
-                self._done_event.set()
-                return None, None
-            gdb_run_as = self._wine_gdb_run_as(run_as, keylog)
-            gdb_patterns = self._wine_gdb_patterns_file()
-            work = functools.partial(
-                wke.launch_and_attach,
-                wine_cmd=argv[0],
-                program=rest[0],
-                program_args=rest[1:],
-                keylog=keylog,
-                patterns=gdb_patterns,
-                verbose=self.verbose,
-                logger=self.logger,
-                on_process=self._track_wine_proc,
-                run_as=run_as,
-                gdb_run_as=gdb_run_as,
-            )
-        else:
-            attach = getattr(self, "_wine_attach_pid", None)
-            if attach is None:
-                attach = self._resolve_wine_attach_pid()
-            if attach is None:
-                self.logger.error(
-                    "Could not determine a PID to attach to for Wine target %r.",
-                    self.target_app,
-                )
-                self._log_wine_attach_hint()
-                self._done_event.set()
-                return None, None
-            gdb_run_as = self._wine_gdb_run_as(
-                wke.sudo_invoker(), keylog, target_pid=attach,
-            )
-            gdb_patterns = self._wine_gdb_patterns_file()
-            work = functools.partial(
-                wke.run_wine_key_extraction,
-                attach=str(attach),
-                keylog=keylog,
-                patterns=gdb_patterns,
-                verbose=self.verbose,
-                on_process=self._track_wine_proc,
-                run_as=gdb_run_as,
-            )
-
-        def _runner():
-            reason = "Wine GDB key extraction finished"
-            try:
-                rc = work()
-                reason = f"Wine GDB key extraction finished (gdb exit {rc})"
-                self.logger.info("%s. Keylog: %s", reason, keylog)
-            except Exception as exc:
-                reason = f"Wine GDB key extraction failed: {exc}"
-                self.logger.error("%s", reason)
-            finally:
-                self._discard_wine_gdb_patterns(gdb_patterns)
-                self._finish_wine_session(reason)
-
-        self._wine_thread = threading.Thread(
-            target=_runner, name="fritap-wine-gdb", daemon=True
-        )
-        self._wine_thread.start()
-        return None, None
-
-    def _log_wine_output_support(self):
-        """Tell the user which -p/-f/--live style outputs the Wine GDB path serves.
-
-        A full packet capture (-p FILE -f) works: the sniffer runs independently
-        and the extracted keys are embedded at finalize. Decrypted plaintext
-        outputs need the Frida agent and are not produced here.
-        """
-        if self.full_capture:
-            self.logger.info(
-                "Full packet capture is active; the TLS keys for it come from the "
-                "GDB extractor (embedded as a DSB when writing .pcapng)."
-            )
-        plaintext_pcap = self.pcap_name and not self.full_capture
-        if plaintext_pcap or self.live or self.payload_modification or self.socket_trace:
-            self.logger.warning(
-                "Plaintext/pcap capture is not currently supported for Wine "
-                "targets; only TLS key extraction (keylog) is available. For a "
-                "full packet capture use -p <file> -f, or capture the keys with "
-                "-k and decrypt the traffic in Wireshark."
-            )
-
-    def _log_wine_attach_hint(self):
-        """Explain a failed attach whose target looks like a Wine launch command."""
-        if not self._target_is_wine():
-            return
-        self.logger.error(
-            "Hint: %r looks like a Wine launch command, but friTap ran in attach "
-            "mode because -s/--spawn was not given.", self.target_app,
-        )
-        self.logger.error(
-            "  -> To launch it under friTap: fritap -s -k keys.log wine app.exe"
-        )
-        self.logger.error(
-            "  -> Or start the app first and attach by name: fritap -k keys.log app.exe"
-        )
-
-    def _wine_gdb_run_as(self, invoker, keylog, target_pid=None):
-        """The sudo *invoker* to run gdb as (least privilege), or None for root.
-
-        gdb is dropped only when that can work (Yama scope, target ids, script
-        and keylog access — see ``unprivileged_gdb_blocker``); otherwise it
-        stays root and the reason is logged. None when not running via sudo.
-        """
-        if invoker is None:
-            return None
-        wke = self._wine_extractor_module()
-        reason = wke.unprivileged_gdb_blocker(invoker, keylog, target_pid=target_pid)
-        if reason:
-            self.logger.info("Keeping gdb as root: %s", reason)
-            return None
-        self.logger.info(
-            "Running gdb as %s (uid %d); kernel.yama.ptrace_scope=0 allows an "
-            "unprivileged attach.", invoker.user, invoker.uid,
-        )
-        return invoker
-
-    def _finish_wine_session(self, reason):
-        """End a Wine GDB session that finished on its own through the shared
-        :meth:`_end_session` teardown (plugin/memscan notify, JSON end reason,
-        ``pcap_cleanup`` + ``cleanup``), so a full capture still gets its rename,
-        DSB and manifest. Skipped when a teardown (e.g. Ctrl-C) already ran;
-        ``_done_event`` is set on every path, even if finalizing raises.
-        """
-        try:
-            if not getattr(self, "_cleanup_done", False):
-                self._end_session(reason)
-        except Exception as exc:
-            self.logger.error("Finalizing the Wine GDB session failed: %s", exc)
-        finally:
-            self._done_event.set()
-
-    def _wine_keylog_lines(self):
-        """Valid NSS keylog lines written by the Wine GDB extractor during THIS
-        session (past ``_wine_keylog_offset``), deduplicated in order, for
-        embedding in a full capture. Comments, garbage and an unreadable file
-        yield nothing."""
-        path = getattr(self, "_wine_keylog_path", None)
-        if not path:
-            return []
-        from ..offline.tls.keylog import parse_strict_nss_line
-        try:
-            text = self._read_keylog_since(path, getattr(self, "_wine_keylog_offset", 0))
-        except OSError:
-            return []
-        entries = filter(None, map(parse_strict_nss_line, text.splitlines()))
-        return list(dict.fromkeys(
-            f"{e.label} {e.client_random} {e.secret}" for e in entries
-        ))
-
-    @staticmethod
-    def _read_keylog_since(path, offset):
-        """Text of *path* after byte *offset*, or all of it if the file shrank
-        below *offset* (truncated); undecodable bytes are replaced."""
-        with open(path, "rb") as handle:
-            size = os.fstat(handle.fileno()).st_size
-            handle.seek(offset if offset <= size else 0)
-            return handle.read().decode("utf-8", errors="replace")
-
-    @staticmethod
-    def _file_size(path):
-        """Size of *path* in bytes, 0 if it does not exist or is unreadable."""
-        try:
-            return os.path.getsize(path)
-        except OSError:
-            return 0
-
-    def _track_wine_proc(self, proc):
-        """Register a Wine-extraction process (the gdb session, and for spawn the
-        launched Wine session) for teardown. Each is a session leader
-        (start_new_session=True), so we record its pgid and killpg it later —
-        which works even after the leader itself has exited but the group lives on.
-        """
-        procs = getattr(self, "_wine_procs", None)
-        if procs is None:
-            procs = self._wine_procs = []
-        try:
-            procs.append((proc, os.getpgid(proc.pid)))
-        except (OSError, ProcessLookupError):
-            pass
-
-    def _terminate_wine_gdb(self):
-        """Stop a running Wine GDB extraction on teardown (Ctrl-C etc.).
-
-        friTap's SIGINT handler force-exits right after cleanup, so this is the
-        only place the gdb session (and, for spawn, the launched Wine tree) is
-        stopped rather than orphaned. Attach mode kills only gdb's own session, so
-        a user-launched target is left running. No-op if nothing was started.
-        """
-        import signal as _signal
-        watcher = getattr(self, "_wine_watcher", None)
-        if watcher is not None:
-            watcher.stop()
-        for _proc, pgid in getattr(self, "_wine_procs", []):
-            try:
-                os.killpg(pgid, _signal.SIGTERM)
-            except (OSError, ProcessLookupError):
-                pass
-        # Frida watcher route, spawn mode: Wine may move the app's processes out
-        # of the launcher's group, so stop the ones we followed explicitly. An
-        # attached (user-launched) target is left running.
-        if watcher is not None and self.spawn:
-            for pid in watcher.alive_reported():
-                try:
-                    os.kill(pid, _signal.SIGTERM)
-                except (OSError, ProcessLookupError):
-                    pass
-
     def start_fritap_session(self, own_message_handler=None):
         if self._should_use_wine_frida_watch():
             return self._run_wine_frida_watch_session(own_message_handler)
         if self._should_use_wine_gdb():
             return self._run_wine_gdb_session(own_message_handler)
-        self.connect_live()  # No-op if already connected or not in live mode
-        # Wire passive analysis BEFORE instrumentation so no flows are missed.
+        self.connect_live()  # no-op if already connected or not in live mode
+        # Before instrumentation, so no flows are missed.
         self._setup_live_scan()
         self._start_consumer_thread()
-        # Start the instrument worker before gating is enabled, so the very
-        # first child/spawn event already has a thread to run on.
+        # Before gating is enabled, so the first child/spawn event has a thread to run on.
         if self.enable_child_gating or self.enable_spawn_gating or self.spawn_gating_all:
             self._start_instrument_thread()
         try:
             return self._session_manager.start_session(own_message_handler)
         except BaseException as exc:
             # start_session returns right after the capture start point, so a
-            # transport error out of it is the target (or the device link)
-            # dying during startup: a runtime error, not "target detached".
+            # transport error here is the target or device link dying during
+            # startup: a runtime error, not "target detached".
             if isinstance(exc, BackendTransportError) and not self.capture_started():
                 self._report_death_before_capture(f"transport error: {exc}")
-            # start_session resumes a spawned target only after instrumentation
-            # succeeds, so anything that raises in between — an agent load
-            # timeout, a failed hook install, Ctrl+C during the pre-resume wait
-            # — used to leave the process suspended forever.
+            # A spawned target is resumed only after instrumentation succeeds, so
+            # any raise in between (load timeout, failed hook install, Ctrl+C)
+            # would leave it suspended forever.
             self._resume_uninstrumented_spawn()
             raise
 
     def _resume_uninstrumented_spawn(self) -> None:
         """Resume a spawned target we failed to instrument.
 
-        A process we spawned stays suspended until someone resumes it. Left
-        that way it is eventually killed by the platform watchdog, and the user
-        is shown the target's own crash (``0x8badf00d`` on iOS) instead of
-        friTap's failure to instrument it — which is exactly the misattribution
-        friTap #65 was reported as. Resuming is the honest outcome: the backend
-        interface offers no kill, and a running-but-uninstrumented target is far
-        easier to reason about than a phantom crash. Say so loudly, because the
-        app will now look like it started normally.
+        Left suspended, the platform watchdog kills it and the user sees the target's own
+        crash (``0x8badf00d`` on iOS) instead of friTap's instrumentation failure. The backend
+        offers no kill, and a running-but-uninstrumented target beats a phantom crash, so the
+        error log says loudly that it now runs without instrumentation.
         """
         if not self.spawn or self.pid is None or self.device is None:
             return
         if self._death_before_capture:
-            # Already explained; the pid is most likely gone, so resume quietly.
+            # Already explained; the pid is probably gone, so resume quietly.
             self._resume_suspended(self.pid)
             return
         self.logger.error(
@@ -4505,753 +898,41 @@ class SSL_Logger():
         )
         self._resume_suspended(self.pid)
 
-    def stop_capture_gracefully(self) -> bool:
-        """Stop the capture exactly like Ctrl+C would (flush pcap/keylog/JSON,
-        detach, exit 0). Safe to call from any thread, e.g. a --duration timer.
-
-        Returns False (and does nothing) when a teardown is already running,
-        so a target that died first keeps its EXIT_TARGET_DETACHED status."""
-        if getattr(self, "_cleanup_done", False) or getattr(self, "_session_end_claimed", False):
-            return False
-        self._session_manager.request_graceful_stop()
-        return True
-
-    def request_stop(self):
-        """Signal the capture to stop. Non-blocking, safe to call from any thread."""
-        self.running = False
-        self._consumer_stop.set()
-        self._instrument_stop.set()
-
-    def finish_fritap(self):
-        self._stop_instrument_thread()  # no new scripts once we are tearing down
-        self._stop_consumer_thread()  # drain remaining messages before PCAP close
-        if self._proxy_redirector is not None:
-            try:
-                self._proxy_redirector.stop()
-            except Exception:
-                pass
-            self._proxy_redirector = None
-        self._session_manager.finish()
-
-    def _provide_custom_hooking_handler(self, handler):
-        return handler
-
-
-    def _internal_callback_wrapper(self, script=None):
-        """Build the Frida on_message handler for ``script``.
-
-        ``script`` is remembered in the closure so a handshake is always
-        answered on the script that asked, even after ``instrument()`` has
-        moved ``self.script`` on to the next process.
-        """
-        def wrapped_handler(message, data):
-            # The startup handshake is answered right here, on the Frida
-            # callback thread, and never enqueued. The agent blocks in
-            # recv().wait() inside script.load(), so routing the reply through
-            # the message queue would deadlock whenever the thread waiting on
-            # load() is the very thread that drains that queue — and would be
-            # dropped outright if the queue happened to be full. Handshake
-            # payloads are terminal anyway (on_fritap_message discards non-dict
-            # payloads), so returning early loses nothing.
-            if isinstance(message, dict) and message.get('type') == 'send':
-                payload = message.get('payload')
-                if isinstance(payload, str):
-                    try:
-                        if self._answer_startup_handshake(payload, script):
-                            return
-                    except Exception:
-                        # A dead script or a closed session must not take down
-                        # Frida's callback thread; the load will time out and be
-                        # reported instead.
-                        self.logger.exception("Failed to answer startup handshake")
-                        return
-
-            # Everything else: enqueue only — return from the Frida callback
-            # thread ASAP to prevent GIL contention that starves the TUI thread.
-            try:
-                self._message_queue.put_nowait((message, data))
-            except queue.Full:
-                self._record_queue_drop()
-
-        return wrapped_handler
-
-    def _record_queue_drop(self) -> None:
-        """Count a message dropped at the full queue (count or byte cap) and
-        log the running total at most once per MESSAGE_QUEUE_DROP_LOG_INTERVAL.
-
-        Runs on Frida's callback thread: no blocking, no Frida calls.
-        """
-        self._queue_drop_count += 1
-        now = time.monotonic()
-        last = getattr(self, "_queue_drop_logged_at", 0.0)
-        if last and now - last < MESSAGE_QUEUE_DROP_LOG_INTERVAL:
+    def _start_payload_mod_watcher(self) -> None:
+        """Start the -pm file watcher once per session; later calls are no-ops."""
+        if getattr(self, "_observer", None) is not None:
             return
-        self._queue_drop_logged_at = now
-        reported = getattr(self, "_queue_drops_reported", 0)
-        self._queue_drops_reported = self._queue_drop_count
-        self.logger.warning(
-            "Agent message queue full (%d messages / %d MiB cap): dropped %d "
-            "message(s) since the last report, %d in total.",
-            MESSAGE_QUEUE_MAX_MESSAGES, MESSAGE_QUEUE_MAX_BYTES // (1024 * 1024),
-            self._queue_drop_count - reported, self._queue_drop_count)
+        self.logger.debug("Init watcher")
+        observer = Observer()
+        observer.schedule(_PayloadModWatcher(self), os.getcwd())
+        observer.start()
+        self._observer = observer
 
-
-    def detach_with_timeout(self, timeout=30):
-        """
-        Attempt to detach from the instrumented process with a timeout.
-
-        Args:
-            process: The instrumented process to detach from.
-            timeout: Time in seconds to wait before forcing detachment.
-                     Default 30s — Frida's script.unload() blocks waiting for
-                     in-flight Interceptor callbacks to drain, and a process
-                     under heavy hook load (e.g. Chrome's QUIC stack with
-                     dozens of stream-level hooks installed) can keep the JS
-                     thread busy for >5s after Ctrl+C. The previous 5s default
-                     was too aggressive and produced spurious
-                     "Detach process timed out" warnings on QUIC-loaded
-                     captures even when the underlying detach eventually
-                     succeeded. Respects --timeout CLI arg when provided.
-        """
-        def detach():
-            try:
-                if self.debug_output or self.debug:
-                    self.logger.debug("Attempting to detach from instrumented process...")
-
-                # FAST PATH — the target already died (native crash inside a hook
-                # surfaces as 'process-terminated', and the script is destroyed
-                # with it). There is nothing left to unload or detach from: every
-                # Frida call below would just block until the outer timeout
-                # (default 30s), which delays cleanup()'s goodbye + os._exit and
-                # makes the user think they must press Ctrl+C again. Short-circuit
-                # so teardown finishes immediately.
-                script_dead = bool(getattr(self.script, "is_destroyed", False))
-
-                # Step 1 — graceful_detach RPC. Frida 17 splits the RPC proxy
-                # into exports_sync (blocking) and exports (async coroutine).
-                # We strictly prefer exports_sync so the call actually blocks
-                # until the JS side returns; the async variant would fire-
-                # and-forget the request and we'd race straight into unload.
-                # The agent's gracefulDetach sets a module-scope shutdown
-                # flag BEFORE calling Interceptor.detachAll, so any callback
-                # already queued on the JS message loop short-circuits at
-                # sendDatalog / emit (microsecond per pending callback
-                # instead of a full IPC round-trip).
-                graceful = None
-                exports_sync = getattr(self.script, "exports_sync", None)
-                if exports_sync is not None:
-                    graceful = getattr(exports_sync, "graceful_detach", None)
-                if graceful is None:
-                    exports_async = getattr(self.script, "exports", None)
-                    if exports_async is not None:
-                        graceful = getattr(exports_async, "graceful_detach", None)
-                if callable(graceful):
-                    try:
-                        graceful()
-                    except Exception as e:
-                        # A destroyed script raises here ("script has been
-                        # destroyed") — treat that as the target being gone.
-                        script_dead = True
-                        if self.debug_output or self.debug:
-                            self.logger.debug(f"graceful_detach RPC failed: {e}")
-
-                # Target already gone — nothing to unload or detach. Return now so
-                # cleanup()'s finally prints the goodbye and exits without delay.
-                if script_dead:
-                    if self.debug_output or self.debug:
-                        self.logger.debug(
-                            "target/script already gone — skipping unload + "
-                            "session.detach()"
-                        )
-                    return
-
-                # Step 2 — brief drain. Give the JS message loop a moment to
-                # process any pending callbacks (they'll now short-circuit on
-                # the shutdown flag) so the queue is empty when unload runs.
-                # 200ms is plenty even for thousands of callbacks because
-                # they each do nothing more than a single flag check.
-                try:
-                    threading.Event().wait(0.2)
-                except Exception:
-                    pass
-
-                # Step 3 — unload_script with its OWN timeout. Frida's
-                # script.unload() has no native timeout; if the JS thread is
-                # still busy for any reason it would block forever.
-                # Wrapping it lets us fall through to session.detach() after
-                # 5s no matter what. Skipped when there is no main script
-                # (a memory-scan-only run) — its plugin scripts are unloaded
-                # separately via the plugin loader's detach path.
-                #
-                # Initialized to None so the Step-4 liveness check below is safe
-                # in the no-main-script case (self.script is None): without this
-                # the name would be unbound there, raising UnboundLocalError
-                # ("cannot access local variable 'unload_thread' ...") — the
-                # crash seen on Ctrl+C during memory-scan-only runs.
-                unload_thread = None
-                if self.script is not None:
-                    unload_thread = threading.Thread(
-                        target=lambda: self._backend.unload_script(self.script),
-                        daemon=True,
-                    )
-                    unload_thread.start()
-                    unload_thread.join(timeout=5)
-
-                # Step 4 — session.detach() (best-effort; backend handles
-                # races with the target already exiting).
-                #
-                # ORDERING MATTERS — do not "simplify" this back into an
-                # unconditional detach. If script.unload() is still in-flight on
-                # the daemon thread, the Frida session is busy and calling
-                # session.detach() into it serializes behind the stuck unload,
-                # which is exactly what produced the 30s "Detach process timed
-                # out" hang during heavy QUIC capture. gracefulDetach() already
-                # ran Interceptor.detachAll() on the JS side (Step 1), so the
-                # hooks are gone regardless; when unload is wedged we skip the
-                # racing detach and let process exit / frida-server reclaim the
-                # session. We only issue session.detach() when unload returned
-                # cleanly (the common, non-flooded case).
-                if unload_thread is not None and unload_thread.is_alive():
-                    if self.debug_output or self.debug:
-                        self.logger.debug(
-                            "script.unload() did not return within 5s; skipping "
-                            "session.detach() to avoid racing the busy session "
-                            "(hooks already removed via gracefulDetach; unload "
-                            "thread will exit when the JS message loop drains)"
-                        )
-                else:
-                    # No main script (unload_thread is None), or unload returned
-                    # cleanly — issue the best-effort session.detach().
-                    self._backend.detach(self.process)
-
-            except Exception as e:
-                self.logger.error(f"Error while detaching: {e}")
-
-        # Create a thread to run the detach method.
-        # daemon=True: detach is best-effort cleanup guarded by a join timeout
-        # below; if it times out the thread is abandoned. Without daemon=True an
-        # abandoned (still-running) detach thread blocks interpreter shutdown in
-        # threading._shutdown(), which manifests as the host process hanging
-        # after the session summary until a second Ctrl+C. The OS reclaims the
-        # Frida session when the process exits anyway, so cutting it short is safe.
-        detach_thread = threading.Thread(target=detach, daemon=True)
-        detach_thread.start()
-
-        # Wait for the thread to complete
-        detach_thread.join(timeout=timeout)
-
-        if detach_thread.is_alive():
-            if self.debug_output:
-                self.logger.warning(f"Detach process timed out after {timeout} seconds.")
-            # Force cleanup if necessary
-            # Note: force detach may not be supported, so handle gracefully
-        else:
-            if self.debug_output:
-                self.logger.debug("Detached friTap from process successfully.")
-
-    def set_keylog_file(self, keylog_name):
-        self.keylog_file = open(keylog_name, "w")
-
-    def pcap_cleanup(self, is_full_capture, is_mobile, pcap_name):
-        self._session_manager.pcap_cleanup(is_full_capture, is_mobile, pcap_name)
-
-    def cleanup(self, live=False, socket_trace=False, full_capture=False, debug_output=False, debug=False):
-        if self._cleanup_done:
+    def _stop_payload_mod_watcher(self) -> None:
+        """Stop and join the -pm file watcher (bounded); idempotent."""
+        observer = getattr(self, "_observer", None)
+        if observer is None:
             return
-        self._cleanup_done = True
-
-        # Tear down a running Wine GDB extraction (gdb subprocess / launched Wine
-        # tree) first: friTap's SIGINT handler force-exits right after cleanup, so
-        # this is the only place that stops it being orphaned (ptrace-attached) on
-        # Ctrl-C. No-op on the Frida path / when no Wine extraction is running.
-        self._terminate_wine_gdb()
-
-        # Run all teardown steps, then ALWAYS print the goodbye banner and force
-        # a clean process exit — even if a step raised (e.g. the target crashed
-        # mid-teardown). This is the single chokepoint every stop path funnels
-        # through: Ctrl+C (main thread via the SIGINT handler), process exit /
-        # native crash (Frida callback thread via on_detach), and the normal or
-        # --timeout return (the CLI's finally block in friTap.py).
+        self._observer = None
         try:
-            self._run_cleanup_steps(live, socket_trace, full_capture, debug_output, debug)
-        except Exception as _cleanup_err:
-            try:
-                self.logger.error(f"Error during cleanup: {_cleanup_err}")
-            except Exception:
-                pass
-        finally:
-            # The JSON document (and every other output handler) must be complete
-            # before the os._exit below, even if a teardown step above raised
-            # before reaching close_output_handlers(). Idempotent.
-            self._close_output_handlers_safely()
-            self.special_logger.info("\nThanks for using friTap. Have a great day!")
-            if not self._tui_mode:
-                # os._exit, not sys.exit: SystemExit only unwinds the current
-                # thread and still blocks interpreter shutdown while it joins the
-                # non-daemon Frida reactor/finalizer thread that stays alive when
-                # script.unload() is still draining the JS message loop. It also
-                # does nothing at all when cleanup() runs on a Frida callback
-                # thread (the crash/on_detach path). os._exit terminates the whole
-                # process immediately from whichever thread we're on, so the user
-                # never needs a second Ctrl+C.
-                os._exit(self._exit_status)
-
-    def _plaintext_hooks_needed(self) -> bool:
-        """Whether the agent installs its plaintext read/write hooks.
-
-        OutputHandlerFactory.plaintext_hooks_needed, unless the session's output
-        opts out (the LSASS helper of a -f full-capture run, see
-        friTap._build_lsass_config)."""
-        from ..output.factory import OutputHandlerFactory
-        output = self._config.output
-        if output.plaintext_hooks_disabled:
-            return False
-        return OutputHandlerFactory.plaintext_hooks_needed(output)
-
-    def _close_output_handlers_safely(self):
-        """close_output_handlers() for the exit path: idempotent, never raises."""
-        try:
-            self.close_output_handlers()
-        except Exception as exc:  # noqa: BLE001 - must not block the exit
-            self.logger.error(f"Error closing output handlers: {exc}")
-        self._finish_json_stream()
-
-    def _finish_json_stream(self):
-        """'-j -' safety net before the process exits: complete the stream
-        envelope when the JSONL handler never opened or closed it (e.g. the run
-        failed before the output handlers were set up). Never raises; a no-op
-        without '-j -', after a normal close, and for the LSASS helper session
-        (which shares, but does not own, the stream)."""
-        output = getattr(getattr(self, "_config", None), "output", None)
-        if getattr(output, "auxiliary_session", False):
-            return
-        try:
-            from ..output.stdout_stream import finish_unclosed_stream
-            finish_unclosed_stream(self._exit_status)
-        except Exception:  # noqa: BLE001 - must not block the exit
-            pass
-
-    def _release_lsass_contributor(self):
-        """Stop the LSASS helper session (Windows target sessions only; never raises).
-
-        Its handlers hold references on the shared output files, so it must be
-        released before this session's own handlers close. A no-op for the LSASS
-        session itself and off Windows, where no such session exists.
-        """
-        output = getattr(getattr(self, "_config", None), "output", None)
-        if output is None or getattr(output, "auxiliary_session", False):
-            return
-        from ..fritap_utility import are_we_running_on_windows
-        if are_we_running_on_windows():
-            _release_lsass_keylog_writer(self.logger)
-
-    def close_output_handlers(self):
-        """Close every output handler (keylog, json, live, ...) exactly once.
-
-        Idempotent: a second call is a no-op, so both the normal teardown and
-        :meth:`friTap.friTap.LsassHookManager.stop_lsass_hook` (which must release
-        the LSASS worker's keylog handle before the SChannel relabel renames that
-        file) can call it.
-        """
-        if not self._handlers_active or getattr(self, "_output_handlers_closed", False):
-            return
-        self._output_handlers_closed = True
-        for handler in self._output_handlers:
-            try:
-                handler.close()
-            except Exception as e:
-                self.logger.error(f"Error closing handler: {e}")
-
-    def _auto_relabel_schannel_keylog(self, pcap_name):
-        """Fix a Windows SChannel/lsass keylog in place by trial decryption.
-
-        The live ncrypt hooks correlate a TLS 1.3 secret's client_random and its
-        handshake-vs-application phase per thread, but lsass is system-wide and runs
-        one handshake's hooks across a thread pool, so the raw keylog comes out with
-        swapped labels and ``???`` client_randoms. Once the raw full capture is
-        written we trial-decrypt every secret against it (reusing the offline
-        :func:`~friTap.offline.keylog_coverage.relabel_keylog`) to recover the true
-        label + client_random, then overwrite the keylog with the corrected version
-        so it loads directly in Wireshark. The raw agent output is preserved as
-        ``<stem>.raw.keylog``.
-
-        Best-effort and non-fatal: any problem leaves the original keylog intact.
-        Gated to Windows full captures and the ``auto_relabel`` config
-        (``--no-auto-relabel`` opts out). Needs tshark; when it is missing a one-line
-        hint to run ``--repair-keylog`` is printed and nothing is modified.
-        """
-        try:
-            if not getattr(self._config.output, "auto_relabel", True):
-                return
-            from ..fritap_utility import are_we_running_on_windows
-            if not are_we_running_on_windows():
-                return
-            if not pcap_name or not os.path.isfile(pcap_name):
-                return
-            keylog_paths = [
-                path for path in _schannel_keylog_candidates(
-                    self._config, getattr(self, "_protocol_registry", None))
-                if os.path.isfile(path) and os.path.getsize(path) > 0
-            ]
-            if not keylog_paths:
-                return
-            # The SChannel secrets are written by the separate lsass SSL_Logger that
-            # shares this keylog path. Tear that session down first so its keylog
-            # handle is flushed AND closed: Windows refuses to rename a file that is
-            # still open, and on any OS later lsass writes would land in the .raw
-            # backup. Then flush our own handle best-effort before reading.
-            _release_lsass_keylog_writer(self.logger)
-            try:
-                live_keylog_file = self._live_keylog_file()
-                if live_keylog_file is not None and not live_keylog_file.closed:
-                    live_keylog_file.flush()
-            except Exception:  # noqa: BLE001
-                pass
-            # Both sessions' handlers are closed by now (ours in
-            # close_output_handlers(), LSASS's just above); confirm the shared
-            # writer really dropped to zero references before renaming.
-            keylog_paths = _drop_still_open_keylogs(self.logger, pcap_name, keylog_paths)
-            if not keylog_paths:
-                return
-            from ..offline.tshark import find_tshark
-            try:
-                tshark_bin = find_tshark(getattr(self._config.output, "tshark_path", None))
-            except RuntimeError:  # TsharkNotFoundError subclasses RuntimeError
-                self.logger.info(
-                    "SChannel keylog may have swapped TLS 1.3 labels / '???' client_randoms, "
-                    "but tshark was not found to auto-fix it. Install tshark, or run: "
-                    "fritap --from-pcap %s --keylog %s --repair-keylog",
-                    pcap_name, keylog_paths[0])
-                return
-            for keylog_path in keylog_paths:
-                _relabel_one_schannel_keylog(self.logger, tshark_bin, pcap_name, keylog_path)
-        except Exception:  # noqa: BLE001 - never break teardown
-            self.logger.debug("SChannel keylog auto-relabel failed", exc_info=True)
-
-    def _full_capture_keylog_path(self):
-        """The keylog this full capture really wrote, else ``None`` (never raises)."""
-        try:
-            written = getattr(self.pcap_obj, "written_keylog_path", None)
-            if callable(written):
-                return written()
-        except Exception:  # noqa: BLE001
-            pass
-        return None
-
-    def _auto_build_tap_from_full_capture(self, pcap_name):
-        """With ``-f --tap X.tap``, convert the finished full capture into X.tap.
-
-        Runs the in-process offline pipeline (manifest-aware) via
-        :func:`friTap.offline.auto_tap.auto_build_tap`. A no-op without --tap,
-        for the LSASS helper session, or when no pcap was written. Never raises.
-        """
-        try:
-            from ..offline.auto_tap import auto_build_tap, should_auto_build_tap
-            output = self._config.output
-            tap_path = getattr(output, "tap_output", None)
-            if not should_auto_build_tap(
-                    full_capture=True, tap_path=tap_path, pcap_path=pcap_name,
-                    auxiliary_session=getattr(output, "auxiliary_session", False)):
-                return
-            auto_build_tap(pcap_name, tap_path,
-                           keylog_path=self._full_capture_keylog_path(),
-                           capture_target=str(getattr(self._config, "target", "") or ""),
-                           logger=self.logger)
-        except Exception:  # noqa: BLE001 - never break teardown
-            self.logger.debug("auto .tap build from full capture failed", exc_info=True)
-
-    def _run_cleanup_steps(self, live=False, socket_trace=False, full_capture=False, debug_output=False, debug=False):
-        """Perform the actual teardown work. Always invoked via cleanup(), which
-        guarantees the goodbye banner and a clean exit run afterward regardless
-        of whether any step here raises."""
-        self._stop_instrument_thread()  # also resumes every pid left suspended
-        self._stop_consumer_thread()
-
-        # Unload plugins
-        if hasattr(self, '_plugin_loader'):
-            self._plugin_loader.unload_all(self._plugin_shim)
-
-        # Final teardown of the memory-scan engine (stops the poll loop, closes
-        # sidecars, unloads scripts). Mirrors the plugins' unload_all.
-        if getattr(self, "_memory_scan_engine", None) is not None:
-            try:
-                self._memory_scan_engine.close()
-            except Exception:  # noqa: BLE001 - cleanup must not break teardown
-                self.logger.debug("memory-scan: engine close() failed", exc_info=True)
-
-        # Finalize live passive analysis (flush flows, drain queue, render
-        # findings) after plugins unload but before detaching. Guarded so a
-        # scan error never breaks normal capture cleanup.
-        self._finalize_live_scan()
-
-        # The Windows LSASS helper session shares our -p/-k/--json files; release
-        # it first so its records are in before the last releaser completes them
-        # (the JSON document, the full-capture finalize below).
-        self._release_lsass_contributor()
-
-        # Close output handlers (new modular path)
-        self.close_output_handlers()
-        # -p: the plaintext pcap is closed now; switch synthetic streams to
-        # their real tuples where safe and record the manifest summary.
-        self._finalize_plaintext_pcap(full_capture)
-
-        if self.pcap_obj is not None and full_capture:
-            if self.pcap_obj.full_capture_thread.is_alive():
-                self.pcap_obj.full_capture_thread.join()
-                time.sleep(2)
-
-        if not self._handlers_active:
-            # Legacy cleanup for live/json when handlers not active
-            from .cleanup_compat import cleanup_legacy
-            cleanup_legacy(self)
-
-        if isinstance(socket_trace, str):
-            self.logger.info(f"Write traced sockets into {socket_trace}")
-            self.write_socket_trace(socket_trace)
-        if socket_trace:
-            display_filter = PCAP.get_filter_from_traced_sockets(self.traced_Socket_Set, filter_type="display")
-            self.logger.info(f"Generated Display Filter for Wireshark:\n{display_filter}")
-
-        if full_capture:
-            if debug_output or debug:
-                display_filter = PCAP.get_filter_from_traced_sockets(self.traced_Socket_Set, filter_type="display")
-                self.logger.debug(f"Generated Display Filter for Wireshark:\n{display_filter}")
-
-            from ..output import KeyCollectorHandler
-            formatted_keys = ()
-            for handler in getattr(self, "_output_handlers", []):
-                if isinstance(handler, KeyCollectorHandler):
-                    formatted_keys = handler.get_collected_keys()
-                    break
-            # The Wine GDB path bypasses the agent's key events, so its keys only
-            # exist in the keylog file the extractor wrote.
-            if not formatted_keys:
-                formatted_keys = self._wine_keylog_lines()
-
-            pcap_name = self.pcap_obj.pcap_file_name
-
-            # owner-capture: ensure AppTap has finished writing the app-scoped pcap
-            # before we finalize (idempotent — also called from join/cleanup).
-            if getattr(self.pcap_obj, "apptap_session", None) is not None:
-                self.pcap_obj.stop_owner_capture()
-            owner_active = getattr(self.pcap_obj, "capture_tier", None) is not None
-            try:
-                if self.traced_scapy_socket_Set and not owner_active:
-                    self.pcap_obj.create_application_traffic_pcap(
-                        self.traced_scapy_socket_Set, self.pcap_obj,
-                        formatted_keys=formatted_keys,
-                    )
-                else:
-                    if owner_active:
-                        self.logger.info(
-                            f"owner-capture: {pcap_name} is already app-scoped by AppTap "
-                            f"(tier={self.pcap_obj.capture_tier}); skipping socket-trace post-filter.")
-                    else:
-                        suffix = (
-                            f"PCAP {pcap_name} will contain all captured traffic from "
-                            f"the device (frida/adb infrastructure excluded by default)."
-                        )
-                        if socket_trace:
-                            self.logger.warning(f"friTap observed no sockets during capture. The resulting {suffix}")
-                        else:
-                            self.logger.info(f"Socket tracing disabled. The resulting {suffix}")
-
-                    # Seed manifest ports from the socket trace when available
-                    # (populated only with --socket_trace). Pure --full_capture
-                    # without it leaves this empty and ports stay unrecorded.
-                    self.pcap_obj.finalize_full_capture(
-                        formatted_keys,
-                        traced_Socket_Set=self.traced_Socket_Set,
-                    )
-            except Exception as e:
-                self.logger.error(f"Error: {e}")
-
-            # Auto-relabel the Windows SChannel keylog so it loads in Wireshark
-            # without a separate --repair-keylog pass (fixes TLS 1.3 label swaps and
-            # ??? client_randoms via trial decryption against the raw full capture).
-            self._auto_relabel_schannel_keylog(pcap_name)
-
-            # -f --tap: the plaintext hooks were off, so build the .tap from the
-            # finalized pcap + keylog (after the relabel, so it sees fixed keys).
-            self._auto_build_tap_from_full_capture(pcap_name)
-
-        self.running = False
-        self._done_event.set()
-        if self.process:
-            # Honor --timeout when explicitly set; otherwise use the
-            # 30s default in detach_with_timeout (raised from 5s because Frida's
-            # script.unload() drains in-flight Interceptor callbacks before
-            # returning, which can take >5s on processes with many hot hooks
-            # — typical for Chrome + QUIC capture).
-            _cli_timeout = getattr(self._config.device, 'timeout', None)
-            if isinstance(_cli_timeout, int) and _cli_timeout > 0:
-                self.detach_with_timeout(timeout=_cli_timeout)
-            else:
-                self.detach_with_timeout()
-        if (self.process is not None and not self._detected_libraries
-                and not self._captured_any_secret
-                and not self._config.hooking.library_scan):
-            if self._config.protocol in ("tls", "auto", "all"):
-                self.special_logger.info(
-                    "\n[Hint] No TLS libraries were detected. Consider using "
-                    "--library-scan (-ls) to discover renamed or statically linked libraries."
-                )
-            else:
-                self.special_logger.info(
-                    f"\n[Hint] No {self._config.protocol.upper()} libraries were detected. "
-                    "If you believe this is incorrect, please open an issue at "
-                    "https://github.com/fkie-cad/friTap/issues"
-                )
-
-    # How long the host waits for the agent's platform report before declaring
-    # probe mode unsupported. The report is sent from the agent's top level, so
-    # it is normally already queued when instrumentation returns; 3s only covers
-    # the consumer thread getting round to routing it.
-    PROBE_REPORT_TIMEOUT = 3.0
-    # Non-zero exit used when the loaded bundle never acknowledged probe mode.
-    PROBE_EXIT_BUNDLE_UNSUPPORTED = 2
-
-    def wait_for_completion(self):
-        """Block until the session ends. Responds to KeyboardInterrupt."""
-        # A probe run has nothing to wait for: the agent installed no hooks, so
-        # no keys, packets or plaintext will ever arrive. Terminating HERE is the
-        # least invasive choice available:
-        #   * start_fritap_session() returns (process, script) to other callers
-        #     (e.g. the LSASS helper session in friTap.py), so a bail-out there
-        #     would change a shared return contract;
-        #   * friTap.py would have to learn probe-mode policy that belongs to the
-        #     logger, and the TUI path calls neither place the same way;
-        #   * this method already owns the process's final exit for the normal
-        #     path (os._exit below) and is the only blocking step after
-        #     instrumentation, so returning early here keeps every non-probe
-        #     code path byte-for-byte unchanged.
-        if self.probe:
-            self._finish_probe_run()
-            return
-        while not self._done_event.wait(timeout=0.5):
-            pass
-        # _done_event is set by _run_cleanup_steps AFTER pcap/keys are flushed.
-        # On the crash / on_detach path, cleanup() runs on a Frida *callback*
-        # thread that can wedge in the post-flush detach/unload teardown (the
-        # script is already destroyed, so the detach RPC/join stalls) — and
-        # os._exit(0) in cleanup()'s finally is then never reached, leaving the
-        # process alive until the user hits Ctrl+C (see fkie-cad/friTap#64 logs).
-        # The main thread is reliably awake here and all data is already flushed,
-        # so it owns the final exit. TUI manages its own lifecycle (mirrors the
-        # cleanup() guard), so skip there.
-        if not self._tui_mode:
-            # _exit_status stays 0 (EXIT_OK) unless the target detached on its
-            # own (EXIT_TARGET_DETACHED) or a non-SIGINT signal stopped us.
-            self._finish_json_stream()
-            os._exit(self._exit_status)
-
-    def _finish_probe_run(self) -> None:
-        """Complete a --probe dry run: verdict, teardown, exit.
-
-        The verdict IS the result of the run, so this owns the process exit the
-        same way the normal path does: 0 once the agent acknowledged probe mode,
-        ``PROBE_EXIT_BUNDLE_UNSUPPORTED`` otherwise.
-        """
-        acknowledged = (
-            self.wait_for_platform_report(self.PROBE_REPORT_TIMEOUT)
-            and self._platform_report is not None
-            # The agent echoes `probe` back precisely so we can tell a
-            # probe-aware bundle from one that merely reports its platform.
-            and self._platform_report.probe
-        )
-        if acknowledged:
-            # The one-line platform summary was already logged (unconditionally)
-            # by _on_platform_report; only the verdict is left to say.
-            self.special_logger.info(
-                "Probe complete — no hooks were installed and no data was captured."
-            )
-            exit_code = 0
-        else:
-            for line in self._probe_unsupported_bundle_lines():
-                self.logger.error(line)
-            exit_code = self.PROBE_EXIT_BUNDLE_UNSUPPORTED
-        self._shutdown_after_probe(exit_code)
-
-    def _probe_unsupported_bundle_lines(self) -> "list[str]":
-        """Return the error lines for a bundle that never acknowledged --probe.
-
-        Pure with respect to the session (reads state, logs nothing) so the
-        wording stays testable.
-
-        This is a hard failure rather than a warning because a diagnostic that
-        can silently lie is worse than no diagnostic: a bundle predating probe
-        mode ignores the ``probe`` config field, installs every hook as usual and
-        reports nothing back — the user would watch the target crash (or survive)
-        and conclude that probe mode had cleared it. Name the bundle that was
-        actually loaded, because a stale bundle next to a rebuilt checkout is the
-        single most likely cause.
-        """
-        try:
-            bundle = self._resolve_agent_bundle_path()
-        except Exception:
-            bundle = getattr(self, "agent_script", "<unknown>")
-        lines = [
-            "--probe failed: the loaded agent bundle does not implement probe mode."
-        ]
-        if self._platform_report is None:
-            lines.append("  The agent never sent a platform report.")
-        else:
-            lines.append(
-                "  The agent reported platform '%s' but did not acknowledge probe "
-                "mode, so it installed its hooks as usual."
-                % (self._platform_report.platform or "unknown",)
-            )
-        lines.append(f"  Loaded bundle: {bundle}")
-        lines.append(
-            "  -> Rebuild the agent bundle with ./dev/compile_agent.sh, then re-run --probe."
-        )
-        lines.append(
-            "  Treat this run as a NORMAL instrumented run: hooks may well have "
-            "been installed, so it proves nothing about probe mode."
-        )
-        return lines
-
-    def _shutdown_after_probe(self, exit_code: int) -> None:
-        """Tear the probe session down and exit with *exit_code*.
-
-        Probe mode writes no pcap/keylog, so the full cleanup() pipeline has
-        nothing to flush — stopping the worker threads and unloading the script
-        (finish_fritap) is the entire teardown. Guarded so a wedged detach can
-        never swallow the verdict; skipped under the TUI, which owns its own
-        lifecycle exactly as cleanup()/wait_for_completion do.
-        """
-        try:
-            self.request_stop()
-            self.finish_fritap()
-        except Exception as err:
-            self.logger.debug("Probe teardown error (ignored): %s", err)
-        self._done_event.set()
-        if not self._tui_mode:
-            self.set_exit_status(exit_code)
-            self._finish_json_stream()
-            os._exit(exit_code)
+            observer.stop()
+            observer.join(timeout=5)
+        except Exception:  # noqa: BLE001 - teardown must not break on the watcher
+            self.logger.debug("payload-mod watcher stop failed", exc_info=True)
 
     def _resolve_agent_bundle_path(self):
         """Resolve the agent bundle path to load (Frida backend).
 
-        NOTE: distinct from the `self._agent_script_path` *instance attribute*,
-        which holds the non-Frida-backend processor bundle path (see init).
-
-        Precedence (all generic — none names a protocol):
-          1. ``FRITAP_AGENT_BUNDLE`` env var — an arbitrary bundle path
-             (absolute, or relative to the current working directory; ``~`` is
-             expanded). Explicit operator override; always wins.
-          2. A ``fritap.agent_bundle`` entry point whose declared ABI matches
-             AGENT_ABI_VERSION (see _discover_agent_bundle). This lets a
-             full/extended install auto-select its own bundle without the env
-             var; ABI-filtered so a stale contribution is skipped.
-          3. A full agent bundle next to this module (``here/fritap_agent_full.js``),
-             but only while it is in sync with the shipped bundle
+        Not the non-Frida ``self._agent_script_path`` attribute. Precedence:
+          1. ``FRITAP_AGENT_BUNDLE`` env var (``~`` expanded, relative to the cwd); always wins.
+          2. A ``fritap.agent_bundle`` entry point whose ABI matches AGENT_ABI_VERSION
+             (see _discover_agent_bundle).
+          3. ``here/fritap_agent_full.js`` while in sync with the shipped bundle
              (see _resolve_full_agent_bundle).
-          4. The shipped bundle next to this module (``here/self.agent_script``).
+          4. The shipped bundle (``here/self.agent_script``).
 
-        Steps 2-4 are resolved once and cached on the instance: child gating
-        calls this per child, and the full-bundle check hashes the public bundle.
+        Steps 2-4 are cached on the instance: child gating calls this per child and
+        the full-bundle check hashes the public bundle.
         """
         override = os.environ.get("FRITAP_AGENT_BUNDLE")
         if override:
@@ -5268,13 +949,10 @@ class SSL_Logger():
     def _resolve_full_agent_bundle(self, default_bundle):
         """Return ``here/fritap_agent_full.js`` if present and in sync, else ``None``.
 
-        Generic by design — names no protocol. The build script writes a sidecar
-        ``fritap_agent_full.js.src`` holding the sha256 of the public bundle the
-        full bundle was built alongside. If the sidecar is missing or its hash no
-        longer matches ``default_bundle``, the full bundle is stale (it would lose
-        recent public fixes), so we warn and fall back to the public bundle.
-        The caller caches the result, so either message is logged once per
-        instance.
+        The build script writes a sidecar ``.src`` with the sha256 of the public bundle. A
+        missing sidecar or a hash differing from ``default_bundle`` means the full bundle is
+        stale (it would lose public fixes), so this warns and falls back. The caller caches
+        the result, so each message is logged once per instance.
         """
         full_bundle = os.path.join(here, FULL_AGENT_BUNDLE_NAME)
         if not os.path.isfile(full_bundle):
@@ -5288,14 +966,11 @@ class SSL_Logger():
         return None
 
     def _discover_agent_bundle(self):
-        """Return an agent bundle path contributed via a ``fritap.agent_bundle``
-        entry point whose declared ABI matches AGENT_ABI_VERSION, else ``None``.
+        """Return a bundle path from a ``fritap.agent_bundle`` entry point whose ABI matches, else ``None``.
 
-        Generic by design — names no protocol. A full/extended build registers
-        such an entry point (a module/object exposing ``AGENT_ABI_VERSION`` and
-        either ``agent_bundle_path()`` or ``AGENT_BUNDLE_PATH``) so that install
-        auto-selects its own bundle. ABI-mismatched, unloadable, or missing-file
-        contributions are skipped; the first valid match wins.
+        The entry point exposes ``AGENT_ABI_VERSION`` plus ``agent_bundle_path()`` or
+        ``AGENT_BUNDLE_PATH``. ABI-mismatched, unloadable or missing-file contributions
+        are skipped; the first valid match wins.
         """
         try:
             from importlib.metadata import entry_points
@@ -5314,10 +989,8 @@ class SSL_Logger():
                 continue
             abi = getattr(obj, "AGENT_ABI_VERSION", None)
             if abi != AGENT_ABI_VERSION:
-                # Warn rather than debug: an ABI bump makes this skip far more
-                # likely, and a private/extended bundle silently dropping out
-                # looks exactly like "my extra hooks stopped working" with no
-                # clue as to why. The user needs the version pair to act on it.
+                # Warn, not debug: a silently skipped extended bundle looks like
+                # "my extra hooks stopped working"; the user needs the version pair.
                 self.logger.warning(
                     "Agent bundle entry point %r declares ABI %s but this friTap "
                     "expects ABI %s — skipping it and falling back to the bundled "
@@ -5337,16 +1010,13 @@ class SSL_Logger():
         return None
 
     def _check_agent_abi(self):
-        """Best-effort: compare the loaded bundle's reported ABI to the host's
-        AGENT_ABI_VERSION and warn on mismatch. Versions the JS<->Python
-        boundary (config_batch fields, ContentTypes, rpc.exports). Non-fatal and
-        defensive: only the blocking ``exports_sync`` proxy is used (the async
-        proxy would return a coroutine, not a value), and older / standalone
-        bundles without the export are silently tolerated.
+        """Warn when the loaded bundle's ABI differs from AGENT_ABI_VERSION (config_batch fields, ContentTypes, rpc.exports).
+
+        Non-fatal. Only the blocking ``exports_sync`` proxy is used (the async proxy
+        returns a coroutine); older bundles without the export are tolerated.
         """
-        exports_sync = getattr(self.script, "exports_sync", None)
-        reporter = getattr(exports_sync, "agent_abi_version", None) if exports_sync is not None else None
-        if not callable(reporter):
+        reporter = agent_abi_reporter(self.script)
+        if reporter is None:
             return  # async-only proxy or older bundle — skip
         try:
             bundle_abi = reporter()
@@ -5361,25 +1031,16 @@ class SSL_Logger():
                 "boundary; rebuild the agent (./dev/compile_agent.sh) if hooks "
                 "misbehave.", bundle_abi, AGENT_ABI_VERSION)
 
-    # Matches the ABI constant as it appears in the compiled bundle, which
-    # frida-compile emits as `AGENT_ABI_VERSION = <n>` (or `=<n>`) from
-    # agent/shared/generated_constants.ts.
+    # The ABI constant as frida-compile emits it (`AGENT_ABI_VERSION = <n>`)
+    # from agent/shared/generated_constants.ts.
     _AGENT_ABI_PATTERN = re.compile(r"AGENT_ABI_VERSION\s*=\s*(\d+)")
 
     @staticmethod
     def _check_agent_abi_static(source: str):
-        """Read the ABI out of the bundle *source*, before it is loaded.
+        """Read the ABI from the bundle *source* before it loads; ``None`` when undeterminable.
 
-        Returns the bundle's ABI, or ``None`` when it cannot be determined.
-
-        The RPC-based ``_check_agent_abi`` can only run once the script has
-        loaded — which is too late for the failure it is meant to catch: a stale
-        bundle's whole problem is what it does *during* load. Reading the
-        constant out of the text costs nothing and lets the mismatch be reported
-        before the agent touches the target at all.
-
-        Deliberately non-fatal: a standalone or hand-built bundle may not carry
-        the constant, and refusing to run would be worse than a warning.
+        The RPC-based ``_check_agent_abi`` runs only after load, too late for a stale bundle
+        that misbehaves during load. Non-fatal: a hand-built bundle may lack the constant.
         """
         if not isinstance(source, str):
             return None
@@ -5419,241 +1080,3 @@ class SSL_Logger():
 
     def get_agent_script_path(self):
         return self._resolve_agent_bundle_path()
-
-    def install_signal_handler(self):
-        self._session_manager.install_signal_handler()
-
-    def _log_session_end(self, reason):
-        """Log session end information"""
-        self._event_bus.emit(SessionEvent(
-            event_type="ended",
-            session_id=str(id(self.process)) if self.process else "",
-        ))
-        if self.json_output:
-            with self._session_data_lock:
-                self.session_data["session_info"]["end_time"] = datetime.now(timezone.utc).isoformat()
-                self.session_data["session_info"]["end_reason"] = reason
-                self.session_data["statistics"]["total_sessions"] = len(self.session_data["ssl_sessions"])
-
-    def _finalize_json_output(self):
-        """Write final JSON output to file. Idempotent.
-
-        The legacy message path streams its document through
-        ``finalize_legacy_json``; when that writer was used, the
-        ``json_file`` handle opened by init_compat for the same path must not
-        overwrite the streamed document, so it is only closed.
-        """
-        from .message_handler import finalize_legacy_json
-        if getattr(self, "_legacy_json_stream", None) is not None:
-            finalize_legacy_json(self)
-            self._close_legacy_json_file()
-            self.logger.info(f"JSON output saved to {self.json_output}")
-            return
-        if self.json_file and not self.json_file.closed:
-            try:
-                with self._session_data_lock:
-                    # Update statistics
-                    self.session_data["session_info"]["end_time"] = datetime.now(timezone.utc).isoformat()
-
-                    # Write JSON data
-                    json.dump(self.session_data, self.json_file, indent=2, ensure_ascii=False)
-                self.json_file.close()
-                self.logger.info(f"JSON output saved to {self.json_output}")
-            except Exception as e:
-                self.logger.error(f"Error writing JSON output: {e}")
-
-    def _close_legacy_json_file(self):
-        json_file = getattr(self, "json_file", None)
-        if json_file is not None and not json_file.closed:
-            try:
-                json_file.close()
-            except Exception:  # noqa: BLE001 - never break teardown
-                pass
-
-    def add_ssl_session(self, session_info):
-        """Add SSL session information to JSON output"""
-        if self.json_output:
-            session_entry = {
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "session_id": session_info.get("session_id"),
-                "cipher_suite": session_info.get("cipher_suite"),
-                "protocol_version": session_info.get("protocol_version"),
-                "server_name": session_info.get("server_name"),
-                "certificate_info": session_info.get("certificate_info")
-            }
-            with self._session_data_lock:
-                self.session_data["ssl_sessions"].append(session_entry)
-
-    def write_socket_trace(self, socket_trace_name):
-        with open(socket_trace_name, 'a') as trace_file:
-            trace_file.write(PCAP.get_filter_from_traced_sockets(self.traced_Socket_Set, filter_type="display") + '\n')
-
-
-class _PluginSessionShim:
-    """Minimal Session-like object for legacy SSL_Logger plugin loading.
-
-    Provides the subset of Session API that plugins use in on_load/on_unload,
-    backed by the SSL_Logger's EventBus.
-    """
-
-    def __init__(self, event_bus, pipeline=None, connection_index=None):
-        self.lifecycle_bus = event_bus
-        self.pipeline = pipeline
-        self.connection_index = connection_index
-
-    def register_sink(self, sink):
-        """Register a sink (no-op in legacy mode unless pipeline is set)."""
-        if self.pipeline is not None:
-            self.pipeline.add_sink(sink)
-
-    def push_message(self, payload, data=None):
-        """Push a message — not supported in legacy shim."""
-        raise NotImplementedError(
-            "push_message() is not supported on the legacy SSL_Logger shim. "
-            "Use CoreController + Session for pipeline-based message routing."
-        )
-
-    def astart(self):
-        """Not available in legacy mode."""
-        raise NotImplementedError(
-            "astart() is not available in legacy mode. "
-            "Use CoreController + Session for async API."
-        )
-
-    def astop(self):
-        """Not available in legacy mode."""
-        raise NotImplementedError(
-            "astop() is not available in legacy mode. "
-            "Use CoreController + Session for async API."
-        )
-
-    def await_done(self):
-        """Not available in legacy mode."""
-        raise NotImplementedError(
-            "await_done() is not available in legacy mode. "
-            "Use CoreController + Session for async API."
-        )
-
-
-# ---------------------------------------------------------------------------
-# Agent socket fields (untrusted: the agent runs inside the target process).
-# Validated addresses flow into BPF / Wireshark display filters, so anything
-# that is not a well-formed IPv4/IPv6 address of a whitelisted family becomes
-# the empty "missing address" value that downstream code already skips.
-# ---------------------------------------------------------------------------
-DEFAULT_SS_FAMILY = "AF_INET"
-FILTERABLE_SS_FAMILIES = frozenset({"AF_INET", "AF_INET6"})
-KNOWN_SS_FAMILIES = FILTERABLE_SS_FAMILIES | {"AF_UNIX"}
-MISSING_ADDRESS = ""
-_IPV6_HEX_LEN = 32
-_MAX_PORT = 0xFFFF
-_invalid_socket_field_warned = False
-
-
-def _warn_invalid_socket_field_once(field: str) -> None:
-    global _invalid_socket_field_warned
-    if _invalid_socket_field_warned:
-        return
-    _invalid_socket_field_warned = True
-    logging.getLogger("friTap").warning(
-        "Ignoring malformed %s reported by the agent (further occurrences are "
-        "silently replaced by an empty address / port 0).", field)
-
-
-def _is_missing(value) -> bool:
-    return value is None or value == ""
-
-
-def _ipv4_packed(socket_addr) -> Optional[bytes]:
-    """Agent IPv4 (host-order int or dotted string) as 4 bytes, else None."""
-    if isinstance(socket_addr, bool):
-        return None
-    if isinstance(socket_addr, int):
-        if 0 <= socket_addr <= 0xFFFFFFFF:
-            return struct.pack(">I", socket_addr)
-        return None
-    if isinstance(socket_addr, str):
-        try:
-            return ipaddress.IPv4Address(socket_addr).packed
-        except ValueError:
-            return None
-    return None
-
-
-def _ipv6_packed(socket_addr) -> Optional[bytes]:
-    """Agent IPv6 (32-char hex or textual form) as 16 bytes, else None."""
-    if not isinstance(socket_addr, str):
-        return None
-    if len(socket_addr) == _IPV6_HEX_LEN:
-        try:
-            return bytes.fromhex(socket_addr)
-        except ValueError:
-            pass
-    try:
-        return ipaddress.IPv6Address(socket_addr).packed
-    except ValueError:
-        return None
-
-
-def normalize_ss_family(ss_family) -> str:
-    """Whitelist the agent's ``ss_family``; anything else is the default."""
-    if isinstance(ss_family, str) and ss_family in KNOWN_SS_FAMILIES:
-        return ss_family
-    if not _is_missing(ss_family):
-        _warn_invalid_socket_field_once("ss_family")
-    return DEFAULT_SS_FAMILY
-
-
-def resolve_ss_family(raw_family):
-    """``(family, address_family)`` for an agent ``ss_family``.
-
-    ``family`` is the whitelisted value to pass downstream (default for a
-    missing or unknown one). ``address_family`` is the family to parse the
-    addresses with, or ``None`` when the agent sent an unknown family -- its
-    addresses are then discarded rather than reinterpreted as IPv4.
-    """
-    family = normalize_ss_family(raw_family)
-    if _is_missing(raw_family) or raw_family == family:
-        return family, family
-    return family, None
-
-
-def coerce_port(port) -> int:
-    """Agent port as an int in 0..65535; anything else becomes 0."""
-    if isinstance(port, int) and not isinstance(port, bool) and 0 <= port <= _MAX_PORT:
-        return port
-    if not _is_missing(port):
-        _warn_invalid_socket_field_once("port")
-    return 0
-
-
-def sanitize_raw_addr(socket_addr, ss_family):
-    """The raw agent address if it is valid for ``ss_family``, else ``""``."""
-    if ss_family == "AF_INET" and _ipv4_packed(socket_addr) is not None:
-        return socket_addr
-    if ss_family == "AF_INET6" and _ipv6_packed(socket_addr) is not None:
-        return socket_addr
-    return MISSING_ADDRESS
-
-
-def get_addr_string(socket_addr, ss_family):
-    """Render an agent socket address, validated, as a printable IP string.
-
-    Only AF_INET (int / dotted string) and AF_INET6 (32-char hex / textual)
-    addresses are rendered. A missing address, AF_UNIX, an unknown family or
-    a malformed value yields ``""`` -- never the raw agent value -- so it can
-    never be interpolated into a BPF or display filter.
-    """
-    if _is_missing(socket_addr):
-        return MISSING_ADDRESS
-    if ss_family == "AF_INET":
-        packed = _ipv4_packed(socket_addr)
-        if packed is not None:
-            return socket.inet_ntop(socket.AF_INET, packed)
-    elif ss_family == "AF_INET6":
-        packed = _ipv6_packed(socket_addr)
-        if packed is not None:
-            return socket.inet_ntop(socket.AF_INET6, packed)
-    if ss_family != "AF_UNIX":
-        _warn_invalid_socket_field_once("socket address")
-    return MISSING_ADDRESS

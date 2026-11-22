@@ -1,31 +1,26 @@
 """Offline Schannel secret correlation (PUBLIC).
 
-The read-only Schannel mem-scan engine recovers TLS 1.2 masters and TLS 1.3 secrets
-from lsass.exe but cannot read the ClientHello random (Schannel keeps none near the
-key object), so it emits them UNPAIRED to a ``.schannel.unpaired`` sidecar. This
-package joins each unpaired secret to its ``client_random`` by TRIAL DECRYPTION
-against the captured pcap (TLS 1.2 via a decrypted Finished, TLS 1.3 via the AEAD
-tag), producing a STANDARD NSS keylog that tshark/Wireshark can then use.
+The Schannel mem-scan engine recovers TLS 1.2 masters and TLS 1.3 secrets from
+lsass.exe but cannot read the ClientHello random, so it writes them UNPAIRED to a
+``.schannel.unpaired`` sidecar. This package joins each secret to its
+``client_random`` by trial decryption against the pcap (TLS 1.2 via a decrypted
+Finished, TLS 1.3 via the AEAD tag) and produces a standard NSS keylog.
 
-Layout mirrors :mod:`friTap.offline.rc4` / :mod:`friTap.offline.signal`:
+  * :mod:`.unpaired`  parses the sidecar,
+  * :mod:`.correlate` is the trial-decryption correlation,
+  * :mod:`.oracle`    answers clean cases in pure Python so tshark runs less,
+  * :mod:`.pidmap`    attributes secrets to a PID via the TCP 4-tuple join,
+  * :mod:`.sspi`      holds in-process byte-equality correlation helpers,
+  * :mod:`.offline_decryptor` is the registry entry and emitter.
 
-  * :mod:`.unpaired`  — parse the ``.schannel.unpaired`` sidecar,
-  * :mod:`.correlate` — the trial-decryption correlation (the core),
-  * :mod:`.pidmap`    — per-PID attribution via the TCP 4-tuple join,
-  * :mod:`.sspi`      — in-process byte-equality correlation helpers,
-  * :mod:`.offline_decryptor` — the registry entry + emitter.
-
-The correlation needs tshark (reused from :mod:`friTap.offline.tshark`); it never
-touches lsass. Like the RC4/Signal packages this subpackage self-registers on
-import via the discovery marker below, and its emitter log-and-skips (never raises)
-on any recoverable problem. Schannel is PUBLIC — not listed in ``private.txt``.
+Correlation needs tshark and never touches lsass. Importing this package
+self-registers the decryptor via the discovery marker below; the emitter
+log-and-skips on any recoverable problem. Schannel is PUBLIC (not in ``private.txt``).
 """
 
 from __future__ import annotations
 
-# True if the optional AEAD backend (for the pure-Python TLS 1.3 peel, used by the
-# pidmap/sspi trial-decrypt helpers) is importable. Never raises; the primary
-# tshark-driven correlation path does not depend on it.
+# True if the optional AEAD backend (pure-Python TLS 1.3 peel) is importable.
 from ..tls.backend import backend_available as schannel_backend_available  # noqa: F401
 
 
@@ -33,20 +28,13 @@ class SchannelError(Exception):
     """Base class for offline Schannel correlation errors."""
 
 
-# Module-level discovery marker: tells the offline-decryptor discovery scan
-# (:func:`friTap.offline.pcap_to_tap._discover_offline_decryptor_extensions`,
-# mirroring ``is_fritap_parser`` / ``is_fritap_analyzer``) that importing this
-# package self-registers an offline decryptor.
+# Discovery marker read by
+# :func:`friTap.offline.pcap_to_tap._discover_offline_decryptor_extensions`.
 is_fritap_offline_decryptor = True
 
 
 def _register_schannel_offline_decryptor() -> None:
-    """Register the Schannel offline decryptor into the process-global registry.
-
-    Lazy + fully guarded so importing this package can never raise: a missing
-    dependency or an import cycle during registration is logged at debug and
-    skipped. Re-registration of an identical entry is idempotent.
-    """
+    """Register the decryptor; guarded so importing this package never raises."""
     from friTap.offline.registry import register_offline_decryptors_safely
 
     register_offline_decryptors_safely(

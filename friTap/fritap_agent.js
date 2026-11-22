@@ -1,5 +1,5 @@
 📦
-1882469 /agent/fritap_agent.js
+2135894 /agent/fritap_agent.js
 ✄
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -1857,6 +1857,10 @@ var init_record_protocol = __esm({
 function setKeylogSslObserver(observer) {
   keylogSslObserver = observer;
 }
+function addKeylogSslListener(listener) {
+  if (!keylogSslListeners.includes(listener))
+    keylogSslListeners.push(listener);
+}
 function extractKeylogClientRandom(line) {
   if (typeof line !== "string")
     return "";
@@ -1872,22 +1876,34 @@ function isUsableSslPointer(ssl) {
   return !ssl.isNull();
 }
 function observeKeylogSsl(line, ssl, module) {
-  if (!keylogSslObserver || !isUsableSslPointer(ssl))
+  if (!keylogSslObserver && keylogSslListeners.length === 0 || !isUsableSslPointer(ssl))
     return;
+  let clientRandom = "";
   try {
-    const clientRandom = extractKeylogClientRandom(line);
-    if (clientRandom)
+    clientRandom = extractKeylogClientRandom(line);
+    if (clientRandom && keylogSslObserver)
       keylogSslObserver(ssl, clientRandom, module);
   } catch (_) {
   }
+  if (clientRandom)
+    notifyListeners(ssl, clientRandom, module);
 }
-var CLIENT_RANDOM_TOKEN_RE, keylogSslObserver;
+function notifyListeners(ssl, clientRandom, module) {
+  for (const listener of keylogSslListeners) {
+    try {
+      listener(ssl, clientRandom, module);
+    } catch (_) {
+    }
+  }
+}
+var CLIENT_RANDOM_TOKEN_RE, keylogSslObserver, keylogSslListeners;
 var init_keylog_ssl_observer = __esm({
   "agent/shared/keylog_ssl_observer.ts"() {
     "use strict";
     init_node_globals();
     CLIENT_RANDOM_TOKEN_RE = /^[0-9a-fA-F]{64}$/;
     keylogSslObserver = null;
+    keylogSslListeners = [];
   }
 });
 
@@ -1903,6 +1919,7 @@ __export(shared_structures_exports, {
   PLATFORM_WINDOWS: () => PLATFORM_WINDOWS,
   PLATFORM_WINE: () => PLATFORM_WINE,
   _isShuttingDown: () => _isShuttingDown,
+  activeQuicProtocolTag: () => activeQuicProtocolTag,
   config_extensions: () => config_extensions,
   hookExecutorInstalled: () => hookExecutorInstalled,
   isPendingHookOutcome: () => isPendingHookOutcome,
@@ -1911,6 +1928,7 @@ __export(shared_structures_exports, {
   ohttp_enabled: () => ohttp_enabled,
   pcap_enabled: () => pcap_enabled,
   pointerSize: () => pointerSize2,
+  quicProtocolTag: () => quicProtocolTag,
   resolveProtocolTag: () => resolveProtocolTag,
   selected_protocol: () => selected_protocol,
   selected_protocols: () => selected_protocols,
@@ -1919,8 +1937,12 @@ __export(shared_structures_exports, {
   sendDatalog: () => sendDatalog,
   sendKeyMaterial: () => sendKeyMaterial,
   sendKeylog: () => sendKeylog,
+  sendModuleOffsetsLearned: () => sendModuleOffsetsLearned,
+  sendPlaintextApiLearned: () => sendPlaintextApiLearned,
+  sendQuicConnectionLifecycle: () => sendQuicConnectionLifecycle,
   sendQuicDatalog: () => sendQuicDatalog,
   sendQuicKeylog: () => sendQuicKeylog,
+  sendQuicStreamChunk: () => sendQuicStreamChunk,
   sendRequestContext: () => sendRequestContext,
   sendWithProtocol: () => sendWithProtocol,
   setConfigExtensions: () => setConfigExtensions,
@@ -1969,8 +1991,12 @@ function resolveProtocolTag(selected, declared) {
     return declared;
   return "tls";
 }
-function sendWithProtocol(message, data) {
-  message["protocol"] = resolveProtocolTag(selected_protocol, activeRecordProtocol());
+function quicProtocolTag(selected, declared) {
+  const tag = resolveProtocolTag(selected, declared);
+  return tag === "tls" ? "quic" : tag;
+}
+function sendWithProtocol(message, data, protocolTag) {
+  message["protocol"] = protocolTag ?? resolveProtocolTag(selected_protocol, activeRecordProtocol());
   if (data !== void 0 && data !== null) {
     send(message, data);
   } else {
@@ -1996,16 +2022,22 @@ function sendKeyMaterial(message, data) {
     return;
   sendWithProtocol(message, data);
 }
-function sendDatalog(message, data) {
+function sendDatalog(message, data, protocolTag) {
   if (_isShuttingDown)
     return;
   message["contentType"] = "datalog";
-  sendWithProtocol(message, data);
+  sendWithProtocol(message, data, protocolTag);
 }
-function sendConnectionLifecycle(event, message) {
+function sendConnectionLifecycle(event, message, protocolTag) {
   message["contentType"] = "connection_lifecycle";
   message["event"] = event;
-  sendWithProtocol(message);
+  sendWithProtocol(message, void 0, protocolTag);
+}
+function sendQuicConnectionLifecycle(event, message) {
+  sendConnectionLifecycle(event, message, activeQuicProtocolTag());
+}
+function activeQuicProtocolTag() {
+  return quicProtocolTag(selected_protocol, activeRecordProtocol());
 }
 function sendCallerStack(join, java_frames, native_frames, meta) {
   const message = {
@@ -2022,6 +2054,16 @@ function sendRequestContext(payload) {
     return;
   sendWithProtocol({ ...payload, contentType: "request_context" });
 }
+function sendPlaintextApiLearned(payload) {
+  if (_isShuttingDown)
+    return;
+  sendWithProtocolTag({ ...payload, contentType: "plaintext_api_learned" }, "tls");
+}
+function sendModuleOffsetsLearned(payload) {
+  if (_isShuttingDown)
+    return;
+  sendWithProtocolTag({ ...payload, contentType: "module_offsets_learned" }, "tls");
+}
 function sendQuicKeylog(keylogLine) {
   sendKeylog(keylogLine);
   const spaceIdx = keylogLine.indexOf(" ");
@@ -2031,7 +2073,7 @@ function sendQuicKeylog(keylogLine) {
     sendKeylog("QUIC_" + label + rest);
   }
 }
-function sendQuicDatalog(message, data, streamId, scid, dcid, transport = "udp", http3Headers, payload) {
+function sendQuicDatalog(message, data, streamId, scid, dcid, transport = "udp", http3Headers, payload, midstream) {
   message["stream_id"] = streamId;
   if (scid)
     message["quic_scid"] = scid;
@@ -2042,7 +2084,17 @@ function sendQuicDatalog(message, data, streamId, scid, dcid, transport = "udp",
     message["http3_headers"] = http3Headers;
   if (payload)
     message["quic_payload"] = payload;
-  sendDatalog(message, data);
+  if (midstream)
+    message["quic_midstream"] = true;
+  sendDatalog(message, data, activeQuicProtocolTag());
+}
+function sendQuicStreamChunk(message, data, streamId, chunk) {
+  message["stream_offset"] = chunk.offset;
+  if (chunk.fin)
+    message["fin"] = true;
+  else
+    delete message["fin"];
+  sendQuicDatalog(message, data, streamId, void 0, void 0, "udp", void 0, "stream", chunk.midstream);
 }
 var offsets, pcap_enabled, keylog_enabled, _isShuttingDown, ohttp_enabled, config_extensions, PLATFORM_LINUX, PLATFORM_DARWIN, PLATFORM_WINDOWS, PLATFORM_WINE, unwantedFDs, AF_INET, AF_INET6, AF_UNIX, pointerSize2, AddressFamilyMapping, selected_protocol, selected_protocols, META_PROTOCOL_SELECTIONS;
 var init_shared_structures = __esm({
@@ -2132,6 +2184,121 @@ init_node_globals();
 
 // agent/util/log.ts
 init_node_globals();
+
+// agent/shared/detach_report.ts
+init_node_globals();
+var DETACH_REPORT_VERSION = 1;
+var DETACH_TEXT_LIMIT = 300;
+var DETACH_LOG_LIMIT = 100;
+var SUMMARY_KEY_LIMIT = 32;
+function clip(text) {
+  return text.length > DETACH_TEXT_LIMIT ? text.slice(0, DETACH_TEXT_LIMIT) : text;
+}
+function describeError(e) {
+  try {
+    return clip(String(e));
+  } catch (_e) {
+    return "<unprintable error>";
+  }
+}
+function isPlainObject(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+function sanitizeSummaryValue(value) {
+  if (typeof value === "boolean")
+    return value;
+  if (typeof value === "number")
+    return Number.isFinite(value) ? value : void 0;
+  if (typeof value === "string")
+    return clip(value);
+  return void 0;
+}
+function sanitizeDetachSummary(value) {
+  if (!isPlainObject(value))
+    return void 0;
+  const summary = {};
+  let kept = 0;
+  for (const key of Object.keys(value)) {
+    if (kept >= SUMMARY_KEY_LIMIT)
+      break;
+    const clean = sanitizeSummaryValue(value[key]);
+    if (clean === void 0)
+      continue;
+    summary[clip(key)] = clean;
+    kept++;
+  }
+  return kept > 0 ? summary : void 0;
+}
+var DetachReportBuilder = class {
+  startedAt = Date.now();
+  steps = [];
+  logs = [];
+  droppedLogs = 0;
+  /** Run `fn` as a named step: timed, isolated, its return value kept as the summary. */
+  step(name, fn) {
+    const started2 = Date.now();
+    const entry = { name, ok: true, ms: 0 };
+    try {
+      const summary = sanitizeDetachSummary(fn());
+      if (summary)
+        entry.summary = summary;
+    } catch (e) {
+      entry.ok = false;
+      entry.error = describeError(e);
+    }
+    entry.ms = Date.now() - started2;
+    this.steps.push(entry);
+  }
+  addLog(level, msg) {
+    if (this.logs.length >= DETACH_LOG_LIMIT) {
+      this.droppedLogs++;
+      return;
+    }
+    this.logs.push({ level, msg: clip(typeof msg === "string" ? msg : describeError(msg)) });
+  }
+  finish() {
+    return {
+      version: DETACH_REPORT_VERSION,
+      repeat: false,
+      total_ms: Date.now() - this.startedAt,
+      steps: this.steps.slice(),
+      logs: this.logs.slice(),
+      dropped_logs: this.droppedLogs
+    };
+  }
+};
+function repeatDetachReport() {
+  return { version: DETACH_REPORT_VERSION, repeat: true, steps: [], logs: [], dropped_logs: 0, total_ms: 0 };
+}
+var activeCapture = null;
+function beginTeardownCapture(report) {
+  activeCapture = report;
+}
+function endTeardownCapture() {
+  activeCapture = null;
+}
+function withTeardownCapture(report, fn) {
+  beginTeardownCapture(report);
+  try {
+    return fn();
+  } finally {
+    endTeardownCapture();
+  }
+}
+function captureTeardownLog(level, msg) {
+  if (activeCapture === null)
+    return false;
+  try {
+    activeCapture.addLog(level, msg);
+  } catch (_e) {
+  }
+  return true;
+}
+
+// agent/util/log.ts
 var _stateModule = null;
 function _isShuttingDownNow() {
   try {
@@ -2144,6 +2311,8 @@ function _isShuttingDownNow() {
   }
 }
 function log(str) {
+  if (captureTeardownLog("info", str))
+    return;
   if (_isShuttingDownNow())
     return;
   var message = {};
@@ -2152,6 +2321,8 @@ function log(str) {
   send(message);
 }
 function devlog(str) {
+  if (captureTeardownLog("debug", str))
+    return;
   if (_isShuttingDownNow())
     return;
   var message = {};
@@ -2215,12 +2386,14 @@ function parseStack() {
   return {};
 }
 function emit(level, msg, extra) {
+  if (typeof msg !== "string" || msg.length === 0)
+    return;
+  if (captureTeardownLog(level, msg))
+    return;
   if (_isShuttingDownNow())
     return;
   const cs = ENABLE_CALLSITE ? parseStack() : {};
   const ts = (/* @__PURE__ */ new Date()).toISOString();
-  if (typeof msg !== "string" || msg.length === 0)
-    return;
   const file = cs.file ? String(cs.file).replace(/^.*[\\/]/, "") : void 0;
   const payload = {
     contentType: `console_${level}`,
@@ -2667,6 +2840,7 @@ __export(android_exports, {
   getArtMethodSpec: () => getArtMethodSpec,
   getArtThreadFromEnv: () => getArtThreadFromEnv,
   getArtThreadSpec: () => getArtThreadSpec,
+  isMethodDeoptimized: () => isMethodDeoptimized,
   makeArtClassLoaderVisitor: () => makeArtClassLoaderVisitor,
   makeArtClassVisitor: () => makeArtClassVisitor,
   makeMethodMangler: () => makeMethodMangler,
@@ -3864,6 +4038,7 @@ var MethodMangler = null;
 var artController = null;
 var inlineHooks = [];
 var patchedClasses = /* @__PURE__ */ new Map();
+var linearAllocClones = /* @__PURE__ */ new Map();
 var artQuickInterceptors = [];
 var thunkPage = null;
 var thunkOffset = 0;
@@ -4015,6 +4190,7 @@ function _getApi() {
           return clone(thisPtr, threadPtr, numTargetBytes);
         };
       },
+      _ZN3art7Runtime22CreateCalleeSaveMethodEv: ["art::Runtime::CreateCalleeSaveMethod", "pointer", ["pointer"]],
       _ZN3art3Dbg14SetJdwpAllowedEb: ["art::Dbg::SetJdwpAllowed", "void", ["bool"]],
       _ZN3art3Dbg13ConfigureJdwpERKNS_4JDWP11JdwpOptionsE: ["art::Dbg::ConfigureJdwp", "void", ["pointer"]],
       _ZN3art31InternalDebuggerControlCallback13StartDebuggerEv: ["art::InternalDebuggerControlCallback::StartDebugger", "void", ["pointer"]],
@@ -4034,6 +4210,7 @@ function _getApi() {
       },
       _ZN3art7Runtime19DeoptimizeBootImageEv: ["art::Runtime::DeoptimizeBootImage", "void", ["pointer"]],
       _ZN3art15instrumentation15Instrumentation10DeoptimizeEPNS_9ArtMethodE: ["art::Instrumentation::Deoptimize", "void", ["pointer", "pointer"]],
+      _ZN3art15instrumentation15Instrumentation13IsDeoptimizedEPNS_9ArtMethodE: ["art::Instrumentation::IsDeoptimized", "bool", ["pointer", "pointer"]],
       // Android >= 11
       _ZN3art3jni12JniIdManager14DecodeMethodIdEP10_jmethodID: ["art::jni::JniIdManager::DecodeMethodId", "pointer", ["pointer", "pointer"]],
       _ZN3art3jni12JniIdManager13DecodeFieldIdEP9_jfieldID: ["art::jni::JniIdManager::DecodeFieldId", "pointer", ["pointer", "pointer"]],
@@ -4046,6 +4223,9 @@ function _getApi() {
       },
       _ZN3art3Dbg15gDebuggerActiveE: function(address) {
         this.isDebuggerActive = () => !!address.readU8();
+      },
+      _ZN3art15gUseUserfaultfdE: function(address) {
+        this.isUserfaultfdGcActive = !!address.readU8();
       }
     },
     optionals: /* @__PURE__ */ new Set([
@@ -4064,6 +4244,7 @@ function _getApi() {
       "_ZN3art6mirror6Object5CloneEPNS_6ThreadE",
       "_ZN3art6mirror6Object5CloneEPNS_6ThreadEm",
       "_ZN3art6mirror6Object5CloneEPNS_6ThreadEj",
+      "_ZN3art7Runtime22CreateCalleeSaveMethodEv",
       "_ZN3art22IndirectReferenceTable3AddEjPNS_6mirror6ObjectE",
       "_ZN3art22IndirectReferenceTable3AddENS_15IRTSegmentStateENS_6ObjPtrINS_6mirror6ObjectEEE",
       "_ZN3art2gc4Heap12VisitObjectsEPFvPNS_6mirror6ObjectEPvES5_",
@@ -4084,11 +4265,13 @@ function _getApi() {
       "_ZN3art3Dbg13ConfigureJdwpERKNS_4JDWP11JdwpOptionsE",
       "_ZN3art31InternalDebuggerControlCallback13StartDebuggerEv",
       "_ZN3art3Dbg15gDebuggerActiveE",
+      "_ZN3art15gUseUserfaultfdE",
       "_ZN3art15instrumentation15Instrumentation20EnableDeoptimizationEv",
       "_ZN3art15instrumentation15Instrumentation20DeoptimizeEverythingEPKc",
       "_ZN3art15instrumentation15Instrumentation20DeoptimizeEverythingEv",
       "_ZN3art7Runtime19DeoptimizeBootImageEv",
       "_ZN3art15instrumentation15Instrumentation10DeoptimizeEPNS_9ArtMethodE",
+      "_ZN3art15instrumentation15Instrumentation13IsDeoptimizedEPNS_9ArtMethodE",
       "_ZN3art3Dbg9StartJdwpEv",
       "_ZN3art3Dbg8GoActiveEv",
       "_ZN3art3Dbg21RequestDeoptimizationERKNS_21DeoptimizationRequestE",
@@ -4245,7 +4428,7 @@ function tryGetEnvJvmti(vm3, runtime3) {
       ["pointer", "pointer", "pointer"]
     );
     const errorPtr = Memory.alloc(pointerSize7);
-    const success = ensurePluginLoaded(runtime3, Memory.allocUtf8String("libopenjdkjvmti.so"), errorPtr);
+    const success = withoutDebuggableTransition(() => ensurePluginLoaded(runtime3, Memory.allocUtf8String("libopenjdkjvmti.so"), errorPtr));
     if (!success) {
       return;
     }
@@ -4264,12 +4447,41 @@ function tryGetEnvJvmti(vm3, runtime3) {
   });
   return env;
 }
+function withoutDebuggableTransition(loadPlugin) {
+  let finishSetup = null;
+  const skipFinishSetup = new NativeCallback(() => {
+  }, "void", ["pointer"]);
+  const dlsymListener = Interceptor.attach(Process.getModuleByName("libdl.so").getExportByName("dlsym"), {
+    onEnter(args) {
+      this.isPluginInitializer = args[1].readCString() === "ArtPlugin_Initialize";
+    },
+    onLeave() {
+      if (!this.isPluginInitializer) {
+        return;
+      }
+      finishSetup = Process.getModuleByName("libopenjdkjvmti.so").findExportByName("_ZN12openjdkjvmti12DeoptManager11FinishSetupEv");
+      if (finishSetup !== null) {
+        Interceptor.replace(finishSetup, skipFinishSetup);
+      }
+    }
+  });
+  try {
+    return loadPlugin();
+  } finally {
+    dlsymListener.detach();
+    if (finishSetup !== null) {
+      Interceptor.revert(finishSetup);
+    }
+    Interceptor.flush();
+  }
+}
 function ensureClassInitialized(env, classRef) {
   const api3 = getApi();
   if (api3.flavor !== "art") {
     return;
   }
-  env.getClassName(classRef);
+  env.getFieldId(classRef, "x", "Z");
+  env.exceptionClear();
 }
 function getArtVMSpec(api3) {
   return {
@@ -7045,7 +7257,25 @@ function cloneArtMethod(method2, vm3) {
     const thread = api3["art::Thread::CurrentFromGdb"]();
     return api3["art::mirror::Object::Clone"](method2, thread);
   }
+  if (api3.isUserfaultfdGcActive) {
+    return cloneArtMethodInLinearAlloc(method2, vm3);
+  }
   return Memory.dup(method2, getArtMethodSpec(vm3).size);
+}
+function cloneArtMethodInLinearAlloc(method2, vm3) {
+  const key = method2.toString();
+  let clone = linearAllocClones.get(key);
+  if (clone === void 0) {
+    const api3 = getApi();
+    vm3.perform((env) => {
+      withRunnableArtThread(vm3, env, () => {
+        clone = api3["art::Runtime::CreateCalleeSaveMethod"](api3.artRuntime);
+        Memory.copy(clone, method2, getArtMethodSpec(vm3).size);
+      });
+    });
+    linearAllocClones.set(key, clone);
+  }
+  return clone;
 }
 function deoptimizeMethod(vm3, env, method2) {
   requestDeoptimization(vm3, env, kSelectiveDeoptimization, method2);
@@ -7061,6 +7291,21 @@ function deoptimizeBootImage(vm3, env) {
   withRunnableArtThread(vm3, env, (thread) => {
     api3["art::Runtime::DeoptimizeBootImage"](api3.artRuntime);
   });
+}
+function isMethodDeoptimized(vm3, env, method2) {
+  const api3 = getApi();
+  if (getAndroidApiLevel() < 24) {
+    throw new Error("This API is only available on Android >= 7.0");
+  }
+  const instrumentation = api3.artInstrumentation;
+  if (instrumentation === null) {
+    throw new Error("Unable to find Instrumentation class in ART; please file a bug");
+  }
+  let deoptimized = false;
+  withRunnableArtThread(vm3, env, () => {
+    deoptimized = !!api3["art::Instrumentation::IsDeoptimized"](instrumentation, method2);
+  });
+  return deoptimized;
 }
 function requestDeoptimization(vm3, env, kind, method2) {
   const api3 = getApi();
@@ -7268,7 +7513,7 @@ function makeArtThreadStateTransitionImpl(vm3, env, callback) {
 }
 function recompileExceptionClearForX86(buffer, pc, exceptionClearImpl, nextFuncImpl, exceptionOffset, neuteredOffsets, callback) {
   const blocks = {};
-  const branchTargets = /* @__PURE__ */ new Set();
+  const branchTargets2 = /* @__PURE__ */ new Set();
   const pending = [exceptionClearImpl];
   while (pending.length > 0) {
     let current = pending.shift();
@@ -7315,7 +7560,7 @@ function recompileExceptionClearForX86(buffer, pc, exceptionClearImpl, nextFuncI
           break;
       }
       if (branchTarget !== null) {
-        branchTargets.add(branchTarget.toString());
+        branchTargets2.add(branchTarget.toString());
         pending.push(branchTarget);
         pending.sort((a, b) => a.compare(b));
       }
@@ -7342,7 +7587,7 @@ function recompileExceptionClearForX86(buffer, pc, exceptionClearImpl, nextFuncI
       const insn = relocator.input;
       const { mnemonic } = insn;
       const insnAddressId = insn.address.toString();
-      if (branchTargets.has(insnAddressId)) {
+      if (branchTargets2.has(insnAddressId)) {
         writer.putLabel(insnAddressId);
       }
       let keep = true;
@@ -7430,7 +7675,7 @@ function recompileExceptionClearForX86(buffer, pc, exceptionClearImpl, nextFuncI
 }
 function recompileExceptionClearForArm(buffer, pc, exceptionClearImpl, nextFuncImpl, exceptionOffset, neuteredOffsets, callback) {
   const blocks = {};
-  const branchTargets = /* @__PURE__ */ new Set();
+  const branchTargets2 = /* @__PURE__ */ new Set();
   const thumbBitRemovalMask = ptr(1).not();
   const pending = [exceptionClearImpl];
   while (pending.length > 0) {
@@ -7519,7 +7764,7 @@ function recompileExceptionClearForArm(buffer, pc, exceptionClearImpl, nextFuncI
           break;
       }
       if (branchTarget !== null) {
-        branchTargets.add(branchTarget.toString());
+        branchTargets2.add(branchTarget.toString());
         pending.push(branchTarget.or(thumbBit));
         pending.sort((a, b) => a.compare(b));
       }
@@ -7554,7 +7799,7 @@ function recompileExceptionClearForArm(buffer, pc, exceptionClearImpl, nextFuncI
       size = insn.size;
       const { mnemonic } = insn;
       const insnAddressId = address.toString();
-      if (branchTargets.has(insnAddressId)) {
+      if (branchTargets2.has(insnAddressId)) {
         writer.putLabel(insnAddressId);
       }
       let keep = true;
@@ -7651,7 +7896,7 @@ function recompileExceptionClearForArm(buffer, pc, exceptionClearImpl, nextFuncI
 }
 function recompileExceptionClearForArm64(buffer, pc, exceptionClearImpl, nextFuncImpl, exceptionOffset, neuteredOffsets, callback) {
   const blocks = {};
-  const branchTargets = /* @__PURE__ */ new Set();
+  const branchTargets2 = /* @__PURE__ */ new Set();
   const pending = [exceptionClearImpl];
   while (pending.length > 0) {
     let current = pending.shift();
@@ -7715,7 +7960,7 @@ function recompileExceptionClearForArm64(buffer, pc, exceptionClearImpl, nextFun
           break;
       }
       if (branchTarget !== null) {
-        branchTargets.add(branchTarget.toString());
+        branchTargets2.add(branchTarget.toString());
         pending.push(branchTarget);
         pending.sort((a, b) => a.compare(b));
       }
@@ -7750,7 +7995,7 @@ function recompileExceptionClearForArm64(buffer, pc, exceptionClearImpl, nextFun
       const insn = relocator.input;
       const { mnemonic } = insn;
       const insnAddressId = insn.address.toString();
-      if (branchTargets.has(insnAddressId)) {
+      if (branchTargets2.has(insnAddressId)) {
         writer.putLabel(insnAddressId);
       }
       let keep = true;
@@ -10298,10 +10543,10 @@ var Model = class _Model {
         env
       );
       try {
-        result = JSON.parse(json.readUtf8String()).map((group) => {
-          const loaderRef = ptr(group.loader);
-          group.loader = !loaderRef.isNull() ? loaderRef : null;
-          return group;
+        result = JSON.parse(json.readUtf8String()).map((group2) => {
+          const loaderRef = ptr(group2.loader);
+          group2.loader = !loaderRef.isNull() ? loaderRef : null;
+          return group2;
         });
       } finally {
         cm.dealloc(json);
@@ -10318,10 +10563,10 @@ var Model = class _Model {
         try {
           const addGlobalReference = api3["art::JavaVMExt::AddGlobalRef"];
           const { vm: vmHandle } = api3;
-          result = JSON.parse(json.readUtf8String()).map((group) => {
-            const loaderObj = group.loader;
-            group.loader = loaderObj !== 0 ? addGlobalReference(vmHandle, thread, ptr(loaderObj)) : null;
-            return group;
+          result = JSON.parse(json.readUtf8String()).map((group2) => {
+            const loaderObj = group2.loader;
+            group2.loader = loaderObj !== 0 ? addGlobalReference(vmHandle, thread, ptr(loaderObj)) : null;
+            return group2;
           });
         } finally {
           cm.dealloc(json);
@@ -10865,11 +11110,11 @@ function makeClassData(klass) {
     staticFieldsSize
   ].concat(createUleb128(instanceFields.length)).concat(createUleb128(constructorMethods.length)).concat(createUleb128(virtualMethods.length)).concat(instanceFields.reduce((result, [indexDiff, accessFlags]) => {
     return result.concat(createUleb128(indexDiff)).concat(createUleb128(accessFlags));
-  }, [])).concat(constructorMethods.reduce((result, [indexDiff, accessFlags, , codeOffset]) => {
-    return result.concat(createUleb128(indexDiff)).concat(createUleb128(accessFlags)).concat(createUleb128(codeOffset || 0));
+  }, [])).concat(constructorMethods.reduce((result, [indexDiff, accessFlags, , codeOffset2]) => {
+    return result.concat(createUleb128(indexDiff)).concat(createUleb128(accessFlags)).concat(createUleb128(codeOffset2 || 0));
   }, [])).concat(virtualMethods.reduce((result, [indexDiff, accessFlags]) => {
-    const codeOffset = 0;
-    return result.concat(createUleb128(indexDiff)).concat(createUleb128(accessFlags)).concat([codeOffset]);
+    const codeOffset2 = 0;
+    return result.concat(createUleb128(indexDiff)).concat(createUleb128(accessFlags)).concat([codeOffset2]);
   }, [])));
 }
 function makeThrowsAnnotation(annotation) {
@@ -13822,7 +14067,14 @@ Object.defineProperties(Field.prototype, {
 	fieldReturnType: ${this.fieldReturnType},
 	value: ${this.value},
 }`;
-      return multilineString.split("\n").map((l) => l.length > 200 ? l.slice(0, l.indexOf(" ") + 1) + "...," : l).join("\n");
+      return multilineString.split("\n").map((l) => {
+        if (l.length <= 200) {
+          return l;
+        }
+        const spaceIndex = l.indexOf(" ");
+        const cut = spaceIndex === -1 ? 200 : spaceIndex + 1;
+        return l.slice(0, cut) + "...,";
+      }).join("\n");
     }
   }
 });
@@ -14205,10 +14457,10 @@ var Runtime = class {
     const { classFactory: factory } = this;
     const env = this.vm.getEnv();
     const ClassLoader = factory.use("java.lang.ClassLoader");
-    return Model.enumerateMethods(query, this.api, env).map((group) => {
-      const handle2 = group.loader;
-      group.loader = handle2 !== null ? factory.wrap(handle2, ClassLoader, env) : null;
-      return group;
+    return Model.enumerateMethods(query, this.api, env).map((group2) => {
+      const handle2 = group2.loader;
+      group2.loader = handle2 !== null ? factory.wrap(handle2, ClassLoader, env) : null;
+      return group2;
     });
   }
   scheduleOnMainThread(fn) {
@@ -14320,6 +14572,22 @@ var Runtime = class {
         }
         return apk;
       };
+      const pollForApplication = () => {
+        runtime3.vm.perform(() => {
+          const app2 = ActivityThread.currentApplication();
+          if (initialized) {
+            return;
+          }
+          if (app2 === null) {
+            setTimeout(pollForApplication, 50);
+            return;
+          }
+          initialized = true;
+          initFactoryFromApplication(factory, app2);
+          runtime3._performPendingVmOps();
+        });
+      };
+      setTimeout(pollForApplication, 50);
     });
   }
   _performPendingVmOps() {
@@ -14380,6 +14648,10 @@ var Runtime = class {
   deoptimizeMethod(method2) {
     const { vm: vm3 } = this;
     return deoptimizeMethod(vm3, vm3.getEnv(), method2);
+  }
+  isMethodDeoptimized(method2) {
+    const { vm: vm3 } = this;
+    return isMethodDeoptimized(vm3, vm3.getEnv(), method2);
   }
   _checkAvailable() {
     if (!this.available) {
@@ -14786,13 +15058,178 @@ function watchFunctionEntries(funcAddr, onEntry) {
 
 // agent/util/safe_memory.ts
 init_node_globals();
+
+// agent/util/darwin_vm_region.ts
+init_node_globals();
+var VM_PROT_READ = 1;
+var VM_PROT_WRITE = 2;
+var VM_PROT_EXECUTE = 4;
+var VM_REGION_SUBMAP_SHORT_INFO_COUNT_64 = 12;
+var SUBMAP_INFO_IS_SUBMAP_OFFSET = 32;
+var KERN_SUCCESS = 0;
+var KERN_INVALID_ADDRESS = 1;
+var MAX_SUBMAP_DEPTH = 8;
+function regionContains(address, base, end) {
+  return address.compare(base) >= 0 && address.compare(end) < 0;
+}
+function resolveLeafRegion(address, query) {
+  for (let depth = 0; depth <= MAX_SUBMAP_DEPTH; depth++) {
+    const answer = query(depth);
+    if (answer === void 0)
+      return void 0;
+    if (answer === null || !regionContains(address, answer.base, answer.end))
+      return null;
+    if (!answer.isSubmap)
+      return { base: answer.base, end: answer.end, protection: answer.protection };
+  }
+  return void 0;
+}
+var lookup2;
+function initLookup() {
+  if (Process.platform !== "darwin")
+    return null;
+  try {
+    const fnAddr = Module.findGlobalExportByName("mach_vm_region_recurse");
+    const taskAddr = Module.findGlobalExportByName("mach_task_self_");
+    if (fnAddr === null || taskAddr === null)
+      return null;
+    const fn = new NativeFunction(fnAddr, "int", ["uint", "pointer", "pointer", "pointer", "pointer", "pointer"], { scheduling: "exclusive" });
+    return {
+      fn,
+      task: taskAddr.readU32(),
+      address: Memory.alloc(8),
+      size: Memory.alloc(8),
+      depth: Memory.alloc(4),
+      info: Memory.alloc(VM_REGION_SUBMAP_SHORT_INFO_COUNT_64 * 4),
+      count: Memory.alloc(4)
+    };
+  } catch (_e) {
+    return null;
+  }
+}
+function queryAtDepth(l, address, depth) {
+  l.address.writePointer(address);
+  l.depth.writeU32(depth);
+  l.count.writeU32(VM_REGION_SUBMAP_SHORT_INFO_COUNT_64);
+  const kr = l.fn(l.task, l.address, l.size, l.depth, l.info, l.count);
+  if (kr === KERN_INVALID_ADDRESS)
+    return null;
+  if (kr !== KERN_SUCCESS)
+    return void 0;
+  const base = l.address.readPointer();
+  return {
+    base,
+    end: base.add(l.size.readU64()),
+    protection: l.info.readS32(),
+    isSubmap: l.info.add(SUBMAP_INFO_IS_SUBMAP_OFFSET).readU32() !== 0
+  };
+}
+function findDarwinRegion(address) {
+  if (lookup2 === void 0)
+    lookup2 = initLookup();
+  if (lookup2 === null)
+    return void 0;
+  const l = lookup2;
+  try {
+    return resolveLeafRegion(address, (depth) => queryAtDepth(l, address, depth));
+  } catch (_e) {
+    return void 0;
+  }
+}
+
+// agent/shared/module_mapping.ts
+init_node_globals();
+function moduleMemoryReader(base) {
+  return (offset, length) => {
+    try {
+      const bytes = base.add(offset).readByteArray(length);
+      return bytes === null ? null : new Uint8Array(bytes);
+    } catch (_e) {
+      return null;
+    }
+  };
+}
+function mappingKey(mod) {
+  return `${mod.name}@${mod.base}`;
+}
+function mappingKeyAt(address) {
+  let mod = null;
+  try {
+    mod = Process.findModuleByAddress(address);
+  } catch (_e) {
+  }
+  return mod === null ? "?" : mappingKey(mod);
+}
+function mappingAddressKey(address, mapping = mappingKeyAt(address)) {
+  return `${mapping}#${address}`;
+}
+function memoizePerMapping(memo, mod, compute) {
+  const key = mappingKey(mod);
+  if (!memo.has(key))
+    memo.set(key, compute());
+  return memo.get(key);
+}
+function searchSortedStarts(count, startAt, addr) {
+  let lo = 0, hi = count - 1, found = -1;
+  while (lo <= hi) {
+    const mid = lo + hi >>> 1;
+    if (startAt(mid) <= addr) {
+      found = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return found;
+}
+
+// agent/util/safe_memory.ts
 var readableCache = [];
 var TBI_MASK = Process.pointerSize === 8 ? ptr("0x00ffffffffffffff") : null;
 function untag(p) {
   return TBI_MASK !== null ? p.and(TBI_MASK) : p;
 }
+function copyPointer(p) {
+  return p.add(0);
+}
 function resetReadableCache() {
   readableCache = [];
+}
+function protectionString(prot) {
+  return ((prot & VM_PROT_READ) !== 0 ? "r" : "-") + ((prot & VM_PROT_WRITE) !== 0 ? "w" : "-") + ((prot & VM_PROT_EXECUTE) !== 0 ? "x" : "-");
+}
+function findRange(address) {
+  try {
+    const a = untag(address);
+    const region = findDarwinRegion(a);
+    if (region !== void 0) {
+      return region === null ? null : { base: region.base, end: region.end, protection: protectionString(region.protection) };
+    }
+    const range = Process.findRangeByAddress(a);
+    return range ? { base: range.base, end: range.base.add(range.size), protection: range.protection } : null;
+  } catch (_e) {
+    return null;
+  }
+}
+function moduleImageBounds(mod) {
+  let end = mod.base.add(mod.size);
+  for (const r of readableModuleRanges(mod)) {
+    const rangeEnd = r.base.add(r.size);
+    if (r.base.compare(mod.base) >= 0 && rangeEnd.compare(end) > 0)
+      end = rangeEnd;
+  }
+  return [mod.base, end];
+}
+function readableModuleRanges(mod) {
+  try {
+    return mod.enumerateRanges("r--");
+  } catch (_e) {
+    return [];
+  }
+}
+function findReadableRange(a) {
+  const range = findRange(a);
+  return range !== null && range.protection[0] === "r" ? range : null;
 }
 function isReadable(ptr2, size = 1) {
   if (ptr2 === null || ptr2.isNull())
@@ -14804,14 +15241,12 @@ function isReadable(ptr2, size = 1) {
       if (a.compare(r.base) >= 0 && endNeeded.compare(r.end) <= 0)
         return true;
     }
-    const range = Process.findRangeByAddress(a);
-    if (!range || range.protection[0] !== "r")
+    const range = findReadableRange(a);
+    if (range === null)
       return false;
-    const base = range.base;
-    const end = base.add(range.size);
-    if (endNeeded.compare(end) > 0)
+    if (endNeeded.compare(range.end) > 0)
       return false;
-    readableCache.push({ base, end });
+    readableCache.push(range);
     return true;
   } catch (e) {
     return false;
@@ -14822,15 +15257,60 @@ function isWritable(ptr2, size = 1) {
     return false;
   try {
     const a = untag(ptr2);
-    const range = Process.findRangeByAddress(a);
-    if (!range)
+    const range = findRange(a);
+    if (range === null || range.protection[0] !== "r" || range.protection[1] !== "w")
       return false;
-    if (range.protection[0] !== "r" || range.protection[1] !== "w")
-      return false;
-    return a.add(size).compare(range.base.add(range.size)) <= 0;
+    return a.add(size).compare(range.end) <= 0;
   } catch (e) {
     return false;
   }
+}
+function isExecutable(p) {
+  try {
+    return findRange(p)?.protection.includes("x") ?? false;
+  } catch (_e) {
+    return false;
+  }
+}
+function readableByteCount(addr, maxBytes) {
+  let covered = 0;
+  try {
+    while (covered < maxBytes) {
+      const cursor = addr.add(covered);
+      const range = findRange(cursor);
+      if (range === null || range.protection[0] !== "r")
+        break;
+      const leftInRange = range.end.sub(cursor);
+      const wanted = maxBytes - covered;
+      if (leftInRange.compare(ptr(wanted)) >= 0)
+        return maxBytes;
+      const left = leftInRange.toUInt32();
+      if (left === 0)
+        break;
+      covered += left;
+    }
+  } catch (_e) {
+  }
+  return covered;
+}
+function codeBytesAvailable(fn, mod, capBytes) {
+  try {
+    const end = mod.base.add(mod.size);
+    if (fn.compare(mod.base) < 0 || fn.compare(end) >= 0)
+      return 0;
+    const toModuleEnd = Number(end.sub(fn).toString());
+    return readableByteCount(fn, Math.min(capBytes, toModuleEnd));
+  } catch (_e) {
+    return 0;
+  }
+}
+function boundedModuleReader(mod) {
+  const read2 = moduleMemoryReader(mod.base);
+  return (offset, length) => {
+    if (offset < 0 || length <= 0 || offset + length > mod.size)
+      return null;
+    return isReadable(mod.base.add(offset), length) ? read2(offset, length) : null;
+  };
 }
 function safeReadPointer(ptr2) {
   if (!isReadable(ptr2, Process.pointerSize))
@@ -14846,6 +15326,15 @@ function safeReadU8(ptr2) {
     return null;
   try {
     return ptr2.readU8();
+  } catch (e) {
+    return null;
+  }
+}
+function safeReadU32(ptr2) {
+  if (!isReadable(ptr2, 4))
+    return null;
+  try {
+    return ptr2.readU32();
   } catch (e) {
     return null;
   }
@@ -15416,7 +15905,7 @@ var NativeSocketObserver = class {
   }
   /** libc functions with a native listener attached (for the debug log). */
   get hookedFunctions() {
-    return [...this.attachedGroups.values()].flatMap((group) => group.names);
+    return [...this.attachedGroups.values()].flatMap((group2) => group2.names);
   }
   /** close()/dup2() reporting for `consumer`, from now on. */
   armClosedFdConsumer(consumer) {
@@ -15469,14 +15958,14 @@ var NativeSocketObserver = class {
   /** All or nothing: on failure, detaches the groups this call attached (not ones armed before). */
   attachGroups(groups) {
     const attachedNow = [];
-    for (const group of groups) {
-      if (this.attachedGroups.has(group))
+    for (const group2 of groups) {
+      if (this.attachedGroups.has(group2))
         continue;
       try {
-        this.attachedGroups.set(group, attachAll(listenerPlan(this.cm, group)));
-        attachedNow.push(group);
+        this.attachedGroups.set(group2, attachAll(listenerPlan(this.cm, group2)));
+        attachedNow.push(group2);
       } catch (e) {
-        warnJsFallback(`attaching the ${group} listeners failed: ${e}`);
+        warnJsFallback(`attaching the ${group2} listeners failed: ${e}`);
         for (const done of attachedNow)
           this.detachGroup(done);
         return false;
@@ -15484,14 +15973,14 @@ var NativeSocketObserver = class {
     }
     return true;
   }
-  detachGroup(group) {
-    for (const listener of this.attachedGroups.get(group)?.listeners ?? [])
+  detachGroup(group2) {
+    for (const listener of this.attachedGroups.get(group2)?.listeners ?? [])
       listener.detach();
-    this.attachedGroups.delete(group);
+    this.attachedGroups.delete(group2);
   }
 };
-function listenerPlan(cm2, group) {
-  switch (group) {
+function listenerPlan(cm2, group2) {
+  switch (group2) {
     case "close":
       return [
         [fdCloseFunction(), { onEnter: cm2.ft_close_on_enter }],
@@ -15560,13 +16049,17 @@ function nativeSocketObserver() {
 // agent/shared/sockaddr.ts
 init_node_globals();
 init_shared_structures();
+var WINDOWS_AF_INET6 = 23;
 function readSockaddrFamily(sa, bsdSockaddr = false) {
   if (bsdSockaddr && Process.platform === "darwin") {
     const fam2 = sa.add(1).readU8();
     return fam2 === 30 ? AF_INET6 : fam2;
   }
   const fam = sa.readU16();
-  return fam === 30 && Process.platform === "darwin" ? AF_INET6 : fam;
+  return fam === nativeAfInet6() ? AF_INET6 : fam;
+}
+function nativeAfInet6() {
+  return Process.platform === "darwin" ? 30 : WINDOWS_AF_INET6;
 }
 function decodeSockaddr(sa, useNativeByteOrder = false, fns, bsdSockaddr = false) {
   if (sa.isNull())
@@ -16171,7 +16664,7 @@ function underscoreVariants(name) {
     variants.push(name.slice(1));
   return variants;
 }
-function findNonExportedSymbols(moduleName, symbolNames) {
+function findNonExportedSymbols(moduleName, symbolNames, status) {
   const result = /* @__PURE__ */ new Map();
   const variantToInput = /* @__PURE__ */ new Map();
   for (const name of symbolNames) {
@@ -16194,6 +16687,8 @@ function findNonExportedSymbols(moduleName, symbolNames) {
     }
   } catch (e) {
     devlog(`[findNonExportedSymbols] in ${moduleName}: ${e}`);
+    if (status)
+      status.complete = false;
   }
   return result;
 }
@@ -18343,12 +18838,12 @@ function Runtime2() {
     const result = {};
     enumerateLoadedClasses(options, {
       onMatch(name, owner2) {
-        let group = result[owner2];
-        if (group === void 0) {
-          group = [];
-          result[owner2] = group;
+        let group2 = result[owner2];
+        if (group2 === void 0) {
+          group2 = [];
+          result[owner2] = group2;
         }
-        group.push(name);
+        group2.push(name);
       },
       onComplete() {
       }
@@ -19598,6 +20093,18 @@ function getDetailedPlatformInfo() {
 }
 
 // agent/shared/strategies/pattern_strategy.ts
+function patternList(archPatterns, funcName) {
+  const funcPatterns = archPatterns[funcName];
+  if (!funcPatterns)
+    return [];
+  return Array.isArray(funcPatterns) ? funcPatterns : [funcPatterns];
+}
+function markIncomplete(status, reason) {
+  if (!status)
+    return;
+  status.complete = false;
+  devlog_debug(`[PatternStrategy] scan incomplete: ${reason}`);
+}
 var PatternStrategy = class {
   name = "pattern";
   priority = 80;
@@ -19609,6 +20116,28 @@ var PatternStrategy = class {
   }
   setPatternData(data) {
     this.patternData = data;
+  }
+  /** Patterns tryHookAsync tries for `funcName`, in order. */
+  patternsFor(moduleName, libraryType, funcName) {
+    if (funcName === void 0)
+      return [];
+    const lookup3 = this.archPatternsFor(moduleName, libraryType);
+    return "table" in lookup3 ? patternList(lookup3.table, funcName) : [];
+  }
+  /** The library -> os -> arch pattern table for the module, or why there is none. */
+  archPatternsFor(moduleName, libraryType) {
+    const modulePatterns = this.patternData?.[moduleName] || this.patternData?.[libraryType];
+    if (!modulePatterns)
+      return { error: `No patterns defined for ${moduleName} or ${libraryType}` };
+    const platform = currentPlatformKey();
+    const osPatterns = modulePatterns[platform];
+    if (!osPatterns)
+      return { error: `No patterns for OS ${platform} in ${moduleName}` };
+    const arch = normalizeArchKey(Process.arch);
+    const archPatterns = osPatterns[arch] || osPatterns["default"];
+    if (!archPatterns)
+      return { error: `No patterns for architecture ${arch} (OS ${platform}) in ${moduleName}` };
+    return { table: archPatterns };
   }
   /**
    * Uniqueness reporting: when a pattern matches MORE than one site in
@@ -19635,8 +20164,9 @@ var PatternStrategy = class {
    * Frida JS thread yields to the event loop between scan chunks and a
    * gracefulDetach RPC can be serviced mid-scan. Awaited by the pipeline's
    * hookModuleAsync() for every TLS library and by the QUIC install path.
+   * `status` (optional) learns about errors the result otherwise swallows.
    */
-  async tryHookAsync(moduleName, libraryType, functions) {
+  async tryHookAsync(moduleName, libraryType, functions, status) {
     const hooked = [];
     const errors2 = [];
     const resolved = /* @__PURE__ */ new Map();
@@ -19646,32 +20176,19 @@ var PatternStrategy = class {
     }
     try {
       const mod = Process.getModuleByName(moduleName);
-      const modulePatterns = this.patternData[moduleName] || this.patternData[libraryType];
-      if (!modulePatterns) {
-        errors2.push(`No patterns defined for ${moduleName} or ${libraryType}`);
-        return { success: false, strategy: this.name, hookedFunctions: hooked, errors: errors2, resolvedAddresses: /* @__PURE__ */ new Map() };
-      }
-      const platform = currentPlatformKey();
-      const osPatterns = modulePatterns[platform];
-      if (!osPatterns) {
-        errors2.push(`No patterns for OS ${platform} in ${moduleName}`);
-        return { success: false, strategy: this.name, hookedFunctions: hooked, errors: errors2, resolvedAddresses: /* @__PURE__ */ new Map() };
-      }
-      const arch = normalizeArchKey(Process.arch);
-      const archPatterns = osPatterns[arch] || osPatterns["default"];
-      if (!archPatterns) {
-        errors2.push(`No patterns for architecture ${arch} (OS ${platform}) in ${moduleName}`);
+      const lookup3 = this.archPatternsFor(moduleName, libraryType);
+      if ("error" in lookup3) {
+        errors2.push(lookup3.error);
         return { success: false, strategy: this.name, hookedFunctions: hooked, errors: errors2, resolvedAddresses: /* @__PURE__ */ new Map() };
       }
       for (const funcName of functions) {
-        const funcPatterns = archPatterns[funcName];
-        if (!funcPatterns)
+        if (!lookup3.table[funcName])
           continue;
-        const patterns2 = Array.isArray(funcPatterns) ? funcPatterns : [funcPatterns];
+        const patterns2 = patternList(lookup3.table, funcName);
         let found = false;
         for (const pattern of patterns2) {
           try {
-            const match = await this.scanFirstMatchAsync(mod, pattern);
+            const match = await this.scanFirstMatchAsync(mod, pattern, status);
             if (match !== null) {
               hooked.push(funcName);
               resolved.set(funcName, match);
@@ -19679,6 +20196,7 @@ var PatternStrategy = class {
               break;
             }
           } catch (scanErr) {
+            markIncomplete(status, `${funcName}: ${scanErr}`);
           }
         }
         if (!found) {
@@ -19687,6 +20205,7 @@ var PatternStrategy = class {
       }
     } catch (err) {
       errors2.push(`Pattern strategy error: ${err}`);
+      markIncomplete(status, `${err}`);
     }
     return {
       success: hooked.length > 0,
@@ -19708,19 +20227,21 @@ var PatternStrategy = class {
    * Checks _isShuttingDownNow() between ranges so the scan loop stops issuing
    * new scans the moment detach begins.
    */
-  async scanFirstMatchAsync(mod, pattern) {
+  async scanFirstMatchAsync(mod, pattern, status) {
     let ranges = [];
     try {
       ranges = mod.enumerateRanges("r-x");
     } catch (_e) {
     }
     if (!ranges || ranges.length === 0) {
-      return this.scanRegionAsync(mod.base, mod.size, pattern, `${mod.name} (whole-module scan)`);
+      return this.scanRegionAsync(mod.base, mod.size, pattern, `${mod.name} (whole-module scan)`, status);
     }
     for (const range of ranges) {
-      if (_isShuttingDownNow())
+      if (_isShuttingDownNow()) {
+        markIncomplete(status, "shutting down");
         return null;
-      const hit = await this.scanRegionAsync(range.base, range.size, pattern, `${mod.name}@${range.base}`);
+      }
+      const hit = await this.scanRegionAsync(range.base, range.size, pattern, `${mod.name}@${range.base}`, status);
       if (hit !== null)
         return hit;
     }
@@ -19732,7 +20253,7 @@ var PatternStrategy = class {
    * first — so reportIfAmbiguous can warn when a pattern is non-unique.
    * Unreadable pages are skipped.
    */
-  scanRegionAsync(base, size, pattern, where) {
+  scanRegionAsync(base, size, pattern, where, status) {
     return new Promise((resolve) => {
       const acc = [];
       try {
@@ -19740,14 +20261,16 @@ var PatternStrategy = class {
           onMatch: (address, matchSize) => {
             acc.push({ address, size: matchSize });
           },
-          onError: () => {
+          onError: (reason) => {
+            markIncomplete(status, `${where}: ${reason}`);
           },
           onComplete: () => {
             this.reportIfAmbiguous(acc, where);
             resolve(acc.length > 0 ? acc[0].address : null);
           }
         });
-      } catch (_e) {
+      } catch (e) {
+        markIncomplete(status, `${where}: ${e}`);
         resolve(null);
       }
     });
@@ -19950,6 +20473,13 @@ var LruMap = class {
     }
     return val;
   }
+  /** Read without promoting: membership checks must not reorder eviction. */
+  peek(key) {
+    return this._map.get(key);
+  }
+  has(key) {
+    return this._map.has(key);
+  }
   set(key, value) {
     this._map.delete(key);
     if (this._map.size >= this._max) {
@@ -19971,6 +20501,14 @@ var LruMap = class {
   }
   get size() {
     return this._map.size;
+  }
+  /** The least recently used entry, without promoting it. */
+  oldest() {
+    return this._map.entries().next().value;
+  }
+  /** Snapshot of the entries, oldest first, without promoting any of them. */
+  entries() {
+    return Array.from(this._map.entries());
   }
 };
 var FifoSet = class {
@@ -21452,33 +21990,142 @@ init_node_globals();
 
 // agent/shared/module_exports.ts
 init_node_globals();
-var exportTables = /* @__PURE__ */ new Map();
-function exportTableOf(module) {
-  const key = `${module.path}@${module.base}`;
-  let table = exportTables.get(key);
-  if (table === void 0) {
-    table = /* @__PURE__ */ new Map();
-    try {
-      for (const exp of module.enumerateExports())
-        table.set(exp.name, exp.address);
-    } catch (_) {
-    }
-    exportTables.set(key, table);
-  }
-  return table;
-}
-function findModuleExport2(moduleName, symbol) {
-  const module = Process.findModuleByName?.(moduleName);
-  if (module && typeof module.findExportByName === "function") {
-    return module.findExportByName(symbol) ?? (typeof module.enumerateExports === "function" ? exportTableOf(module).get(symbol) ?? null : null);
-  }
-  const legacyFind = Module.findExportByName;
-  return typeof legacyFind === "function" ? legacyFind(moduleName, symbol) ?? null : null;
-}
 
-// agent/shared/boringssl_anchor_locator.ts
+// agent/shared/arm64_xref.ts
 init_node_globals();
-init_shared_structures();
+
+// agent/shared/macho_header.ts
+init_node_globals();
+var MH_MAGIC_64 = 4277009103;
+var LC_SEGMENT_64 = 25;
+var LC_UUID = 27;
+var MACH_HEADER_64_BYTES = 32;
+var SEGMENT_COMMAND_64_BYTES = 72;
+var SECTION_64_BYTES = 80;
+var MAX_LOAD_COMMAND_BYTES = 1024 * 1024;
+var UUID_BYTES = 16;
+function fixedString(bytes, at, length) {
+  let s = "";
+  for (let i = 0; i < length && bytes[at + i] !== 0; i++)
+    s += String.fromCharCode(bytes[at + i]);
+  return s;
+}
+function u64(dv, at) {
+  const v = dv.getBigUint64(at, true);
+  return v > BigInt(Number.MAX_SAFE_INTEGER) ? -1 : Number(v);
+}
+function isMachO64(read2) {
+  const magic = read2(0, 4);
+  return magic !== null && magic.length === 4 && new DataView(magic.buffer, magic.byteOffset, 4).getUint32(0, true) === MH_MAGIC_64;
+}
+function parseMachOLoadCommands(read2) {
+  try {
+    if (!isMachO64(read2))
+      return null;
+    const header = read2(0, MACH_HEADER_64_BYTES);
+    if (header === null || header.length < MACH_HEADER_64_BYTES)
+      return null;
+    const hv = new DataView(header.buffer, header.byteOffset, header.byteLength);
+    const ncmds = hv.getUint32(16, true), sizeofcmds = hv.getUint32(20, true);
+    if (sizeofcmds === 0 || sizeofcmds > MAX_LOAD_COMMAND_BYTES)
+      return null;
+    const cmds = read2(MACH_HEADER_64_BYTES, sizeofcmds);
+    if (cmds === null || cmds.length < sizeofcmds)
+      return null;
+    return walkLoadCommands(cmds, ncmds);
+  } catch (_e) {
+    return null;
+  }
+}
+function walkLoadCommands(cmds, ncmds) {
+  const dv = new DataView(cmds.buffer, cmds.byteOffset, cmds.byteLength);
+  const raw = [];
+  let uuid = null, textVmaddr = null;
+  for (let i = 0, at = 0; i < ncmds && at + 8 <= cmds.length; i++) {
+    const cmd = dv.getUint32(at, true), cmdsize = dv.getUint32(at + 4, true);
+    if (cmdsize < 8 || at + cmdsize > cmds.length)
+      break;
+    if (cmd === LC_UUID && cmdsize >= 8 + UUID_BYTES)
+      uuid = toHexString(cmds.subarray(at + 8, at + 8 + UUID_BYTES));
+    if (cmd === LC_SEGMENT_64 && cmdsize >= SEGMENT_COMMAND_64_BYTES) {
+      if (fixedString(cmds, at + 8, 16) === "__TEXT")
+        textVmaddr = u64(dv, at + 24);
+      const nsects = dv.getUint32(at + 64, true);
+      for (let s = 0; s < nsects; s++) {
+        const sec = at + SEGMENT_COMMAND_64_BYTES + s * SECTION_64_BYTES;
+        if (sec + SECTION_64_BYTES > at + cmdsize)
+          break;
+        raw.push({
+          sectname: fixedString(cmds, sec, 16),
+          segname: fixedString(cmds, sec + 16, 16),
+          addr: u64(dv, sec + 32),
+          size: u64(dv, sec + 40)
+        });
+      }
+    }
+    at += cmdsize;
+  }
+  const base = textVmaddr ?? 0;
+  const sections = raw.filter((r) => r.addr >= base && r.size >= 0).map((r) => ({ segname: r.segname, sectname: r.sectname, offset: r.addr - base, size: r.size }));
+  return { uuid, sections };
+}
+var sectionKey = (segname, sectname) => `${segname},${sectname}`;
+var MachOImage = class {
+  mod;
+  commands;
+  sections = null;
+  constructor(mod, commands) {
+    this.mod = mod;
+    this.commands = commands;
+  }
+  get uuid() {
+    return this.commands.uuid;
+  }
+  section(segname, sectname) {
+    if (this.sections === null)
+      this.sections = sectionsFromFrida(this.mod) ?? this.sectionsFromLoadCommands();
+    return this.sections.get(sectionKey(segname, sectname)) ?? null;
+  }
+  sectionsFromLoadCommands() {
+    const map = /* @__PURE__ */ new Map();
+    for (const s of this.commands.sections) {
+      if (s.size > 0)
+        map.set(sectionKey(s.segname, s.sectname), { base: this.mod.base.add(s.offset), size: s.size });
+    }
+    return map;
+  }
+};
+function sectionsFromFrida(mod) {
+  try {
+    if (typeof mod.enumerateSections !== "function")
+      return null;
+    const map = /* @__PURE__ */ new Map();
+    for (const s of mod.enumerateSections()) {
+      const segname = s.id.split(".")[1] ?? "";
+      if (s.size > 0)
+        map.set(sectionKey(segname, s.name), { base: s.address, size: s.size });
+    }
+    return map;
+  } catch (_e) {
+    return null;
+  }
+}
+var imageByMapping = /* @__PURE__ */ new Map();
+function machOImage(mod) {
+  return memoizePerMapping(imageByMapping, mod, () => {
+    const commands = parseMachOLoadCommands(moduleMemoryReader(mod.base));
+    return commands === null ? null : new MachOImage(mod, commands);
+  });
+}
+function moduleMachOUuid(mod) {
+  return machOImage(mod)?.uuid ?? null;
+}
+function isMachOModule(mod) {
+  return machOImage(mod) !== null;
+}
+function machOSectionRange(mod, segname, sectname) {
+  return machOImage(mod)?.section(segname, sectname) ?? null;
+}
 
 // agent/shared/arm64.ts
 init_node_globals();
@@ -21534,6 +22181,9 @@ function isIndirectBranch(insn) {
 function isBLRAuth(insn) {
   return maskEq(insn, 4294965279, 3594455071) || maskEq(insn, 4294965248, 3611232256);
 }
+function isAnyCall(insn) {
+  return isBL(insn) || isBLR(insn) || isBLRAuth(insn);
+}
 function isTrap(insn) {
   return maskEq(insn, 4292870175, 3558866944) || maskEq(insn, 4294901760, 0);
 }
@@ -21545,6 +22195,21 @@ function isCBZ64(insn) {
 }
 function isCBNZ64(insn) {
   return maskEq(insn, 4278190080, 3036676096);
+}
+function isLDRSWimmU(insn) {
+  return maskEq(insn, 4290772992, 3112173568);
+}
+function decodeLDRSWImm(insn) {
+  return (insn >>> 10 & 4095) * 4;
+}
+function isADDreg64(insn) {
+  return maskEq(insn, 4292934656, 2332033024);
+}
+function isSUBreg64(insn) {
+  return maskEq(insn, 4292934656, 3405774848);
+}
+function regRm(insn) {
+  return insn >>> 16 & 31;
 }
 function isFunctionPrologueWord(insn) {
   if (insn >>> 0 === 3573752639)
@@ -21567,6 +22232,21 @@ function isLandingPadWord(insn) {
   const word = insn >>> 0;
   return word === PACIASP || word === BTI_C;
 }
+var PACIBSP = 3573752703;
+var BTI_J = 3573752991;
+var BTI_JC = 3573753055;
+function isEntryPrologueWord(insn) {
+  const word = insn >>> 0;
+  return isFunctionPrologueWord(insn) && word !== BTI_J && word !== BTI_JC;
+}
+function isFrameSetupWord(insn) {
+  return maskEq(insn, 4290773984, 2843739104) || maskEq(insn, 4278191103, 3506439167) || insn >>> 0 === PACIBSP;
+}
+function isNonStackStore(insn) {
+  const w = insn >>> 0;
+  const store = (w & 2143289344) === 687865856 || (w & 3217031168) === 3103784960 || (w & 3219131392) === 3087007744;
+  return store && regRn(w) !== 31 && regRn(w) !== 29;
+}
 function isBranchOrSystemGroup(insn) {
   return maskEq(insn, 469762048, 335544320);
 }
@@ -21574,7 +22254,7 @@ function isLoadStoreGroup(insn) {
   return maskEq(insn, 167772160, 134217728);
 }
 function branchOrSystemWritesReg(insn, reg) {
-  if (isBL(insn) || isBLR(insn) || isBLRAuth(insn))
+  if (isAnyCall(insn))
     return reg === 30;
   if (maskEq(insn, 4293918720, 3576692736))
     return regRd(insn) === reg;
@@ -21768,7 +22448,6 @@ function ldrU64ScanPattern(imm12) {
 }
 
 // agent/shared/arm64_xref.ts
-init_node_globals();
 function adrpTarget(pc, insn) {
   const pageImm = decodeADRPImm(insn);
   const pcPage = pc.and(ptr("0xfff").not());
@@ -21843,7 +22522,7 @@ function compilePattern(pattern) {
   }
   return pattern;
 }
-async function scanRangesChunked(ranges, jobs, chunkBytes = XREF_SCAN_CHUNK_BYTES, yieldFn = yieldToEventLoop) {
+async function scanRangesChunked(ranges, jobs, chunkBytes = XREF_SCAN_CHUNK_BYTES, yieldFn = yieldToEventLoop, status) {
   if (jobs.length === 0)
     return;
   const shapes = jobs.map((j) => withoutLeadingWildcards(j.pattern));
@@ -21861,6 +22540,8 @@ async function scanRangesChunked(ranges, jobs, chunkBytes = XREF_SCAN_CHUNK_BYTE
         try {
           hits = Memory.scanSync(chunkStart, scanSize, compiled[i]);
         } catch (_e) {
+          if (status)
+            status.complete = false;
           continue;
         }
         const skipped = shapes[i].skipped;
@@ -21876,10 +22557,10 @@ async function scanRangesChunked(ranges, jobs, chunkBytes = XREF_SCAN_CHUNK_BYTE
     }
   }
 }
-function findOpeningAdrp(at, reg, page, rangeStart) {
+function findOpeningAdrp(at, reg, page, rangeStart2) {
   for (let j = 1; j <= LOAD_SITE_WINDOW; j++) {
     const p = at.sub(j * 4);
-    if (p.compare(rangeStart) < 0)
+    if (p.compare(rangeStart2) < 0)
       return null;
     let insn = 0;
     try {
@@ -21932,21 +22613,21 @@ function toJobs(jobs) {
 function isAligned(addr, align3) {
   return addr.and(ptr(align3 - 1)).toInt32() === 0;
 }
-async function findPointerSlots(mod, targets2, chunkBytes, yieldFn) {
+async function findPointerSlots(mod, targets2, chunkBytes, yieldFn, status) {
   const slots = targets2.map(() => []);
   const jobs = /* @__PURE__ */ new Map();
   targets2.forEach((t, i) => addJob(jobs, pointerScanPattern(t), (a) => {
     if (isAligned(a, 8) && slots[i].length < MAX_LOAD_SITES)
       slots[i].push(a);
   }));
-  await scanRangesChunked(dataRanges(mod), toJobs(jobs), chunkBytes, yieldFn);
+  await scanRangesChunked(dataRanges(mod), toJobs(jobs), chunkBytes, yieldFn, status);
   return slots;
 }
-async function findStringLoadSitesAsync(mod, targets2, chunkBytes = XREF_SCAN_CHUNK_BYTES, yieldFn = yieldToEventLoop, maxSites = MAX_LOAD_SITES) {
+async function findStringLoadSitesAsync(mod, targets2, chunkBytes = XREF_SCAN_CHUNK_BYTES, yieldFn = yieldToEventLoop, maxSites = MAX_LOAD_SITES, status) {
   const sites = targets2.map(() => []);
-  const slots = await findPointerSlots(mod, targets2, chunkBytes, yieldFn);
+  const slots = await findPointerSlots(mod, targets2, chunkBytes, yieldFn, status);
   const jobs = /* @__PURE__ */ new Map();
-  let rangeStart = mod.base;
+  let rangeStart2 = mod.base;
   const verifyAt = (i, page, isShape) => (at) => {
     if (!isAligned(at, 4))
       return;
@@ -21958,7 +22639,7 @@ async function findStringLoadSitesAsync(mod, targets2, chunkBytes = XREF_SCAN_CH
     }
     if (!isShape(insn))
       return;
-    const adrp = findOpeningAdrp(at, regRn(insn), page, rangeStart);
+    const adrp = findOpeningAdrp(at, regRn(insn), page, rangeStart2);
     if (adrp !== null)
       sites[i].push(adrp);
   };
@@ -21972,10 +22653,10 @@ async function findStringLoadSitesAsync(mod, targets2, chunkBytes = XREF_SCAN_CH
   });
   const codeJobs = toJobs(jobs);
   for (const range of mod.enumerateRanges("r-x")) {
-    rangeStart = range.base;
-    await scanRangesChunked([range], codeJobs, chunkBytes, yieldFn);
+    rangeStart2 = range.base;
+    await scanRangesChunked([range], codeJobs, chunkBytes, yieldFn, status);
   }
-  await findAdrSites(mod, targets2, sites, chunkBytes, yieldFn);
+  await findAdrSites(mod, targets2, sites, chunkBytes, yieldFn, status);
   return sites.map((list) => dedupeSorted(list).slice(0, maxSites));
 }
 var ADR_REACH_BYTES = 1024 * 1024;
@@ -22018,11 +22699,11 @@ function adrScanWindows(codeRanges2, targets2) {
 function wordInRanges(addr, ranges) {
   return ranges.some((r) => addr.compare(r.base) >= 0 && addr.add(4).compare(r.base.add(r.size)) <= 0);
 }
-async function findAdrSites(mod, targets2, sites, chunkBytes, yieldFn) {
+async function findAdrSites(mod, targets2, sites, chunkBytes, yieldFn, status) {
   const code4 = mod.enumerateRanges("r-x");
   for (let low2 = 0; low2 < 4; low2++) {
-    const group = targets2.filter((t) => t.and(ptr(3)).toInt32() === low2);
-    if (group.length === 0)
+    const group2 = targets2.filter((t) => t.and(ptr(3)).toInt32() === low2);
+    if (group2.length === 0)
       continue;
     const byAddress = /* @__PURE__ */ new Map();
     targets2.forEach((t, i) => {
@@ -22045,16 +22726,27 @@ async function findAdrSites(mod, targets2, sites, chunkBytes, yieldFn) {
         sites[i].push(at);
     };
     const needle = adrTopByteForTarget(low2).toString(16).padStart(2, "0");
-    await scanRangesChunked(adrScanWindows(code4, group), [{ pattern: needle, onMatch: onTopByte }], chunkBytes, yieldFn);
+    await scanRangesChunked(adrScanWindows(code4, group2), [{ pattern: needle, onMatch: onTopByte }], chunkBytes, yieldFn, status);
   }
 }
 function dedupeSorted(list) {
   const sorted = [...list].sort((a, b) => a.compare(b));
   return sorted.filter((p, k) => k === 0 || !p.equals(sorted[k - 1]));
 }
-async function findAnchorStringsAsync(mod, asciis, chunkBytes = XREF_SCAN_CHUNK_BYTES, yieldFn = yieldToEventLoop) {
+var MACHO_STRING_SECTIONS = [["__TEXT", "__cstring"], ["__TEXT", "__const"]];
+function anchorStringRangePasses(mod) {
+  const data = () => dataRanges(mod);
+  const code4 = () => mod.enumerateRanges("r-x");
+  if (isMachOModule(mod)) {
+    const sections = MACHO_STRING_SECTIONS.map(([seg, sect]) => machOSectionRange(mod, seg, sect)).filter((r) => r !== null);
+    if (sections.length > 0)
+      return [() => sections, data, code4];
+  }
+  return [data, code4];
+}
+async function findAnchorStringsAsync(mod, asciis, chunkBytes = XREF_SCAN_CHUNK_BYTES, yieldFn = yieldToEventLoop, status) {
   const found = asciis.map(() => null);
-  for (const ranges of [dataRanges(mod), mod.enumerateRanges("r-x")]) {
+  for (const rangesOfPass of anchorStringRangePasses(mod)) {
     const jobs = /* @__PURE__ */ new Map();
     asciis.forEach((s, i) => {
       if (found[i] === null)
@@ -22065,7 +22757,7 @@ async function findAnchorStringsAsync(mod, asciis, chunkBytes = XREF_SCAN_CHUNK_
     });
     if (jobs.size === 0)
       break;
-    await scanRangesChunked(ranges, toJobs(jobs), chunkBytes, yieldFn);
+    await scanRangesChunked(rangesOfPass(), toJobs(jobs), chunkBytes, yieldFn, status);
   }
   return found;
 }
@@ -22082,12 +22774,12 @@ function literalStart(inside, maxBack = 512) {
   }
   return p;
 }
-async function anchorSiteFunctions(mod, functions, anchors) {
-  const hits = await findAnchorStringsAsync(mod, anchors.map((a) => a.text + "\0"));
+async function anchorSiteFunctions(mod, functions, anchors, status) {
+  const hits = await findAnchorStringsAsync(mod, anchors.map((a) => a.text + "\0"), XREF_SCAN_CHUNK_BYTES, yieldToEventLoop, status);
   const found = anchors.map((a, i) => ({ a, hit: hits[i] })).filter((x) => x.hit !== null);
   const targets2 = found.map(({ a, hit }) => a.literalSuffix ? literalStart(hit) : hit);
   const maxSites = Math.max(MAX_LOAD_SITES, ...anchors.map((a) => a.maxSites ?? MAX_LOAD_SITES));
-  const loads = targets2.length > 0 ? await findStringLoadSitesAsync(mod, targets2, XREF_SCAN_CHUNK_BYTES, yieldToEventLoop, maxSites) : [];
+  const loads = targets2.length > 0 ? await findStringLoadSitesAsync(mod, targets2, XREF_SCAN_CHUNK_BYTES, yieldToEventLoop, maxSites, status) : [];
   const sitesByAnchor = /* @__PURE__ */ new Map();
   found.forEach(({ a }, k) => sitesByAnchor.set(a, loads[k].slice(0, a.maxSites ?? MAX_LOAD_SITES).map((at) => ({ at, fn: functions.bounds(at) }))));
   return anchors.map((a) => sitesByAnchor.get(a) ?? []);
@@ -22095,10 +22787,99 @@ async function anchorSiteFunctions(mod, functions, anchors) {
 function moduleOffsetLabel(mod, p, missing = "?") {
   return p === null ? missing : "+0x" + p.sub(mod.base).toString(16);
 }
-function firstCallTargetForward(from2, limit, modStart, modEnd) {
+function isRegisterMove(insn) {
+  return (insn & 2145452e3) >>> 0 === 704644064;
+}
+function isRegisterSave(insn) {
+  return (insn & 4290772992) >>> 0 === 2835349504 || isSTRimmU64(insn);
+}
+var ARG_SETUP_STUB = { maxBodyWords: 4, allowSaves: false };
+var REGISTER_SAVE_STUB = { maxBodyWords: 7, allowSaves: true };
+function outlinedStubBody(words, shape) {
+  const last = Math.min(words.length - 1, shape.maxBodyWords);
+  for (let i = 0; i <= last; i++) {
+    const w = words[i] >>> 0;
+    if (isRET(w))
+      return words.slice(0, i).map((x) => x >>> 0);
+    if (!isRegisterMove(w) && !(shape.allowSaves && isRegisterSave(w)))
+      return null;
+  }
+  return null;
+}
+function readInstructionWords(addr, count) {
+  const wordCount = Math.floor(readableByteCount(addr, count * 4) / 4);
+  if (wordCount === 0)
+    return [];
+  try {
+    const bytes = addr.readByteArray(wordCount * 4);
+    return bytes === null ? [] : Array.from(new Uint32Array(bytes));
+  } catch (_e) {
+    return [];
+  }
+}
+function functionByteLength(fn, table, capBytes) {
+  const bounds = table?.bounds(fn) ?? null;
+  if (bounds === null || bounds.end === null || !bounds.start.equals(fn))
+    return capBytes;
+  return Math.min(bounds.end.sub(fn).toUInt32(), capBytes);
+}
+function directCallTargets(words, base) {
+  const end = base + words.length * 4;
+  const targets2 = [];
+  words.forEach((word, i) => {
+    const w = word >>> 0;
+    const pc = base + i * 4;
+    if (!isBL(w) && !isUnconditionalB(w))
+      return;
+    const target = pc + decodeBLImm(w);
+    if (isUnconditionalB(w) && target >= base && target < end)
+      return;
+    if (!targets2.includes(target))
+      targets2.push(target);
+  });
+  return targets2;
+}
+function readWordsUpTo(addr, count) {
+  const words = [];
+  try {
+    for (let i = 0; i < count; i++)
+      words.push(addr.add(i * 4).readU32());
+  } catch (_e) {
+  }
+  return words;
+}
+function isArgSetupStubAt(addr) {
+  return outlinedStubBody(readWordsUpTo(addr, ARG_SETUP_STUB.maxBodyWords + 1), ARG_SETUP_STUB) !== null;
+}
+function reloadsLinkRegister(insn) {
+  return writesReg(insn, 30) && !isAnyCall(insn);
+}
+function isEpilogueLinkReload(insn) {
+  const w = insn >>> 0;
+  if (regRn(w) !== 31)
+    return false;
+  const ldrX30 = (w & 4290772992) >>> 0 === 4181721088 || (w & 4292871168) >>> 0 === 4164944896;
+  if (ldrX30)
+    return regRd(w) === 30;
+  const op = (w & 4290772992) >>> 0;
+  const ldpX = op === 2831155200 || op === 2839543808 || op === 2847932416;
+  return ldpX && (regRd(w) === 30 || regRt2(w) === 30);
+}
+function isTailCallTarget(site, tgt, functions) {
+  const fn = functions?.bounds(site) ?? null;
+  if (fn !== null && fn.end !== null)
+    return tgt.compare(fn.start) < 0 || tgt.compare(fn.end) >= 0;
+  try {
+    return isFunctionPrologueWord(tgt.readU32());
+  } catch (_e) {
+    return false;
+  }
+}
+function firstCallTargetForward(from2, limit, modStart, modEnd, functions) {
   let cursor = from2.add(4);
   const maxWalk = 1024;
   let walked = 0;
+  let linkRegisterRestored = false;
   while (cursor.compare(limit) < 0 && walked < maxWalk) {
     let insn = 0;
     try {
@@ -22108,13 +22889,20 @@ function firstCallTargetForward(from2, limit, modStart, modEnd) {
     }
     if (isBL(insn)) {
       const tgt = blTarget(cursor, insn);
-      if (inModule(tgt, modStart, modEnd))
+      if (inModule(tgt, modStart, modEnd) && !isArgSetupStubAt(tgt))
         return tgt;
     }
     if (isBLR(insn) || isBLRAuth(insn)) {
       devlog(`[arm64-xref] forward walk hit unresolvable BLR @ ${cursor}`);
       return null;
     }
+    if (isUnconditionalB(insn) && linkRegisterRestored) {
+      const tgt = blTarget(cursor, insn);
+      if (inModule(tgt, modStart, modEnd) && isTailCallTarget(from2, tgt, functions))
+        return tgt;
+    }
+    if (reloadsLinkRegister(insn))
+      linkRegisterRestored = isEpilogueLinkReload(insn);
     if (endsFallThrough(insn)) {
       devlog(`[arm64-xref] forward walk hit a non-fall-through instruction @ ${cursor} before any BL`);
       return null;
@@ -22125,8 +22913,225 @@ function firstCallTargetForward(from2, limit, modStart, modEnd) {
   return null;
 }
 
+// agent/shared/module_exports.ts
+var exportTables = /* @__PURE__ */ new Map();
+function exportTableOf(module) {
+  const key = `${module.path}@${module.base}`;
+  let table = exportTables.get(key);
+  if (table === void 0) {
+    table = /* @__PURE__ */ new Map();
+    try {
+      for (const exp of module.enumerateExports())
+        table.set(exp.name, exp.address);
+    } catch (_) {
+    }
+    exportTables.set(key, table);
+  }
+  return table;
+}
+function findOwnExport(module, symbol) {
+  try {
+    const p = module.findExportByName(symbol);
+    if (p === null || p.isNull())
+      return null;
+    const [start, end] = moduleImageBounds(module);
+    return inModule(p, start, end) ? p : null;
+  } catch (_) {
+    return null;
+  }
+}
+function findModuleExport2(moduleName, symbol, options = {}) {
+  const module = Process.findModuleByName?.(moduleName);
+  if (options.ownModuleOnly) {
+    return module && typeof module.findExportByName === "function" ? findOwnExport(module, symbol) : null;
+  }
+  if (module && typeof module.findExportByName === "function") {
+    return module.findExportByName(symbol) ?? (typeof module.enumerateExports === "function" ? exportTableOf(module).get(symbol) ?? null : null);
+  }
+  const legacyFind = Module.findExportByName;
+  return typeof legacyFind === "function" ? legacyFind(moduleName, symbol) ?? null : null;
+}
+
+// agent/shared/boringssl_anchor_locator.ts
+init_node_globals();
+init_shared_structures();
+
+// agent/shared/keylog_guards.ts
+init_node_globals();
+var DECODE_UNREADABLE = Symbol("decode-unreadable");
+function isDecoded(d) {
+  return d !== null && d !== DECODE_UNREADABLE;
+}
+function unreadableIfShort(decoded, readInFull) {
+  return decoded === null && !readInFull ? DECODE_UNREADABLE : decoded;
+}
+var LabelSelfCheck = class {
+  isKnown;
+  limit;
+  mismatches = 0;
+  constructor(isKnown, limit) {
+    this.isKnown = isKnown;
+    this.limit = limit;
+  }
+  observe(label) {
+    if (this.isKnown(label)) {
+      this.mismatches = 0;
+      return "emit";
+    }
+    this.mismatches++;
+    return this.mismatches < this.limit ? "skip" : "detach";
+  }
+};
+
 // agent/shared/boringssl_keylog_outcome.ts
 init_node_globals();
+
+// agent/shared/call_abi.ts
+init_node_globals();
+var moduleAbi = /* @__PURE__ */ new Map();
+function setModuleCallAbi(moduleName, abi) {
+  moduleAbi.set(moduleName.toLowerCase(), abi);
+}
+function hostCallAbi() {
+  if (Process.arch === "arm64")
+    return "aarch64";
+  if (Process.arch === "x64")
+    return Process.platform === "windows" ? "win64" : "sysv";
+  return null;
+}
+function callAbiForModule(moduleName) {
+  return moduleAbi.get(moduleName.toLowerCase()) ?? hostCallAbi();
+}
+function argAt(ctx, abi, idx) {
+  if (abi === "aarch64") {
+    const c = ctx;
+    if (idx < 8)
+      return [c.x0, c.x1, c.x2, c.x3, c.x4, c.x5, c.x6, c.x7][idx];
+    return c.sp.add((idx - 8) * 8).readPointer();
+  } else if (abi === "win64") {
+    const c = ctx;
+    if (idx < 4)
+      return [c.rcx, c.rdx, c.r8, c.r9][idx];
+    return c.rsp.add(40 + (idx - 4) * 8).readPointer();
+  } else {
+    const c = ctx;
+    if (idx < 6)
+      return [c.rdi, c.rsi, c.rdx, c.rcx, c.r8, c.r9][idx];
+    return c.rsp.add(8 + (idx - 6) * 8).readPointer();
+  }
+}
+var MAX_SECRET_LEN2 = 64;
+function win64SpanIsByReference(spanSize) {
+  return spanSize !== null && spanSize > 0 && spanSize <= MAX_SECRET_LEN2;
+}
+function readSslLogSecretCall(args, ctx, abi) {
+  if (abi === null) {
+    return { ssl: args[0], label: args[1], data: args[2], len: args[3].toUInt32() };
+  }
+  const ssl = argAt(ctx, abi, 0);
+  const label = argAt(ctx, abi, 1);
+  const a2 = argAt(ctx, abi, 2);
+  if (abi !== "win64") {
+    return { ssl, label, data: a2, len: argAt(ctx, abi, 3).toUInt32() };
+  }
+  let spanSize = null;
+  try {
+    spanSize = a2.add(8).readU64().toNumber();
+  } catch (_e) {
+  }
+  if (win64SpanIsByReference(spanSize)) {
+    return { ssl, label, data: a2.readPointer(), len: spanSize };
+  }
+  return { ssl, label, data: a2, len: argAt(ctx, abi, 3).toUInt32() };
+}
+
+// agent/shared/go_attach.ts
+init_node_globals();
+var MAX_STACK_CHECK_INSTRUCTIONS = 6;
+var STACK_GUARD_LOAD_WORD = 4181724048;
+function isGoArm64StackGuardLoad(insn) {
+  return insn >>> 0 === STACK_GUARD_LOAD_WORD;
+}
+var GO_HOOK_STACK_HEADROOM = 16 * 1024;
+var SUB_X17_SP_IMM_MASK = 4286579711;
+var SUB_X17_SP_IMM_BITS = 3506439153;
+function decodeSubX17SpImm(insn) {
+  const word = insn >>> 0;
+  if ((word & SUB_X17_SP_IMM_MASK) >>> 0 !== SUB_X17_SP_IMM_BITS)
+    return null;
+  const imm12 = word >>> 10 & 4095;
+  return word >>> 22 & 1 ? imm12 * 4096 : imm12;
+}
+function widenGoArm64StackCheck(insn, headroom = GO_HOOK_STACK_HEADROOM) {
+  const frame = decodeSubX17SpImm(insn);
+  if (frame === null)
+    return null;
+  const pages = Math.ceil((frame + headroom) / 4096);
+  if (pages > 4095)
+    return null;
+  return (SUB_X17_SP_IMM_BITS | 1 << 22 | pages << 10) >>> 0;
+}
+var widenedStackChecks = /* @__PURE__ */ new Set();
+function ensureGoArm64StackHeadroom(fn) {
+  const key = fn.toString();
+  if (widenedStackChecks.has(key))
+    return true;
+  const site = fn.add(4);
+  const widened = widenGoArm64StackCheck(site.readU32());
+  if (widened === null)
+    return false;
+  Memory.patchCode(site, 4, (code4) => code4.writeU32(widened));
+  widenedStackChecks.add(key);
+  devlog(`[go] ${fn}: stack check widened by ${GO_HOOK_STACK_HEADROOM} bytes for the hook`);
+  return true;
+}
+function isStackCheckInstruction(instruction) {
+  const { mnemonic, opStr } = instruction;
+  if (mnemonic === "cmp")
+    return true;
+  return ["sub", "subs", "mov", "movz", "movk", "add"].includes(mnemonic) && /^x1[67],/.test(opStr);
+}
+function goArm64StackCheckEnd(fn) {
+  if (!opensWithGoStackGuardLoad(fn))
+    return null;
+  let cursor = fn.add(4);
+  for (let i = 1; i < MAX_STACK_CHECK_INSTRUCTIONS; i++) {
+    let instruction;
+    try {
+      instruction = Instruction.parse(cursor);
+    } catch (e) {
+      return null;
+    }
+    if (instruction.mnemonic.startsWith("b."))
+      return instruction.next;
+    if (!isStackCheckInstruction(instruction))
+      return null;
+    cursor = instruction.next;
+  }
+  return null;
+}
+function opensWithGoStackGuardLoad(fn) {
+  try {
+    return isGoArm64StackGuardLoad(fn.readU32());
+  } catch (e) {
+    return false;
+  }
+}
+function attachGoFunctionEntry(address, callbacks, arch = Process.arch) {
+  const afterCheck = arch === "arm64" ? goArm64StackCheckEnd(address) : null;
+  if (afterCheck === null)
+    return Interceptor.attach(address, callbacks);
+  try {
+    if (!ensureGoArm64StackHeadroom(address))
+      devlog(`[go] ${address}: small-frame stack check; no extra headroom for the hook`);
+  } catch (e) {
+    devlog(`[go] ${address}: could not widen the stack check (${e}); hooking without extra headroom`);
+  }
+  devlog(`[go] ${address}: hooking after its stack check at ${afterCheck}`);
+  return Interceptor.attach(afterCheck, callbacks);
+}
+
+// agent/shared/boringssl_keylog_outcome.ts
 var ALL_KEYLOG_TIERS_MISSED_MSG = (moduleName, detail) => `[!] ${moduleName}: no BoringSSL keylog hook could be installed (callback, symbol and pattern tiers all missed${detail ? `; ${detail}` : ""})`;
 var reportedModules = /* @__PURE__ */ new Set();
 var warnedModules = /* @__PURE__ */ new Set();
@@ -22143,6 +23148,53 @@ function claimKeylogHook(moduleName, tier) {
     log(`[*] ${moduleName}: the ${tier} tier installed a keylog hook after all (supersedes the earlier "no BoringSSL keylog hook" warning)`);
   }
   return true;
+}
+var hookedSslLogSecrets = /* @__PURE__ */ new Map();
+function isSslLogSecretHooked(address) {
+  return hookedSslLogSecrets.has(mappingAddressKey(address));
+}
+function sslLogSecretHookTier(address) {
+  return hookedSslLogSecrets.get(mappingAddressKey(address));
+}
+function attachSslLogSecretOnce(address, tier, attach2) {
+  const key = mappingAddressKey(address);
+  if (hookedSslLogSecrets.has(key))
+    return true;
+  if (!attach2())
+    return false;
+  hookedSslLogSecrets.set(key, tier);
+  return true;
+}
+function claimForLiveSslLogSecretHook(moduleName, address, fallback) {
+  return claimKeylogHook(moduleName, sslLogSecretHookTier(address) ?? fallback);
+}
+function tryAttach(tag, address, callbacks) {
+  try {
+    Interceptor.attach(address, callbacks);
+    return true;
+  } catch (e) {
+    devlog_error(`${tag} Interceptor.attach @ ${address} failed: ${e}`);
+    return false;
+  }
+}
+function attachSslLogSecretHook(addr, tier, cb, moduleName = "", abi = callAbiForModule(moduleName)) {
+  return attachSslLogSecretOnce(addr, tier, () => tryAttach(`[bssl-keylog] ${moduleName}:`, addr, {
+    onEnter(args) {
+      const c = readSslLogSecretCall(args, this.context, abi);
+      cb(c.label, c.ssl, c.data, c.len);
+    }
+  }));
+}
+function attachPatternEntryHook(address, onMatchCallback, dumpKeysEntry) {
+  const attach2 = () => {
+    attachGoFunctionEntry(address, {
+      onEnter: function(args) {
+        onMatchCallback.call(this, args);
+      }
+    });
+    return true;
+  };
+  return dumpKeysEntry ? attachSslLogSecretOnce(address, "pattern", attach2) : attach2();
 }
 function guardKeylogDumpKeys(moduleName, tier, dumpKeys) {
   let dropLogged = false;
@@ -22256,65 +23308,6 @@ function runForcedAnchorTier(moduleName, dumpKeys, trySymbolTier) {
     return onAllKeylogTiersMissed(moduleName, dumpKeys, { detail: FORCED_ANCHOR_ONLY_DETAIL, pairipDisabled: false });
 }
 
-// agent/shared/call_abi.ts
-init_node_globals();
-var moduleAbi = /* @__PURE__ */ new Map();
-function setModuleCallAbi(moduleName, abi) {
-  moduleAbi.set(moduleName.toLowerCase(), abi);
-}
-function hostCallAbi() {
-  if (Process.arch === "arm64")
-    return "aarch64";
-  if (Process.arch === "x64")
-    return Process.platform === "windows" ? "win64" : "sysv";
-  return null;
-}
-function callAbiForModule(moduleName) {
-  return moduleAbi.get(moduleName.toLowerCase()) ?? hostCallAbi();
-}
-function argAt(ctx, abi, idx) {
-  if (abi === "aarch64") {
-    const c = ctx;
-    if (idx < 8)
-      return [c.x0, c.x1, c.x2, c.x3, c.x4, c.x5, c.x6, c.x7][idx];
-    return c.sp.add((idx - 8) * 8).readPointer();
-  } else if (abi === "win64") {
-    const c = ctx;
-    if (idx < 4)
-      return [c.rcx, c.rdx, c.r8, c.r9][idx];
-    return c.rsp.add(40 + (idx - 4) * 8).readPointer();
-  } else {
-    const c = ctx;
-    if (idx < 6)
-      return [c.rdi, c.rsi, c.rdx, c.rcx, c.r8, c.r9][idx];
-    return c.rsp.add(8 + (idx - 6) * 8).readPointer();
-  }
-}
-var MAX_SECRET_LEN2 = 64;
-function win64SpanIsByReference(spanSize) {
-  return spanSize !== null && spanSize > 0 && spanSize <= MAX_SECRET_LEN2;
-}
-function readSslLogSecretCall(args, ctx, abi) {
-  if (abi === null) {
-    return { ssl: args[0], label: args[1], data: args[2], len: args[3].toUInt32() };
-  }
-  const ssl = argAt(ctx, abi, 0);
-  const label = argAt(ctx, abi, 1);
-  const a2 = argAt(ctx, abi, 2);
-  if (abi !== "win64") {
-    return { ssl, label, data: a2, len: argAt(ctx, abi, 3).toUInt32() };
-  }
-  let spanSize = null;
-  try {
-    spanSize = a2.add(8).readU64().toNumber();
-  } catch (_e) {
-  }
-  if (win64SpanIsByReference(spanSize)) {
-    return { ssl, label, data: a2.readPointer(), len: spanSize };
-  }
-  return { ssl, label, data: a2, len: argAt(ctx, abi, 3).toUInt32() };
-}
-
 // agent/shared/x64_xref.ts
 init_node_globals();
 var LEA_ARG1_PREFIX = {
@@ -22357,7 +23350,6 @@ function firstCallAfter(code4, codeVa, leaOff, lo, hi, window = CALL_SEARCH_WIND
   }
   return null;
 }
-var X64_REG = { rax: 0, rcx: 1, rdx: 2, rbx: 3, rsp: 4, rbp: 5, rsi: 6, rdi: 7 };
 var MIN_FIELD_OFFSET = 8;
 var MAX_CTX_OFFSET = 1024;
 var MAX_CB_OFFSET = 16384;
@@ -22443,8 +23435,693 @@ function decodeX64CtxKeylogOffsets(code4, sslReg) {
   return null;
 }
 
+// agent/shared/x64_insn.ts
+init_node_globals();
+var X64 = {
+  rax: 0,
+  rcx: 1,
+  rdx: 2,
+  rbx: 3,
+  rsp: 4,
+  rbp: 5,
+  rsi: 6,
+  rdi: 7,
+  r8: 8,
+  r9: 9,
+  r10: 10,
+  r11: 11,
+  r12: 12,
+  r13: 13,
+  r14: 14,
+  r15: 15
+};
+var RIP = -1;
+var SYSV_CALLER_SAVED = [0, 1, 2, 6, 7, 8, 9, 10, 11];
+var ALL_GPRS = Array.from({ length: 16 }, (_v, i) => i);
+var MAX_INSN_LEN = 15;
+var LEGACY_PREFIXES = /* @__PURE__ */ new Set([240, 242, 243, 46, 54, 62, 38, 100, 101, 102, 103]);
+var INVALID_1 = /* @__PURE__ */ new Set([
+  6,
+  7,
+  14,
+  22,
+  23,
+  30,
+  31,
+  39,
+  47,
+  55,
+  63,
+  96,
+  97,
+  130,
+  154,
+  206,
+  212,
+  213,
+  214,
+  234
+]);
+function oneByteHasModrm(op) {
+  if (op < 64)
+    return (op & 7) < 4;
+  return [99, 105, 107, 192, 193, 198, 199, 246, 247, 254, 255].includes(op) || op >= 128 && op <= 143 || op >= 208 && op <= 211 || op >= 216 && op <= 223;
+}
+function oneByteImmSize(op, opSize16, rexW, reg) {
+  const z = opSize16 && !rexW ? 2 : 4;
+  if (op < 64)
+    return (op & 7) === 4 ? 1 : (op & 7) === 5 ? z : 0;
+  if ([106, 107, 128, 131, 168, 192, 193, 198, 205, 228, 229, 230, 231].includes(op))
+    return 1;
+  if (op >= 112 && op <= 127 || op >= 224 && op <= 227 || op === 235)
+    return 1;
+  if (op >= 176 && op <= 183)
+    return 1;
+  if ([104, 105, 129, 169, 199].includes(op))
+    return z;
+  if (op === 232 || op === 233)
+    return 4;
+  if (op >= 184 && op <= 191)
+    return rexW ? 8 : z;
+  if (op === 194 || op === 202)
+    return 2;
+  if (op === 200)
+    return 3;
+  if (op === 246 && (reg & 7) < 2)
+    return 1;
+  if (op === 247 && (reg & 7) < 2)
+    return z;
+  return 0;
+}
+var NO_MODRM_0F = /* @__PURE__ */ new Set([
+  5,
+  6,
+  7,
+  8,
+  9,
+  11,
+  14,
+  48,
+  49,
+  50,
+  51,
+  52,
+  53,
+  55,
+  119,
+  160,
+  161,
+  162,
+  168,
+  169,
+  170
+]);
+var INVALID_0F = /* @__PURE__ */ new Set([4, 10, 12, 36, 37, 38, 39, 54, 57, 59, 60, 61, 62, 63]);
+var IMM8_0F = /* @__PURE__ */ new Set([15, 112, 113, 114, 115, 164, 172, 186, 194, 196, 197, 198]);
+function twoByteHasModrm(op) {
+  if (NO_MODRM_0F.has(op))
+    return false;
+  if (op >= 128 && op <= 143)
+    return false;
+  if (op >= 200 && op <= 207)
+    return false;
+  return true;
+}
+var Cursor = class {
+  code;
+  pos;
+  end;
+  constructor(code4, pos, end) {
+    this.code = code4;
+    this.pos = pos;
+    this.end = end;
+  }
+  has(n) {
+    return this.pos + n <= this.end;
+  }
+  u8() {
+    return this.code[this.pos++];
+  }
+  signed(size) {
+    const c = this.code;
+    const p = this.pos;
+    this.pos += size;
+    if (size === 1)
+      return c[p] << 24 >> 24;
+    if (size === 2)
+      return (c[p] | c[p + 1] << 8) << 16 >> 16;
+    const lo = c[p] | c[p + 1] << 8 | c[p + 2] << 16 | c[p + 3] << 24;
+    if (size === 4)
+      return lo;
+    const hi = c[p + 4] | c[p + 5] << 8 | c[p + 6] << 16 | c[p + 7] << 24;
+    return hi * 4294967296 + (lo >>> 0);
+  }
+};
+function readModrm(cur, rex) {
+  if (!cur.has(1))
+    return null;
+  const modrm = cur.u8();
+  const mod = modrm >> 6;
+  const reg = modrm >> 3 & 7 | (rex & 4) << 1;
+  const rmLow = modrm & 7;
+  if (mod === 3)
+    return { mod, reg, rm: rmLow | (rex & 1) << 3, mem: null };
+  let base = rmLow | (rex & 1) << 3;
+  let index = null;
+  let scale = 1;
+  let dispSize = mod === 1 ? 1 : mod === 2 ? 4 : 0;
+  if (rmLow === 4) {
+    if (!cur.has(1))
+      return null;
+    const sib = cur.u8();
+    scale = 1 << (sib >> 6);
+    const idx = sib >> 3 & 7 | (rex & 2) << 2;
+    index = idx === 4 ? null : idx;
+    if ((sib & 7) === 5 && mod === 0) {
+      base = null;
+      dispSize = 4;
+    } else
+      base = sib & 7 | (rex & 1) << 3;
+  } else if (rmLow === 5 && mod === 0) {
+    base = RIP;
+    dispSize = 4;
+  }
+  if (!cur.has(dispSize))
+    return null;
+  const disp = dispSize === 0 ? 0 : cur.signed(dispSize);
+  return { mod, reg, rm: rmLow | (rex & 1) << 3, mem: { base, index, scale, disp } };
+}
+function blank(addr) {
+  return {
+    addr,
+    length: 0,
+    map: 0,
+    opcode: 0,
+    vex: false,
+    rex: 0,
+    rexW: false,
+    prefix66: false,
+    prefixF2: false,
+    prefixF3: false,
+    prefix67: false,
+    mod: null,
+    reg: null,
+    rm: null,
+    mem: null,
+    vvvv: null,
+    imm: null,
+    target: null
+  };
+}
+function applyModrm(insn, m2) {
+  insn.mod = m2.mod;
+  insn.reg = m2.reg;
+  insn.rm = m2.rm;
+  insn.mem = m2.mem;
+}
+function decodeVex(cur, insn) {
+  const esc = cur.u8();
+  let rex = 0;
+  let map = 1;
+  let pp = 0;
+  if (esc === 197) {
+    if (!cur.has(1))
+      return false;
+    const b1 = cur.u8();
+    rex = b1 & 128 ? 0 : 4;
+    insn.vvvv = ~b1 >> 3 & 15;
+    pp = b1 & 3;
+  } else {
+    const extra = esc === 98 ? 3 : 2;
+    if (!cur.has(extra))
+      return false;
+    const b1 = cur.u8();
+    const b2 = cur.u8();
+    rex = ~b1 >> 5 & 7;
+    map = b1 & (esc === 98 ? 7 : 31);
+    insn.rexW = (b2 & 128) !== 0;
+    insn.vvvv = ~b2 >> 3 & 15;
+    pp = b2 & 3;
+    if (esc === 98)
+      cur.u8();
+  }
+  if (map < 1 || map > 3 || !cur.has(1))
+    return false;
+  insn.vex = true;
+  insn.map = map;
+  insn.prefix66 = pp === 1;
+  insn.prefixF3 = pp === 2;
+  insn.prefixF2 = pp === 3;
+  insn.opcode = cur.u8();
+  const m2 = readModrm(cur, rex);
+  if (m2 === null)
+    return false;
+  applyModrm(insn, m2);
+  insn.rex = rex | (insn.rexW ? 8 : 0);
+  const imm8 = map === 3 || map === 1 && IMM8_0F.has(insn.opcode);
+  if (imm8) {
+    if (!cur.has(1))
+      return false;
+    insn.imm = cur.signed(1);
+  }
+  return true;
+}
+function decodeLegacy(cur, insn, rex) {
+  let op = cur.u8();
+  if (op === 15) {
+    if (!cur.has(1))
+      return false;
+    op = cur.u8();
+    insn.map = 1;
+    if (op === 56 || op === 58) {
+      if (!cur.has(1))
+        return false;
+      insn.map = op === 56 ? 2 : 3;
+      op = cur.u8();
+    }
+  }
+  insn.opcode = op;
+  if (insn.map === 0 && INVALID_1.has(op))
+    return false;
+  if (insn.map === 1 && INVALID_0F.has(op))
+    return false;
+  const hasModrm = insn.map === 0 ? oneByteHasModrm(op) : insn.map > 1 || twoByteHasModrm(op);
+  if (hasModrm) {
+    const m2 = readModrm(cur, rex);
+    if (m2 === null)
+      return false;
+    applyModrm(insn, m2);
+  }
+  let immSize;
+  if (insn.map === 0)
+    immSize = oneByteImmSize(op, insn.prefix66, insn.rexW, insn.reg);
+  else if (insn.map === 1)
+    immSize = op >= 128 && op <= 143 ? 4 : IMM8_0F.has(op) ? 1 : 0;
+  else
+    immSize = insn.map === 3 ? 1 : 0;
+  if (insn.map === 0 && op >= 160 && op <= 163)
+    immSize = insn.prefix67 ? 4 : 8;
+  if (!cur.has(immSize))
+    return false;
+  if (immSize > 0)
+    insn.imm = cur.signed(immSize);
+  if (op === 200 && insn.map === 0)
+    insn.imm = null;
+  return true;
+}
+function setBranchTarget(insn) {
+  const end = insn.addr + insn.length;
+  const op = insn.opcode;
+  const rel = insn.map === 0 && (op >= 112 && op <= 127 || op >= 224 && op <= 227 || op === 232 || op === 233 || op === 235);
+  if (rel || insn.map === 1 && op >= 128 && op <= 143 && !insn.vex)
+    insn.target = end + insn.imm;
+}
+function decodeX64Insn(code4, offset, base, limit = code4.length) {
+  const end = Math.min(limit, code4.length);
+  const cur = new Cursor(code4, offset, end);
+  const insn = blank(base + offset);
+  let rex = 0;
+  while (cur.has(1) && cur.pos - offset < MAX_INSN_LEN) {
+    const b = code4[cur.pos];
+    if (LEGACY_PREFIXES.has(b)) {
+      if (b === 102)
+        insn.prefix66 = true;
+      if (b === 242)
+        insn.prefixF2 = true;
+      if (b === 243)
+        insn.prefixF3 = true;
+      if (b === 103)
+        insn.prefix67 = true;
+      rex = 0;
+      cur.pos++;
+    } else if ((b & 240) === 64) {
+      rex = b & 15;
+      cur.pos++;
+    } else
+      break;
+  }
+  insn.rexW = (rex & 8) !== 0;
+  insn.rex = rex;
+  if (!cur.has(1))
+    return null;
+  const op = code4[cur.pos];
+  const isVexEscape = op === 196 || op === 197 || op === 98;
+  if (isVexEscape && rex !== 0)
+    return null;
+  const ok = isVexEscape ? decodeVex(cur, insn) : decodeLegacy(cur, insn, rex);
+  if (!ok)
+    return null;
+  insn.length = cur.pos - offset;
+  if (insn.length > MAX_INSN_LEN)
+    return null;
+  setBranchTarget(insn);
+  return insn;
+}
+function sweepX64(code4, base) {
+  const insns = [];
+  let off = 0;
+  while (off < code4.length) {
+    const insn = decodeX64Insn(code4, off, base);
+    if (insn === null)
+      return { insns, complete: code4.length - off < MAX_INSN_LEN };
+    insns.push(insn);
+    off += insn.length;
+  }
+  return { insns, complete: true };
+}
+var isOneByte = (i, op) => !i.vex && i.map === 0 && i.opcode === op;
+var group = (i) => (i.reg ?? 0) & 7;
+function isX64DirectCall(i) {
+  return isOneByte(i, 232);
+}
+function isX64Call(i) {
+  return isOneByte(i, 232) || isOneByte(i, 255) && (group(i) === 2 || group(i) === 3);
+}
+function isX64DirectJmp(i) {
+  return isOneByte(i, 233) || isOneByte(i, 235);
+}
+function endsX64FallThrough(i) {
+  if (i.vex)
+    return false;
+  if (i.map === 1)
+    return i.opcode === 11;
+  if (i.map !== 0)
+    return false;
+  if ([194, 195, 202, 203, 207, 233, 235, 204, 244].includes(i.opcode))
+    return true;
+  return i.opcode === 255 && (group(i) === 4 || group(i) === 5);
+}
+function isX64Branch(i) {
+  return endsX64FallThrough(i) || i.target !== null && !isX64DirectCall(i);
+}
+function x64RegMove(i) {
+  if (i.vex || i.map !== 0 || !i.rexW || i.mod !== 3)
+    return null;
+  if (i.opcode === 137)
+    return [i.rm, i.reg];
+  if (i.opcode === 139)
+    return [i.reg, i.rm];
+  return null;
+}
+var rmIfReg = (i) => i.mod === 3 ? [i.rm] : [];
+var opReg = (i) => i.opcode & 7 | (i.rex & 1) << 3;
+function writesOneByteModrm(i) {
+  const op = i.opcode;
+  const g = group(i);
+  if (op < 64) {
+    if (op >= 56)
+      return [];
+    return (op & 7) < 2 ? rmIfReg(i) : [i.reg];
+  }
+  if (op === 132 || op === 133 || op === 142)
+    return [];
+  if (op === 134 || op === 135)
+    return [i.reg, ...rmIfReg(i)];
+  if ([99, 105, 107, 138, 139, 141].includes(op))
+    return [i.reg];
+  if (op >= 128 && op <= 131)
+    return g === 7 ? [] : rmIfReg(i);
+  if ([136, 137, 140, 143, 192, 193, 198, 199, 208, 209, 210, 211].includes(op))
+    return rmIfReg(i);
+  if (op === 246 || op === 247)
+    return g < 2 ? [] : g < 4 ? rmIfReg(i) : [X64.rax, X64.rdx];
+  if (op === 254 || op === 255) {
+    if (g < 2)
+      return rmIfReg(i);
+    return g === 2 || g === 3 ? SYSV_CALLER_SAVED : [];
+  }
+  if (op >= 216 && op <= 223)
+    return op === 223 && i.mod === 3 ? [X64.rax] : [];
+  return [i.reg, ...rmIfReg(i)];
+}
+function writesOneByteNoModrm(i) {
+  const op = i.opcode;
+  if (op < 64)
+    return op >= 56 ? [] : [X64.rax];
+  if (op >= 80 && op <= 87)
+    return [];
+  if (op >= 88 && op <= 95 || op >= 176 && op <= 191)
+    return [opReg(i)];
+  if (op >= 144 && op <= 151)
+    return opReg(i) === X64.rax ? [] : [X64.rax, opReg(i)];
+  if (op === 152 || op === 159 || op === 160 || op === 161 || op === 215)
+    return [X64.rax];
+  if (op === 153)
+    return [X64.rdx];
+  if (op >= 164 && op <= 175)
+    return op === 168 || op === 169 ? [] : [X64.rax, X64.rcx, X64.rsi, X64.rdi];
+  if (op === 200 || op === 201)
+    return [X64.rbp];
+  if (op >= 224 && op <= 227)
+    return [X64.rcx];
+  if (op >= 228 && op <= 239 && op !== 232 && op !== 233 && op !== 235)
+    return [X64.rax];
+  if (op === 232)
+    return SYSV_CALLER_SAVED;
+  if ([
+    104,
+    106,
+    155,
+    156,
+    157,
+    158,
+    162,
+    163,
+    194,
+    195,
+    202,
+    203,
+    204,
+    233,
+    235,
+    241,
+    244,
+    245,
+    248,
+    249,
+    250,
+    251,
+    252,
+    253
+  ].includes(op) || op >= 112 && op <= 127)
+    return [];
+  return ALL_GPRS;
+}
+function writes0F(i) {
+  const op = i.opcode;
+  if (op === 5)
+    return [X64.rax, X64.rcx, X64.r11];
+  if (op === 49)
+    return [X64.rax, X64.rdx];
+  if (op === 162)
+    return [X64.rax, X64.rbx, X64.rcx, X64.rdx];
+  if (op === 30 && i.prefixF3 && group(i) === 1)
+    return rmIfReg(i);
+  if (op === 11 || op === 13 || op >= 24 && op <= 31 || op === 119 || op >= 128 && op <= 143)
+    return [];
+  if (op >= 64 && op <= 79 || [44, 45, 80, 175, 182, 183, 184, 188, 189, 190, 191, 197, 215].includes(op)) {
+    return [i.reg];
+  }
+  if (op >= 144 && op <= 159 || [164, 165, 171, 172, 173, 179, 187, 174].includes(op))
+    return rmIfReg(i);
+  if (op === 126)
+    return i.prefixF3 ? [] : rmIfReg(i);
+  if (op === 163)
+    return [];
+  if (op === 186)
+    return group(i) === 4 ? [] : rmIfReg(i);
+  if (op === 176 || op === 177)
+    return [X64.rax, ...rmIfReg(i)];
+  if (op === 192 || op === 193)
+    return [i.reg, ...rmIfReg(i)];
+  if (op >= 200 && op <= 207)
+    return [opReg(i)];
+  const sse = op >= 16 && op <= 23 || op >= 40 && op <= 47 || op >= 81 && op <= 127 || op >= 194 && op <= 198 || op >= 208;
+  return sse ? [] : ALL_GPRS;
+}
+function writesVectorMaps(i) {
+  const op = i.opcode;
+  if (i.map === 2 && op >= 240 && op <= 247)
+    return [i.reg, ...i.vvvv !== null ? [i.vvvv] : [], ...rmIfReg(i)];
+  if (i.map === 3 && op === 240)
+    return [i.reg];
+  if (i.map === 3 && op >= 20 && op <= 23)
+    return rmIfReg(i);
+  if (i.map === 1 && [44, 45, 80, 197, 215].includes(op))
+    return [i.reg];
+  if (i.map === 1 && op === 126)
+    return i.prefixF3 ? [] : rmIfReg(i);
+  return [];
+}
+function x64RegsWritten(i) {
+  if (i.vex || i.map >= 2)
+    return writesVectorMaps(i);
+  if (i.map === 1)
+    return writes0F(i);
+  return i.mod !== null ? writesOneByteModrm(i) : writesOneByteNoModrm(i);
+}
+
 // agent/util/proc_maps.ts
 init_node_globals();
+
+// agent/shared/pe_header.ts
+init_node_globals();
+var IMAGE_DOS_SIGNATURE = 23117;
+var IMAGE_NT_SIGNATURE = 17744;
+var DOS_HEADER_BYTES = 64;
+var E_LFANEW_OFFSET = 60;
+var MAX_E_LFANEW = 65536;
+var NT_SIGNATURE_BYTES = 4;
+var COFF_HEADER_BYTES = 20;
+var COFF_TIMESTAMP_OFFSET = 4;
+var COFF_OPTIONAL_HEADER_SIZE_OFFSET = 16;
+var OPTIONAL_HEADER_OFFSET = NT_SIGNATURE_BYTES + COFF_HEADER_BYTES;
+var PE32_MAGIC = 267;
+var PE32_PLUS_MAGIC = 523;
+var SIZE_OF_IMAGE_OFFSET = 56;
+var PE32_DATA_DIRECTORY_OFFSET = 96;
+var PE32_PLUS_DATA_DIRECTORY_OFFSET = 112;
+var DATA_DIRECTORY_ENTRY_BYTES = 8;
+var IMAGE_DIRECTORY_ENTRY_DEBUG = 6;
+var DEBUG_DIRECTORY_ENTRY_BYTES = 28;
+var MAX_DEBUG_DIRECTORY_ENTRIES = 16;
+var DEBUG_TYPE_OFFSET = 12;
+var DEBUG_SIZE_OF_DATA_OFFSET = 16;
+var DEBUG_ADDRESS_OF_RAW_DATA_OFFSET = 20;
+var IMAGE_DEBUG_TYPE_CODEVIEW = 2;
+var CODEVIEW_RSDS_SIGNATURE = 1396986706;
+var CODEVIEW_GUID_OFFSET = 4;
+var CODEVIEW_AGE_OFFSET = 20;
+var CODEVIEW_MIN_BYTES = 24;
+var UNSET_TIMESTAMPS = [0, 4294967295];
+var NO_CODEVIEW = Symbol("no-codeview");
+function view(bytes) {
+  return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+}
+function hex32(value) {
+  return value.toString(16).padStart(8, "0");
+}
+function hex16(value) {
+  return value.toString(16).padStart(4, "0");
+}
+function readNtOffset(read2) {
+  const dos = read2(0, DOS_HEADER_BYTES);
+  if (dos === null || dos.length < DOS_HEADER_BYTES)
+    return null;
+  const dv = view(dos);
+  if (dv.getUint16(0, true) !== IMAGE_DOS_SIGNATURE)
+    return null;
+  const nt = dv.getUint32(E_LFANEW_OFFSET, true);
+  return nt === 0 || nt > MAX_E_LFANEW ? null : nt;
+}
+function dataDirectoryOffset(magic) {
+  if (magic === PE32_MAGIC)
+    return PE32_DATA_DIRECTORY_OFFSET;
+  if (magic === PE32_PLUS_MAGIC)
+    return PE32_PLUS_DATA_DIRECTORY_OFFSET;
+  return null;
+}
+function readPeHeaders(read2, nt) {
+  const fixed = read2(nt, OPTIONAL_HEADER_OFFSET);
+  if (fixed === null || fixed.length < OPTIONAL_HEADER_OFFSET)
+    return null;
+  const fdv = view(fixed);
+  if (fdv.getUint32(0, true) !== IMAGE_NT_SIGNATURE)
+    return null;
+  const timeDateStamp = fdv.getUint32(NT_SIGNATURE_BYTES + COFF_TIMESTAMP_OFFSET, true);
+  const optionalSize = fdv.getUint16(NT_SIGNATURE_BYTES + COFF_OPTIONAL_HEADER_SIZE_OFFSET, true);
+  const optional = read2(nt + OPTIONAL_HEADER_OFFSET, optionalSize);
+  if (optional === null || optional.length < optionalSize || optionalSize < 2)
+    return null;
+  const odv = view(optional);
+  const directories = dataDirectoryOffset(odv.getUint16(0, true));
+  if (directories === null || optionalSize < directories)
+    return null;
+  const sizeOfImage = odv.getUint32(SIZE_OF_IMAGE_OFFSET, true);
+  const directoryCount = odv.getUint32(directories - 4, true);
+  const debugAt = directories + IMAGE_DIRECTORY_ENTRY_DEBUG * DATA_DIRECTORY_ENTRY_BYTES;
+  const hasDebug = directoryCount > IMAGE_DIRECTORY_ENTRY_DEBUG && debugAt + DATA_DIRECTORY_ENTRY_BYTES <= optionalSize;
+  return {
+    timeDateStamp,
+    sizeOfImage,
+    debugRva: hasDebug ? odv.getUint32(debugAt, true) : 0,
+    debugSize: hasDebug ? odv.getUint32(debugAt + 4, true) : 0
+  };
+}
+function withinImage(rva, length, sizeOfImage) {
+  return rva > 0 && length > 0 && rva + length <= sizeOfImage;
+}
+function rsdsIdentity(record) {
+  const dv = view(record);
+  if (dv.getUint32(0, true) !== CODEVIEW_RSDS_SIGNATURE)
+    return null;
+  const g = CODEVIEW_GUID_OFFSET;
+  return hex32(dv.getUint32(g, true)) + hex16(dv.getUint16(g + 4, true)) + hex16(dv.getUint16(g + 6, true)) + toHexString(record.subarray(g + 8, g + 16)) + hex32(dv.getUint32(CODEVIEW_AGE_OFFSET, true));
+}
+function codeViewFromEntry(read2, entry, at, sizeOfImage) {
+  const size = entry.getUint32(at + DEBUG_SIZE_OF_DATA_OFFSET, true);
+  const rva = entry.getUint32(at + DEBUG_ADDRESS_OF_RAW_DATA_OFFSET, true);
+  if (rva === 0)
+    return NO_CODEVIEW;
+  if (size < CODEVIEW_MIN_BYTES || !withinImage(rva, CODEVIEW_MIN_BYTES, sizeOfImage))
+    return null;
+  const record = read2(rva, CODEVIEW_MIN_BYTES);
+  if (record === null || record.length < CODEVIEW_MIN_BYTES)
+    return null;
+  return rsdsIdentity(record) ?? NO_CODEVIEW;
+}
+function findCodeView(read2, headers) {
+  if (headers.debugRva === 0 || headers.debugSize === 0)
+    return NO_CODEVIEW;
+  const count = Math.min(Math.floor(headers.debugSize / DEBUG_DIRECTORY_ENTRY_BYTES), MAX_DEBUG_DIRECTORY_ENTRIES);
+  const length = count * DEBUG_DIRECTORY_ENTRY_BYTES;
+  if (!withinImage(headers.debugRva, length, headers.sizeOfImage))
+    return null;
+  const table = read2(headers.debugRva, length);
+  if (table === null || table.length < length)
+    return null;
+  const dv = view(table);
+  for (let i = 0; i < count; i++) {
+    const at = i * DEBUG_DIRECTORY_ENTRY_BYTES;
+    if (dv.getUint32(at + DEBUG_TYPE_OFFSET, true) === IMAGE_DEBUG_TYPE_CODEVIEW) {
+      return codeViewFromEntry(read2, dv, at, headers.sizeOfImage);
+    }
+  }
+  return NO_CODEVIEW;
+}
+function timestampIdentity(headers) {
+  if (UNSET_TIMESTAMPS.includes(headers.timeDateStamp) || headers.sizeOfImage === 0)
+    return null;
+  return hex32(headers.timeDateStamp) + hex32(headers.sizeOfImage);
+}
+function parsePeIdentity(read2) {
+  try {
+    const nt = readNtOffset(read2);
+    if (nt === null)
+      return null;
+    const headers = readPeHeaders(read2, nt);
+    if (headers === null)
+      return null;
+    const codeView = findCodeView(read2, headers);
+    if (codeView === null)
+      return null;
+    return codeView === NO_CODEVIEW ? timestampIdentity(headers) : codeView;
+  } catch (_e) {
+  }
+  return null;
+}
+function modulePeIdentity(mod) {
+  return parsePeIdentity(moduleMemoryReader(mod.base));
+}
+function isPeImage(base) {
+  try {
+    return isReadable(base, 2) && base.readU16() === IMAGE_DOS_SIGNATURE;
+  } catch (_e) {
+    return false;
+  }
+}
+
+// agent/util/proc_maps.ts
 function tryGlobalExport(name) {
   try {
     return Module.getGlobalExportByName(name);
@@ -22517,7 +24194,7 @@ function parseMapsPeImages(maps) {
 }
 function peSizeOfImage(base) {
   try {
-    if (base.readU16() !== 23117)
+    if (!isPeImage(base))
       return null;
     const nt = base.add(base.add(60).readU32());
     if (nt.readU32() !== 17744)
@@ -22636,23 +24313,195 @@ function makeWin64ToSysvThunk(target, nargs) {
 
 // agent/shared/eh_frame.ts
 init_node_globals();
+
+// agent/shared/macho_unwind_info.ts
+init_node_globals();
+var UNWIND_SECTION_VERSION = 1;
+var UNWIND_HEADER_BYTES = 28;
+var FIRST_LEVEL_ENTRY_BYTES = 12;
+var SECOND_LEVEL_REGULAR = 2;
+var SECOND_LEVEL_COMPRESSED = 3;
+var REGULAR_ENTRY_BYTES = 8;
+var MERGED_SPLIT_MAX_BYTES = 4194304;
+function parseUnwindInfoStarts(info) {
+  try {
+    const dv = new DataView(info.buffer, info.byteOffset, info.byteLength);
+    if (dv.getUint32(0, true) !== UNWIND_SECTION_VERSION || info.length < UNWIND_HEADER_BYTES)
+      return null;
+    const indexOffset = dv.getUint32(20, true), indexCount = dv.getUint32(24, true);
+    if (indexCount === 0)
+      return null;
+    const pageAt = (i) => dv.getUint32(indexOffset + i * FIRST_LEVEL_ENTRY_BYTES + 4, true);
+    let total = 0;
+    for (let i = 0; i + 1 < indexCount; i++)
+      total += secondLevelEntryCount(dv, pageAt(i));
+    const all = new Uint32Array(total);
+    let n = 0;
+    for (let i = 0; i + 1 < indexCount; i++) {
+      n = readSecondLevelPage(dv, pageAt(i), dv.getUint32(indexOffset + i * FIRST_LEVEL_ENTRY_BYTES, true), all, n);
+    }
+    const starts = sortedUnique(all.subarray(0, n));
+    const sentinel = dv.getUint32(indexOffset + (indexCount - 1) * FIRST_LEVEL_ENTRY_BYTES, true);
+    return starts.length > 0 ? { starts, end: sentinel > starts[starts.length - 1] ? sentinel : null } : null;
+  } catch (_e) {
+    return null;
+  }
+}
+function secondLevelEntryCount(dv, page) {
+  if (page === 0)
+    return 0;
+  const kind = dv.getUint32(page, true);
+  return kind === SECOND_LEVEL_REGULAR || kind === SECOND_LEVEL_COMPRESSED ? dv.getUint16(page + 6, true) : 0;
+}
+function readSecondLevelPage(dv, page, pageFunctionBase, out, n) {
+  const count = secondLevelEntryCount(dv, page);
+  if (count === 0)
+    return n;
+  const compressed = dv.getUint32(page, true) === SECOND_LEVEL_COMPRESSED;
+  const entries = page + dv.getUint16(page + 4, true);
+  for (let k = 0; k < count; k++) {
+    out[n++] = compressed ? pageFunctionBase + (dv.getUint32(entries + k * 4, true) & 16777215) : dv.getUint32(entries + k * REGULAR_ENTRY_BYTES, true);
+  }
+  return n;
+}
+function sortedUnique(a) {
+  for (let k = 1; k < a.length; k++) {
+    if (a[k] < a[k - 1]) {
+      a.sort();
+      break;
+    }
+  }
+  let m2 = 0;
+  for (let k = 0; k < a.length; k++)
+    if (m2 === 0 || a[k] !== a[m2 - 1])
+      a[m2++] = a[k];
+  return a.subarray(0, m2);
+}
+var CONDITIONAL_TARGET = 1;
+var UNCONDITIONAL_TARGET = 2;
+function branchTargets(words) {
+  const targets2 = new Uint8Array(words.length);
+  let hasIndirectJump = false;
+  for (let k = 0; k < words.length; k++) {
+    const w = words[k];
+    if (isIndirectBranch(w)) {
+      hasIndirectJump = true;
+      continue;
+    }
+    const off = directBranchOffset(w);
+    if (off === null)
+      continue;
+    const t = k + off / 4;
+    if (t >= 0 && t < words.length)
+      targets2[t] |= isUnconditionalB(w) ? UNCONDITIONAL_TARGET : CONDITIONAL_TARGET;
+  }
+  return { targets: targets2, hasIndirectJump };
+}
+function splitMergedRange(words, start) {
+  const entries = [start];
+  const { targets: targets2, hasIndirectJump } = branchTargets(words);
+  for (let k = 1; k < words.length; k++) {
+    const w = words[k], prev = words[k - 1];
+    if ((targets2[k] & CONDITIONAL_TARGET) !== 0 || isTrap(w))
+      continue;
+    const prologue = isEntryPrologueWord(w) && (endsFallThrough(prev) || isBL(prev) && isFrameSetupWord(w));
+    const unreachedLeaf = (targets2[k] & UNCONDITIONAL_TARGET) === 0 && (isTrap(prev) || !hasIndirectJump && endsFallThrough(prev));
+    if (prologue || unreachedLeaf)
+      entries.push(start + k * 4);
+  }
+  return Uint32Array.from(entries);
+}
+function asWords(bytes, length) {
+  return bytes.byteOffset % 4 === 0 ? new Uint32Array(bytes.buffer, bytes.byteOffset, length / 4) : new Uint32Array(bytes.slice(0, length).buffer);
+}
+var UnwindFunctionTable = class {
+  table;
+  textStart;
+  textEnd;
+  readBytes;
+  splits = /* @__PURE__ */ new Map();
+  constructor(table, textStart, textEnd, readBytes4) {
+    this.table = table;
+    this.textStart = textStart;
+    this.textEnd = textEnd;
+    this.readBytes = readBytes4;
+  }
+  get starts() {
+    return this.table.starts;
+  }
+  /** [start, end) of the function containing image offset `off`, or null outside __text or the table. */
+  boundsAt(off) {
+    if (off < this.textStart || off >= this.textEnd)
+      return null;
+    const starts = this.table.starts;
+    const i = searchSortedStarts(starts.length, (k) => starts[k], off);
+    if (i < 0)
+      return null;
+    const rangeEnd = i + 1 < starts.length ? starts[i + 1] : Math.min(this.table.end ?? this.textEnd, this.textEnd);
+    if (off >= rangeEnd)
+      return null;
+    const entries = this.entriesIn(starts[i], rangeEnd);
+    const j = searchSortedStarts(entries.length, (k) => entries[k], off);
+    return { start: entries[j], end: j + 1 < entries.length ? entries[j + 1] : rangeEnd };
+  }
+  entriesIn(start, end) {
+    let entries = this.splits.get(start);
+    if (entries === void 0) {
+      entries = Uint32Array.of(start);
+      const length = Math.floor((end - start) / 4) * 4;
+      if (length > 4 && length <= MERGED_SPLIT_MAX_BYTES) {
+        const bytes = this.readBytes(start, length);
+        if (bytes !== null && bytes.length >= length)
+          entries = splitMergedRange(asWords(bytes, length), start);
+      }
+      this.splits.set(start, entries);
+    }
+    return entries;
+  }
+};
+var MachOUnwindFunctionBounds = class _MachOUnwindFunctionBounds {
+  base;
+  table;
+  constructor(base, table) {
+    this.base = base;
+    this.table = table;
+  }
+  static fromModule(mod) {
+    try {
+      const unwind = machOSectionRange(mod, "__TEXT", "__unwind_info");
+      const text = machOSectionRange(mod, "__TEXT", "__text");
+      if (unwind === null || text === null)
+        return null;
+      const bytes = unwind.base.readByteArray(unwind.size);
+      const parsed = bytes === null ? null : parseUnwindInfoStarts(new Uint8Array(bytes));
+      if (parsed === null)
+        return null;
+      const textStart = text.base.sub(mod.base).toUInt32();
+      return new _MachOUnwindFunctionBounds(mod.base, new UnwindFunctionTable(parsed, textStart, textStart + text.size, moduleMemoryReader(mod.base)));
+    } catch (_e) {
+      return null;
+    }
+  }
+  bounds(addr) {
+    try {
+      const off = addr.sub(this.base);
+      if (addr.compare(this.base) < 0 || off.compare(this.table.textEnd) >= 0)
+        return null;
+      const found = this.table.boundsAt(off.toUInt32());
+      if (found === null)
+        return null;
+      return { start: this.base.add(found.start), end: found.end === null ? null : this.base.add(found.end) };
+    } catch (_e) {
+      return null;
+    }
+  }
+};
+
+// agent/shared/eh_frame.ts
 var PT_LOAD = 1;
 var PT_GNU_EH_FRAME = 1685382480;
 var DW_EH_PE_udata4 = 3;
 var DW_EH_PE_datarel_sdata4 = 59;
-function searchSortedStarts(count, startAt, addr) {
-  let lo = 0, hi = count - 1, found = -1;
-  while (lo <= hi) {
-    const mid = lo + hi >>> 1;
-    if (startAt(mid) <= addr) {
-      found = mid;
-      lo = mid + 1;
-    } else {
-      hi = mid - 1;
-    }
-  }
-  return found;
-}
 var EhFrameFunctionTable = class _EhFrameFunctionTable {
   hdr;
   count;
@@ -22726,8 +24575,9 @@ var moduleKey = (mod) => `${mod.name}@${mod.base}+${mod.size}`;
 var tablesByModule = /* @__PURE__ */ new Map();
 function ehFrameTableFor(mod) {
   const key = moduleKey(mod);
-  if (!tablesByModule.has(key))
-    tablesByModule.set(key, EhFrameFunctionTable.fromModule(mod));
+  if (!tablesByModule.has(key)) {
+    tablesByModule.set(key, isMachOModule(mod) ? MachOUnwindFunctionBounds.fromModule(mod) : EhFrameFunctionTable.fromModule(mod));
+  }
   return tablesByModule.get(key);
 }
 var LANDING_PAD_MAX_SCAN_BYTES = 65536;
@@ -22735,22 +24585,22 @@ var LANDING_PAD_FIRST_CHUNK_BYTES = 4096;
 var BTI_BEFORE_PACIASP_MAX_WORDS = 16;
 var alignDown4 = (x) => Math.floor(x / 4) * 4;
 var alignUp4 = (x) => Math.ceil(x / 4) * 4;
-function scanLandingPadStart(readU324, addr, lowerBound, maxBack) {
+function scanLandingPadStart(readU323, addr, lowerBound, maxBack) {
   const floor = alignUp4(Math.max(lowerBound, addr - maxBack));
   for (let at = alignDown4(addr); at >= floor; at -= 4) {
-    const w = readU324(at);
+    const w = readU323(at);
     if (w === null)
       return null;
     if (w >>> 0 === BTI_C)
       return { entry: at, pad: at };
     if (w >>> 0 === PACIASP)
-      return { entry: btiEntryBeforePaciasp(readU324, at, floor) ?? at, pad: at };
+      return { entry: btiEntryBeforePaciasp(readU323, at, floor) ?? at, pad: at };
   }
   return null;
 }
-function btiEntryBeforePaciasp(readU324, paciasp, floor) {
+function btiEntryBeforePaciasp(readU323, paciasp, floor) {
   for (let at = paciasp - 4; at >= floor && at >= paciasp - 4 * BTI_BEFORE_PACIASP_MAX_WORDS; at -= 4) {
-    const w = readU324(at);
+    const w = readU323(at);
     if (w === null || endsFallThrough(w))
       return null;
     if (w >>> 0 === BTI_C)
@@ -22758,10 +24608,10 @@ function btiEntryBeforePaciasp(readU324, paciasp, floor) {
   }
   return null;
 }
-function findLandingPadEnd(readU324, addr, upperBound, maxForward = LANDING_PAD_MAX_SCAN_BYTES) {
+function findLandingPadEnd(readU323, addr, upperBound, maxForward = LANDING_PAD_MAX_SCAN_BYTES) {
   const limit = Math.min(upperBound, addr + maxForward);
   for (let at = alignDown4(addr) + 4; at + 4 <= limit; at += 4) {
-    const w = readU324(at);
+    const w = readU323(at);
     if (w === null)
       return null;
     if (isLandingPadWord(w))
@@ -22931,6 +24781,500 @@ function functionBoundsFor(mod) {
   return source;
 }
 
+// agent/shared/learned_module_cache.ts
+init_node_globals();
+
+// agent/shared/elf_build_id.ts
+init_node_globals();
+var ELF_MAGIC = [127, 69, 76, 70];
+var ELFCLASS32 = 1;
+var ELFCLASS64 = 2;
+var ELFDATA2LSB = 1;
+var PT_LOAD2 = 1;
+var PT_NOTE = 4;
+var NT_GNU_BUILD_ID = 3;
+var GNU_NOTE_NAME = "GNU\0";
+var ELF_HEADER_BYTES = 64;
+var MAX_PROGRAM_HEADERS = 512;
+var MAX_NOTE_SEGMENT_BYTES = 64 * 1024;
+var MAX_BUILD_ID_BYTES = 64;
+var PAGE_SIZE = 4096;
+function view2(bytes) {
+  return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+}
+function readWord(dv, offset, is64, le) {
+  if (!is64)
+    return dv.getUint32(offset, le);
+  const value = dv.getBigUint64(offset, le);
+  return value > BigInt(Number.MAX_SAFE_INTEGER) ? -1 : Number(value);
+}
+function hasElfMagic(header) {
+  return header.length >= ELF_MAGIC.length && ELF_MAGIC.every((b, i) => header[i] === b);
+}
+function isElfImage(read2) {
+  const header = read2(0, ELF_MAGIC.length);
+  return header !== null && hasElfMagic(header);
+}
+function parseElfHeader(header) {
+  if (header === null || header.length < ELF_HEADER_BYTES)
+    return null;
+  if (!hasElfMagic(header))
+    return null;
+  const elfClass = header[4];
+  if (elfClass !== ELFCLASS32 && elfClass !== ELFCLASS64)
+    return null;
+  const is64 = elfClass === ELFCLASS64;
+  const littleEndian = header[5] === ELFDATA2LSB;
+  const dv = view2(header);
+  return {
+    is64,
+    littleEndian,
+    phoff: readWord(dv, is64 ? 32 : 28, is64, littleEndian),
+    phentsize: dv.getUint16(is64 ? 54 : 42, littleEndian),
+    phnum: dv.getUint16(is64 ? 56 : 44, littleEndian)
+  };
+}
+function parseProgramHeader(dv, at, layout) {
+  const { is64, littleEndian: le } = layout;
+  return {
+    type: dv.getUint32(at, le),
+    vaddr: readWord(dv, at + (is64 ? 16 : 8), is64, le),
+    filesz: readWord(dv, at + (is64 ? 32 : 16), is64, le),
+    align: readWord(dv, at + (is64 ? 48 : 28), is64, le)
+  };
+}
+function readProgramHeaders(read2, layout) {
+  const minEntry = layout.is64 ? 56 : 32;
+  if (layout.phoff <= 0 || layout.phentsize < minEntry)
+    return null;
+  if (layout.phnum === 0 || layout.phnum > MAX_PROGRAM_HEADERS)
+    return null;
+  const table = read2(layout.phoff, layout.phnum * layout.phentsize);
+  if (table === null || table.length < layout.phnum * layout.phentsize)
+    return null;
+  const dv = view2(table);
+  const headers = [];
+  for (let i = 0; i < layout.phnum; i++)
+    headers.push(parseProgramHeader(dv, i * layout.phentsize, layout));
+  return headers;
+}
+function alignUp(value, alignment) {
+  return Math.ceil(value / alignment) * alignment;
+}
+function gnuBuildIdFromNotes(notes, littleEndian, alignment = 4) {
+  const dv = view2(notes);
+  let at = 0;
+  while (at + 12 <= notes.length) {
+    const namesz = dv.getUint32(at, littleEndian);
+    const descsz = dv.getUint32(at + 4, littleEndian);
+    const type = dv.getUint32(at + 8, littleEndian);
+    const nameAt = at + 12;
+    const descAt = nameAt + alignUp(namesz, alignment);
+    const next = descAt + alignUp(descsz, alignment);
+    if (descAt + descsz > notes.length)
+      return null;
+    const name = String.fromCharCode(...notes.subarray(nameAt, nameAt + namesz));
+    if (type === NT_GNU_BUILD_ID && name === GNU_NOTE_NAME && descsz > 0 && descsz <= MAX_BUILD_ID_BYTES) {
+      return toHexString(notes.subarray(descAt, descAt + descsz));
+    }
+    if (next <= at)
+      return null;
+    at = next;
+  }
+  return null;
+}
+function loadBias(headers) {
+  const loads = headers.filter((h) => h.type === PT_LOAD2 && h.vaddr >= 0);
+  if (loads.length === 0)
+    return 0;
+  const lowest = Math.min(...loads.map((h) => h.vaddr));
+  return lowest - lowest % PAGE_SIZE;
+}
+function buildIdFromNoteSegment(read2, note, bias, littleEndian) {
+  const offset = note.vaddr - bias;
+  if (note.vaddr < 0 || offset < 0 || note.filesz <= 0 || note.filesz > MAX_NOTE_SEGMENT_BYTES)
+    return null;
+  const notes = read2(offset, note.filesz);
+  if (notes === null)
+    return null;
+  return gnuBuildIdFromNotes(notes, littleEndian, note.align === 8 ? 8 : 4);
+}
+function parseGnuBuildId(read2) {
+  try {
+    const layout = parseElfHeader(read2(0, ELF_HEADER_BYTES));
+    if (layout === null)
+      return null;
+    const headers = readProgramHeaders(read2, layout);
+    if (headers === null)
+      return null;
+    const bias = loadBias(headers);
+    for (const note of headers.filter((h) => h.type === PT_NOTE)) {
+      const buildId = buildIdFromNoteSegment(read2, note, bias, layout.littleEndian);
+      if (buildId !== null)
+        return buildId;
+    }
+  } catch (_e) {
+  }
+  return null;
+}
+function moduleGnuBuildId(base) {
+  return parseGnuBuildId(moduleMemoryReader(base));
+}
+
+// agent/shared/learned_module_cache.ts
+init_shared_structures();
+var PROLOGUE_HASH_BYTES = 32;
+var FUNCTION_HASH_OFFSET = 32;
+var FUNCTION_HASH_BYTES = 32;
+var MISS_MARKER = 1;
+var MISS_FINGERPRINT_MAX = 1048575;
+var FNV_OFFSET_BASIS = 2166136261;
+var FNV_PRIME = 16777619;
+var REPORT_COALESCE_MS = 50;
+var LAYOUT_MIN = -65536;
+var LAYOUT_MAX = 1048576;
+var ITEM_NAME_RE = /^[a-z0-9_]+(\.[A-Za-z0-9_]+){1,3}$/;
+var MAX_ITEM_NAME_LENGTH = 128;
+var SHA256_RE = /^[0-9a-fA-F]{64}$/;
+var LAYOUT_RVA_SUFFIX = "Rva";
+var LAYOUT_RVA_MAX = 2 ** 32;
+function learnedKey(identity2) {
+  return `${identity2.buildId}|${identity2.size}|${identity2.arch}`;
+}
+function moduleBasename(name) {
+  return name.split(/[\\/]/).pop() ?? name;
+}
+var buildIdByMapping = /* @__PURE__ */ new Map();
+function identifyModule(mod) {
+  const buildId = memoizePerMapping(buildIdByMapping, mod, () => moduleGnuBuildId(mod.base) ?? moduleMachOUuid(mod) ?? modulePeIdentity(mod));
+  return buildId === null ? null : { buildId, size: mod.size, arch: Process.arch };
+}
+function sha256Bytes(address, length, offset = 0) {
+  try {
+    if (typeof Checksum === "undefined")
+      return null;
+    const bytes = address.add(offset).readByteArray(length);
+    return bytes === null ? null : Checksum.compute("sha256", bytes);
+  } catch (_e) {
+    return null;
+  }
+}
+function sha256Prologue(address) {
+  return sha256Bytes(address, PROLOGUE_HASH_BYTES);
+}
+function sha256FunctionBody(address) {
+  return sha256Bytes(address, FUNCTION_HASH_BYTES, FUNCTION_HASH_OFFSET);
+}
+function isHookableAddress(address, arch) {
+  return arch !== "arm" || !address.and(1).isNull();
+}
+function isLearnedItemName(name) {
+  return typeof name === "string" && name.length <= MAX_ITEM_NAME_LENGTH && ITEM_NAME_RE.test(name);
+}
+function isPlainObject2(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function isRva(value, size) {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 && value < size;
+}
+function isSha256Hex(value) {
+  return typeof value === "string" && SHA256_RE.test(value);
+}
+function isLayoutRva(value) {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 && value < LAYOUT_RVA_MAX;
+}
+function isValidLayoutValue(name, value) {
+  if (name.endsWith(LAYOUT_RVA_SUFFIX))
+    return isLayoutRva(value);
+  return typeof value === "number" && Number.isInteger(value) && value >= LAYOUT_MIN && value <= LAYOUT_MAX;
+}
+function rvaOf(mod, address, size) {
+  if (address === null)
+    return null;
+  try {
+    const rva = Number(address.sub(mod.base).toString());
+    return isRva(rva, size) ? rva : null;
+  } catch (_e) {
+    return null;
+  }
+}
+function verifiedLearnedAddress(mod, rva, sha, hashPrologue = sha256Prologue) {
+  if (!isRva(rva, mod.size) || !isSha256Hex(sha))
+    return null;
+  const address = mod.base.add(rva);
+  const actual = hashPrologue(address);
+  return actual !== null && actual.toLowerCase() === sha.toLowerCase() ? address : null;
+}
+function sameItem(a, b) {
+  if (typeof b === "number")
+    return a === b;
+  return isPlainObject2(a) && a.rva === b.rva && typeof a.prologue_sha256 === "string" && a.prologue_sha256.toLowerCase() === b.prologue_sha256.toLowerCase();
+}
+function itemKey(field, name) {
+  return `${field}:${name}`;
+}
+function defaultDeps() {
+  return {
+    identify: identifyModule,
+    // Verify and report with the same hook-proof window.
+    hashPrologue: sha256FunctionBody,
+    emit: sendModuleOffsetsLearned,
+    schedule: (flush) => {
+      setTimeout(flush, REPORT_COALESCE_MS);
+    }
+  };
+}
+var LearnedModuleCache = class {
+  entries;
+  deps;
+  // Only modules an entry was learned for are worth parsing the ELF build id of.
+  cachedModules;
+  acceptedFromCache = /* @__PURE__ */ new Map();
+  alreadyReported = /* @__PURE__ */ new Map();
+  cacheHitSent = /* @__PURE__ */ new Set();
+  pending = /* @__PURE__ */ new Map();
+  flushScheduled = false;
+  constructor(raw, deps = {}) {
+    this.entries = isPlainObject2(raw) ? raw : {};
+    this.deps = { ...defaultDeps(), ...deps };
+    this.cachedModules = new Set(Object.values(this.entries).map((entry) => isPlainObject2(entry) ? entry.module : null));
+  }
+  get entryCount() {
+    return Object.keys(this.entries).length;
+  }
+  /** The raw host entry for `mod`'s build_id|size|arch key, or null. */
+  hostEntry(mod) {
+    return this.hostLookup(mod)?.entry ?? null;
+  }
+  /** The prologue-verified address of cached function `name` in `mod`, or null. */
+  learnedFunction(mod, name) {
+    try {
+      const lookup3 = this.hostLookup(mod);
+      const item = lookup3 === null ? void 0 : this.itemIn(lookup3.entry, "functions", name);
+      if (lookup3 === null || !isPlainObject2(item))
+        return null;
+      const address = verifiedLearnedAddress(mod, item.rva, item.prologue_sha256, this.deps.hashPrologue);
+      if (address === null) {
+        devlog_debug(`[learned-cache] ${mod.name}: ${name} not verified (stale or malformed entry)`);
+        return null;
+      }
+      if (!isHookableAddress(address, lookup3.identity.arch)) {
+        devlog_debug(`[learned-cache] ${mod.name}: ${name} at ${address} is an even (ARM-mode) address; ignored`);
+        return null;
+      }
+      this.accept(mod, "functions", name);
+      return address;
+    } catch (e) {
+      devlog_debug(`[learned-cache] ${mod.name}: ${name} lookup failed: ${e}`);
+      return null;
+    }
+  }
+  /** Cached layout value `name` for `mod` (within the host's bounds), or null. */
+  learnedLayout(mod, name) {
+    try {
+      const value = this.hostItem(mod, "layout", name);
+      if (!isValidLayoutValue(name, value))
+        return null;
+      this.accept(mod, "layout", name);
+      return value;
+    } catch (e) {
+      devlog_debug(`[learned-cache] ${mod.name}: layout ${name} lookup failed: ${e}`);
+      return null;
+    }
+  }
+  /**
+   * The cached item `name` failed live validation (or the caller's own check): a
+   * value found later may be reported again (the stale one itself still never is).
+   */
+  reject(mod, field, name) {
+    this.acceptedFromCache.get(mappingKey(mod))?.delete(itemKey(field, name));
+  }
+  /** True when `mod` has a build identity, i.e. results learned for it can be cached. */
+  isCacheable(mod) {
+    try {
+      return this.deps.identify(mod) !== null;
+    } catch (_e) {
+      return false;
+    }
+  }
+  /** Queue scan results of `mod` for the host; items that came from the cache are never reported. */
+  reportLearned(mod, items) {
+    try {
+      const identity2 = this.deps.identify(mod);
+      if (identity2 === null) {
+        devlog_debug(`[learned-cache] ${mod.name}: no build id; results not cacheable`);
+        return;
+      }
+      const report = this.pendingFor(mod, identity2);
+      for (const [name, address] of Object.entries(items.functions ?? {})) {
+        const learned = this.learnedFunctionItem(mod, identity2, name, address);
+        if (learned !== null && this.isNew(mod, "functions", name, learned))
+          report.functions[name] = learned;
+      }
+      for (const [name, value] of Object.entries(items.layout ?? {})) {
+        if (isLearnedItemName(name) && isValidLayoutValue(name, value) && this.isNew(mod, "layout", name, value))
+          report.layout[name] = value;
+      }
+      this.scheduleFlush();
+    } catch (e) {
+      devlog_debug(`[learned-cache] ${mod.name}: report failed: ${e}`);
+    }
+  }
+  /** Tell the host (once per module per session) that a cached item was used, so it stays hot. */
+  reportCacheHit(mod) {
+    const key = mappingKey(mod);
+    if (this.cacheHitSent.has(key))
+      return;
+    this.cacheHitSent.add(key);
+    try {
+      const identity2 = this.deps.identify(mod);
+      if (identity2 === null)
+        return;
+      this.deps.emit({ ...this.keyFields(mod, identity2), cache_hit: true });
+    } catch (e) {
+      devlog_debug(`[learned-cache] ${mod.name}: cache-hit report failed: ${e}`);
+    }
+  }
+  /** Send every queued report: one message per module. */
+  flush() {
+    this.flushScheduled = false;
+    const reports = [...this.pending.values()];
+    this.pending.clear();
+    for (const report of reports)
+      this.send(report);
+  }
+  send(report) {
+    const hasFunctions = Object.keys(report.functions).length > 0;
+    const hasLayout = Object.keys(report.layout).length > 0;
+    if (!hasFunctions && !hasLayout)
+      return;
+    const payload = { ...this.keyFields(report.mod, report.identity) };
+    if (hasFunctions)
+      payload.functions = report.functions;
+    if (hasLayout)
+      payload.layout = report.layout;
+    devlog_debug(`[learned-cache] ${report.mod.name}: reporting ` + [...Object.keys(report.functions), ...Object.keys(report.layout)].join(", "));
+    try {
+      this.deps.emit(payload);
+    } catch (e) {
+      devlog_debug(`[learned-cache] ${report.mod.name}: send failed: ${e}`);
+    }
+  }
+  keyFields(mod, identity2) {
+    return { module: moduleBasename(mod.name), build_id: identity2.buildId, size: identity2.size, arch: identity2.arch };
+  }
+  hostLookup(mod) {
+    if (!this.cachedModules.has(moduleBasename(mod.name)))
+      return null;
+    const identity2 = this.deps.identify(mod);
+    if (identity2 === null)
+      return null;
+    const entry = this.entries[learnedKey(identity2)];
+    return isPlainObject2(entry) ? { identity: identity2, entry } : null;
+  }
+  itemIn(entry, field, name) {
+    const items = entry?.[field];
+    return isPlainObject2(items) ? items[name] : void 0;
+  }
+  hostItem(mod, field, name) {
+    return this.itemIn(this.hostEntry(mod), field, name);
+  }
+  accept(mod, field, name) {
+    memoizePerMapping(this.acceptedFromCache, mod, () => /* @__PURE__ */ new Set()).add(itemKey(field, name));
+    this.reportCacheHit(mod);
+  }
+  learnedFunctionItem(mod, identity2, name, address) {
+    if (!isLearnedItemName(name))
+      return null;
+    const rva = rvaOf(mod, address, identity2.size);
+    const hash = rva === null ? null : this.deps.hashPrologue(address);
+    return rva === null || hash === null ? null : { rva, prologue_sha256: hash.toLowerCase() };
+  }
+  /** False for an item accepted from the cache, already in it, or already reported this session. */
+  isNew(mod, field, name, value) {
+    const id = itemKey(field, name);
+    if (this.acceptedFromCache.get(mappingKey(mod))?.has(id))
+      return false;
+    if (sameItem(this.hostItem(mod, field, name), value))
+      return false;
+    const reported = memoizePerMapping(this.alreadyReported, mod, () => /* @__PURE__ */ new Map());
+    if (reported.has(id) && sameItem(reported.get(id), value))
+      return false;
+    reported.set(id, value);
+    return true;
+  }
+  pendingFor(mod, identity2) {
+    return memoizePerMapping(this.pending, mod, () => ({ mod, identity: identity2, functions: {}, layout: {} }));
+  }
+  scheduleFlush() {
+    if (this.flushScheduled || this.pending.size === 0)
+      return;
+    this.flushScheduled = true;
+    this.deps.schedule(() => this.flush());
+  }
+};
+var activeCache = new LearnedModuleCache({});
+function installLearnedModuleCache(raw, deps = {}) {
+  activeCache = new LearnedModuleCache(raw, deps);
+  devlog_debug(`[learned-cache] ${activeCache.entryCount} host entries`);
+  return activeCache;
+}
+function learnedFunction(mod, name) {
+  return activeCache.learnedFunction(mod, name);
+}
+function learnedLayout(mod, name) {
+  return activeCache.learnedLayout(mod, name);
+}
+function rejectLearnedLayout(mod, name) {
+  activeCache.reject(mod, "layout", name);
+}
+function rejectLearnedFunction(mod, name) {
+  activeCache.reject(mod, "functions", name);
+}
+function reportLearned(mod, items) {
+  activeCache.reportLearned(mod, items);
+}
+function isCacheableModule(mod) {
+  return activeCache.isCacheable(mod);
+}
+function reportCacheHit(mod) {
+  activeCache.reportCacheHit(mod);
+}
+function learnedHostEntry(mod) {
+  try {
+    return activeCache.hostEntry(mod);
+  } catch (e) {
+    devlog_debug(`[learned-cache] ${mod.name}: host entry lookup failed: ${e}`);
+    return null;
+  }
+}
+function missFingerprint(inputs) {
+  let hash = FNV_OFFSET_BASIS;
+  for (const char of inputs.join("\0")) {
+    hash = Math.imul(hash ^ char.codePointAt(0), FNV_PRIME) >>> 0;
+  }
+  return hash % MISS_FINGERPRINT_MAX + 1;
+}
+function hasLearnedMiss(mod, name, marker = MISS_MARKER) {
+  const value = activeCache.learnedLayout(mod, name);
+  if (value === marker)
+    return true;
+  if (value !== null)
+    activeCache.reject(mod, "layout", name);
+  return false;
+}
+function learnedMissName(name) {
+  const lastDot = name.lastIndexOf(".");
+  return `${name.slice(0, lastDot + 1)}miss.${name.slice(lastDot + 1)}`;
+}
+function reportLearnedMisses(mod, markers, scan) {
+  if (!scan.complete || _isShuttingDownNow())
+    return;
+  if (Object.keys(markers).length === 0)
+    return;
+  activeCache.reportLearned(mod, { layout: markers });
+}
+
 // agent/shared/boringssl_anchor_locator.ts
 var BORINGSSL_KEYLOG_LABELS = [
   "CLIENT_RANDOM",
@@ -22994,16 +25338,26 @@ var LENGTH_ARG_WINDOW = 4;
 var LENGTH_ARG_REG = 2;
 var SSL3_RANDOM_SIZE2 = 32;
 var LAST_CALLER_SAVED_REG = 18;
-function isCallWord(w) {
-  return isBL(w) || isBLR(w) || isBLRAuth(w);
-}
 function clobbersCallerSavedReg(w, reg) {
-  return isCallWord(w) && reg <= LAST_CALLER_SAVED_REG;
+  return isAnyCall(w) && reg <= LAST_CALLER_SAVED_REG;
 }
 var SSL_ARG_MASK = 1;
 var XZR = 31;
 function holdsSsl(aliasMask, reg) {
   return reg < XZR && (aliasMask >>> reg & 1) === 1;
+}
+var LINK_REG = 30;
+function sslAliasesAfterStubCall(aliasMask, stubBody) {
+  const after = stubBody.reduce((mask, w) => sslAliasesAfter(mask, w), aliasMask);
+  return (after & ~(1 << LINK_REG)) >>> 0;
+}
+function stubBodiesOf(words, stubWordsAt) {
+  return words.map((w, i) => {
+    if (stubWordsAt === void 0 || !isBL(w >>> 0))
+      return null;
+    const stub = stubWordsAt(i);
+    return stub === null ? null : outlinedStubBody(stub, REGISTER_SAVE_STUB);
+  });
 }
 function sslAliasesAfter(aliasMask, w) {
   const source = movRegSource(w);
@@ -23025,7 +25379,7 @@ function successorIndices(words, i) {
     successors.push(i + branch / 4);
   return successors.filter((s) => s >= 0 && s < words.length);
 }
-function sslAliasesAtEachWord(words) {
+function sslAliasesAtEachWord(words, stubBodies = []) {
   const before = new Array(words.length).fill(null);
   if (words.length === 0)
     return before;
@@ -23033,7 +25387,8 @@ function sslAliasesAtEachWord(words) {
   const worklist = [0];
   while (worklist.length > 0) {
     const i = worklist.pop();
-    const after = sslAliasesAfter(before[i], words[i] >>> 0);
+    const stub = stubBodies[i] ?? null;
+    const after = stub === null ? sslAliasesAfter(before[i], words[i] >>> 0) : sslAliasesAfterStubCall(before[i], stub);
     for (const s of successorIndices(words, i)) {
       const merged = before[s] === null ? after : (before[s] & after) >>> 0;
       if (merged !== before[s]) {
@@ -23073,9 +25428,9 @@ function lengthArgBetween(words, from2, to) {
   }
   return false;
 }
-function collectSslLayoutCandidates(words, ctxOff) {
+function collectSslLayoutCandidates(words, ctxOff, stubWordsAt) {
   const window = words.slice(0, SSL_LOG_SECRET_MAX_WORDS);
-  const aliasesAt = sslAliasesAtEachWord(window);
+  const aliasesAt = sslAliasesAtEachWord(window, stubBodiesOf(window, stubWordsAt));
   const found = [];
   for (let i = 0; i < window.length; i++) {
     const w = window[i] >>> 0;
@@ -23088,8 +25443,8 @@ function collectSslLayoutCandidates(words, ctxOff) {
   }
   return found;
 }
-function decodeSslLogSecretLayout(words, ctxOff) {
-  const candidates = collectSslLayoutCandidates(words, ctxOff);
+function decodeSslLogSecretLayout(words, ctxOff, stubWordsAt) {
+  const candidates = collectSslLayoutCandidates(words, ctxOff, stubWordsAt);
   if (candidates.length === 0)
     return null;
   const { s3Off, crOff } = candidates[0];
@@ -23147,13 +25502,13 @@ function deriveOffsetsAt(addr) {
     for (let i = 0; i < PROLOGUE_WORDS; i++) {
       const at = addr.add(i * 4);
       if (!isReadable(at, 4))
-        return null;
+        return DECODE_UNREADABLE;
       words.push(at.readU32());
     }
     return decodeCtxKeylogOffsets(words);
   } catch (e) {
     devlog(`[anchor-locator] prologue decode failed: ${e}`);
-    return null;
+    return DECODE_UNREADABLE;
   }
 }
 function installViaCtxWrite(moduleName, fnAddr, offs, abi = null) {
@@ -23190,7 +25545,7 @@ function installViaCtxWrite(moduleName, fnAddr, offs, abi = null) {
     if (hookedExisting.has(key))
       return;
     hookedExisting.add(key);
-    const range = Process.findRangeByAddress(fn);
+    const range = findRange(fn);
     if (range === null || !range.protection.includes("x")) {
       log(`[-] ${moduleName}: ctx+0x${cbOff.toString(16)} holds ${fn}, which is not code; leaving it alone.`);
       return;
@@ -23206,70 +25561,72 @@ function installViaCtxWrite(moduleName, fnAddr, offs, abi = null) {
       log(`[-] ${moduleName}: could not hook the app's keylog callback at ${fn}: ${e}`);
     }
   };
-  try {
-    Interceptor.attach(fnAddr, {
-      onEnter(args) {
-        try {
-          const ssl = abi === null ? args[0] : argAt(this.context, abi, 0);
-          if (ssl.isNull())
-            return;
-          const ctx = safeReadPointer(ssl.add(ctxOff));
-          if (ctx === null || ctx.isNull())
-            return;
-          const field = ctx.add(cbOff);
-          const current = safeReadPointer(field);
-          if (current !== null && current.equals(cbEntry))
-            return;
-          if (!isWritable(field, Process.pointerSize)) {
-            if (!vetoedOnce) {
-              vetoedOnce = true;
-              log(`[-] ${moduleName}: anchor-locator refused the keylog write \u2014 ctx+0x${cbOff.toString(16)} is not writable (offset likely wrong).`);
-            }
-            return;
-          }
-          if (current === null)
-            return;
-          if (!current.isNull()) {
-            hookExistingKeylogCallback(current);
-            return;
-          }
-          if (_isShuttingDownNow())
-            return;
-          field.writePointer(cbEntry);
-          writtenKeylogFields.set(field.toString(), { field, cb: cbEntry });
-          if (!installedOnce) {
-            installedOnce = true;
-            devlog(`[anchor-locator] ${moduleName}: wrote keylog_callback at ctx+0x${cbOff.toString(16)}`);
-          }
-        } catch (e) {
+  const attached = attachSslLogSecretOnce(fnAddr, "anchor", () => tryAttach(`[anchor-locator] ${moduleName}: (ctx-write)`, fnAddr, {
+    onEnter(args) {
+      try {
+        const ssl = abi === null ? args[0] : argAt(this.context, abi, 0);
+        if (ssl.isNull())
+          return;
+        const ctx = safeReadPointer(ssl.add(ctxOff));
+        if (ctx === null || ctx.isNull())
+          return;
+        const field = ctx.add(cbOff);
+        const current = safeReadPointer(field);
+        if (current !== null && current.equals(cbEntry))
+          return;
+        if (!isWritable(field, Process.pointerSize)) {
           if (!vetoedOnce) {
             vetoedOnce = true;
-            log(`[-] ${moduleName}: anchor-locator keylog install failed: ${e}`);
+            log(`[-] ${moduleName}: anchor-locator refused the keylog write \u2014 ctx+0x${cbOff.toString(16)} is not writable (offset likely wrong).`);
           }
+          return;
+        }
+        if (current === null)
+          return;
+        if (!current.isNull()) {
+          hookExistingKeylogCallback(current);
+          return;
+        }
+        if (_isShuttingDownNow())
+          return;
+        field.writePointer(cbEntry);
+        writtenKeylogFields.set(field.toString(), { field, cb: cbEntry });
+        if (!installedOnce) {
+          installedOnce = true;
+          devlog(`[anchor-locator] ${moduleName}: wrote keylog_callback at ctx+0x${cbOff.toString(16)}`);
+        }
+      } catch (e) {
+        if (!vetoedOnce) {
+          vetoedOnce = true;
+          log(`[-] ${moduleName}: anchor-locator keylog install failed: ${e}`);
         }
       }
-    });
-  } catch (e) {
-    devlog(`[anchor-locator] ${moduleName}: Interceptor.attach (ctx-write) failed: ${e}`);
+    }
+  }));
+  if (!attached)
     return false;
-  }
   log(`[*] ${moduleName}: keylog hooks installed via anchor-locator (derived ctx offsets 0x${ctxOff.toString(16)}/0x${cbOff.toString(16)})`);
   return true;
 }
-function installViaFieldDump(moduleName, fnAddr, dumpKeys, abi = null) {
-  try {
-    Interceptor.attach(fnAddr, {
-      onEnter(args) {
-        const c = readSslLogSecretCall(args, this.context, abi);
-        dumpKeys(c.label, c.ssl, c.data, c.len);
-      }
-    });
-  } catch (e) {
-    devlog(`[anchor-locator] ${moduleName}: Interceptor.attach (field dump) failed: ${e}`);
+function installViaFieldDump(moduleName, fnAddr, dumpKeys, abi = null, arm64Mod = null) {
+  if (arm64Mod !== null && !isPlausibleFunctionEntry(fnAddr, ehFrameTableFor(arm64Mod))) {
+    devlog(`[anchor-locator] ${moduleName}: ${fnAddr} is not a function entry (eh_frame/prologue); field dump skipped`);
     return false;
   }
+  if (!attachSslLogSecretHook(fnAddr, "anchor", dumpKeys, moduleName, abi))
+    return false;
   log(`[*] ${moduleName}: keylog hooks installed via anchor-locator (field dump)`);
   return true;
+}
+function isPlausibleFunctionEntry(addr, functions) {
+  const fn = functions?.bounds(addr) ?? null;
+  if (fn !== null && fn.start.equals(addr))
+    return true;
+  try {
+    return isFunctionPrologueWord(addr.readU32());
+  } catch (_e) {
+    return false;
+  }
 }
 function collectLabelVotes(labels, sitesPerLabel, firstCallee) {
   const pairs = [];
@@ -23291,11 +25648,12 @@ function codeMegabytes(mod) {
   return (bytes / (1024 * 1024)).toFixed(1);
 }
 async function locateSslLogSecret(mod, moduleName) {
+  const status = { complete: true };
   const modStart = mod.base;
   const modEnd = mod.base.add(mod.size);
   const started2 = Date.now();
   devlog(`[anchor-locator] ${moduleName}: scanning ${codeMegabytes(mod)} MB of code for ${BORINGSSL_KEYLOG_LABELS.length} keylog label xrefs (background, non-blocking)`);
-  const strAddrs = await findAnchorStringsAsync(mod, BORINGSSL_KEYLOG_LABELS.map((l) => l + "\0"));
+  const strAddrs = await findAnchorStringsAsync(mod, BORINGSSL_KEYLOG_LABELS.map((l) => l + "\0"), XREF_SCAN_CHUNK_BYTES, yieldToEventLoop, status);
   const labels = [];
   const targets2 = [];
   strAddrs.forEach((a, i) => {
@@ -23304,77 +25662,147 @@ async function locateSslLogSecret(mod, moduleName) {
       targets2.push(a);
     }
   });
-  const sites = targets2.length > 0 ? await findStringLoadSitesAsync(mod, targets2) : [];
-  const pairs = collectLabelVotes(labels, sites, (site) => firstCallTargetForward(site, modEnd, modStart, modEnd));
+  const sites = targets2.length > 0 ? await findStringLoadSitesAsync(mod, targets2, XREF_SCAN_CHUNK_BYTES, yieldToEventLoop, void 0, status) : [];
+  const functions = ehFrameTableFor(mod) ?? void 0;
+  const pairs = collectLabelVotes(labels, sites, (site) => firstCallTargetForward(site, modEnd, modStart, modEnd, functions));
   devlog(`[anchor-locator] ${moduleName}: xref scan finished in ${Date.now() - started2} ms (${targets2.length} label string(s), ${pairs.length} resolved a call)`);
   devlog(`[anchor-locator] ${moduleName}: votes ` + (pairs.map((p) => `${p.label}->${p.callee}`).join(", ") || "(none)"));
+  const missIsReliable = targets2.length > 0 && status.complete;
   const agreed = pickAgreedCallee(pairs);
   if (agreed === null) {
     devlog(`[anchor-locator] ${moduleName}: no ssl_log_secret candidate agreed across >=2 labels (${pairs.length} label(s) resolved a call)`);
-    return null;
+    return { found: null, missIsReliable };
   }
   devlog(`[anchor-locator] ${moduleName}: ssl_log_secret candidate @ ${agreed} (agreed by ${pairs.filter((p) => p.callee === agreed).length}/${pairs.length} label xref(s))`);
-  return ptr(agreed);
+  return { found: ptr(agreed), missIsReliable };
 }
 var sslLogSecretByModule = /* @__PURE__ */ new Map();
-function locateSslLogSecretCached(mod, moduleName) {
-  const key = `${mod.name}@${mod.base}`;
-  let pending = sslLogSecretByModule.get(key);
-  if (pending === void 0) {
-    pending = locateSslLogSecret(mod, moduleName);
-    sslLogSecretByModule.set(key, pending);
-  }
-  return pending;
+var LEARNED_SSL_LOG_SECRET = "boringssl.ssl_log_secret";
+var LEARNED_SSL_LOG_SECRET_MISS = learnedMissName(LEARNED_SSL_LOG_SECRET);
+var LOCATOR_REVISION = 1;
+var SSL_LOG_SECRET_MISS_FINGERPRINT = missFingerprint(["labels", ...BORINGSSL_KEYLOG_LABELS, "revision", String(LOCATOR_REVISION)]);
+function defaultSslLogSecretSources(mod) {
+  return {
+    decodes: (fnAddr) => sslLogSecretDecodes(mod, fnAddr),
+    scan: locateSslLogSecret
+  };
 }
-function sslLogSecretWordCount(mod, fnAddr) {
-  const bounds = ehFrameTableFor(mod)?.bounds(fnAddr) ?? null;
-  if (bounds === null || bounds.end === null || !bounds.start.equals(fnAddr))
-    return SSL_LOG_SECRET_MAX_WORDS;
-  const words = bounds.end.sub(fnAddr).toInt32() / 4;
-  return Math.max(1, Math.min(SSL_LOG_SECRET_MAX_WORDS, Math.floor(words)));
+function sslLogSecretDecodes(mod, fnAddr) {
+  const offs = memoizedCtxKeylogOffsets(mod, fnAddr, deriveOffsetsAt);
+  if (isDecoded(offs))
+    return true;
+  const module = loadedModuleFor(mod);
+  const layout = module === null ? null : sslLayoutAt(module, fnAddr);
+  if (isDecoded(layout))
+    return true;
+  return offs === DECODE_UNREADABLE || layout === DECODE_UNREADABLE ? null : false;
 }
-function readableByteCount(addr, maxBytes) {
-  let covered = 0;
-  try {
-    while (covered < maxBytes) {
-      const cursor = addr.add(covered);
-      const range = Process.findRangeByAddress(cursor);
-      if (range === null || range.protection[0] !== "r")
-        break;
-      const leftInRange = range.base.add(range.size).sub(cursor);
-      const wanted = maxBytes - covered;
-      if (leftInRange.compare(ptr(wanted)) >= 0)
-        return maxBytes;
-      const left = leftInRange.toUInt32();
-      if (left === 0)
-        break;
-      covered += left;
-    }
-  } catch (_e) {
-  }
-  return covered;
-}
-function readInstructionWords(addr, count) {
-  const wordCount = Math.floor(readableByteCount(addr, count * 4) / 4);
-  if (wordCount === 0)
-    return [];
-  try {
-    const bytes = addr.readByteArray(wordCount * 4);
-    return bytes === null ? [] : Array.from(new Uint32Array(bytes));
-  } catch (_e) {
-    return [];
-  }
-}
-function decodeSslLayoutAt(mod, moduleName, fnAddr) {
-  const words = readInstructionWords(fnAddr, sslLogSecretWordCount(mod, fnAddr));
-  const ctx = decodeCtxKeylogOffsets(words.slice(0, PROLOGUE_WORDS));
-  const layout = ctx === null ? null : decodeSslLogSecretLayout(words, ctx.ctxOff);
-  if (ctx === null || layout === null) {
-    devlog(`[anchor-locator] ${moduleName}: ssl layout not decoded at ${fnAddr} (${words.length} words, ctx ${ctx === null ? "missing" : "ok"})`);
+function validatedLearnedSslLogSecret(mod, decodes, logPrefix) {
+  const fnAddr = learnedFunction(mod, LEARNED_SSL_LOG_SECRET);
+  if (fnAddr === null)
+    return null;
+  const verdict = decodes(fnAddr);
+  if (verdict === true)
+    return fnAddr;
+  if (verdict === null) {
+    devlog(`${logPrefix}: learned ssl_log_secret @ ${fnAddr} could not be read; scanning instead`);
     return null;
   }
-  devlog(`[anchor-locator] ${moduleName}: ssl layout at ${fnAddr}: s3Off=0x${layout.s3Off.toString(16)} crOff=0x${layout.crOff.toString(16)} ctxOff=0x${ctx.ctxOff.toString(16)} lengthArg=${layout.lengthArgSeen}`);
-  return { s3Off: layout.s3Off, crOff: layout.crOff, ctxOff: ctx.ctxOff };
+  rejectLearnedFunction(mod, LEARNED_SSL_LOG_SECRET);
+  devlog(`${logPrefix}: learned ssl_log_secret @ ${fnAddr} does not decode; scanning instead`);
+  return null;
+}
+function reportDecodedSslLogSecret(mod, fnAddr, decodes) {
+  if (decodes(fnAddr) !== true)
+    return false;
+  reportLearned(mod, { functions: { [LEARNED_SSL_LOG_SECRET]: fnAddr } });
+  return true;
+}
+function loadedModuleFor(mod) {
+  try {
+    const module = Process.findModuleByAddress(mod.base);
+    return module !== null && module.base.equals(mod.base) ? module : null;
+  } catch (_e) {
+    return null;
+  }
+}
+var ctxKeylogOffsetsByAddress = /* @__PURE__ */ new Map();
+var sslLayoutByAddress = /* @__PURE__ */ new Map();
+function memoizedPerAddress(memo, mod, fnAddr, decode) {
+  const key = mappingAddressKey(fnAddr, mappingKey(mod));
+  const known = memo.get(key);
+  if (known !== void 0)
+    return known;
+  const decoded = decode(fnAddr);
+  if (decoded !== DECODE_UNREADABLE)
+    memo.set(key, decoded);
+  return decoded;
+}
+function memoizedCtxKeylogOffsets(mod, fnAddr, decode) {
+  return memoizedPerAddress(ctxKeylogOffsetsByAddress, mod, fnAddr, decode);
+}
+function ctxKeylogOffsetsAt(mod, fnAddr) {
+  const offs = memoizedCtxKeylogOffsets(mod, fnAddr, deriveOffsetsAt);
+  return isDecoded(offs) ? offs : null;
+}
+async function resolveSslLogSecret(mod, moduleName, sources) {
+  const learned = validatedLearnedSslLogSecret(mod, sources.decodes, `[anchor-locator] ${moduleName}`);
+  if (learned !== null) {
+    devlog(`[anchor-locator] ssl_log_secret for ${moduleName} from learned cache @ ${learned}; no scan needed`);
+    return learned;
+  }
+  if (hasLearnedMiss(mod, LEARNED_SSL_LOG_SECRET_MISS, SSL_LOG_SECRET_MISS_FINGERPRINT)) {
+    devlog_debug(`[anchor-locator] ${moduleName}: learned cache records no ssl_log_secret in this build; scan skipped`);
+    return null;
+  }
+  const { found, missIsReliable } = await sources.scan(mod, moduleName);
+  if (found === null) {
+    reportLearnedMisses(mod, { [LEARNED_SSL_LOG_SECRET_MISS]: SSL_LOG_SECRET_MISS_FINGERPRINT }, { complete: missIsReliable });
+    return null;
+  }
+  reportDecodedSslLogSecret(mod, found, sources.decodes);
+  return found;
+}
+function locateSslLogSecretCached(mod, moduleName, sources = defaultSslLogSecretSources(mod)) {
+  return memoizePerMapping(sslLogSecretByModule, mod, () => resolveSslLogSecret(mod, moduleName, sources));
+}
+function sslLogSecretWordCount(mod, fnAddr) {
+  const bytes = functionByteLength(fnAddr, ehFrameTableFor(mod), SSL_LOG_SECRET_MAX_WORDS * 4);
+  return Math.max(1, Math.floor(bytes / 4));
+}
+function stubWordsReader(mod, fnAddr, words) {
+  const modEnd = mod.base.add(mod.size);
+  const stubWords = REGISTER_SAVE_STUB.maxBodyWords + 1;
+  return (i) => {
+    const target = blTarget(fnAddr.add(i * 4), words[i] >>> 0);
+    if (target.compare(mod.base) < 0 || target.add(stubWords * 4).compare(modEnd) > 0)
+      return null;
+    return readInstructionWords(target, stubWords);
+  };
+}
+var UNKNOWN_CTX_OFFSET = -1;
+function decodeSslLayoutFromWords(words, stubWordsAt) {
+  const ctx = decodeCtxKeylogOffsets(words.slice(0, PROLOGUE_WORDS));
+  const layout = decodeSslLogSecretLayout(words, ctx?.ctxOff ?? UNKNOWN_CTX_OFFSET, stubWordsAt);
+  return layout === null ? null : { ...layout, ctxOff: ctx?.ctxOff ?? null };
+}
+function sslLayoutAt(mod, fnAddr) {
+  return memoizedPerAddress(sslLayoutByAddress, mod, fnAddr, () => {
+    const wanted = sslLogSecretWordCount(mod, fnAddr);
+    const words = readInstructionWords(fnAddr, wanted);
+    const layout = decodeSslLayoutFromWords(words, stubWordsReader(mod, fnAddr, words));
+    return layout === null && words.length < wanted ? DECODE_UNREADABLE : layout;
+  });
+}
+function decodeSslLayoutAt(mod, moduleName, fnAddr) {
+  const layout = sslLayoutAt(mod, fnAddr);
+  if (!isDecoded(layout)) {
+    devlog(`[anchor-locator] ${moduleName}: ssl layout not decoded at ${fnAddr}`);
+    return null;
+  }
+  const ctxText = layout.ctxOff === null ? "unknown" : `0x${layout.ctxOff.toString(16)}`;
+  devlog(`[anchor-locator] ${moduleName}: ssl layout at ${fnAddr}: s3Off=0x${layout.s3Off.toString(16)} crOff=0x${layout.crOff.toString(16)} ctxOff=${ctxText} lengthArg=${layout.lengthArgSeen}`);
+  return layout;
 }
 async function locateSslLayout(moduleName) {
   if (Process.arch !== "arm64")
@@ -23426,13 +25854,62 @@ async function runAnchorLocatorTier4(moduleName, dumpKeys, _detail) {
     devlog(`[anchor-locator] ${moduleName}: shutdown during ssl_log_secret scan; not installing`);
     return false;
   }
+  if (isSslLogSecretHooked(sslLogSecret)) {
+    devlog(`[anchor-locator] ${moduleName}: ssl_log_secret @ ${sslLogSecret} is already hooked; not hooking it again`);
+    claimForLiveSslLogSecretHook(moduleName, sslLogSecret, "anchor");
+    return true;
+  }
   resetReadableCache();
-  const offs = deriveOffsetsAt(sslLogSecret);
+  const offs = ctxKeylogOffsetsAt(mod, sslLogSecret);
   if (offs !== null) {
     return installViaCtxWrite(moduleName, sslLogSecret, offs);
   }
   devlog(`[anchor-locator] ${moduleName}: ctx-offset decode failed; using field-dump fallback`);
-  return installViaFieldDump(moduleName, sslLogSecret, dumpKeys);
+  return installViaFieldDump(moduleName, sslLogSecret, dumpKeys, null, mod);
+}
+var observeOnlyRuns = /* @__PURE__ */ new Map();
+function installSslLogSecretObserver(moduleName, fnAddr, observe) {
+  try {
+    Interceptor.attach(fnAddr, {
+      onEnter(args) {
+        if (_isShuttingDownNow())
+          return;
+        try {
+          observe(args[0]);
+        } catch (_e) {
+        }
+      }
+    });
+  } catch (e) {
+    devlog(`[anchor-locator] ${moduleName}: Interceptor.attach (observe-only) failed: ${e}`);
+    return false;
+  }
+  devlog(`[anchor-locator] ${moduleName}: observe-only ssl_log_secret hook @ ${fnAddr} (no keylog)`);
+  return true;
+}
+function runAnchorLocatorObserveOnly(moduleName, observe) {
+  let run = observeOnlyRuns.get(moduleName);
+  if (run === void 0) {
+    run = locateAndObserve(moduleName, observe);
+    observeOnlyRuns.set(moduleName, run);
+  }
+  return run;
+}
+async function locateAndObserve(moduleName, observe) {
+  if (Process.arch !== "arm64" || keylogHookOwner(moduleName) !== void 0)
+    return false;
+  try {
+    const mod = Process.findModuleByName(moduleName);
+    if (mod === null)
+      return false;
+    const fnAddr = await locateSslLogSecretCached(mod, moduleName);
+    if (fnAddr === null || _isShuttingDownNow() || keylogHookOwner(moduleName) !== void 0)
+      return false;
+    return installSslLogSecretObserver(moduleName, fnAddr, observe);
+  } catch (e) {
+    devlog(`[anchor-locator] ${moduleName}: observe-only locate failed: ${e}`);
+    return false;
+  }
 }
 var X64_CHUNK_OVERLAP = 7 + CALL_SEARCH_WINDOW + 5;
 async function findLabelStringsX64(mod) {
@@ -23540,7 +26017,7 @@ function pinnedSslLogSecret(mod) {
 }
 async function runAnchorLocatorX64(mod, dumpKeys, abi) {
   const moduleName = mod.name;
-  const sslReg = abi === "win64" ? X64_REG.rcx : X64_REG.rdi;
+  const sslReg = abi === "win64" ? X64.rcx : X64.rdi;
   const pinned = pinnedSslLogSecret(mod);
   if (pinned !== null) {
     const offs2 = decodeCtxOffsetsX64At(pinned, sslReg, moduleName);
@@ -23592,7 +26069,8 @@ var NON_BORINGSSL_MODULE_PATTERNS = [
   /^libs2n/i,
   /matrixssl/i,
   /rustls/i,
-  /schannel/i
+  /schannel/i,
+  /nspr4/i
 ];
 function isKnownNonBoringSslModule(module) {
   return NON_BORINGSSL_MODULE_PATTERNS.some((pattern) => pattern.test(module));
@@ -23829,6 +26307,17 @@ function installManualKeyExtraction(keylog3, addresses, moduleName, resolvedFns)
   });
   return true;
 }
+function settleCustomInstall(result, moduleName) {
+  if (typeof result !== "object" || result === null || typeof result.then !== "function") {
+    return result;
+  }
+  result.then((installed) => {
+    devlog(installed ? `[*] ${moduleName}: async keylog install settled: installed` : `[-] ${moduleName}: async keylog install settled: nothing installed`);
+  }).catch((e) => {
+    devlog(`[-] ${moduleName}: async keylog install rejected: ${e}`);
+  });
+  return false;
+}
 function installKeylogHook(def, addresses, moduleName, resolvedFns, enableDefaultFd) {
   const keylog3 = def.keylog;
   switch (keylog3.kind) {
@@ -23839,7 +26328,7 @@ function installKeylogHook(def, addresses, moduleName, resolvedFns, enableDefaul
     case "manual_on_connect":
       return installManualKeyExtraction(keylog3, addresses, moduleName, resolvedFns);
     case "custom":
-      return keylog3.install(addresses, moduleName, resolvedFns, enableDefaultFd);
+      return settleCustomInstall(keylog3.install(addresses, moduleName, resolvedFns, enableDefaultFd), moduleName);
     case "none":
       return false;
   }
@@ -23961,98 +26450,17 @@ function safeKeyLenLogged(claimedLen, labelStr, keyPtr, byteWalk) {
 function lenArg(a) {
   return a ? a.toUInt32() : void 0;
 }
+function secretLenOrFallback(claimedLen, labelStr, keyPtr, fallbackLen) {
+  if (claimedLen === void 0)
+    return fallbackLen;
+  return safeKeyLenLogged(claimedLen, labelStr, keyPtr, () => fallbackLen).len;
+}
 
 // agent/shared/boringssl_pattern_hook.ts
 init_node_globals();
 
 // agent/tls/shared/pattern_based_hooking.ts
 init_node_globals();
-
-// agent/shared/go_attach.ts
-init_node_globals();
-var MAX_STACK_CHECK_INSTRUCTIONS = 6;
-var STACK_GUARD_LOAD_WORD = 4181724048;
-function isGoArm64StackGuardLoad(insn) {
-  return insn >>> 0 === STACK_GUARD_LOAD_WORD;
-}
-var GO_HOOK_STACK_HEADROOM = 16 * 1024;
-var SUB_X17_SP_IMM_MASK = 4286579711;
-var SUB_X17_SP_IMM_BITS = 3506439153;
-function decodeSubX17SpImm(insn) {
-  const word = insn >>> 0;
-  if ((word & SUB_X17_SP_IMM_MASK) >>> 0 !== SUB_X17_SP_IMM_BITS)
-    return null;
-  const imm12 = word >>> 10 & 4095;
-  return word >>> 22 & 1 ? imm12 * 4096 : imm12;
-}
-function widenGoArm64StackCheck(insn, headroom = GO_HOOK_STACK_HEADROOM) {
-  const frame = decodeSubX17SpImm(insn);
-  if (frame === null)
-    return null;
-  const pages = Math.ceil((frame + headroom) / 4096);
-  if (pages > 4095)
-    return null;
-  return (SUB_X17_SP_IMM_BITS | 1 << 22 | pages << 10) >>> 0;
-}
-var widenedStackChecks = /* @__PURE__ */ new Set();
-function ensureGoArm64StackHeadroom(fn) {
-  const key = fn.toString();
-  if (widenedStackChecks.has(key))
-    return true;
-  const site = fn.add(4);
-  const widened = widenGoArm64StackCheck(site.readU32());
-  if (widened === null)
-    return false;
-  Memory.patchCode(site, 4, (code4) => code4.writeU32(widened));
-  widenedStackChecks.add(key);
-  devlog(`[go] ${fn}: stack check widened by ${GO_HOOK_STACK_HEADROOM} bytes for the hook`);
-  return true;
-}
-function isStackCheckInstruction(instruction) {
-  const { mnemonic, opStr } = instruction;
-  if (mnemonic === "cmp")
-    return true;
-  return ["sub", "subs", "mov", "movz", "movk", "add"].includes(mnemonic) && /^x1[67],/.test(opStr);
-}
-function goArm64StackCheckEnd(fn) {
-  if (!opensWithGoStackGuardLoad(fn))
-    return null;
-  let cursor = fn.add(4);
-  for (let i = 1; i < MAX_STACK_CHECK_INSTRUCTIONS; i++) {
-    let instruction;
-    try {
-      instruction = Instruction.parse(cursor);
-    } catch (e) {
-      return null;
-    }
-    if (instruction.mnemonic.startsWith("b."))
-      return instruction.next;
-    if (!isStackCheckInstruction(instruction))
-      return null;
-    cursor = instruction.next;
-  }
-  return null;
-}
-function opensWithGoStackGuardLoad(fn) {
-  try {
-    return isGoArm64StackGuardLoad(fn.readU32());
-  } catch (e) {
-    return false;
-  }
-}
-function attachGoFunctionEntry(address, callbacks, arch = Process.arch) {
-  const afterCheck = arch === "arm64" ? goArm64StackCheckEnd(address) : null;
-  if (afterCheck === null)
-    return Interceptor.attach(address, callbacks);
-  try {
-    if (!ensureGoArm64StackHeadroom(address))
-      devlog(`[go] ${address}: small-frame stack check; no extra headroom for the hook`);
-  } catch (e) {
-    devlog(`[go] ${address}: could not widen the stack check (${e}); hooking without extra headroom`);
-  }
-  devlog(`[go] ${address}: hooking after its stack check at ${afterCheck}`);
-  return Interceptor.attach(afterCheck, callbacks);
-}
 
 // agent/tls/shared/cronet_patterns.ts
 init_node_globals();
@@ -24124,12 +26532,7 @@ function acceptPrologueMatch(address, patternName, moduleName) {
     return false;
   }
   if (IS_ARM64) {
-    let prot = null;
-    try {
-      prot = Process.findRangeByAddress(address)?.protection ?? null;
-    } catch (_) {
-      prot = null;
-    }
+    const prot = findRange(address)?.protection ?? null;
     if (prot === null || prot.indexOf("x") < 0) {
       devlog_debug(`Pattern match at ${address} (${patternName})${where} skipped: not in an executable range (${prot ?? "unmapped"})`);
       return false;
@@ -24138,12 +26541,8 @@ function acceptPrologueMatch(address, patternName, moduleName) {
   return true;
 }
 function isRangeStillReadable(range) {
-  try {
-    const live = Process.findRangeByAddress(range.base);
-    return !!live && live.protection.indexOf("r") === 0;
-  } catch (_) {
-    return false;
-  }
+  const live = findRange(range.base);
+  return live !== null && live.protection.indexOf("r") === 0;
 }
 function get_CPU_specific_pattern(default_pattern) {
   const arch = normalizeArchKey(Process.arch);
@@ -24165,6 +26564,8 @@ var PatternBasedHooking = class {
   // emitting a premature "tier 3 exhausted" before Memory.scan has had a
   // chance to run on slow targets like libmonochrome_64.so (~200 MB).
   cascadeCompleted = false;
+  // Entry address of the hooked match, so callers can cache it.
+  matchedAddress = null;
   module;
   patterns = {};
   // Keyed as `${range.base}-${range.size}|${pattern_name}` so each pattern
@@ -24174,6 +26575,11 @@ var PatternBasedHooking = class {
   // (every range gets skipped) — the bug that caused --modern to miss
   // ssl_log_secret in libmonochrome_64.so even with correct patterns.
   rescannedRanges = /* @__PURE__ */ new Set();
+  recordMatch(address) {
+    this.found_ssl_log_secret = true;
+    this.no_hooking_success = false;
+    this.matchedAddress = address;
+  }
   constructor(module) {
     this.found_ssl_log_secret = false;
     this.module = module;
@@ -24204,8 +26610,7 @@ var PatternBasedHooking = class {
       onMatch: (address) => {
         if (!acceptPrologueMatch(address, pattern_name))
           return;
-        this.found_ssl_log_secret = true;
-        this.no_hooking_success = false;
+        this.recordMatch(address);
         var module_by_address = Process.findModuleByAddress(address);
         devlog_info(`Pattern found at (${pattern_name}) address: ${address} in module ${module_by_address.name}`);
         log(`[*] ${module_by_address?.name ?? "<unknown>"}: keylog hooks installed via pattern (${pattern_name}, onReturn @ ${address})`);
@@ -24302,7 +26707,7 @@ var PatternBasedHooking = class {
     }
   }
   // Method to hook by pattern, with a custom function to handle onEnter and onLeave
-  hookByPattern(patterns2, pattern_name, onMatchCallback, onCompleteCallback) {
+  hookByPattern(patterns2, pattern_name, onMatchCallback, dumpKeysEntry, onCompleteCallback) {
     const moduleName = this.module?.name;
     devlog(`Trying to scan ${moduleName} ...`);
     hookBreadcrumb(`pattern-scan: ${moduleName}`);
@@ -24325,36 +26730,32 @@ var PatternBasedHooking = class {
       onMatch: (address) => {
         if (!acceptPrologueMatch(address, pattern_name, moduleName))
           return;
-        this.found_ssl_log_secret = true;
-        this.no_hooking_success = false;
+        if (!attachPatternEntryHook(address, onMatchCallback, dumpKeysEntry))
+          return;
+        this.recordMatch(address);
         if (moduleName) {
           devlog_info(`Pattern found at (${pattern_name}) address: ${address} for module ${moduleName}`);
         } else {
           devlog_info(`Pattern found at (${pattern_name}) address: ${address}`);
         }
         log(`[*] ${moduleName ?? "<unknown>"}: keylog hooks installed via pattern (${pattern_name} @ ${address})`);
-        attachGoFunctionEntry(address, {
-          onEnter: function(args) {
-            onMatchCallback.call(this, args);
-          }
-        });
       },
       onError: (reason) => {
         if (this.found_ssl_log_secret)
           return;
         devlog_error("There was an error scanning memory: " + reason);
         devlog_error(`Trying to rescan memory with permissions in mind on ${moduleName}`);
-        this.hookByPatternOnlyReadableParts(patterns2, pattern_name, onMatchCallback, (primary_success) => {
+        this.hookByPatternOnlyReadableParts(patterns2, pattern_name, onMatchCallback, dumpKeysEntry, (primary_success) => {
           if (this.found_ssl_log_secret)
             return;
           if (!primary_success) {
             devlog(`Primary pattern failed, trying fallback pattern on ${moduleName}`);
-            this.hookByPatternOnlyReadableParts(patterns2, "fallback_pattern", onMatchCallback, (fallback_success) => {
+            this.hookByPatternOnlyReadableParts(patterns2, "fallback_pattern", onMatchCallback, dumpKeysEntry, (fallback_success) => {
               if (this.found_ssl_log_secret)
                 return;
               if (!fallback_success) {
                 devlog(`Fallback pattern failed, trying second fallback pattern on ${moduleName}`);
-                this.hookByPatternOnlyReadableParts(patterns2, "second_fallback_pattern", onMatchCallback, (second_fallback_success) => {
+                this.hookByPatternOnlyReadableParts(patterns2, "second_fallback_pattern", onMatchCallback, dumpKeysEntry, (second_fallback_success) => {
                   if (this.found_ssl_log_secret)
                     return;
                   if (second_fallback_success) {
@@ -24374,7 +26775,7 @@ var PatternBasedHooking = class {
     });
   }
   // Method to hook by pattern, with a custom function to handle onEnter and onLeave
-  hookByPatternOnlyReadableParts(patterns2, pattern_name, onMatchCallback, onCompleteCallback) {
+  hookByPatternOnlyReadableParts(patterns2, pattern_name, onMatchCallback, dumpKeysEntry, onCompleteCallback) {
     if (this.found_ssl_log_secret) {
       onCompleteCallback(true);
       return;
@@ -24442,18 +26843,16 @@ var PatternBasedHooking = class {
               if (!acceptPrologueMatch(address, pattern_name, moduleName))
                 return;
               patternFound = true;
-              this.found_ssl_log_secret = true;
-              this.no_hooking_success = false;
-              devlog_info(`Pattern found at (${pattern_name}) address: ${address} on ${moduleName}`);
-              log(`[*] ${moduleName ?? "<unknown>"}: keylog hooks installed via pattern (${pattern_name}, readable-ranges @ ${address})`);
+              let attached = false;
               try {
-                attachGoFunctionEntry(address, {
-                  onEnter: function(args) {
-                    onMatchCallback.call(this, args);
-                  }
-                });
+                attached = attachPatternEntryHook(address, onMatchCallback, dumpKeysEntry);
               } catch (e) {
                 devlog_error(`Interceptor.attach failed at ${address}: ${e}`);
+              }
+              if (attached) {
+                this.recordMatch(address);
+                devlog_info(`Pattern found at (${pattern_name}) address: ${address} on ${moduleName}`);
+                log(`[*] ${moduleName ?? "<unknown>"}: keylog hooks installed via pattern (${pattern_name}, readable-ranges @ ${address})`);
               }
               executeOnce(true);
               return "stop";
@@ -24577,8 +26976,7 @@ var PatternBasedHooking = class {
               if (!acceptPrologueMatch(address, pattern_name, moduleName))
                 return;
               patternFound = true;
-              this.found_ssl_log_secret = true;
-              this.no_hooking_success = false;
+              this.recordMatch(address);
               const m2 = Process.findModuleByAddress(address);
               if (m2) {
                 log(`Pattern found at (${pattern_name}) address: ${address} in module ${m2.name}`);
@@ -24684,7 +27082,9 @@ var PatternBasedHooking = class {
   // monoliths like libmonochrome_64.so. cascadeCompleted is set true at
   // every terminal branch so pollPatternOutcome can tell "scan still
   // running" from "scan done, nothing matched".
-  hookModuleByPattern(patterns2, onMatchCallback) {
+  // Direct callers hook a keylog (ssl_log_secret) function; action-driven
+  // callers pass whether their action is Dump-Keys.
+  hookModuleByPattern(patterns2, onMatchCallback, dumpKeysEntry = true) {
     if (!patterns2 || !patterns2.primary && !patterns2.fallback) {
       devlog_debug("hookModuleByPattern: no usable pattern, skipping scan");
       this.no_hooking_success = true;
@@ -24692,20 +27092,20 @@ var PatternBasedHooking = class {
       return;
     }
     const moduleName = this.module?.name;
-    this.hookByPattern(patterns2, "primary_pattern", onMatchCallback, (primary_success) => {
+    this.hookByPattern(patterns2, "primary_pattern", onMatchCallback, dumpKeysEntry, (primary_success) => {
       if (primary_success) {
         this.cascadeCompleted = true;
         return;
       }
       devlog("Primary pattern failed, trying fallback pattern...");
-      this.hookByPattern(patterns2, "fallback_pattern", onMatchCallback, (fallback_success) => {
+      this.hookByPattern(patterns2, "fallback_pattern", onMatchCallback, dumpKeysEntry, (fallback_success) => {
         if (fallback_success) {
           this.cascadeCompleted = true;
           return;
         }
         if (patterns2.second_fallback) {
           devlog("Fallback pattern failed, trying second fallback pattern...");
-          this.hookByPattern(patterns2, "second_fallback_pattern", onMatchCallback, (second_fallback_success) => {
+          this.hookByPattern(patterns2, "second_fallback_pattern", onMatchCallback, dumpKeysEntry, (second_fallback_success) => {
             if (!second_fallback_success && !this.found_ssl_log_secret) {
               devlog_debug(`None of the patterns worked. You may need to adjust the patterns for ${moduleName}`);
               this.no_hooking_success = true;
@@ -24733,7 +27133,7 @@ var PatternBasedHooking = class {
   invoke_pattern_based_hooking(action, module_name, platform, arch, hookCallback) {
     var action_specific_patterns = this.get_action_specific_pattern(module_name, platform, arch, action);
     devlog(`Using ${action} patterns for ${platform} on ${arch}`);
-    this.hookModuleByPattern(action_specific_patterns, hookCallback);
+    this.hookModuleByPattern(action_specific_patterns, hookCallback, action === "Dump-Keys");
   }
   // Function to retrieve patterns based on the current CPU architecture and action
   get_action_specific_pattern(module_name, platform, arch, action) {
@@ -25049,7 +27449,8 @@ function installBoringSSLPatternHook(moduleName, patternsJson, dumpKeys, fallbac
   return {
     scheduled: true,
     reason: `scan-scheduled (${source.via})`,
-    settled: pollPatternOutcome(hooker, moduleName)
+    settled: pollPatternOutcome(hooker, moduleName),
+    hooker
   };
 }
 function notScheduled(reason) {
@@ -25239,21 +27640,6 @@ function resolveSslLogSecretSymbol(mod) {
 function isResolvedSymbol(addr) {
   return !!addr && !addr.isNull();
 }
-function attachSslLogSecretHook(addr, cb, moduleName = "") {
-  const abi = callAbiForModule(moduleName);
-  try {
-    Interceptor.attach(addr, {
-      onEnter(args) {
-        const c = readSslLogSecretCall(args, this.context, abi);
-        cb(c.label, c.ssl, c.data, c.len);
-      }
-    });
-    return true;
-  } catch (e) {
-    devlog_error(`[boringssl-sym] Interceptor.attach failed: ${e}`);
-    return false;
-  }
-}
 var PATTERN_HOOKING_SETTLE_MS = 1e3;
 var KEYLOG_NOT_INSTALLED_MSG = (moduleName, reason = "symbol absent, patterns no-match") => `[!] No keylog hook installed for ${moduleName} (${reason})`;
 function attemptSymbolFallback(moduleName, dumpKeys, ctx = "bssl-symbol-fb") {
@@ -25316,7 +27702,7 @@ function installBoringSSLSymbolHook(moduleName, dumpKeys) {
   const r = resolveSslLogSecretSymbol(mod);
   if (!r)
     return false;
-  const ok = attachSslLogSecretHook(r.address, guardKeylogDumpKeys(moduleName, "symbol", dumpKeys), moduleName);
+  const ok = attachSslLogSecretHook(r.address, "symbol", guardKeylogDumpKeys(moduleName, "symbol", dumpKeys), moduleName);
   if (ok) {
     log(`[*] ${moduleName}: keylog hooks installed via symbol (${r.via}: ${r.symbolName} @ ${r.address})`);
   }
@@ -25401,6 +27787,44 @@ function makeBoringSslDumpKeys(moduleName) {
   };
 }
 
+// agent/shared/boringssl_learned_keylog.ts
+init_node_globals();
+var defaultDeps2 = {
+  arch: () => Process.arch,
+  // attachSslLogSecretHook reads the call's arguments, so the s3/cr decode suffices too.
+  decodes: sslLogSecretDecodes,
+  attach: attachSslLogSecretHook
+};
+function userDumpKeysPatternsApply(moduleName, user) {
+  return !!user.json && hasUsablePatternsFor(user.json, moduleName, user.fallbackModuleName, "Dump-Keys");
+}
+function cacheApplies(deps) {
+  return deps.arch() === "arm64";
+}
+function hookLearnedSslLogSecret(mod, dumpKeys, deps = defaultDeps2) {
+  if (!cacheApplies(deps))
+    return false;
+  const fnAddr = validatedLearnedSslLogSecret(mod, (a) => deps.decodes(mod, a), `[bssl-learned] ${mod.name}`);
+  if (fnAddr === null)
+    return false;
+  if (!deps.attach(fnAddr, "pattern", guardKeylogDumpKeys(mod.name, "pattern", dumpKeys), mod.name))
+    return false;
+  claimForLiveSslLogSecretHook(mod.name, fnAddr, "pattern");
+  devlog_debug(`ssl_log_secret for ${mod.name} from learned cache (pattern path skipped)`);
+  return true;
+}
+function hookLearnedSslLogSecretByName(moduleName, dumpKeys, user, findModule = () => Process.findModuleByName(moduleName), deps = defaultDeps2) {
+  if (userDumpKeysPatternsApply(moduleName, user))
+    return false;
+  const mod = findModule();
+  return mod !== null && hookLearnedSslLogSecret(mod, dumpKeys, deps);
+}
+function reportPatternMatchedSslLogSecret(mod, matchedAddress, deps = defaultDeps2) {
+  if (matchedAddress === null || !cacheApplies(deps))
+    return false;
+  return reportDecodedSslLogSecret(mod, matchedAddress, (a) => deps.decodes(mod, a));
+}
+
 // agent/shared/boringssl_hook_chain.ts
 function runTier(name, moduleName, fn) {
   try {
@@ -25440,9 +27864,14 @@ function installBoringSSLKeylogChain(def, addresses, moduleName, resolvedFns, en
     onAllKeylogTiersMissed(moduleName, dumpKeysCb, { detail: "pattern tier skipped by --boringssl-anchor-only", pairipDisabled: false });
     return "none";
   }
+  const patternFallbackModule = "libcronet.so";
+  const userPatterns = { json: patternsJson, fallbackModuleName: patternFallbackModule };
+  if (runTier("learned", moduleName, () => hookLearnedSslLogSecretByName(moduleName, dumpKeysCb, userPatterns))) {
+    return "pattern";
+  }
   const family = def.family ?? detectBoringSSLFamily(moduleName);
   const libraryType = def.libraryType ?? "boringssl";
-  const patternResult = installBoringSSLPatternHook(moduleName, patternsJson, dumpKeysCb, "libcronet.so", { family, libraryType });
+  const patternResult = installBoringSSLPatternHook(moduleName, patternsJson, dumpKeysCb, patternFallbackModule, { family, libraryType });
   if (!patternResult.scheduled) {
     devlog_debug(`[bssl-chain] ${moduleName}: tier=pattern reason=${patternResult.reason}`);
     devlog(KEYLOG_NOT_INSTALLED_MSG(moduleName, `tier 3 not scheduled (${patternResult.reason})`));
@@ -25452,6 +27881,9 @@ function installBoringSSLKeylogChain(def, addresses, moduleName, resolvedFns, en
   patternResult.settled.then((matched) => {
     if (matched) {
       devlog_debug(`[bssl-chain] ${moduleName}: pattern tier matched (family=${family})`);
+      const hooker = patternResult.hooker;
+      if (hooker)
+        reportPatternMatchedSslLogSecret(hooker.module, hooker.matchedAddress);
       return;
     }
     devlog(`[bssl-chain] ${moduleName}: tier 3 exhausted or gave up (family=${family}); falling back to symbol re-scan`);
@@ -25495,13 +27927,23 @@ async function executeFromDefinition(def, moduleName, socketLibrary, isBaseHook,
     ...def.nativeFunctions.map((spec) => spec.symbol)
   ];
   await resolveWithPipelineAsync(addresses, moduleName, def.offsetKey, pipelineSymbols);
-  const install = () => installResolvedDefinition(def, addresses, moduleName, isBaseHook, enableDefaultFd);
+  const install2 = () => installResolvedDefinition(def, addresses, moduleName, isBaseHook, enableDefaultFd);
   if (recordProtocol === void 0)
-    return install();
-  return runHookExecutor(recordProtocol, install);
+    return install2();
+  return runHookExecutor(recordProtocol, install2);
 }
-function delegatesToExtraHooks(def) {
-  return !def.readHook && !def.writeHook && def.keylog.kind === "none";
+function hasUnconditionalOwnHooks(def) {
+  return !!def.readHook || !!def.writeHook || def.keylog.kind !== "custom" && def.keylog.kind !== "none";
+}
+async function settleCustomKeylog(keylog3, addresses, moduleName, resolvedFns, enableDefaultFd) {
+  try {
+    const installed = await keylog3.install(addresses, moduleName, resolvedFns, enableDefaultFd);
+    devlog(installed ? `[*] ${moduleName}: custom keylog install settled: installed` : `[-] ${moduleName}: custom keylog install settled: nothing installed`);
+    return installed === true;
+  } catch (e) {
+    devlog(`[loader] custom keylog install failed on ${moduleName}: ${e}`);
+    return false;
+  }
 }
 function installResolvedDefinition(def, addresses, moduleName, isBaseHook, enableDefaultFd) {
   const resolvedFns = {};
@@ -25528,6 +27970,7 @@ function installResolvedDefinition(def, addresses, moduleName, isBaseHook, enabl
   }
   installReadHook(def, addresses, moduleName, resolvedFns, enableDefaultFd);
   installWriteHook(def, addresses, moduleName, resolvedFns, enableDefaultFd);
+  let customKeylog = Promise.resolve(false);
   if (!keylog_enabled) {
     devlog(`[loader] ${moduleName}: keylog install skipped (keylog_enabled=false)`);
   } else if (def.libraryType === "boringssl") {
@@ -25536,10 +27979,12 @@ function installResolvedDefinition(def, addresses, moduleName, isBaseHook, enabl
     } catch (e) {
       devlog(`[loader] BoringSSL chain threw for ${moduleName}: ${e}`);
     }
+  } else if (def.keylog.kind === "custom") {
+    customKeylog = settleCustomKeylog(def.keylog, addresses, moduleName, resolvedFns, enableDefaultFd);
   } else {
     try {
       const installed = installKeylogHook(def, addresses, moduleName, resolvedFns, enableDefaultFd);
-      if (installed && def.keylog.kind !== "custom" && def.keylog.kind !== "none") {
+      if (installed && def.keylog.kind !== "none") {
         log(`[*] ${moduleName}: keylog hooks installed via callback (${def.keylog.kind})`);
       }
     } catch (e) {
@@ -25562,7 +28007,7 @@ function installResolvedDefinition(def, addresses, moduleName, isBaseHook, enabl
       devlog(`[loader] base-hook address store error: ${e}`);
     }
   }
-  return extraInstalled || !delegatesToExtraHooks(def);
+  return extraInstalled || hasUnconditionalOwnHooks(def) ? Promise.resolve(true) : customKeylog;
 }
 
 // agent/tls/definitions/gnutls.ts
@@ -25949,21 +28394,1743 @@ function emitRecord(call, buildMessage, payload) {
     sendDatalog(message, payload);
 }
 
+// agent/shared/nss_keylog_locator.ts
+init_node_globals();
+init_shared_structures();
+
+// agent/shared/nss_keylog_backend_arm64.ts
+init_node_globals();
+
+// agent/shared/string_anchor_functions.ts
+init_node_globals();
+var DEFAULT_MAX_ANCHOR_SITES = 64;
+var MAX_LITERAL_OCCURRENCES = 16;
+var LEA_RIP_OVERLAP = 6;
+var NO_FUNCTIONS = { functions: [], unboundedSites: [] };
+function dataRanges2(mod) {
+  return mod.enumerateRanges("r--").filter((r) => !r.protection.includes("x"));
+}
+function codeRanges(mod) {
+  return mod.enumerateRanges("r-x");
+}
+async function findLiteralOccurrences(mod, texts, chunkBytes, yieldFn, status) {
+  const found = texts.map(() => []);
+  for (const ranges of [dataRanges2(mod), codeRanges(mod)]) {
+    const missing = texts.map((_t, i) => i).filter((i) => found[i].length === 0);
+    if (missing.length === 0)
+      break;
+    const jobs = missing.map((i) => ({
+      pattern: toHexPattern(texts[i] + "\0"),
+      onMatch: (a) => {
+        if (found[i].length < MAX_LITERAL_OCCURRENCES)
+          found[i].push(a);
+      }
+    }));
+    await scanRangesChunked(ranges, jobs, chunkBytes, yieldFn, status);
+  }
+  return found;
+}
+function anchorTargets(spec, occurrences) {
+  const targets2 = spec.literalSuffix ? occurrences.map((hit) => literalStart(hit)) : occurrences;
+  const unique = /* @__PURE__ */ new Map();
+  for (const t of targets2)
+    unique.set(t.toString(), t);
+  return [...unique.values()];
+}
+async function findRipLeaSitesAsync(mod, targetSets, chunkBytes, yieldFn, status) {
+  const owner2 = /* @__PURE__ */ new Map();
+  targetSets.forEach((set, i) => set.forEach((t) => {
+    const a = Number(t.toString());
+    owner2.set(a, [...owner2.get(a) ?? [], i]);
+  }));
+  const sites = targetSets.map(() => []);
+  if (owner2.size === 0)
+    return sites;
+  const targets2 = new Set(owner2.keys());
+  for (const range of codeRanges(mod)) {
+    for (let off = 0; off < range.size; off += chunkBytes) {
+      if (_isShuttingDownNow())
+        throw new XrefScanAborted();
+      const at = range.base.add(off);
+      const own = Math.min(chunkBytes, range.size - off);
+      let code4 = null;
+      try {
+        const bytes = at.readByteArray(Math.min(own + LEA_RIP_OVERLAP, range.size - off));
+        code4 = bytes ? new Uint8Array(bytes) : null;
+      } catch (_e) {
+        code4 = null;
+      }
+      if (code4 === null && status)
+        status.complete = false;
+      if (code4 !== null) {
+        for (const ref of findRipLeaRefs(code4, Number(at.toString()), targets2, own)) {
+          for (const i of owner2.get(ref.target) ?? [])
+            sites[i].push(at.add(ref.site - Number(at.toString())));
+        }
+      }
+      await yieldFn();
+    }
+  }
+  return sites;
+}
+async function loadSitesFor(mod, targetSets, maxSites, chunkBytes, yieldFn, status) {
+  if (Process.arch === "x64")
+    return findRipLeaSitesAsync(mod, targetSets, chunkBytes, yieldFn, status);
+  if (Process.arch !== "arm64")
+    return targetSets.map(() => []);
+  const flat = targetSets.flat();
+  if (flat.length === 0)
+    return targetSets.map(() => []);
+  const perTarget = await findStringLoadSitesAsync(mod, flat, chunkBytes, yieldFn, maxSites, status);
+  let k = 0;
+  return targetSets.map((set) => set.flatMap(() => perTarget[k++]));
+}
+function groupSitesByFunction(sites, functions) {
+  const byStart = /* @__PURE__ */ new Map();
+  const unboundedSites = [];
+  const sorted = [...sites].sort((a, b) => a.compare(b)).filter((p, k, all) => k === 0 || !p.equals(all[k - 1]));
+  for (const site of sorted) {
+    const fn = functions.bounds(site);
+    if (fn === null) {
+      unboundedSites.push(site);
+      continue;
+    }
+    const key = fn.start.toString();
+    const entry = byStart.get(key) ?? { start: fn.start, end: fn.end, sites: [] };
+    entry.sites.push(site);
+    byStart.set(key, entry);
+  }
+  const list = [...byStart.values()].sort((a, b) => a.start.compare(b.start));
+  return { functions: list, unboundedSites };
+}
+async function locateFunctionsByAnchors(mod, specs, options = {}) {
+  const functions = options.functions !== void 0 ? options.functions : ehFrameTableFor(mod);
+  if (!functions || specs.length === 0)
+    return specs.map(() => NO_FUNCTIONS);
+  const chunkBytes = options.chunkBytes ?? XREF_SCAN_CHUNK_BYTES;
+  const yieldFn = options.yieldFn ?? yieldToEventLoop;
+  const occurrences = await findLiteralOccurrences(mod, specs.map((s) => s.text), chunkBytes, yieldFn);
+  const targetSets = specs.map((s, i) => anchorTargets(s, occurrences[i]));
+  const maxSites = Math.max(DEFAULT_MAX_ANCHOR_SITES, ...specs.map((s) => s.maxSites ?? 0));
+  const sites = await loadSitesFor(mod, targetSets, maxSites, chunkBytes, yieldFn);
+  return specs.map((s, i) => groupSitesByFunction(sites[i].slice(0, s.maxSites ?? DEFAULT_MAX_ANCHOR_SITES), functions));
+}
+function agreedFunction(perAnchor, excluded = []) {
+  let agreed = null;
+  for (const result of perAnchor) {
+    if (result.functions.length === 0 && result.unboundedSites.length === 0)
+      continue;
+    if (result.functions.length !== 1 || result.unboundedSites.length > 0)
+      return null;
+    const fn = result.functions[0];
+    if (agreed !== null && !agreed.start.equals(fn.start))
+      return null;
+    agreed = agreed ?? fn;
+  }
+  if (agreed === null)
+    return null;
+  const home = agreed.start;
+  return excluded.some((other) => other.functions.some((f2) => f2.start.equals(home))) ? null : agreed;
+}
+
+// agent/shared/nss_layout_constants.ts
+init_node_globals();
+var NSS_HEX_TABLE = "0123456789abcdef";
+var WRITER_DECODE_CAP_BYTES = 2048;
+var CLIENT_RANDOM_OFF_MIN = 256;
+var CLIENT_RANDOM_OFF_MAX = 8192;
+function isPlausibleWriterClientRandomOffset(imm, align3) {
+  return imm >= CLIENT_RANDOM_OFF_MIN && imm <= CLIENT_RANDOM_OFF_MAX && imm % align3 === 0;
+}
+function readsHexTable(read2, addr) {
+  const bytes = read2(addr, NSS_HEX_TABLE.length);
+  return bytes !== null && bytes.length === NSS_HEX_TABLE.length && String.fromCharCode(...bytes) === NSS_HEX_TABLE;
+}
+function singleOffset(hexTableSeen, offsets2) {
+  if (!hexTableSeen || offsets2.size !== 1)
+    return null;
+  return { clientRandomOff: [...offsets2][0] };
+}
+function calleesPerLabel(perLabel, resolve) {
+  return perLabel.map((items) => items.map((item) => resolve(item)).filter((p) => p !== null));
+}
+function addressesInModule(mod, offsets2) {
+  return offsets2.filter((off) => off >= 0 && off < mod.size).map((off) => mod.base.add(off));
+}
+
+// agent/shared/nss_keylog_backend_arm64.ts
+var CLIENT_RANDOM_ALIGN = 8;
+var ARG0 = 0;
+var SP_OR_ZR = 31;
+var LAST_CALLER_SAVED = 18;
+var PAGE = 4096;
+function cloneTracking(t) {
+  return { x0IsSs: t.x0IsSs, copies: new Set(t.copies) };
+}
+function trackSsCopies(t, insn) {
+  const src = movRegSource(insn);
+  const createsCopy = src !== null && src !== SP_OR_ZR && (src === ARG0 && t.x0IsSs || t.copies.has(src));
+  const call = isAnyCall(insn);
+  for (const reg of [...t.copies]) {
+    if (writesReg(insn, reg) || call && reg <= LAST_CALLER_SAVED)
+      t.copies.delete(reg);
+  }
+  if (call || writesReg(insn, ARG0))
+    t.x0IsSs = false;
+  if (createsCopy)
+    t.copies.add(movRegDest(insn));
+}
+function literalAddress(insn, pc, pages) {
+  let address = null;
+  if (isADR(insn))
+    address = pc + decodeADRImm(insn);
+  if (isADDimm64(insn) && pages.has(regRn(insn)))
+    address = pages.get(regRn(insn)) + decodeADDImm12(insn);
+  for (const reg of [...pages.keys()])
+    if (writesReg(insn, reg) || isAnyCall(insn))
+      pages.delete(reg);
+  if (isADRP(insn))
+    pages.set(regRd(insn), Math.floor(pc / PAGE) * PAGE + decodeADRPImm(insn));
+  return address;
+}
+function decodeKeylogWriter(words, base, readAt) {
+  let tracking = { x0IsSs: true, copies: /* @__PURE__ */ new Set() };
+  let atBlockStart = cloneTracking(tracking);
+  const pages = /* @__PURE__ */ new Map();
+  const offsets2 = /* @__PURE__ */ new Set();
+  let hexTableSeen = false;
+  words.forEach((word, i) => {
+    const w = word >>> 0;
+    const pc = base + i * 4;
+    const literal = literalAddress(w, pc, pages);
+    if (literal !== null && readsHexTable(readAt, literal))
+      hexTableSeen = true;
+    const imm = decodeADDImm12(w);
+    if (isADDimm64(w) && tracking.copies.has(regRn(w)) && isPlausibleWriterClientRandomOffset(imm, CLIENT_RANDOM_ALIGN)) {
+      offsets2.add(imm);
+    }
+    trackSsCopies(tracking, w);
+    if (endsFallThrough(w))
+      tracking = cloneTracking(atBlockStart);
+    if (endsFallThrough(w) || directBranchOffset(w) !== null)
+      atBlockStart = cloneTracking(tracking);
+  });
+  return singleOffset(hexTableSeen, offsets2);
+}
+function functionWords(fn, mod) {
+  const available = codeBytesAvailable(fn, mod, WRITER_DECODE_CAP_BYTES);
+  const length = Math.min(functionByteLength(fn, functionBoundsFor(mod), WRITER_DECODE_CAP_BYTES), available);
+  const wanted = Math.floor(length / 4);
+  const words = readInstructionWords(fn, wanted);
+  return { words, readInFull: wanted > 0 && words.length >= wanted };
+}
+function isFunctionStart(fn, mod) {
+  const table = ehFrameTableFor(mod) ?? functionBoundsFor(mod);
+  return table.bounds(fn)?.start.equals(fn) ?? false;
+}
+var arm64NssLocatorBackend = {
+  name: "arm64",
+  deviceVerified: true,
+  async labelCallees(mod, labels, status) {
+    const strings = await findLiteralOccurrences(mod, labels, XREF_SCAN_CHUNK_BYTES, yieldToEventLoop, status);
+    const sites = await loadSitesFor(mod, strings, MAX_LOAD_SITES, XREF_SCAN_CHUNK_BYTES, yieldToEventLoop, status);
+    const functions = functionBoundsFor(mod);
+    const moduleEnd = mod.base.add(mod.size);
+    return calleesPerLabel(sites, (site) => {
+      const limit = functions.bounds(site)?.end ?? site.add(WRITER_DECODE_CAP_BYTES);
+      return firstCallTargetForward(site, limit, mod.base, moduleEnd, functions);
+    });
+  },
+  directCallees(fn, mod) {
+    const off = rvaOf(mod, fn, mod.size);
+    if (off === null)
+      return [];
+    return addressesInModule(mod, directCallTargets(functionWords(fn, mod).words, off)).filter((p) => isExecutable(p) && isFunctionStart(p, mod));
+  },
+  decodeWriter(fn, mod) {
+    const off = rvaOf(mod, fn, mod.size);
+    if (off === null)
+      return null;
+    const { words, readInFull } = functionWords(fn, mod);
+    return unreadableIfShort(decodeKeylogWriter(words, off, boundedModuleReader(mod)), readInFull);
+  },
+  hookAddress(fn) {
+    return fn;
+  }
+};
+
+// agent/shared/nss_keylog_backend_x64.ts
+init_node_globals();
+var LABEL_SITE_WINDOW_BYTES = 256;
+var CLIENT_RANDOM_ALIGN2 = 8;
+function x64DirectCallTargets(bytes, base) {
+  const end = base + bytes.length;
+  const targets2 = [];
+  for (const insn of sweepX64(bytes, base).insns) {
+    if (insn.target === null || !isX64DirectCall(insn) && !isX64DirectJmp(insn))
+      continue;
+    if (isX64DirectJmp(insn) && insn.target >= base && insn.target < end)
+      continue;
+    if (!targets2.includes(insn.target))
+      targets2.push(insn.target);
+  }
+  return targets2;
+}
+function x64FirstCallAfterSite(bytes, base, fnStart, fnEnd) {
+  const limit = Math.min(bytes.length, Math.max(0, fnEnd - base));
+  for (let off = 0; off < limit; ) {
+    const insn = decodeX64Insn(bytes, off, base, limit);
+    if (insn === null)
+      return null;
+    if (isX64DirectCall(insn))
+      return insn.target;
+    if (isX64DirectJmp(insn))
+      return insn.target < fnStart || insn.target >= fnEnd ? insn.target : null;
+    if (endsX64FallThrough(insn) || isX64Call(insn))
+      return null;
+    off += insn.length;
+  }
+  return null;
+}
+function trackSsCopies2(copies, insn) {
+  const move = x64RegMove(insn);
+  const createsCopy = move !== null && copies.has(move[1]);
+  for (const reg of x64RegsWritten(insn))
+    copies.delete(reg);
+  if (createsCopy)
+    copies.add(move[0]);
+}
+function ssDisplacements(insn, copies) {
+  const found = [];
+  const mem = insn.mem;
+  const onCopy = mem !== null && (mem.base !== null && copies.has(mem.base) || mem.index !== null && mem.scale === 1 && copies.has(mem.index));
+  if (onCopy && isPlausibleWriterClientRandomOffset(mem.disp, CLIENT_RANDOM_ALIGN2))
+    found.push(mem.disp);
+  const addImm = !insn.vex && insn.map === 0 && insn.rexW && insn.imm !== null && (insn.opcode === 129 && insn.mod === 3 && (insn.reg & 7) === 0 && copies.has(insn.rm) || insn.opcode === 5 && copies.has(X64.rax));
+  if (addImm && isPlausibleWriterClientRandomOffset(insn.imm, CLIENT_RANDOM_ALIGN2))
+    found.push(insn.imm);
+  return found;
+}
+function referencesHexTable(insn, readAt) {
+  if (insn.mem === null || insn.mem.base !== RIP)
+    return false;
+  return readsHexTable(readAt, insn.addr + insn.length + insn.mem.disp);
+}
+function decodeX64KeylogWriter(bytes, base, readAt) {
+  const sweep = sweepX64(bytes, base);
+  if (!sweep.complete)
+    return null;
+  let copies = /* @__PURE__ */ new Set([X64.rdi]);
+  let atBlockStart = new Set(copies);
+  const offsets2 = /* @__PURE__ */ new Set();
+  let hexTableSeen = false;
+  for (const insn of sweep.insns) {
+    if (referencesHexTable(insn, readAt))
+      hexTableSeen = true;
+    for (const off of ssDisplacements(insn, copies))
+      offsets2.add(off);
+    trackSsCopies2(copies, insn);
+    if (endsX64FallThrough(insn))
+      copies = new Set(atBlockStart);
+    if (isX64Branch(insn))
+      atBlockStart = new Set(copies);
+  }
+  return singleOffset(hexTableSeen, offsets2);
+}
+function functionBytes(fn, off, mod, read2) {
+  const length = functionByteLength(fn, functionBoundsFor(mod), WRITER_DECODE_CAP_BYTES);
+  const available = codeBytesAvailable(fn, mod, WRITER_DECODE_CAP_BYTES);
+  return available <= 0 ? null : read2(off, Math.min(length, available));
+}
+function isAcceptableCallee(p, mod) {
+  if (!isExecutable(p))
+    return false;
+  const table = ehFrameTableFor(mod);
+  return table === null || (table.bounds(p)?.start.equals(p) ?? false);
+}
+function labelSiteCallee(site, mod, functions) {
+  const siteOff = rvaOf(mod, site, mod.size);
+  if (siteOff === null)
+    return null;
+  const bounds = functions.bounds(site);
+  const end = bounds?.end ?? null;
+  const fnStart = bounds === null ? siteOff : siteOff - site.sub(bounds.start).toUInt32();
+  const fnEnd = siteOff + (end === null ? LABEL_SITE_WINDOW_BYTES : end.sub(site).toUInt32());
+  const length = Math.min(fnEnd - siteOff, LABEL_SITE_WINDOW_BYTES, mod.size - siteOff);
+  const bytes = boundedModuleReader(mod)(siteOff, length);
+  if (bytes === null)
+    return null;
+  const target = x64FirstCallAfterSite(bytes, siteOff, fnStart, fnEnd);
+  const callee = target === null ? [] : addressesInModule(mod, [target]);
+  return callee.length === 1 && isAcceptableCallee(callee[0], mod) ? callee[0] : null;
+}
+var x64NssLocatorBackend = {
+  name: "x64",
+  deviceVerified: false,
+  async labelCallees(mod, labels, status) {
+    const strings = await findLiteralOccurrences(mod, labels, XREF_SCAN_CHUNK_BYTES, yieldToEventLoop, status);
+    const sites = await loadSitesFor(mod, strings, MAX_LOAD_SITES, XREF_SCAN_CHUNK_BYTES, yieldToEventLoop, status);
+    const functions = functionBoundsFor(mod);
+    return calleesPerLabel(sites, (site) => labelSiteCallee(site, mod, functions));
+  },
+  directCallees(fn, mod) {
+    const off = rvaOf(mod, fn, mod.size);
+    const bytes = off === null ? null : functionBytes(fn, off, mod, boundedModuleReader(mod));
+    if (off === null || bytes === null)
+      return [];
+    return addressesInModule(mod, x64DirectCallTargets(bytes, off)).filter((p) => isAcceptableCallee(p, mod));
+  },
+  decodeWriter(fn, mod) {
+    const off = rvaOf(mod, fn, mod.size);
+    if (off === null)
+      return null;
+    const read2 = boundedModuleReader(mod);
+    const bytes = functionBytes(fn, off, mod, read2);
+    return bytes === null ? DECODE_UNREADABLE : decodeX64KeylogWriter(bytes, off, read2);
+  },
+  hookAddress(fn) {
+    return fn;
+  }
+};
+
+// agent/shared/nss_keylog_backend_arm.ts
+init_node_globals();
+
+// agent/shared/arm_xref.ts
+init_node_globals();
+var ALL_REGISTERS = 65535;
+var SP = 13;
+var LR = 14;
+var PC = 15;
+var CALL_CLOBBERED = 20495;
+var bit = (reg) => 1 << reg;
+function sext(value, bits) {
+  const shift = 32 - bits;
+  return value << shift >> shift;
+}
+function align4(value) {
+  return value - value % 4;
+}
+function thumbInsnSize(hw1) {
+  return hw1 >>> 11 >= 29 ? 4 : 2;
+}
+function readU16(bytes, at) {
+  return bytes[at] | bytes[at + 1] << 8;
+}
+function thumbInsnAt(bytes, base, at) {
+  if (at < 0 || at + 2 > bytes.length)
+    return null;
+  const hw1 = readU16(bytes, at);
+  const size = thumbInsnSize(hw1);
+  if (at + size > bytes.length)
+    return null;
+  return { address: base + at, hw1, hw2: size === 4 ? readU16(bytes, at + 2) : 0, size };
+}
+function decodeThumb(bytes, base, from2 = base, end = base + bytes.length) {
+  const insns = [];
+  for (let at = from2 - base; base + at < end; ) {
+    const insn = thumbInsnAt(bytes, base, at);
+    if (insn === null)
+      break;
+    insns.push(insn);
+    at += insn.size;
+  }
+  return insns;
+}
+function thumbExpandImm(imm12) {
+  const imm8 = imm12 & 255;
+  if (imm12 >>> 10 === 0) {
+    switch (imm12 >>> 8 & 3) {
+      case 0:
+        return imm8;
+      case 1:
+        return (imm8 << 16 | imm8) >>> 0;
+      case 2:
+        return (imm8 << 24 | imm8 << 8) >>> 0;
+      default:
+        return imm8 * 16843009 >>> 0;
+    }
+  }
+  const unrotated = 128 | imm12 & 127;
+  const rotation = imm12 >>> 7 & 31;
+  return (unrotated >>> rotation | unrotated << 32 - rotation) >>> 0;
+}
+function imm12Of(insn) {
+  return (insn.hw1 >>> 10 & 1) << 11 | (insn.hw2 >>> 12 & 7) << 8 | insn.hw2 & 255;
+}
+function isDataProcessingImm(insn) {
+  return insn.size === 4 && (insn.hw1 & 63488) === 61440 && (insn.hw2 & 32768) === 0;
+}
+function ldrLiteral(insn) {
+  const pc = align4(insn.address + 4);
+  if (insn.size === 2 && (insn.hw1 & 63488) === 18432) {
+    return { rt: insn.hw1 >>> 8 & 7, address: pc + (insn.hw1 & 255) * 4 };
+  }
+  if (insn.size === 4 && (insn.hw1 & 65407) === 63583) {
+    const imm = insn.hw2 & 4095;
+    return { rt: insn.hw2 >>> 12, address: (insn.hw1 & 128) !== 0 ? pc + imm : pc - imm };
+  }
+  return null;
+}
+function addPcRegister(insn) {
+  if (insn.size !== 2 || (insn.hw1 & 65400) !== 17528)
+    return null;
+  return (insn.hw1 >>> 7 & 1) << 3 | insn.hw1 & 7;
+}
+function moveWide(insn) {
+  if (!isDataProcessingImm(insn))
+    return null;
+  const masked = insn.hw1 & 64496;
+  if (masked !== 62016 && masked !== 62144)
+    return null;
+  const imm16 = (insn.hw1 & 15) << 12 | (insn.hw1 >>> 10 & 1) << 11 | (insn.hw2 >>> 12 & 7) << 8 | insn.hw2 & 255;
+  return { rd: insn.hw2 >>> 8 & 15, imm16, top: masked === 62144 };
+}
+function addImmediate(insn) {
+  if (!isDataProcessingImm(insn))
+    return null;
+  const rd = insn.hw2 >>> 8 & 15;
+  const rn = insn.hw1 & 15;
+  const setsFlags = (insn.hw1 & 16) !== 0;
+  if ((insn.hw1 & 64480) === 61696 && !(rd === PC && setsFlags))
+    return { rd, rn, imm: thumbExpandImm(imm12Of(insn)) };
+  if ((insn.hw1 & 64496) === 61952)
+    return { rd, rn, imm: imm12Of(insn) };
+  return null;
+}
+function registerMove(insn) {
+  const { hw1, hw2 } = insn;
+  if (insn.size === 2 && (hw1 & 65280) === 17920)
+    return { rd: (hw1 >>> 7 & 1) << 3 | hw1 & 7, rm: hw1 >>> 3 & 15 };
+  if (insn.size === 2 && (hw1 & 65472) === 0)
+    return { rd: hw1 & 7, rm: hw1 >>> 3 & 7 };
+  if (insn.size === 4 && (hw1 & 65519) === 59983 && (hw2 & 28912) === 0)
+    return { rd: hw2 >>> 8 & 15, rm: hw2 & 15 };
+  return null;
+}
+function branchImm25(hw1, hw2) {
+  const s = hw1 >>> 10 & 1;
+  const i1 = 1 ^ (hw2 >>> 13 & 1 ^ s);
+  const i2 = 1 ^ (hw2 >>> 11 & 1 ^ s);
+  const raw = s << 24 | i1 << 23 | i2 << 22 | (hw1 & 1023) << 12 | (hw2 & 2047) << 1;
+  return sext(raw, 25);
+}
+function branchImm21(hw1, hw2) {
+  const raw = (hw1 >>> 10 & 1) << 20 | (hw2 >>> 11 & 1) << 19 | (hw2 >>> 13 & 1) << 18 | (hw1 & 63) << 12 | (hw2 & 2047) << 1;
+  return sext(raw, 21);
+}
+function directBranch16(hw, pc) {
+  if ((hw & 61440) === 53248 && (hw >>> 8 & 15) < 14)
+    return { kind: "bcond", target: pc + sext(hw & 255, 8) * 2 };
+  if ((hw & 63488) === 57344)
+    return { kind: "b", target: pc + sext(hw & 2047, 11) * 2 };
+  if ((hw & 62720) === 45312)
+    return { kind: "cbz", target: pc + ((hw >>> 9 & 1) << 6 | (hw >>> 3 & 31) << 1) };
+  return null;
+}
+function directBranch(insn) {
+  const pc = insn.address + 4;
+  if (insn.size === 2)
+    return directBranch16(insn.hw1, pc);
+  const { hw1, hw2 } = insn;
+  if ((hw1 & 63488) !== 61440 || (hw2 & 32768) === 0)
+    return null;
+  switch (hw2 & 53248) {
+    case 53248:
+      return { kind: "bl", target: pc + branchImm25(hw1, hw2) };
+    case 36864:
+      return { kind: "b", target: pc + branchImm25(hw1, hw2) };
+    case 49152:
+      return (hw2 & 1) === 0 ? { kind: "blx", target: align4(pc) + branchImm25(hw1, hw2) } : null;
+    case 32768:
+      return (hw1 >>> 7 & 7) === 7 ? null : { kind: "bcond", target: pc + branchImm21(hw1, hw2) };
+    default:
+      return null;
+  }
+}
+function registerBranch(insn) {
+  if (insn.size !== 2 || (insn.hw1 & 65287) !== 18176)
+    return null;
+  return (insn.hw1 & 128) !== 0 ? "blx" : "bx";
+}
+function isCall(insn) {
+  const kind = directBranch(insn)?.kind;
+  return kind === "bl" || kind === "blx" || registerBranch(insn) === "blx";
+}
+function itBlockLength(insn) {
+  if (insn.size !== 2 || (insn.hw1 & 65280) !== 48896 || (insn.hw1 & 15) === 0)
+    return 0;
+  const mask = insn.hw1 & 15;
+  let trailingZeros = 0;
+  while ((mask >>> trailingZeros & 1) === 0)
+    trailingZeros++;
+  return 4 - trailingZeros;
+}
+function writes16Misc(hw) {
+  if ((hw & 65280) === 45056)
+    return bit(SP);
+  if ((hw & 62720) === 45312)
+    return 0;
+  if ((hw & 65280) === 45568 || (hw & 65280) === 47616)
+    return bit(hw & 7);
+  if ((hw & 65024) === 46080)
+    return bit(SP);
+  if ((hw & 65024) === 48128)
+    return hw & 255 | ((hw & 256) !== 0 ? bit(PC) : 0) | bit(SP);
+  if ((hw & 65280) === 48896 || (hw & 65280) === 48640 || (hw & 65504) === 46688)
+    return 0;
+  return ALL_REGISTERS;
+}
+function writes16DataOrSpecial(hw) {
+  if ((hw & 64512) === 16384) {
+    const op2 = hw >>> 6 & 15;
+    return op2 === 8 || op2 === 10 || op2 === 11 ? 0 : bit(hw & 7);
+  }
+  const op = hw >>> 8 & 3;
+  const rdn = (hw >>> 7 & 1) << 3 | hw & 7;
+  if (op === 1)
+    return 0;
+  if (op === 3)
+    return (hw & 128) !== 0 ? bit(LR) : 0;
+  return bit(rdn);
+}
+function writes16(hw) {
+  if ((hw & 63488) === 10240)
+    return 0;
+  if ((hw & 57344) === 8192)
+    return bit(hw >>> 8 & 7);
+  if ((hw & 57344) === 0)
+    return bit(hw & 7);
+  if ((hw & 63488) === 16384)
+    return writes16DataOrSpecial(hw);
+  if ((hw & 63488) === 18432)
+    return bit(hw >>> 8 & 7);
+  if ((hw & 61440) === 20480)
+    return (hw >>> 9 & 7) <= 2 ? 0 : bit(hw & 7);
+  if ((hw & 57344) === 24576 || (hw & 61440) === 32768)
+    return (hw & 2048) !== 0 ? bit(hw & 7) : 0;
+  if ((hw & 61440) === 36864)
+    return (hw & 2048) !== 0 ? bit(hw >>> 8 & 7) : 0;
+  if ((hw & 61440) === 40960)
+    return bit(hw >>> 8 & 7);
+  if ((hw & 61440) === 45056)
+    return writes16Misc(hw);
+  if ((hw & 61440) === 49152)
+    return bit(hw >>> 8 & 7) | ((hw & 2048) !== 0 ? hw & 255 : 0);
+  if ((hw & 65280) === 57088)
+    return bit(0);
+  if ((hw & 61440) === 53248 || (hw & 63488) === 57344)
+    return 0;
+  return ALL_REGISTERS;
+}
+function writesLoadStoreMultipleOrDual(hw1, hw2) {
+  const rn = hw1 & 15;
+  const writeback = (hw1 & 32) !== 0 ? bit(rn) : 0;
+  const load = (hw1 & 16) !== 0;
+  if ((hw1 & 65088) === 59392)
+    return writeback | (load ? hw2 : 0);
+  if ((hw1 & 65520) === 59600 && (hw2 & 65504) === 61440)
+    return 0;
+  if ((hw1 & 288) !== 0)
+    return writeback | (load ? bit(hw2 >>> 12) | bit(hw2 >>> 8 & 15) : 0);
+  return bit(hw2 >>> 12) | bit(hw2 >>> 8 & 15) | bit(hw2 & 15);
+}
+function writesCoprocessor(hw1, hw2) {
+  const load = (hw1 & 16) !== 0;
+  if ((hw1 & 61184) === 61184)
+    return 0;
+  if ((hw1 & 61184) === 60928) {
+    const rt = hw2 >>> 12;
+    return (hw2 & 16) !== 0 && load && rt !== PC ? bit(rt) : 0;
+  }
+  if ((hw1 & 61408) === 60480)
+    return load ? bit(hw2 >>> 12) | bit(hw1 & 15) : 0;
+  return (hw1 & 32) !== 0 ? bit(hw1 & 15) : 0;
+}
+function writesLoadStoreSingle(hw1, hw2) {
+  const rn = hw1 & 15;
+  if ((hw1 & 65296) === 63744)
+    return (hw2 & 15) !== PC ? bit(rn) : 0;
+  const writeback = (hw1 & 128) === 0 && rn !== PC && (hw2 & 2304) === 2304 ? bit(rn) : 0;
+  const load = (hw1 & 16) !== 0;
+  const rt = hw2 >>> 12;
+  const isHint = rt === PC && (hw1 >>> 5 & 3) !== 2;
+  return writeback | (load && !isHint ? bit(rt) : 0);
+}
+function writes32(hw1, hw2) {
+  const rd = hw2 >>> 8 & 15;
+  if ((hw1 & 65024) === 59392)
+    return writesLoadStoreMultipleOrDual(hw1, hw2);
+  if ((hw1 & 65024) === 59904)
+    return rd === PC && (hw1 & 16) !== 0 ? 0 : bit(rd);
+  if ((hw1 & 60416) === 60416)
+    return writesCoprocessor(hw1, hw2);
+  if ((hw1 & 63488) === 61440 && (hw2 & 32768) === 0) {
+    const isTest = (hw1 & 512) === 0 && rd === PC && (hw1 & 16) !== 0;
+    return isTest ? 0 : bit(rd);
+  }
+  if ((hw1 & 63488) === 61440) {
+    if ((hw2 & 49152) === 49152)
+      return bit(LR);
+    return (hw1 & 65504) === 62432 ? bit(rd) : 0;
+  }
+  if ((hw1 & 65024) === 63488 || (hw1 & 65296) === 63744)
+    return writesLoadStoreSingle(hw1, hw2);
+  if ((hw1 & 65280) === 64e3)
+    return bit(rd);
+  if ((hw1 & 65408) === 64256)
+    return bit(rd);
+  if ((hw1 & 65408) === 64384)
+    return bit(rd) | bit(hw2 >>> 12);
+  return ALL_REGISTERS;
+}
+function writtenRegisters(insn) {
+  return insn.size === 2 ? writes16(insn.hw1) : writes32(insn.hw1, insn.hw2);
+}
+function endsFallThrough2(insn) {
+  if (directBranch(insn)?.kind === "b" || registerBranch(insn) === "bx")
+    return true;
+  if (insn.size === 2 && (insn.hw1 & 65280) === 56832)
+    return true;
+  if (insn.size === 4 && (insn.hw1 & 65520) === 59600 && (insn.hw2 & 65504) === 61440)
+    return true;
+  return !isCall(insn) && (writtenRegisters(insn) & bit(PC)) !== 0;
+}
+function restoresLinkRegister(insn) {
+  return !isCall(insn) && (writtenRegisters(insn) & bit(LR)) !== 0;
+}
+function thumbFunctionEnd(bytes, base) {
+  const limit = base + bytes.length;
+  let furthestTarget = base;
+  let conditional = 0;
+  let previous = null;
+  for (const insn of decodeThumb(bytes, base)) {
+    const inIt = conditional > 0;
+    conditional = inIt ? conditional - 1 : itBlockLength(insn);
+    const branch = directBranch(insn);
+    const tailCall = branch?.kind === "b" && previous !== null && restoresLinkRegister(previous);
+    const intraFunction = branch !== null && branch.kind !== "bl" && branch.kind !== "blx" && !tailCall;
+    if (intraFunction && branch.target < limit)
+      furthestTarget = Math.max(furthestTarget, branch.target);
+    const next = insn.address + insn.size;
+    if (!inIt && endsFallThrough2(insn) && next > furthestTarget)
+      return next;
+    previous = insn;
+  }
+  return limit;
+}
+var PcRelativeTracker = class {
+  readU32;
+  pending = /* @__PURE__ */ new Map();
+  constructor(readU323) {
+    this.readU32 = readU323;
+  }
+  /** Feed one instruction; returns the absolute address an `add Rx, pc` materialises, else null. */
+  step(insn) {
+    const addPc = addPcRegister(insn);
+    if (addPc !== null) {
+      const value = this.pending.get(addPc);
+      this.pending.delete(addPc);
+      return value === void 0 ? null : value.value + insn.address + 4 >>> 0;
+    }
+    const wide = moveWide(insn);
+    const before = wide === null ? void 0 : this.pending.get(wide.rd);
+    this.forgetWritten(insn);
+    const literal = ldrLiteral(insn);
+    if (literal !== null) {
+      const word = this.readU32(literal.address);
+      if (word !== null)
+        this.pending.set(literal.rt, { value: word >>> 0, movwOnly: false });
+    }
+    if (wide !== null && !wide.top)
+      this.pending.set(wide.rd, { value: wide.imm16, movwOnly: true });
+    if (wide !== null && wide.top && before?.movwOnly) {
+      this.pending.set(wide.rd, { value: (wide.imm16 << 16 | before.value & 65535) >>> 0, movwOnly: false });
+    }
+    return null;
+  }
+  forgetWritten(insn) {
+    const written = writtenRegisters(insn) | (isCall(insn) ? CALL_CLOBBERED : 0);
+    for (const reg of [...this.pending.keys()])
+      if ((written & bit(reg)) !== 0)
+        this.pending.delete(reg);
+  }
+};
+var PCREL_WINDOW_HALFWORDS = 12;
+function opensMaterialisationOf(insn, reg) {
+  if (insn === null)
+    return false;
+  return ldrLiteral(insn)?.rt === reg || moveWide(insn)?.rd === reg;
+}
+function pcRelativeRefsAt(bytes, base, addPcAt, readU323, windowHalfwords = PCREL_WINDOW_HALFWORDS) {
+  const addPc = thumbInsnAt(bytes, base, addPcAt - base);
+  const reg = addPc === null ? null : addPcRegister(addPc);
+  if (reg === null)
+    return [];
+  const refs = [];
+  for (let k = 1; k <= windowHalfwords; k++) {
+    const start = addPcAt - 2 * k;
+    if (start < base || !opensMaterialisationOf(thumbInsnAt(bytes, base, start - base), reg))
+      continue;
+    const insns = decodeThumb(bytes, base, start, addPcAt + 2);
+    const last = insns[insns.length - 1];
+    if (last === void 0 || last.address !== addPcAt)
+      continue;
+    const tracker = new PcRelativeTracker(readU323);
+    let value = null;
+    for (const insn of insns)
+      value = tracker.step(insn);
+    if (value !== null && !refs.some((r) => r.value === value))
+      refs.push({ loadAt: start, addPcAt, value });
+  }
+  return refs;
+}
+function isAddPcAt(bytes, at) {
+  return at >= 0 && at + 2 <= bytes.length && (readU16(bytes, at) & 65400) === 17528;
+}
+function findPcRelativeRefs(bytes, base, targets2, readU323) {
+  const found = targets2.map(() => []);
+  for (let at = 0; at + 2 <= bytes.length; at += 2) {
+    if (!isAddPcAt(bytes, at))
+      continue;
+    for (const ref of pcRelativeRefsAt(bytes, base, base + at, readU323)) {
+      targets2.forEach((t, i) => {
+        if (t === ref.value)
+          found[i].push(ref);
+      });
+    }
+  }
+  return found;
+}
+var CALL_SEARCH_MAX_INSNS = 48;
+var CALL_SEARCH_MAX_HOPS = 4;
+function firstThumbCallTarget(bytes, base, from2) {
+  let at = from2;
+  let conditional = 0;
+  let lrRestored = false;
+  let hops = 0;
+  for (let n = 0; n < CALL_SEARCH_MAX_INSNS; n++) {
+    const insn = thumbInsnAt(bytes, base, at - base);
+    if (insn === null)
+      return null;
+    const inIt = conditional > 0;
+    conditional = inIt ? conditional - 1 : itBlockLength(insn);
+    const branch = directBranch(insn);
+    if (branch?.kind === "bl")
+      return branch.target;
+    if (branch?.kind === "blx" || registerBranch(insn) === "blx")
+      return null;
+    if (!inIt && branch?.kind === "b") {
+      if (lrRestored)
+        return branch.target;
+      if (++hops > CALL_SEARCH_MAX_HOPS)
+        return null;
+      at = branch.target;
+      continue;
+    }
+    if (!inIt && endsFallThrough2(insn))
+      return null;
+    if (restoresLinkRegister(insn))
+      lrRestored = true;
+    at += insn.size;
+  }
+  return null;
+}
+function thumbDirectCallTargets(bytes, base) {
+  const end = base + bytes.length;
+  const targets2 = [];
+  for (const insn of decodeThumb(bytes, base)) {
+    const branch = directBranch(insn);
+    if (branch === null || branch.kind !== "bl" && branch.kind !== "b")
+      continue;
+    if (branch.kind === "b" && branch.target >= base && branch.target < end)
+      continue;
+    if (!targets2.includes(branch.target))
+      targets2.push(branch.target);
+  }
+  return targets2;
+}
+
+// agent/shared/nss_keylog_backend_arm.ts
+var LABEL_CALL_WINDOW_BYTES = 192;
+var CLIENT_RANDOM_ALIGN3 = 4;
+var ARG02 = 0;
+function u32le2(b, i) {
+  return (b[i] | b[i + 1] << 8 | b[i + 2] << 16 | b[i + 3] << 24) >>> 0;
+}
+function wordReader(readAt) {
+  return (addr) => {
+    const b = readAt(addr, 4);
+    return b === null || b.length < 4 ? null : u32le2(b, 0);
+  };
+}
+function trackSsCopies3(copies, insn, conditional) {
+  const move = registerMove(insn);
+  const createsCopy = !conditional && move !== null && move.rd !== SP && move.rd !== PC && copies.has(move.rm);
+  const written = writtenRegisters(insn) | (isCall(insn) ? CALL_CLOBBERED : 0);
+  for (const reg of [...copies])
+    if ((written & 1 << reg) !== 0)
+      copies.delete(reg);
+  if (createsCopy)
+    copies.add(move.rd);
+}
+function isBlockBranch(insn) {
+  const kind = directBranch(insn)?.kind;
+  return kind === "b" || kind === "bcond" || kind === "cbz";
+}
+function thumbStart(base) {
+  return base - base % 2;
+}
+function decodeArmKeylogWriter(bytes, base, readAt) {
+  const start = thumbStart(base);
+  const end = thumbFunctionEnd(bytes, start);
+  let copies = /* @__PURE__ */ new Set([ARG02]);
+  let atBlockStart = new Set(copies);
+  const pcRelative = new PcRelativeTracker(wordReader(readAt));
+  const offsets2 = /* @__PURE__ */ new Set();
+  let hexTableSeen = false;
+  let conditional = 0;
+  for (const insn of decodeThumb(bytes, start, start, end)) {
+    const inIt = conditional > 0;
+    conditional = inIt ? conditional - 1 : itBlockLength(insn);
+    const literal = pcRelative.step(insn);
+    if (literal !== null && readsHexTable(readAt, literal))
+      hexTableSeen = true;
+    const add = addImmediate(insn);
+    if (add !== null && copies.has(add.rn) && isPlausibleWriterClientRandomOffset(add.imm, CLIENT_RANDOM_ALIGN3)) {
+      offsets2.add(add.imm);
+    }
+    trackSsCopies3(copies, insn, inIt);
+    const deadEnd = !inIt && endsFallThrough2(insn);
+    if (deadEnd)
+      copies = new Set(atBlockStart);
+    if (deadEnd || isBlockBranch(insn))
+      atBlockStart = new Set(copies);
+  }
+  return singleOffset(hexTableSeen, offsets2);
+}
+function armDirectCallTargets(bytes, base) {
+  const start = thumbStart(base);
+  return thumbDirectCallTargets(bytes.subarray(0, thumbFunctionEnd(bytes, start) - start), start);
+}
+function readUpTo(read2, offset, length) {
+  for (let n = length; n >= 64; n = Math.floor(n / 2)) {
+    const bytes = read2(offset, n);
+    if (bytes !== null)
+      return bytes;
+  }
+  return null;
+}
+function codeOffset(fn, mod) {
+  const off = rvaOf(mod, fn, mod.size);
+  return off === null ? null : off - off % 2;
+}
+function chunkWordReader(chunk, chunkOff, fallback) {
+  return (addr) => {
+    const i = addr - chunkOff;
+    return i >= 0 && i + 4 <= chunk.length ? u32le2(chunk, i) : fallback(addr);
+  };
+}
+async function findLabelRefs(mod, targetSets, status) {
+  const read2 = boundedModuleReader(mod);
+  const readU323 = wordReader(read2);
+  const refs = targetSets.map(() => []);
+  const targets2 = targetSets.flat();
+  if (targets2.length === 0)
+    return refs;
+  const backWindow = 2 * PCREL_WINDOW_HALFWORDS;
+  for (const range of mod.enumerateRanges("r-x")) {
+    const rangeOff = range.base.sub(mod.base).toUInt32();
+    for (let off = 0; off < range.size; off += XREF_SCAN_CHUNK_BYTES) {
+      if (_isShuttingDownNow())
+        throw new XrefScanAborted();
+      const own = Math.min(XREF_SCAN_CHUNK_BYTES, range.size - off);
+      const back = Math.min(backWindow, off);
+      const chunkOff = rangeOff + off - back;
+      const chunk = read2(chunkOff, back + own);
+      if (chunk === null) {
+        status.complete = false;
+      } else {
+        const found = findPcRelativeRefs(chunk, chunkOff, targets2, chunkWordReader(chunk, chunkOff, readU323));
+        collectOwnedRefs(found, chunkOff + back, chunkOff + back + own, targetSets, refs);
+      }
+      await yieldToEventLoop();
+    }
+  }
+  return refs;
+}
+function collectOwnedRefs(perTarget, ownFrom, ownTo, targetSets, refs) {
+  let k = 0;
+  targetSets.forEach((set, label) => set.forEach(() => {
+    for (const { addPcAt } of perTarget[k]) {
+      if (addPcAt < ownFrom || addPcAt >= ownTo)
+        continue;
+      if (refs[label].length < MAX_LOAD_SITES && !refs[label].includes(addPcAt))
+        refs[label].push(addPcAt);
+    }
+    k++;
+  }));
+}
+function toThumbCallee(mod, off) {
+  const [p] = addressesInModule(mod, [off]);
+  return p !== void 0 && isExecutable(p) ? p : null;
+}
+function functionBytes2(fn, mod) {
+  const off = codeOffset(fn, mod);
+  if (off === null)
+    return null;
+  const available = codeBytesAvailable(mod.base.add(off), mod, WRITER_DECODE_CAP_BYTES);
+  if (available <= 0)
+    return null;
+  const read2 = boundedModuleReader(mod);
+  const bytes = available < 64 ? read2(off, available) : readUpTo(read2, off, available);
+  return bytes === null ? null : { off, bytes, available };
+}
+var armNssLocatorBackend = {
+  name: "arm",
+  // Device-verified 2026-11-22 on a Pixel 5 (Android 14) with 32-bit Firefox 160.0.1:
+  // writer +0x1bb34d, client_random +0x428, keys matched ClientHellos and decrypted.
+  deviceVerified: true,
+  async labelCallees(mod, labels, status) {
+    const strings = await findLiteralOccurrences(mod, labels, XREF_SCAN_CHUNK_BYTES, yieldToEventLoop, status);
+    const targetSets = strings.map((copies) => copies.map((p) => p.sub(mod.base).toUInt32()));
+    const refs = await findLabelRefs(mod, targetSets, status);
+    const read2 = boundedModuleReader(mod);
+    return calleesPerLabel(refs, (addPcAt) => {
+      const window = readUpTo(read2, addPcAt, LABEL_CALL_WINDOW_BYTES);
+      const target = window === null ? null : firstThumbCallTarget(window, addPcAt, addPcAt);
+      return target === null ? null : toThumbCallee(mod, target);
+    });
+  },
+  directCallees(fn, mod) {
+    const body = functionBytes2(fn, mod);
+    if (body === null)
+      return [];
+    return armDirectCallTargets(body.bytes, body.off).map((target) => toThumbCallee(mod, target)).filter((p) => p !== null);
+  },
+  decodeWriter(fn, mod) {
+    const body = functionBytes2(fn, mod);
+    if (body === null)
+      return codeOffset(fn, mod) === null ? null : DECODE_UNREADABLE;
+    const decoded = decodeArmKeylogWriter(body.bytes, body.off, boundedModuleReader(mod));
+    return unreadableIfShort(decoded, body.bytes.length >= body.available);
+  },
+  hookAddress(fn) {
+    return fn.or(1);
+  }
+};
+
+// agent/shared/nss_keylog_locator.ts
+var NSS_DIRECT_WRITER_LABELS = ["CLIENT_RANDOM", "ECH_SECRET", "ECH_CONFIG"];
+var NSS_TLS13_LABELS = [
+  "CLIENT_EARLY_TRAFFIC_SECRET",
+  "CLIENT_HANDSHAKE_TRAFFIC_SECRET",
+  "SERVER_HANDSHAKE_TRAFFIC_SECRET",
+  "CLIENT_TRAFFIC_SECRET_0",
+  "SERVER_TRAFFIC_SECRET_0",
+  "EARLY_EXPORTER_SECRET",
+  "EXPORTER_SECRET"
+];
+var NSS_KEYLOG_LABELS = [...NSS_DIRECT_WRITER_LABELS, ...NSS_TLS13_LABELS];
+var LONGEST_LABEL = Math.max(...NSS_KEYLOG_LABELS.map((l) => l.length));
+function isKnownLabel(label) {
+  return label !== null && NSS_KEYLOG_LABELS.includes(label);
+}
+var LEARNED_NSS_KEYLOG_WRITER = "nss.keylog_writer";
+var LEARNED_NSS_KEYLOG_WRITER_MISS = learnedMissName(LEARNED_NSS_KEYLOG_WRITER);
+var NSS_KEYLOG_WRITER_MISS_FINGERPRINT = missFingerprint([...NSS_KEYLOG_LABELS, "revision", "1"]);
+var BACKENDS = /* @__PURE__ */ new Map([
+  ["arm64", arm64NssLocatorBackend],
+  // Static-only validation (Fenix 160.0.1 bytes); deviceVerified=false, logged as untested-abi.
+  ["x64", x64NssLocatorBackend],
+  ["arm", armNssLocatorBackend]
+]);
+function nssLocatorBackendFor(arch) {
+  return BACKENDS.get(arch) ?? null;
+}
+function pickKeylogWriter(candidates, decode, keyOf2 = String) {
+  const seen = /* @__PURE__ */ new Set();
+  let picked = null;
+  for (const candidate of candidates) {
+    const key = keyOf2(candidate);
+    if (seen.has(key))
+      continue;
+    seen.add(key);
+    const decoded = decode(candidate);
+    if (decoded === null)
+      continue;
+    if (picked !== null)
+      return null;
+    picked = { candidate, decoded };
+  }
+  return picked;
+}
+var SECITEM_MAX_LEN = 512;
+function isSecItemShape(dataReadable, len) {
+  return dataReadable && len !== null && len >= 1 && len <= SECITEM_MAX_LEN;
+}
+function parseNssVersion(text) {
+  const match = text === null ? null : /^(\d+)\.(\d+)/.exec(text.trim());
+  return match === null ? null : { major: Number(match[1]), minor: Number(match[2]) };
+}
+function writerTakesSecItem(version) {
+  return version.major > 3 || version.major === 3 && version.minor >= 115;
+}
+function secretSourceFor(version, secItemShaped) {
+  if (version === null)
+    return secItemShaped ? "secitem" : null;
+  if (writerTakesSecItem(version))
+    return secItemShaped ? "secitem" : null;
+  return secItemShaped ? null : "symkey";
+}
+var writerByMapping = /* @__PURE__ */ new Map();
+var lastClientRandomOff = null;
+function nssClientRandomOffset() {
+  return lastClientRandomOff;
+}
+function backendLabel(backend) {
+  if (backend === null)
+    return `backend none for ${Process.arch}`;
+  return `backend ${backend.name}, ${backend.deviceVerified ? "device-verified" : "untested-abi"}`;
+}
+function located(mod, backend, writer, decoded, source) {
+  lastClientRandomOff = decoded.clientRandomOff;
+  log(`[*] ${mod.name}: NSS keylog writer ${moduleOffsetLabel(mod, writer)} client_random +0x${decoded.clientRandomOff.toString(16)} (${backendLabel(backend)}, ${source})`);
+  return { writer, clientRandomOff: decoded.clientRandomOff, backend };
+}
+function missed(mod, backend, why) {
+  log(`[-] ${mod.name}: NSS keylog writer not located (${backendLabel(backend)}): ${why}`);
+  return null;
+}
+function uniquePointers(pointers) {
+  return pointers.filter((p, i) => pointers.findIndex((q) => q.equals(p)) === i);
+}
+function learnedWriterVerdict(cached, decode) {
+  if (cached === null)
+    return { kind: "none" };
+  const decoded = decode(cached);
+  if (isDecoded(decoded))
+    return { kind: "hit", cached, decoded };
+  return decoded === null ? { kind: "stale" } : { kind: "unreadable" };
+}
+function learnedWriter(mod, backend) {
+  const cached = learnedFunction(mod, LEARNED_NSS_KEYLOG_WRITER);
+  const verdict = learnedWriterVerdict(cached, (p) => backend.decodeWriter(p, mod));
+  if (verdict.kind === "hit")
+    return { fn: verdict.cached, decoded: verdict.decoded };
+  if (verdict.kind === "stale") {
+    rejectLearnedFunction(mod, LEARNED_NSS_KEYLOG_WRITER);
+    devlog(`[nss-keylog] ${mod.name}: learned writer @ ${cached} no longer decodes; scanning`);
+  } else if (verdict.kind === "unreadable") {
+    devlog(`[nss-keylog] ${mod.name}: learned writer @ ${cached} could not be read; scanning instead`);
+  }
+  return null;
+}
+async function scanLabelCallees(mod, backend, status) {
+  try {
+    return await backend.labelCallees(mod, [...NSS_KEYLOG_LABELS], status);
+  } catch (e) {
+    status.complete = false;
+    if (!(e instanceof XrefScanAborted))
+      devlog(`[nss-keylog] ${mod.name}: label scan failed: ${e}`);
+    return NSS_KEYLOG_LABELS.map(() => []);
+  }
+}
+function writerCandidates(mod, backend, callees) {
+  const direct = callees.slice(0, NSS_DIRECT_WRITER_LABELS.length).flat();
+  const all = [...direct];
+  for (const fn of direct) {
+    try {
+      all.push(...backend.directCallees(fn, mod));
+    } catch (_e) {
+    }
+  }
+  return uniquePointers(all);
+}
+function logTls13Diagnostic(mod, backend, callees, writer) {
+  const unique = uniquePointers(callees.slice(NSS_DIRECT_WRITER_LABELS.length).flat());
+  const confirming = unique.filter((w) => {
+    try {
+      return backend.directCallees(w, mod).some((c) => backend.hookAddress(c).equals(writer));
+    } catch (_e) {
+      return false;
+    }
+  });
+  devlog(`[nss-keylog] ${mod.name}: TLS 1.3 label callees ${unique.map((p) => moduleOffsetLabel(mod, p)).join(",") || "none"}; ${confirming.length} call the writer (diagnostic)`);
+}
+async function locateNssKeylogWriter(mod) {
+  if (!isElfImage(boundedModuleReader(mod)))
+    return missed(mod, null, "not an ELF module (tier 1 covers ELF only)");
+  const backend = nssLocatorBackendFor(Process.arch);
+  if (backend === null)
+    return missed(mod, null, "no locator backend for this architecture");
+  const learned = learnedWriter(mod, backend);
+  if (learned !== null)
+    return located(mod, backend, learned.fn, learned.decoded, "learned cache");
+  if (hasLearnedMiss(mod, LEARNED_NSS_KEYLOG_WRITER_MISS, NSS_KEYLOG_WRITER_MISS_FINGERPRINT)) {
+    return missed(mod, backend, "learned cache records no writer in this build");
+  }
+  const status = { complete: true };
+  const callees = await scanLabelCallees(mod, backend, status);
+  const candidates = writerCandidates(mod, backend, callees);
+  const picked = pickKeylogWriter(candidates, (fn) => {
+    try {
+      const decoded = backend.decodeWriter(fn, mod);
+      return isDecoded(decoded) ? decoded : null;
+    } catch (_e) {
+      return null;
+    }
+  }, (p) => p.toString());
+  if (picked === null) {
+    reportLearnedMisses(mod, { [LEARNED_NSS_KEYLOG_WRITER_MISS]: NSS_KEYLOG_WRITER_MISS_FINGERPRINT }, status);
+    return missed(mod, backend, `${candidates.length} candidate(s), none or several decode`);
+  }
+  const writer = backend.hookAddress(picked.candidate);
+  reportLearned(mod, { functions: { [LEARNED_NSS_KEYLOG_WRITER]: writer } });
+  logTls13Diagnostic(mod, backend, callees, writer);
+  return located(mod, backend, writer, picked.decoded, "scan");
+}
+function locateNssKeylogWriterCached(mod) {
+  return memoizePerMapping(writerByMapping, mod, () => locateNssKeylogWriter(mod));
+}
+var LABEL_MISMATCH_LIMIT = 4;
+var CLIENT_RANDOM_LEN = 32;
+var SEC_SUCCESS = 0;
+var MAX_DEDUPE_LINES = 4096;
+var LABEL_READ_BYTES = LONGEST_LABEL + 1;
+function loadedNss3Modules() {
+  try {
+    return Process.enumerateModules().filter((m2) => m2.name.startsWith("libnss3"));
+  } catch (_e) {
+    return [];
+  }
+}
+function defaultFindExport(mod) {
+  return (name) => {
+    for (const m2 of [mod, ...loadedNss3Modules()]) {
+      try {
+        const p = m2.findExportByName(name);
+        if (p !== null && !p.isNull())
+          return p;
+      } catch (_e) {
+      }
+    }
+    return null;
+  };
+}
+function defaultNssVersion(findExport) {
+  return () => {
+    for (const name of ["NSSSSL_GetVersion", "NSS_GetVersion"]) {
+      const fn = findExport(name);
+      if (fn === null)
+        continue;
+      try {
+        const text = new NativeFunction(fn, "pointer", [])();
+        if (!text.isNull())
+          return text.readCString();
+      } catch (_e) {
+      }
+    }
+    return null;
+  };
+}
+function readLabel(p) {
+  const readable = readableByteCount(p, LABEL_READ_BYTES);
+  if (readable === 0)
+    return null;
+  let bytes;
+  try {
+    bytes = new Uint8Array(p.readByteArray(readable));
+  } catch (_e) {
+    return null;
+  }
+  const nul = bytes.indexOf(0);
+  return nul < 0 ? null : String.fromCharCode(...bytes.subarray(0, nul));
+}
+function readSecItem(item) {
+  if (item.isNull())
+    return null;
+  const data = safeReadPointer(item.add(Process.pointerSize));
+  const len = safeReadU32(item.add(2 * Process.pointerSize));
+  const dataReadable = data !== null && !data.isNull() && len !== null && isReadable(data, len);
+  if (!isSecItemShape(dataReadable, len))
+    return null;
+  try {
+    return data.readByteArray(len);
+  } catch (_e) {
+    return null;
+  }
+}
+function isAllZero(bytes) {
+  return new Uint8Array(bytes).every((b) => b === 0);
+}
+var NssKeylogHookState = class {
+  mod;
+  writer;
+  version;
+  findExport;
+  labelCheck = new LabelSelfCheck(isKnownLabel, LABEL_MISMATCH_LIMIT);
+  lines = new FifoSet(MAX_DEDUPE_LINES);
+  /** undefined: not looked up yet; null: the exports are missing (remembered, not re-enumerated per call). */
+  pk11 = void 0;
+  constructor(mod, writer, version, findExport) {
+    this.mod = mod;
+    this.writer = writer;
+    this.version = version;
+    this.findExport = findExport;
+  }
+  /** PK11_ExtractKeyValue + PK11_GetKeyData, what pre-3.115 ssl3_RecordKeyLog itself calls. */
+  readSymKey(key) {
+    if (this.pk11 === void 0)
+      this.pk11 = this.bindPk11();
+    if (this.pk11 === null || this.pk11.extract(key) !== SEC_SUCCESS)
+      return null;
+    return readSecItem(this.pk11.getData(key));
+  }
+  bindPk11() {
+    const extract = this.findExport("PK11_ExtractKeyValue");
+    const getData = this.findExport("PK11_GetKeyData");
+    if (extract === null || getData === null)
+      return null;
+    return {
+      extract: new NativeFunction(extract, "int", ["pointer"]),
+      getData: new NativeFunction(getData, "pointer", ["pointer"])
+    };
+  }
+  emit(line) {
+    if (this.lines.has(line))
+      return;
+    this.lines.add(line);
+    sendKeylog(line, null, this.mod.name);
+  }
+};
+function readSecret(state3, arg) {
+  const asSecItem = readSecItem(arg);
+  const source = secretSourceFor(state3.version, asSecItem !== null);
+  if (source === "secitem")
+    return asSecItem;
+  if (source === "symkey")
+    return state3.readSymKey(arg);
+  return null;
+}
+function readClientRandom2(ss, offset) {
+  const at = ss.add(offset);
+  if (!isReadable(at, CLIENT_RANDOM_LEN))
+    return null;
+  try {
+    return at.readByteArray(CLIENT_RANDOM_LEN);
+  } catch (_e) {
+    return null;
+  }
+}
+function onWriterCall(state3, ss, labelPtr, secretArg) {
+  resetReadableCache();
+  const label = readLabel(labelPtr);
+  const verdict = state3.labelCheck.observe(label);
+  if (verdict !== "emit")
+    return verdict === "skip";
+  const secret = readSecret(state3, secretArg);
+  const clientRandom = readClientRandom2(ss, state3.writer.clientRandomOff);
+  if (secret === null || clientRandom === null || isAllZero(clientRandom))
+    return true;
+  state3.emit(`${label} ${toHexString(clientRandom)} ${toHexString(secret)}`);
+  return true;
+}
+var installedByMapping = /* @__PURE__ */ new Map();
+function attachWriterHook(mod, writer, deps) {
+  const findExport = deps.findExport ?? defaultFindExport(mod);
+  const versionText = (deps.nssVersion ?? defaultNssVersion(findExport))();
+  const state3 = new NssKeylogHookState(mod, writer, parseNssVersion(versionText), findExport);
+  let listener = null;
+  try {
+    listener = Interceptor.attach(writer.writer, {
+      onEnter(args) {
+        try {
+          if (onWriterCall(state3, args[0], args[1], args[2]) || listener === null)
+            return;
+          listener.detach();
+          listener = null;
+          rejectLearnedFunction(mod, LEARNED_NSS_KEYLOG_WRITER);
+          log(`[-] ${mod.name}: NSS keylog writer hook saw ${LABEL_MISMATCH_LIMIT} unknown labels in a row; removed`);
+        } catch (e) {
+          devlog(`[nss-keylog] ${mod.name}: writer hook error: ${e}`);
+        }
+      }
+    });
+  } catch (e) {
+    log(`[-] ${mod.name}: could not hook the NSS keylog writer at ${writer.writer}: ${e}`);
+    return false;
+  }
+  devlog_debug(`[nss-keylog] ${mod.name}: writer hook installed (NSS ${versionText ?? "version unknown"})`);
+  return true;
+}
+function installNssKeylogHook(mod, deps = {}) {
+  return memoizePerMapping(installedByMapping, mod, async () => {
+    const writer = await locateNssKeylogWriterCached(mod);
+    return writer !== null && attachWriterHook(mod, writer, deps);
+  });
+}
+
+// agent/shared/detach_teardown.ts
+init_node_globals();
+
+// agent/shared/hook_registry.ts
+init_node_globals();
+var UNLABELLED = "unlabelled";
+function invokeIsolated(_label, fn) {
+  try {
+    fn();
+  } catch (_e) {
+  }
+}
+function makeHookRegistry(options) {
+  let hooks = [];
+  return {
+    register(fn, label = UNLABELLED) {
+      hooks.push({ label, fn });
+    },
+    run(invoke = invokeIsolated) {
+      const pending = hooks;
+      hooks = [];
+      if (options.reverse)
+        pending.reverse();
+      for (const hook of pending) {
+        try {
+          invoke(hook.label, hook.fn);
+        } catch (_e) {
+        }
+      }
+    }
+  };
+}
+
+// agent/shared/detach_teardown.ts
+var teardowns = makeHookRegistry({ reverse: true });
+function registerDetachTeardown(label, fn) {
+  teardowns.register(fn, label);
+}
+function runDetachTeardowns(report = new DetachReportBuilder()) {
+  teardowns.run((label, fn) => report.step(`teardown:${label}`, fn));
+}
+function revertJavaOverloads(bridge, overloads, label) {
+  if (overloads.length === 0)
+    return;
+  try {
+    if (!bridge || !bridge.available)
+      return;
+    bridge.perform(() => {
+      for (const overload of overloads) {
+        try {
+          overload.implementation = null;
+        } catch (e) {
+          devlog(`[${label}] revert failed: ${e}`);
+        }
+      }
+    });
+  } catch (e) {
+    devlog(`[${label}] Java-hook teardown skipped: ${e}`);
+  }
+}
+
+// agent/shared/nss_client_random_learner.ts
+init_node_globals();
+
+// agent/shared/nss_tracked_sockets.ts
+init_node_globals();
+var CLIENT_RANDOM_LENGTH = 32;
+var ATTRIBUTION_WINDOW = 16384;
+var MAX_TRACKED_SOCKETS = 4096;
+var HEX_RANDOM_RE = /^[0-9a-f]{64}$/;
+var ALL_ZERO_RE = /^0+$/;
+var ATTRIBUTION_WINDOW_BIG = BigInt(ATTRIBUTION_WINDOW);
+var CLIENT_RANDOM_LENGTH_BIG = BigInt(CLIENT_RANDOM_LENGTH);
+var NssTrackedSockets = class {
+  // Insertion order is eviction order: reads use peek()/has(), which never promote.
+  records;
+  constructor(maxSockets = MAX_TRACKED_SOCKETS) {
+    this.records = new LruMap(maxSockets);
+  }
+  get size() {
+    return this.records.size;
+  }
+  /** A new sslSocket from SSL_ImportFD; a record left at a reused address is reset. */
+  track(ss) {
+    this.records.set(ss, { learnerRandoms: /* @__PURE__ */ new Map(), echRandoms: /* @__PURE__ */ new Map() });
+  }
+  forget(ss) {
+    this.records.delete(ss);
+  }
+  clear() {
+    this.records.clear();
+  }
+  record(ss) {
+    return this.records.peek(ss);
+  }
+  /** Every record, oldest first. */
+  allRecords() {
+    return this.records.entries().map(([, record]) => record);
+  }
+  /**
+   * Attribute a generation into `data`: O(1) when the client_random offset is known,
+   * else the nearest-socket scan. Null when no socket is in reach or it is misaligned.
+   */
+  locate(data, knownOffset = null) {
+    const ss = knownOffset === null ? this.nearest(data) : this.atKnownOffset(data, knownOffset);
+    if (ss === null)
+      return null;
+    const offset = Number(data - ss);
+    return offset % 4 === 0 ? { ss, offset } : null;
+  }
+  /** The nearest tracked sslSocket at or below `data` within the window, or null. */
+  nearest(data) {
+    let best = null;
+    for (const [ss] of this.records.entries()) {
+      if (ss <= data && (best === null || ss > best))
+        best = ss;
+    }
+    if (best === null || data - best >= ATTRIBUTION_WINDOW_BIG)
+      return null;
+    return best;
+  }
+  /** The tracked socket `data` is the client_random (data-off) or inner random (data-off-32) of. */
+  atKnownOffset(data, offset) {
+    const clientRandomOwner = data - BigInt(offset);
+    if (this.records.has(clientRandomOwner))
+      return clientRandomOwner;
+    const innerRandomOwner = clientRandomOwner - CLIENT_RANDOM_LENGTH_BIG;
+    return this.records.has(innerRandomOwner) ? innerRandomOwner : null;
+  }
+};
+
+// agent/shared/nss_client_random_learner.ts
+var LEARNED_NSS_CLIENT_RANDOM_OFF = "nss.client_random_off";
+var ACCEPTANCE_QUORUM = 3;
+var MAX_RANDOMS_PER_OFFSET = 4;
+function isPlausibleClientRandomOffset(offset) {
+  return typeof offset === "number" && Number.isInteger(offset) && offset > 0 && offset < ATTRIBUTION_WINDOW && offset % 4 === 0;
+}
+var NssClientRandomLearner = class {
+  events;
+  quorum;
+  sockets;
+  /** sslSocket address -> offset it validated at (distinct addresses vote once). */
+  votes = /* @__PURE__ */ new Map();
+  votedOffsets = /* @__PURE__ */ new Set();
+  accepted = null;
+  disagreement = false;
+  mismatches = 0;
+  constructor(events = {}, quorum = ACCEPTANCE_QUORUM, sockets = new NssTrackedSockets()) {
+    this.events = events;
+    this.quorum = quorum;
+    this.sockets = sockets;
+  }
+  get acceptedOffset() {
+    return this.accepted;
+  }
+  get disagreed() {
+    return this.disagreement;
+  }
+  /** True once the learner has nothing left to learn (accepted, or failed closed). */
+  get settled() {
+    return this.accepted !== null || this.disagreement;
+  }
+  get trackedSockets() {
+    return this.sockets.size;
+  }
+  /** A new sslSocket from SSL_ImportFD; a record left at a reused address is reset. */
+  trackSocket(ss) {
+    this.sockets.track(ss);
+  }
+  forgetSocket(ss) {
+    this.sockets.forget(ss);
+  }
+  /**
+   * Record a 32-byte generation into `data`. Returns the socket and offset it was
+   * attributed to, or null (no socket in reach, misaligned, or bytes follow it).
+   */
+  attribute(data, generatedHex, followingZero) {
+    if (this.settled)
+      return null;
+    const hit = this.sockets.locate(data);
+    return hit === null ? null : this.attributeAt(hit, generatedHex, followingZero);
+  }
+  /** As attribute(), for a generation the shared store already attributed. */
+  attributeAt(hit, generatedHex, followingZero) {
+    if (this.settled || !followingZero || !HEX_RANDOM_RE.test(generatedHex))
+      return null;
+    const randoms = this.sockets.record(hit.ss)?.learnerRandoms;
+    if (randoms === void 0)
+      return null;
+    const atOffset = randoms.get(hit.offset) ?? [];
+    if (atOffset.length < MAX_RANDOMS_PER_OFFSET)
+      atOffset.push(generatedHex);
+    randoms.set(hit.offset, atOffset);
+    return { ss: hit.ss, offset: hit.offset };
+  }
+  /** Offset this socket already validated at, or null (undecided, invalid, or failed closed). */
+  validatedOffset(ss) {
+    if (this.disagreement)
+      return null;
+    const verdict = this.sockets.record(ss)?.verdict;
+    return typeof verdict === "number" ? verdict : null;
+  }
+  /**
+   * Validate a socket at its secret callback (sticky once decided). Returns the offset
+   * to read its client_random at, or null: untracked, nothing attributed, not yet
+   * written, mismatch, or the learner failed closed.
+   */
+  validateSocket(ss, read2) {
+    if (this.disagreement)
+      return null;
+    const record = this.sockets.record(ss);
+    if (record === void 0)
+      return null;
+    if (record.verdict !== void 0)
+      return record.verdict === "invalid" ? null : record.verdict;
+    const randoms = record.learnerRandoms;
+    if (randoms.size === 0)
+      return null;
+    const candidate = Math.min(...randoms.keys());
+    const live = read2(candidate);
+    if (live === null || ALL_ZERO_RE.test(live))
+      return null;
+    const recorded = [...randoms.get(candidate) ?? [], ...randoms.get(candidate + CLIENT_RANDOM_LENGTH) ?? []];
+    if (!recorded.includes(live.toLowerCase())) {
+      record.verdict = "invalid";
+      this.mismatches++;
+      return null;
+    }
+    record.verdict = candidate;
+    this.vote(ss, candidate);
+    return this.disagreement ? null : candidate;
+  }
+  vote(ss, offset) {
+    if (this.settled)
+      return;
+    this.votes.set(ss, offset);
+    this.votedOffsets.add(offset);
+    if (this.votedOffsets.size > 1) {
+      this.disagreement = true;
+      this.events.onDisagreement?.([...this.votedOffsets].sort((a, b) => a - b));
+      return;
+    }
+    if (this.votes.size >= this.quorum) {
+      this.accepted = offset;
+      this.events.onAccepted?.(offset, this.votes.size);
+    }
+  }
+};
+function addressOf(p) {
+  return BigInt(untag(p).toString());
+}
+function readClientRandomHex2(at) {
+  try {
+    if (!isReadable(at, CLIENT_RANDOM_LENGTH))
+      return null;
+    const bytes = at.readByteArray(CLIENT_RANDOM_LENGTH);
+    return bytes === null ? null : toHexString(bytes);
+  } catch (_e) {
+    return null;
+  }
+}
+function attachGeneratedRandomObserver(generateRandom, onGenerated) {
+  return Interceptor.attach(generateRandom, {
+    onEnter(args) {
+      this.data = args[1].toInt32() === CLIENT_RANDOM_LENGTH ? copyPointer(args[0]) : null;
+    },
+    onLeave(retval) {
+      if (!this.data || retval.toInt32() !== 0)
+        return;
+      try {
+        onGenerated(this.data);
+      } catch (_e) {
+      }
+    }
+  });
+}
+
+// agent/shared/nss_ech_random_recorder.ts
+init_node_globals();
+var MAX_ECH_OFFSETS_PER_SOCKET = 8;
+var NssEchRandomRecorder = class {
+  sockets;
+  constructor(sockets = new NssTrackedSockets()) {
+    this.sockets = sockets;
+  }
+  get trackedSockets() {
+    return this.sockets.size;
+  }
+  /** A new sslSocket from SSL_ImportFD; a record left at a reused address is reset. */
+  trackSocket(ss) {
+    this.sockets.track(ss);
+  }
+  forgetSocket(ss) {
+    this.sockets.forget(ss);
+  }
+  /** Drop every recorded random (the tracked sockets stay: the learner may still need them). */
+  clear() {
+    for (const record of this.sockets.allRecords())
+      record.echRandoms.clear();
+  }
+  /**
+   * Record a 32-byte generation into `data` (first random per offset wins, so a
+   * HelloRetryRequest or a later RNG call at the same field changes nothing).
+   * Returns the socket and offset it was attributed to, or null.
+   */
+  record(data, generatedHex) {
+    const hit = this.sockets.locate(data);
+    return hit === null ? null : this.recordAt(hit, generatedHex);
+  }
+  /** As record(), for a generation the shared store already attributed. All-zero bytes are not a random. */
+  recordAt(hit, generatedHex) {
+    if (!HEX_RANDOM_RE.test(generatedHex) || ALL_ZERO_RE.test(generatedHex))
+      return null;
+    const randoms = this.sockets.record(hit.ss)?.echRandoms;
+    if (randoms === void 0)
+      return null;
+    const attribution = { ss: hit.ss, offset: hit.offset };
+    if (randoms.has(hit.offset))
+      return attribution;
+    if (randoms.size >= MAX_ECH_OFFSETS_PER_SOCKET)
+      return null;
+    randoms.set(hit.offset, generatedHex);
+    return attribution;
+  }
+  /**
+   * The client_randoms to key one secret line of `ss` with, given the client_random
+   * offset and the live bytes read there: [inner, outer] when ECH was accepted (live
+   * equals the inner random recorded at offset+32, and a different outer random was
+   * recorded at offset), else [live]. Never contains duplicates.
+   */
+  keylogRandoms(ss, offset, liveHex) {
+    const live = liveHex.toLowerCase();
+    const randoms = this.sockets.record(ss)?.echRandoms;
+    if (randoms === void 0)
+      return [live];
+    const outer = randoms.get(offset);
+    const inner = randoms.get(offset + CLIENT_RANDOM_LENGTH);
+    if (outer === void 0 || inner === void 0 || live !== inner || outer === inner)
+      return [live];
+    return [inner, outer];
+  }
+};
+
 // agent/tls/libs/nss.ts
+var NSS_MODULE_NAME = /^(lib)?(nss3|ssl3)/i;
 var { readU32: readU322, readU64, readPointer: readPointer2, writeU32: writeU322, writeU64, writePointer: writePointer2 } = NativePointer.prototype;
 var SECStatus;
-(function(SECStatus3) {
-  SECStatus3[SECStatus3["SECWouldBlock"] = -2] = "SECWouldBlock";
-  SECStatus3[SECStatus3["SECFailure"] = -1] = "SECFailure";
-  SECStatus3[SECStatus3["SECSuccess"] = 0] = "SECSuccess";
+(function(SECStatus2) {
+  SECStatus2[SECStatus2["SECWouldBlock"] = -2] = "SECWouldBlock";
+  SECStatus2[SECStatus2["SECFailure"] = -1] = "SECFailure";
+  SECStatus2[SECStatus2["SECSuccess"] = 0] = "SECSuccess";
 })(SECStatus || (SECStatus = {}));
 var PRDescType;
-(function(PRDescType3) {
-  PRDescType3[PRDescType3["PR_DESC_FILE"] = 1] = "PR_DESC_FILE";
-  PRDescType3[PRDescType3["PR_DESC_SOCKET_TCP"] = 2] = "PR_DESC_SOCKET_TCP";
-  PRDescType3[PRDescType3["PR_DESC_SOCKET_UDP"] = 3] = "PR_DESC_SOCKET_UDP";
-  PRDescType3[PRDescType3["PR_DESC_LAYERED"] = 4] = "PR_DESC_LAYERED";
-  PRDescType3[PRDescType3["PR_DESC_PIPE"] = 5] = "PR_DESC_PIPE";
+(function(PRDescType2) {
+  PRDescType2[PRDescType2["PR_DESC_FILE"] = 1] = "PR_DESC_FILE";
+  PRDescType2[PRDescType2["PR_DESC_SOCKET_TCP"] = 2] = "PR_DESC_SOCKET_TCP";
+  PRDescType2[PRDescType2["PR_DESC_SOCKET_UDP"] = 3] = "PR_DESC_SOCKET_UDP";
+  PRDescType2[PRDescType2["PR_DESC_LAYERED"] = 4] = "PR_DESC_LAYERED";
+  PRDescType2[PRDescType2["PR_DESC_PIPE"] = 5] = "PR_DESC_PIPE";
 })(PRDescType || (PRDescType = {}));
 var NSS = class _NSS {
   moduleName;
@@ -26016,6 +30183,7 @@ var NSS = class _NSS {
     }
     _NSS.getsockname = new NativeFunction(this.addresses[this.moduleName]["PR_GetSockName"], "int", ["pointer", "pointer"]);
     _NSS.getpeername = new NativeFunction(this.addresses[this.moduleName]["PR_GetPeerName"], "int", ["pointer", "pointer"]);
+    _NSS.bindNativeHelpers(this.addresses[this.moduleName]);
   }
   // SSL_SecretCallback support (resolved via SSL_GetExperimentalAPI)
   static SSL_SecretCallback_fn = null;
@@ -26023,30 +30191,142 @@ var NSS = class _NSS {
   // Cached NSPR/libc wrappers for getPortsAndAddressesFromNSS (built once, reused per packet).
   static _cachedSocketFns = null;
   static secretCallbackReentryGuard = false;
-  static originalSecretCallbacks = {};
+  /** The app's own secret callback per sslSocket (key: sslSocket address), called through by secret_callback. */
+  static originalSecretCallbacks = /* @__PURE__ */ new Map();
+  /** sslSocket address -> PRFileDesc of every live socket on which friTap's secret_callback is registered. */
+  static ownedSecretCallbackFds = /* @__PURE__ */ new Map();
+  /** App SSLHandshakeCallback addresses already hooked (dedupe before Interceptor.attach). */
+  static hookedAppHandshakeCallbacks = /* @__PURE__ */ new Set();
   // Version-dependent ssl3 offset
   static SSL3_STATE_OFFSET = 1432;
-  static get_NSS_version() {
-    var getNSSversion = null;
-    var version_string = "0";
-    if (!Java.available) {
-      getNSSversion = new NativeFunction(Module.getGlobalExportByName("NSSSSL_GetVersion"), "pointer", []);
-    } else {
-      getNSSversion = new NativeFunction(Process.getModuleByName("libnss3.so").getExportByName("NSSSSL_GetVersion"), "pointer", []);
+  /** Tier-3 offset table is verified only below this version (major*1000+minor, exclusive). */
+  static TABLE_VERIFIED_BELOW = 3115;
+  /** Modules searched for NSS exports, in order (set by setExportScope). Never a global dlsym:
+   *  Gecko loads libnss3 RTLD_LOCAL, so dlsym(RTLD_DEFAULT) cannot see it (C1). */
+  static exportScope = [];
+  static cachedVersion = null;
+  static tableDisabledLogged = false;
+  /** Set the modules used for module-scoped export lookup (duplicates and nulls dropped). */
+  static setExportScope(modules) {
+    const seen = /* @__PURE__ */ new Set();
+    _NSS.exportScope = [];
+    for (const m2 of modules) {
+      if (!m2 || seen.has(m2.base.toString()))
+        continue;
+      seen.add(m2.base.toString());
+      _NSS.exportScope.push(m2);
     }
-    if (!getNSSversion.isNull()) {
-      var ptr_version_string = getNSSversion();
-      if (!ptr_version_string.isNull()) {
-        version_string = ptr_version_string.readCString();
+    _NSS.cachedVersion = null;
+  }
+  /** Module-scoped export lookup: the export scope, then any loaded libnss3* / libssl3*. */
+  static findNssExport(name) {
+    return _NSS.findExportIn([..._NSS.exportScope, ..._NSS.loadedModulesMatching(NSS_MODULE_NAME)], name);
+  }
+  /**
+   * findNssExport over ONE loaded-module snapshot: the module list is enumerated lazily, on
+   * the first name the export scope does not resolve, and reused for every later lookup.
+   * For a burst of lookups (one install) instead of an enumeration per name.
+   */
+  static nssExportFinder() {
+    let loaded = null;
+    return (name) => {
+      const inScope = _NSS.findExportIn(_NSS.exportScope, name);
+      if (inScope !== null)
+        return inScope;
+      if (loaded === null)
+        loaded = _NSS.loadedModulesMatching(NSS_MODULE_NAME);
+      return _NSS.findExportIn(loaded, name);
+    };
+  }
+  /**
+   * NSPR export lookup: the export scope, then any loaded NSPR (libnspr4.so, nspr4.dll,
+   * libnspr4.dll, libnspr4.dylib) or folded NSS (libnss3.*, nss3.dll). Never a global dlsym.
+   */
+  static findNsprExport(name) {
+    return _NSS.findExportIn([..._NSS.exportScope, ..._NSS.loadedModulesMatching(/^(lib)?(nspr4|nss3)\./i)], name);
+  }
+  static findExportIn(modules, name) {
+    for (const m2 of modules) {
+      try {
+        const p = m2.findExportByName(name);
+        if (p !== null && !p.isNull())
+          return p;
+      } catch (_e) {
+      }
+    }
+    return null;
+  }
+  static loadedModulesMatching(namePattern) {
+    try {
+      return Process.enumerateModules().filter((m2) => namePattern.test(m2.name));
+    } catch (_e) {
+      return [];
+    }
+  }
+  /** NSS version as major*1000+minor (3.132 -> 3132), 0 when unknown. Resolved from the detected module. */
+  static get_NSS_version() {
+    if (_NSS.cachedVersion !== null)
+      return _NSS.cachedVersion;
+    var version_string = "0";
+    for (const name of ["NSSSSL_GetVersion", "NSS_GetVersion"]) {
+      const fnAddr = _NSS.findNssExport(name);
+      if (fnAddr === null)
+        continue;
+      try {
+        const text = new NativeFunction(fnAddr, "pointer", [])();
+        if (!text.isNull()) {
+          version_string = text.readCString() ?? "0";
+          break;
+        }
+      } catch (e) {
+        devlog(`NSS: ${name} failed: ${e}`);
       }
     }
     var match = version_string.match(/^(\d+)\.(\d+)/);
-    if (!match) {
-      return 0;
+    var version = match ? parseInt(match[1], 10) * 1e3 + parseInt(match[2], 10) : 0;
+    if (version > 0)
+      _NSS.cachedVersion = version;
+    return version;
+  }
+  /** Human-readable form of a get_NSS_version() value. */
+  static formatNssVersion(version) {
+    return version > 0 ? `${Math.floor(version / 1e3)}.${version % 1e3}` : "unknown";
+  }
+  /**
+   * True iff the sslSocket/ssl3 offset table may be read (tier 3): only for NSS
+   * versions inside the verified range. Logs once when the layout is unverified.
+   */
+  static structReadsAllowed() {
+    const abiProblem = _NSS.tableAbiMismatch();
+    if (abiProblem !== null) {
+      _NSS.logTableDisabledOnce(`[!] NSS offset table is verified for LP64 Unix only (${abiProblem}), struct reads disabled`);
+      return false;
     }
-    var major = parseInt(match[1], 10);
-    var minor = parseInt(match[2], 10);
-    return major * 1e3 + minor;
+    const version = _NSS.get_NSS_version();
+    if (version > 0 && version < _NSS.TABLE_VERIFIED_BELOW)
+      return true;
+    _NSS.logTableDisabledOnce(`[!] NSS ${_NSS.formatNssVersion(version)} layout unverified, struct reads disabled`);
+    return false;
+  }
+  /**
+   * Why the SSL3_STATE_OFFSET / ssl3 table does not apply to this process, or null when it
+   * does. The table was measured on Linux LP64; Win64 is LLP64 (long is 4 bytes) and 32-bit
+   * targets change every pointer-sized member, so neither may read through it.
+   */
+  static tableAbiMismatch() {
+    if (Process.platform === "windows")
+      return "Windows is LLP64";
+    if (Process.pointerSize !== 8)
+      return `pointer size ${Process.pointerSize}`;
+    if (_NSS.exportScope.some((m2) => isPeImage(m2.base)))
+      return "PE module under Wine is LLP64";
+    return null;
+  }
+  static logTableDisabledOnce(message) {
+    if (_NSS.tableDisabledLogged)
+      return;
+    _NSS.tableDisabledLogged = true;
+    log(message);
   }
   static detectVersionOffsets() {
     try {
@@ -26065,16 +30345,21 @@ var NSS = class _NSS {
       devlog("NSS version detection failed, using default ssl3 offset: " + e);
     }
   }
-  static resolveExperimentalAPI() {
+  /**
+   * Resolve SSL_SecretCallback through SSL_GetExperimentalAPI.
+   * @param getExperimentalApiAddr the module-scoped address of SSL_GetExperimentalAPI
+   *        (from the hooked module's resolved addresses); falls back to findNssExport.
+   * @returns true when SSL_SecretCallback_fn is available
+   */
+  static resolveExperimentalAPI(getExperimentalApiAddr) {
     try {
-      var getExpApiAddr = null;
-      try {
-        getExpApiAddr = Module.getGlobalExportByName("SSL_GetExperimentalAPI");
-      } catch (_) {
+      var getExpApiAddr = getExperimentalApiAddr ?? null;
+      if (getExpApiAddr === null || getExpApiAddr.isNull()) {
+        getExpApiAddr = _NSS.findNssExport("SSL_GetExperimentalAPI");
       }
-      if (!getExpApiAddr || getExpApiAddr.isNull()) {
-        devlog("SSL_GetExperimentalAPI not found \u2014 secret callback will use struct-write fallback");
-        return;
+      if (getExpApiAddr === null || getExpApiAddr.isNull()) {
+        devlog("SSL_GetExperimentalAPI not found in the NSS module \u2014 SSL_SecretCallback unavailable");
+        return false;
       }
       var getExpApiFn = new NativeFunction(getExpApiAddr, "pointer", ["pointer"]);
       var nameStr = Memory.allocUtf8String("SSL_SecretCallback");
@@ -26083,10 +30368,13 @@ var NSS = class _NSS {
         _NSS.SSL_SecretCallback_fn = new NativeFunction(fnPtr, "int", ["pointer", "pointer", "pointer"]);
         _NSS.SSL_SecretCallback_ptr = fnPtr;
         devlog("SSL_SecretCallback resolved via experimental API at " + fnPtr);
+        return true;
       }
+      devlog("SSL_GetExperimentalAPI returned NULL for SSL_SecretCallback");
     } catch (e) {
       devlog("SSL_GetExperimentalAPI resolution failed: " + e);
     }
+    return false;
   }
   /* PARSING functions */
   static parse_struct_SECItem(secitem) {
@@ -26101,8 +30389,6 @@ var NSS = class _NSS {
     return {
       "fd": sslSocketFD.readPointer(),
       "version": sslSocketFD.add(160),
-      "handshakeCallback": sslSocketFD.add(464),
-      "secretCallback": sslSocketFD.add(568),
       "ssl3": sslSocketFD.add(_NSS.SSL3_STATE_OFFSET)
     };
   }
@@ -26121,121 +30407,304 @@ var NSS = class _NSS {
     }
     _NSS.ssl3OffsetsInitialized = true;
   }
+  /**
+   * Lazy view of ssl3StateStr: every field is a getter, so only the fields a caller
+   * touches are read. Offsets come from the version table and are only trusted for
+   * NSS < 3.115 (see structReadsAllowed()); callers must check that first.
+   */
   static parse_struct_ssl3Str(ssl3_struct) {
     _NSS.initSsl3Offsets();
     return {
-      "crSpec": ssl3_struct.readPointer(),
-      "prSpec": ssl3_struct.add(pointerSize2).readPointer(),
-      "cwSpec": ssl3_struct.add(pointerSize2 * 2).readPointer(),
-      "pwSpec": ssl3_struct.add(pointerSize2 * 3).readPointer(),
-      "peerRequestedKeyUpdate": ssl3_struct.add(pointerSize2 * 4).readU32(),
-      "keyUpdateDeferred": ssl3_struct.add(pointerSize2 * 4 + 4).readU32(),
-      "deferredKeyUpdateRequest": ssl3_struct.add(pointerSize2 * 4 + 8).readU32(),
-      "clientCertRequested": ssl3_struct.add(pointerSize2 * 4 + 12).readU32(),
-      "clientCertificate": ssl3_struct.add(pointerSize2 * 4 + 16).readPointer(),
-      "clientPrivateKey": ssl3_struct.add(pointerSize2 * 5 + 16).readPointer(),
-      "clientCertChain": ssl3_struct.add(pointerSize2 * 6 + 16).readPointer(),
-      "sendEmptyCert": ssl3_struct.add(pointerSize2 * 7 + 16).readU32(),
-      "policy": ssl3_struct.add(pointerSize2 * 7 + 20).readU32(),
-      "peerCertArena": ssl3_struct.add(pointerSize2 * 7 + 24).readPointer(),
-      "peerCertChain": ssl3_struct.add(pointerSize2 * 8 + 24).readPointer(),
-      "ca_list": ssl3_struct.add(pointerSize2 * 9 + 24).readPointer(),
+      get crSpec() {
+        return ssl3_struct.readPointer();
+      },
+      get prSpec() {
+        return ssl3_struct.add(pointerSize2).readPointer();
+      },
+      get cwSpec() {
+        return ssl3_struct.add(pointerSize2 * 2).readPointer();
+      },
+      get pwSpec() {
+        return ssl3_struct.add(pointerSize2 * 3).readPointer();
+      },
+      get peerRequestedKeyUpdate() {
+        return ssl3_struct.add(pointerSize2 * 4).readU32();
+      },
+      get keyUpdateDeferred() {
+        return ssl3_struct.add(pointerSize2 * 4 + 4).readU32();
+      },
+      get deferredKeyUpdateRequest() {
+        return ssl3_struct.add(pointerSize2 * 4 + 8).readU32();
+      },
+      get clientCertRequested() {
+        return ssl3_struct.add(pointerSize2 * 4 + 12).readU32();
+      },
+      get clientCertificate() {
+        return ssl3_struct.add(pointerSize2 * 4 + 16).readPointer();
+      },
+      get clientPrivateKey() {
+        return ssl3_struct.add(pointerSize2 * 5 + 16).readPointer();
+      },
+      get clientCertChain() {
+        return ssl3_struct.add(pointerSize2 * 6 + 16).readPointer();
+      },
+      get sendEmptyCert() {
+        return ssl3_struct.add(pointerSize2 * 7 + 16).readU32();
+      },
+      get policy() {
+        return ssl3_struct.add(pointerSize2 * 7 + 20).readU32();
+      },
+      get peerCertArena() {
+        return ssl3_struct.add(pointerSize2 * 7 + 24).readPointer();
+      },
+      get peerCertChain() {
+        return ssl3_struct.add(pointerSize2 * 8 + 24).readPointer();
+      },
+      get ca_list() {
+        return ssl3_struct.add(pointerSize2 * 9 + 24).readPointer();
+      },
       "hs": {
-        "client_random": ssl3_struct.add(pointerSize2 * 10 + 24 + _NSS.SS3_VERSIONS_CR_OFFSET),
+        get client_random() {
+          return ssl3_struct.add(pointerSize2 * 10 + 24 + _NSS.SS3_VERSIONS_CR_OFFSET);
+        },
         //SSL3Random --> typedef PRUint8 SSL3Random[SSL3_RANDOM_LENGTH];
-        "server_random": ssl3_struct.add(pointerSize2 * 10 + 56 + _NSS.SS3_VERSIONS_CR_OFFSET),
-        "client_inner_random": ssl3_struct.add(pointerSize2 * 10 + 88 + _NSS.SS3_VERSIONS_CR_OFFSET),
-        "ws": ssl3_struct.add(pointerSize2 * 10 + 120 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-        "hashType": ssl3_struct.add(pointerSize2 * 10 + 124 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
+        get server_random() {
+          return ssl3_struct.add(pointerSize2 * 10 + 56 + _NSS.SS3_VERSIONS_CR_OFFSET);
+        },
+        get client_inner_random() {
+          return ssl3_struct.add(pointerSize2 * 10 + 88 + _NSS.SS3_VERSIONS_CR_OFFSET);
+        },
+        get ws() {
+          return ssl3_struct.add(pointerSize2 * 10 + 120 + _NSS.SS3_VERSIONS_OFFSET).readU32();
+        },
+        get hashType() {
+          return ssl3_struct.add(pointerSize2 * 10 + 124 + _NSS.SS3_VERSIONS_OFFSET).readU32();
+        },
         "messages": {
-          "data": ssl3_struct.add(pointerSize2 * 10 + 128 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-          "len": ssl3_struct.add(pointerSize2 * 11 + 128 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-          "space": ssl3_struct.add(pointerSize2 * 11 + 132 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-          "fixed": ssl3_struct.add(pointerSize2 * 11 + 136 + _NSS.SS3_VERSIONS_OFFSET).readU32()
+          get data() {
+            return ssl3_struct.add(pointerSize2 * 10 + 128 + _NSS.SS3_VERSIONS_OFFSET).readPointer();
+          },
+          get len() {
+            return ssl3_struct.add(pointerSize2 * 11 + 128 + _NSS.SS3_VERSIONS_OFFSET).readU32();
+          },
+          get space() {
+            return ssl3_struct.add(pointerSize2 * 11 + 132 + _NSS.SS3_VERSIONS_OFFSET).readU32();
+          },
+          get fixed() {
+            return ssl3_struct.add(pointerSize2 * 11 + 136 + _NSS.SS3_VERSIONS_OFFSET).readU32();
+          }
         },
         "echInnerMessages": {
-          "data": ssl3_struct.add(pointerSize2 * 11 + 140 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-          "len": ssl3_struct.add(pointerSize2 * 12 + 140 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-          "space": ssl3_struct.add(pointerSize2 * 12 + 144 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-          "fixed": ssl3_struct.add(pointerSize2 * 12 + 148 + _NSS.SS3_VERSIONS_OFFSET).readU32()
+          get data() {
+            return ssl3_struct.add(pointerSize2 * 11 + 140 + _NSS.SS3_VERSIONS_OFFSET).readPointer();
+          },
+          get len() {
+            return ssl3_struct.add(pointerSize2 * 12 + 140 + _NSS.SS3_VERSIONS_OFFSET).readU32();
+          },
+          get space() {
+            return ssl3_struct.add(pointerSize2 * 12 + 144 + _NSS.SS3_VERSIONS_OFFSET).readU32();
+          },
+          get fixed() {
+            return ssl3_struct.add(pointerSize2 * 12 + 148 + _NSS.SS3_VERSIONS_OFFSET).readU32();
+          }
         },
-        "md5": ssl3_struct.add(pointerSize2 * 12 + 152 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-        "sha": ssl3_struct.add(pointerSize2 * 13 + 152 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-        "shaEchInner": ssl3_struct.add(pointerSize2 * 14 + 152 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-        "shaPostHandshake": ssl3_struct.add(pointerSize2 * 15 + 152 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-        "signatureScheme": ssl3_struct.add(pointerSize2 * 16 + 152 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-        "kea_def": ssl3_struct.add(pointerSize2 * 16 + 156 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-        "cipher_suite": ssl3_struct.add(pointerSize2 * 17 + 156 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-        "suite_def": ssl3_struct.add(pointerSize2 * 17 + 160 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
+        get md5() {
+          return ssl3_struct.add(pointerSize2 * 12 + 152 + _NSS.SS3_VERSIONS_OFFSET).readPointer();
+        },
+        get sha() {
+          return ssl3_struct.add(pointerSize2 * 13 + 152 + _NSS.SS3_VERSIONS_OFFSET).readPointer();
+        },
+        get shaEchInner() {
+          return ssl3_struct.add(pointerSize2 * 14 + 152 + _NSS.SS3_VERSIONS_OFFSET).readPointer();
+        },
+        get shaPostHandshake() {
+          return ssl3_struct.add(pointerSize2 * 15 + 152 + _NSS.SS3_VERSIONS_OFFSET).readPointer();
+        },
+        get signatureScheme() {
+          return ssl3_struct.add(pointerSize2 * 16 + 152 + _NSS.SS3_VERSIONS_OFFSET).readU32();
+        },
+        get kea_def() {
+          return ssl3_struct.add(pointerSize2 * 16 + 156 + _NSS.SS3_VERSIONS_OFFSET).readPointer();
+        },
+        get cipher_suite() {
+          return ssl3_struct.add(pointerSize2 * 17 + 156 + _NSS.SS3_VERSIONS_OFFSET).readU32();
+        },
+        get suite_def() {
+          return ssl3_struct.add(pointerSize2 * 17 + 160 + _NSS.SS3_VERSIONS_OFFSET).readPointer();
+        },
         "msg_body": {
-          "data": ssl3_struct.add(pointerSize2 * 18 + 160 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-          "len": ssl3_struct.add(pointerSize2 * 19 + 160 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-          "space": ssl3_struct.add(pointerSize2 * 19 + 164 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-          "fixed": ssl3_struct.add(pointerSize2 * 19 + 168 + _NSS.SS3_VERSIONS_OFFSET).readU32()
+          get data() {
+            return ssl3_struct.add(pointerSize2 * 18 + 160 + _NSS.SS3_VERSIONS_OFFSET).readPointer();
+          },
+          get len() {
+            return ssl3_struct.add(pointerSize2 * 19 + 160 + _NSS.SS3_VERSIONS_OFFSET).readU32();
+          },
+          get space() {
+            return ssl3_struct.add(pointerSize2 * 19 + 164 + _NSS.SS3_VERSIONS_OFFSET).readU32();
+          },
+          get fixed() {
+            return ssl3_struct.add(pointerSize2 * 19 + 168 + _NSS.SS3_VERSIONS_OFFSET).readU32();
+          }
         },
-        "header_bytes": ssl3_struct.add(pointerSize2 * 19 + 172 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-        "msg_type": ssl3_struct.add(pointerSize2 * 19 + 176 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-        "msg_len": ssl3_struct.add(pointerSize2 * 19 + 180 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-        "isResuming": ssl3_struct.add(pointerSize2 * 19 + 184 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-        "sendingSCSV": ssl3_struct.add(pointerSize2 * 19 + 188 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-        "receivedNewSessionTicket": ssl3_struct.add(pointerSize2 * 19 + 192 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-        "newSessionTicket": ssl3_struct.add(pointerSize2 * 19 + 196 + _NSS.SS3_VERSIONS_OFFSET),
+        get header_bytes() {
+          return ssl3_struct.add(pointerSize2 * 19 + 172 + _NSS.SS3_VERSIONS_OFFSET).readU32();
+        },
+        get msg_type() {
+          return ssl3_struct.add(pointerSize2 * 19 + 176 + _NSS.SS3_VERSIONS_OFFSET).readU32();
+        },
+        get msg_len() {
+          return ssl3_struct.add(pointerSize2 * 19 + 180 + _NSS.SS3_VERSIONS_OFFSET).readU32();
+        },
+        get isResuming() {
+          return ssl3_struct.add(pointerSize2 * 19 + 184 + _NSS.SS3_VERSIONS_OFFSET).readU32();
+        },
+        get sendingSCSV() {
+          return ssl3_struct.add(pointerSize2 * 19 + 188 + _NSS.SS3_VERSIONS_OFFSET).readU32();
+        },
+        get receivedNewSessionTicket() {
+          return ssl3_struct.add(pointerSize2 * 19 + 192 + _NSS.SS3_VERSIONS_OFFSET).readU32();
+        },
+        get newSessionTicket() {
+          return ssl3_struct.add(pointerSize2 * 19 + 196 + _NSS.SS3_VERSIONS_OFFSET);
+        },
         // for now we calculate only its offset (44 bytes); detailes at https://github.com/nss-dev/nss/blob/master/lib/ssl/ssl3prot.h#L162
-        "finishedBytes": ssl3_struct.add(pointerSize2 * 19 + 240 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-        "finishedMsgs": ssl3_struct.add(pointerSize2 * 19 + 244 + _NSS.SS3_VERSIONS_OFFSET),
-        "authCertificatePending": ssl3_struct.add(pointerSize2 * 18 + 316 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-        "restartTarget": ssl3_struct.add(pointerSize2 * 19 + 320 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-        "canFalseStart": ssl3_struct.add(pointerSize2 * 19 + 324 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-        "preliminaryInfo": ssl3_struct.add(pointerSize2 * 19 + 328 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
+        get finishedBytes() {
+          return ssl3_struct.add(pointerSize2 * 19 + 240 + _NSS.SS3_VERSIONS_OFFSET).readU32();
+        },
+        get finishedMsgs() {
+          return ssl3_struct.add(pointerSize2 * 19 + 244 + _NSS.SS3_VERSIONS_OFFSET);
+        },
+        get authCertificatePending() {
+          return ssl3_struct.add(pointerSize2 * 18 + 316 + _NSS.SS3_VERSIONS_OFFSET).readU32();
+        },
+        get restartTarget() {
+          return ssl3_struct.add(pointerSize2 * 19 + 320 + _NSS.SS3_VERSIONS_OFFSET).readU32();
+        },
+        get canFalseStart() {
+          return ssl3_struct.add(pointerSize2 * 19 + 324 + _NSS.SS3_VERSIONS_OFFSET).readU32();
+        },
+        get preliminaryInfo() {
+          return ssl3_struct.add(pointerSize2 * 19 + 328 + _NSS.SS3_VERSIONS_OFFSET).readU32();
+        },
         "remoteExtensions": {
-          "next": ssl3_struct.add(pointerSize2 * 19 + 332 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-          "prev": ssl3_struct.add(pointerSize2 * 20 + 332 + _NSS.SS3_VERSIONS_OFFSET).readPointer()
+          get next() {
+            return ssl3_struct.add(pointerSize2 * 19 + 332 + _NSS.SS3_VERSIONS_OFFSET).readPointer();
+          },
+          get prev() {
+            return ssl3_struct.add(pointerSize2 * 20 + 332 + _NSS.SS3_VERSIONS_OFFSET).readPointer();
+          }
         },
         "echOuterExtensions": {
-          "next": ssl3_struct.add(pointerSize2 * 21 + 332 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-          "prev": ssl3_struct.add(pointerSize2 * 22 + 332 + _NSS.SS3_VERSIONS_OFFSET).readPointer()
+          get next() {
+            return ssl3_struct.add(pointerSize2 * 21 + 332 + _NSS.SS3_VERSIONS_OFFSET).readPointer();
+          },
+          get prev() {
+            return ssl3_struct.add(pointerSize2 * 22 + 332 + _NSS.SS3_VERSIONS_OFFSET).readPointer();
+          }
         },
-        "sendMessageSeq": ssl3_struct.add(pointerSize2 * 23 + 332 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
+        get sendMessageSeq() {
+          return ssl3_struct.add(pointerSize2 * 23 + 332 + _NSS.SS3_VERSIONS_OFFSET).readU32();
+        },
         //u16 but through alignment  U32
         "lastMessageFlight": {
-          "next": ssl3_struct.add(pointerSize2 * 23 + 336 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-          "prev": ssl3_struct.add(pointerSize2 * 24 + 336 + _NSS.SS3_VERSIONS_OFFSET).readPointer()
+          get next() {
+            return ssl3_struct.add(pointerSize2 * 23 + 336 + _NSS.SS3_VERSIONS_OFFSET).readPointer();
+          },
+          get prev() {
+            return ssl3_struct.add(pointerSize2 * 24 + 336 + _NSS.SS3_VERSIONS_OFFSET).readPointer();
+          }
         },
-        "maxMessageSent": ssl3_struct.add(pointerSize2 * 25 + 336 + _NSS.SS3_VERSIONS_OFFSET).readU16(),
+        get maxMessageSent() {
+          return ssl3_struct.add(pointerSize2 * 25 + 336 + _NSS.SS3_VERSIONS_OFFSET).readU16();
+        },
         //u16
-        "recvMessageSeq": ssl3_struct.add(pointerSize2 * 25 + 338 + _NSS.SS3_VERSIONS_OFFSET).readU16(),
+        get recvMessageSeq() {
+          return ssl3_struct.add(pointerSize2 * 25 + 338 + _NSS.SS3_VERSIONS_OFFSET).readU16();
+        },
         "recvdFragments": {
-          "data": ssl3_struct.add(pointerSize2 * 25 + 340 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-          "len": ssl3_struct.add(pointerSize2 * 26 + 340 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-          "space": ssl3_struct.add(pointerSize2 * 26 + 344 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-          "fixed": ssl3_struct.add(pointerSize2 * 26 + 348 + _NSS.SS3_VERSIONS_OFFSET).readU32()
+          get data() {
+            return ssl3_struct.add(pointerSize2 * 25 + 340 + _NSS.SS3_VERSIONS_OFFSET).readPointer();
+          },
+          get len() {
+            return ssl3_struct.add(pointerSize2 * 26 + 340 + _NSS.SS3_VERSIONS_OFFSET).readU32();
+          },
+          get space() {
+            return ssl3_struct.add(pointerSize2 * 26 + 344 + _NSS.SS3_VERSIONS_OFFSET).readU32();
+          },
+          get fixed() {
+            return ssl3_struct.add(pointerSize2 * 26 + 348 + _NSS.SS3_VERSIONS_OFFSET).readU32();
+          }
         },
-        "recvdHighWater": ssl3_struct.add(pointerSize2 * 26 + 352 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
+        get recvdHighWater() {
+          return ssl3_struct.add(pointerSize2 * 26 + 352 + _NSS.SS3_VERSIONS_OFFSET).readU32();
+        },
         "cookie": {
-          "type": ssl3_struct.add(pointerSize2 * 26 + 356 + _NSS.SS3_VERSIONS_OFFSET).readU64(),
-          "data": ssl3_struct.add(pointerSize2 * 27 + 356 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-          "len": ssl3_struct.add(pointerSize2 * 28 + 356 + _NSS.SS3_VERSIONS_OFFSET).readU32()
+          get type() {
+            return ssl3_struct.add(pointerSize2 * 26 + 356 + _NSS.SS3_VERSIONS_OFFSET).readU64();
+          },
+          get data() {
+            return ssl3_struct.add(pointerSize2 * 27 + 356 + _NSS.SS3_VERSIONS_OFFSET).readPointer();
+          },
+          get len() {
+            return ssl3_struct.add(pointerSize2 * 28 + 356 + _NSS.SS3_VERSIONS_OFFSET).readU32();
+          }
         },
-        "times_array": ssl3_struct.add(pointerSize2 * 28 + 360 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-        "rtTimer": ssl3_struct.add(pointerSize2 * 28 + 432 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-        "ackTimer": ssl3_struct.add(pointerSize2 * 29 + 432 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-        "hdTimer": ssl3_struct.add(pointerSize2 * 30 + 432 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-        "rtRetries": ssl3_struct.add(pointerSize2 * 31 + 432 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
+        get times_array() {
+          return ssl3_struct.add(pointerSize2 * 28 + 360 + _NSS.SS3_VERSIONS_OFFSET).readU32();
+        },
+        get rtTimer() {
+          return ssl3_struct.add(pointerSize2 * 28 + 432 + _NSS.SS3_VERSIONS_OFFSET).readPointer();
+        },
+        get ackTimer() {
+          return ssl3_struct.add(pointerSize2 * 29 + 432 + _NSS.SS3_VERSIONS_OFFSET).readPointer();
+        },
+        get hdTimer() {
+          return ssl3_struct.add(pointerSize2 * 30 + 432 + _NSS.SS3_VERSIONS_OFFSET).readPointer();
+        },
+        get rtRetries() {
+          return ssl3_struct.add(pointerSize2 * 31 + 432 + _NSS.SS3_VERSIONS_OFFSET).readU32();
+        },
         "srvVirtName": {
-          "type": ssl3_struct.add(pointerSize2 * 31 + 436 + _NSS.SS3_VERSIONS_OFFSET).readU64(),
-          "data": ssl3_struct.add(pointerSize2 * 32 + 436 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-          "len": ssl3_struct.add(pointerSize2 * 33 + 436 + _NSS.SS3_VERSIONS_OFFSET).readU32()
+          get type() {
+            return ssl3_struct.add(pointerSize2 * 31 + 436 + _NSS.SS3_VERSIONS_OFFSET).readU64();
+          },
+          get data() {
+            return ssl3_struct.add(pointerSize2 * 32 + 436 + _NSS.SS3_VERSIONS_OFFSET).readPointer();
+          },
+          get len() {
+            return ssl3_struct.add(pointerSize2 * 33 + 436 + _NSS.SS3_VERSIONS_OFFSET).readU32();
+          }
         },
-        "currentSecret": ssl3_struct.add(pointerSize2 * 33 + 440 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-        "resumptionMasterSecret": ssl3_struct.add(pointerSize2 * 34 + 440 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-        "dheSecret": ssl3_struct.add(pointerSize2 * 35 + 440 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-        "clientEarlyTrafficSecret": ssl3_struct.add(pointerSize2 * 36 + 440 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-        "clientHsTrafficSecret": ssl3_struct.add(pointerSize2 * 37 + 440 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-        "serverHsTrafficSecret": ssl3_struct.add(pointerSize2 * 38 + 440 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-        "clientTrafficSecret": ssl3_struct.add(pointerSize2 * 39 + 440 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-        "serverTrafficSecret": ssl3_struct.add(pointerSize2 * 40 + 440 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-        "earlyExporterSecret": ssl3_struct.add(pointerSize2 * 41 + 440 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-        "exporterSecret": ssl3_struct.add(pointerSize2 * 42 + 440 + _NSS.SS3_VERSIONS_OFFSET).readPointer()
+        get currentSecret() {
+          return ssl3_struct.add(pointerSize2 * 33 + 440 + _NSS.SS3_VERSIONS_OFFSET).readPointer();
+        },
+        get resumptionMasterSecret() {
+          return ssl3_struct.add(pointerSize2 * 34 + 440 + _NSS.SS3_VERSIONS_OFFSET).readPointer();
+        },
+        get dheSecret() {
+          return ssl3_struct.add(pointerSize2 * 35 + 440 + _NSS.SS3_VERSIONS_OFFSET).readPointer();
+        },
+        get clientEarlyTrafficSecret() {
+          return ssl3_struct.add(pointerSize2 * 36 + 440 + _NSS.SS3_VERSIONS_OFFSET).readPointer();
+        },
+        get clientHsTrafficSecret() {
+          return ssl3_struct.add(pointerSize2 * 37 + 440 + _NSS.SS3_VERSIONS_OFFSET).readPointer();
+        },
+        get serverHsTrafficSecret() {
+          return ssl3_struct.add(pointerSize2 * 38 + 440 + _NSS.SS3_VERSIONS_OFFSET).readPointer();
+        },
+        get clientTrafficSecret() {
+          return ssl3_struct.add(pointerSize2 * 39 + 440 + _NSS.SS3_VERSIONS_OFFSET).readPointer();
+        },
+        get serverTrafficSecret() {
+          return ssl3_struct.add(pointerSize2 * 40 + 440 + _NSS.SS3_VERSIONS_OFFSET).readPointer();
+        },
+        get earlyExporterSecret() {
+          return ssl3_struct.add(pointerSize2 * 41 + 440 + _NSS.SS3_VERSIONS_OFFSET).readPointer();
+        },
+        get exporterSecret() {
+          return ssl3_struct.add(pointerSize2 * 42 + 440 + _NSS.SS3_VERSIONS_OFFSET).readPointer();
+        }
       }
       // end of hs struct
       /*
@@ -26396,36 +30865,86 @@ var NSS = class _NSS {
     "3:1": "SERVER_TRAFFIC_SECRET_0"
   };
   static secret_callback = new NativeCallback(function(fd, epoch, dir, secret, arg_ptr) {
+    _NSS.onSecretCallback(fd, epoch, dir, secret);
+  }, "void", ["pointer", "uint16", "int", "pointer", "pointer"]);
+  /** Body of secret_callback: log the secret, then ALWAYS call through to the app's original. */
+  static onSecretCallback(fd, epoch, dir, secret) {
+    var sslSocketFD = NULL;
     try {
-      var label = _NSS.SECRET_LABEL_MAP[epoch + ":" + dir];
-      if (!label)
-        return;
-      if (secret.isNull())
-        return;
-      var secretHex = _NSS.get_Secret_As_HexString(secret);
-      if (!secretHex || secretHex.length === 0)
-        return;
-      var sslSocketFD = _NSS.get_SSL_FD(fd);
-      if (sslSocketFD.isNull())
-        return;
-      var sslSocketStr = _NSS.parse_struct_sslSocketStr(sslSocketFD);
-      var ssl3 = _NSS.parse_struct_ssl3Str(sslSocketStr.ssl3);
-      var client_random = _NSS.getClientRandom(ssl3);
-      devlog("invoking keylog from NSS (SSL_LOG_SECRETS)");
-      sendKeylog(_NSS.get_Keylog_Dump(label, client_random, secretHex));
-      var sockKey = sslSocketFD.toString();
-      var orig = _NSS.originalSecretCallbacks[sockKey];
-      if (orig && orig.cb && !orig.cb.isNull() && !orig.cb.equals(_NSS.secret_callback)) {
-        try {
-          orig.fn(fd, epoch, dir, secret, orig.arg);
-        } catch (e2) {
-          devlog("secret_callback: original callback call-through failed: " + e2);
-        }
-      }
+      sslSocketFD = _NSS.get_SSL_Socket(fd);
+      _NSS.logSecret(sslSocketFD, epoch, dir, secret);
     } catch (e) {
       devlog_error("secret_callback error: " + e);
+    } finally {
+      _NSS.callOriginalSecretCallback(sslSocketFD, fd, epoch, dir, secret);
     }
-  }, "void", ["pointer", "uint16", "uint16", "pointer", "pointer"]);
+  }
+  /** Emit one keylog line for an SSLSecretCallback invocation (read-only). */
+  static logSecret(sslSocketFD, epoch, dir, secret) {
+    var label = _NSS.SECRET_LABEL_MAP[epoch + ":" + dir];
+    if (!label || secret.isNull() || sslSocketFD.isNull())
+      return;
+    var client_random = _NSS.clientRandomHexFromSocket(sslSocketFD, true);
+    if (!client_random)
+      return;
+    var secretHex = _NSS.get_Secret_As_HexString(secret);
+    if (!secretHex || secretHex.length === 0)
+      return;
+    devlog("invoking keylog from NSS (SSL_SecretCallback)");
+    var randoms = _NSS.keylogRandomsFor(sslSocketFD, client_random);
+    if (randoms.length === 1) {
+      sendKeylog(_NSS.get_Keylog_Dump(label, client_random, secretHex));
+      return;
+    }
+    var sentAny = false;
+    for (var random of randoms) {
+      if (_NSS.sendEchDualLine(_NSS.get_Keylog_Dump(label, random, secretHex)))
+        sentAny = true;
+    }
+    if (sentAny)
+      _NSS.echDualEmissions++;
+  }
+  /**
+   * client_randoms one tier-2 secret line is keyed with: [inner, outer] when the ECH
+   * recorder saw this socket accept ECH (NSS copied the inner random over client_random;
+   * Wireshark without ECH_SECRET only knows the outer one), else [live]. Never throws.
+   */
+  static keylogRandomsFor(sslSocketFD, liveHex) {
+    var recorder = _NSS.echRecorder;
+    if (recorder === null)
+      return [liveHex];
+    try {
+      var offset = _NSS.clientRandomOffsetFor(sslSocketFD, false);
+      if (offset === null)
+        return [liveHex];
+      return recorder.keylogRandoms(addressOf(sslSocketFD), offset, liveHex);
+    } catch (_e) {
+      return [liveHex];
+    }
+  }
+  /**
+   * ECH-dual lines are deduplicated (bounded), so a repeated callback never doubles them.
+   * @returns true iff the line was sent (not a duplicate)
+   */
+  static sendEchDualLine(line) {
+    if (_NSS.echDualLinesSent.has(line))
+      return false;
+    _NSS.echDualLinesSent.add(line);
+    sendKeylog(line);
+    return true;
+  }
+  static callOriginalSecretCallback(sslSocketFD, fd, epoch, dir, secret) {
+    if (sslSocketFD.isNull())
+      return;
+    var orig = _NSS.originalSecretCallbacks.get(sslSocketFD.toString());
+    if (!orig || orig.cb.isNull() || orig.cb.equals(_NSS.secret_callback))
+      return;
+    try {
+      orig.fn(fd, epoch, dir, secret, orig.arg);
+    } catch (e) {
+      devlog("secret_callback: original callback call-through failed: " + e);
+    }
+  }
   /********* NSS helper functions  ********/
   /**
       * Returns a dictionary of a sockfd's "src_addr", "src_port", "dst_addr", and
@@ -26508,7 +31027,7 @@ var NSS = class _NSS {
       } else {
         getpeername(sockfd, addr);
       }
-      const decoded = decodeSockaddr(addr, false, { ntohs, ntohl });
+      const decoded = decodeSockaddr(addr, false, { ntohs, ntohl }, false);
       if (!decoded) {
         devlog("[-] PIPE descriptor error: Only supporting IPv4/6: " + addr.readU16());
         throw "Only supporting IPv4/6";
@@ -26518,20 +31037,6 @@ var NSS = class _NSS {
       message["ss_family"] = decoded.family;
     }
     return message;
-  }
-  /**
-  * This functions tests if a given address is a readable pointer
-  *
-  * @param {*} ptr_addr is a pointer to the memory location where we want to check if there is already an address
-  * @returns 1 to indicate that there is a ptr at
-  */
-  static is_ptr_at_mem_location(ptr_addr) {
-    try {
-      ptr_addr.readPointer();
-      return 1;
-    } catch (error) {
-      return -1;
-    }
   }
   /**
   *
@@ -26555,7 +31060,13 @@ var NSS = class _NSS {
    * "error while getting SSL layer" logs for fds that will never resolve.
    */
   static noSslLayerFDs = new FifoSet(1024);
+  /** PR_GetDescType(fd), or -1 when PR_GetDescType was not resolved (never throws on a missing binding). */
+  static descTypeOf(pRFileDesc) {
+    return typeof _NSS.getDescType === "function" ? _NSS.getDescType(pRFileDesc) : -1;
+  }
   static NSS_FindIdentityForName(pRFileDesc, layer_name) {
+    if (typeof _NSS.PR_GetNameForIdentity !== "function")
+      return NULL;
     const fdKey = pRFileDesc.toString();
     if (_NSS.noSslLayerFDs.has(fdKey)) {
       return NULL;
@@ -26590,7 +31101,12 @@ var NSS = class _NSS {
   }
   static getSSL_Layer(pRFileDesc) {
     var ssl_layer_id = 3;
-    var getIdentitiesLayer = new NativeFunction(Process.getModuleByName("libnspr4.so").getExportByName("PR_GetIdentitiesLayer"), "pointer", ["pointer", "int"]);
+    var getIdentitiesLayerAddr = _NSS.findNsprExport("PR_GetIdentitiesLayer");
+    if (getIdentitiesLayerAddr === null) {
+      devlog("NSS: PR_GetIdentitiesLayer not found in the NSPR/NSS modules");
+      return -1;
+    }
+    var getIdentitiesLayer = new NativeFunction(getIdentitiesLayerAddr, "pointer", ["pointer", "int"]);
     var ssl_layer = getIdentitiesLayer(pRFileDesc, ssl_layer_id);
     if (ptr(ssl_layer.toString()).isNull()) {
       devlog("PR_BAD_DESCRIPTOR_ERROR: " + ssl_layer);
@@ -26651,7 +31167,7 @@ var NSS = class _NSS {
   static getSslSessionIdFromFD(pRFileDesc) {
     var fdHex = pRFileDesc.toString(16).padStart(8, "0").slice(-8).toUpperCase();
     var dummySSL_SessionID = DUMMY_SESSION_ID_NSS.slice(0, -8) + fdHex;
-    var fdType = _NSS.getDescType(pRFileDesc);
+    var fdType = _NSS.descTypeOf(pRFileDesc);
     var layer = _NSS.NSS_FindIdentityForName(pRFileDesc, "SSL");
     if (!layer || Java.available || !_NSS.SSL_SESSION_get_id) {
       return dummySSL_SessionID;
@@ -26661,18 +31177,16 @@ var NSS = class _NSS {
       try {
         devlog_debug("---- getSslSessionIdFromFD -----");
         devlog_debug("ERROR");
-        devlog_debug("pRFileDescType: " + _NSS.getDescType(pRFileDesc));
+        devlog_debug("pRFileDescType: " + _NSS.descTypeOf(pRFileDesc));
         if (fdType == 2) {
           var c = Memory.dup(pRFileDesc, 32);
-          var getLayersIdentity = null;
-          var getNameOfIdentityLayer;
-          try {
-            getLayersIdentity = new NativeFunction(Process.getModuleByName("libnspr4.so").getExportByName("PR_GetLayersIdentity"), "uint32", ["pointer"]);
-            getNameOfIdentityLayer = new NativeFunction(Process.getModuleByName("libnspr4.so").getExportByName("PR_GetNameForIdentity"), "pointer", ["uint32"]);
-          } catch (e) {
-            getLayersIdentity = new NativeFunction(Process.getModuleByName("libnss3.so").getExportByName("PR_GetLayersIdentity"), "uint32", ["pointer"]);
-            getNameOfIdentityLayer = new NativeFunction(Process.getModuleByName("libnss3.so").getExportByName("PR_GetNameForIdentity"), "pointer", ["uint32"]);
+          var getLayersIdentityAddr = _NSS.findNsprExport("PR_GetLayersIdentity");
+          var getNameForIdentityAddr = _NSS.findNsprExport("PR_GetNameForIdentity");
+          if (getLayersIdentityAddr === null || getNameForIdentityAddr === null) {
+            throw new Error("PR_GetLayersIdentity / PR_GetNameForIdentity not found");
           }
+          var getLayersIdentity = new NativeFunction(getLayersIdentityAddr, "uint32", ["pointer"]);
+          var getNameOfIdentityLayer = new NativeFunction(getNameForIdentityAddr, "pointer", ["uint32"]);
           var layerID = getLayersIdentity(pRFileDesc);
           devlog_debug("LayerID: " + layerID);
           var nameIDentity = getNameOfIdentityLayer(layerID);
@@ -26762,6 +31276,20 @@ var NSS = class _NSS {
   *
   *
   */
+  /**
+   * sslSocket of a PRFileDesc stack without the noSslLayerFDs cache: used by the key
+   * extraction paths, where a stale "no SSL layer" verdict for a reused fd pointer
+   * would break the secret-callback bookkeeping. NULL when there is no SSL layer.
+   */
+  static findSslSocketUncached(pRFileDesc) {
+    try {
+      var ssl_layer = _NSS._findIdentityForNameRecursive(pRFileDesc, "SSL");
+      return ssl_layer.isNull() ? NULL : _NSS.get_SSL_Socket(ssl_layer);
+    } catch (e) {
+      devlog_debug("NSS: findSslSocketUncached failed: " + e);
+      return NULL;
+    }
+  }
   static get_SSL_Socket(ssl_layer) {
     var sslSocket = ssl_layer.add(pointerSize2 * 1).readPointer();
     return sslSocket;
@@ -26787,8 +31315,35 @@ var NSS = class _NSS {
    * @returns the client_random as hex string (lower case)
    */
   static getClientRandom(ssl3) {
-    var client_random = _NSS.getHexString(ssl3.hs.client_random, _NSS.SSL3_RANDOM_LENGTH);
-    return client_random;
+    var at = ssl3.hs.client_random;
+    if (!isReadable(at, _NSS.SSL3_RANDOM_LENGTH))
+      return "";
+    return _NSS.getHexString(at, _NSS.SSL3_RANDOM_LENGTH);
+  }
+  /**
+   * ss->ssl3.hs.client_random as lower-case hex, "" when unknown or not yet set.
+   * Source order: the offset decoded from the keylog writer (tier 1), the learned /
+   * cached offset, this socket's offset validated by the client_random learner, and
+   * the version table only inside its verified range. Bytes are always read live
+   * (ECH replaces client_random with the inner random). Every read is range-checked.
+   *
+   * @param atSecretCallback true only from the secret callback: there a learner socket
+   *        is validated (first call decides); elsewhere only an already validated offset is used
+   */
+  static clientRandomHexFromSocket(sslSocketFD, atSecretCallback = false) {
+    var at;
+    var offset = _NSS.clientRandomOffsetFor(sslSocketFD, atSecretCallback);
+    if (offset !== null) {
+      at = sslSocketFD.add(offset);
+    } else if (_NSS.structReadsAllowed()) {
+      at = _NSS.parse_struct_ssl3Str(_NSS.parse_struct_sslSocketStr(sslSocketFD).ssl3).hs.client_random;
+    } else {
+      return "";
+    }
+    if (!isReadable(at, _NSS.SSL3_RANDOM_LENGTH))
+      return "";
+    var hex2 = _NSS.getHexString(at, _NSS.SSL3_RANDOM_LENGTH);
+    return /^0+$/.test(hex2) ? "" : hex2;
   }
   /**
    * Extract client_random from a PRFileDesc, traversing the NSS struct chain.
@@ -26802,6 +31357,172 @@ var NSS = class _NSS {
    * bound keeps memory bounded on long-running captures.
    */
   static clientRandomCache = new LruMap(1024);
+  /** client_random offset learned this run or loaded from the learned cache (tier-2 source). */
+  static learnedClientRandomOffset = null;
+  /** Sticky per process: once any learner saw sockets disagree, no learner ever starts again. */
+  static clientRandomLearnerDisagreed = false;
+  /** Tier-2 learner, while it runs (null with a known offset, or when PK11_GenerateRandom is missing). */
+  static clientRandomLearner = null;
+  /** The read-only PK11_GenerateRandom hook feeding the learner and/or the ECH recorder. */
+  static randomObserverHook = null;
+  /** sslSockets the observer attributes randoms to, shared by the learner and the ECH recorder. */
+  static randomTrackedSockets = null;
+  /** Tier-2 ECH recorder (outer/inner random per socket) while the PK11_GenerateRandom hook runs. */
+  static echRecorder = null;
+  /** Secret callbacks emitted for both the inner and the outer random (teardown `echDual`). */
+  static echDualEmissions = 0;
+  static echDualLinesSent = new FifoSet(4096);
+  /** Offset of ss->ssl3.hs.client_random per the source order above, or null (table or nothing). */
+  static clientRandomOffsetFor(sslSocketFD, atSecretCallback) {
+    var decodedOffset = nssClientRandomOffset();
+    if (decodedOffset !== null)
+      return decodedOffset;
+    if (_NSS.learnedClientRandomOffset !== null)
+      return _NSS.learnedClientRandomOffset;
+    var learner = _NSS.clientRandomLearner;
+    if (learner === null)
+      return null;
+    var ss = addressOf(sslSocketFD);
+    if (!atSecretCallback)
+      return learner.validatedOffset(ss);
+    return learner.validateSocket(ss, (off) => readClientRandomHex2(sslSocketFD.add(off)));
+  }
+  /** The cached offset of this build, when the learned cache has a plausible one. */
+  static loadCachedClientRandomOffset(sslModule) {
+    if (sslModule === null)
+      return null;
+    var cached = learnedLayout(sslModule, LEARNED_NSS_CLIENT_RANDOM_OFF);
+    if (cached === null)
+      return null;
+    if (!isPlausibleClientRandomOffset(cached)) {
+      rejectLearnedLayout(sslModule, LEARNED_NSS_CLIENT_RANDOM_OFF);
+      devlog(`[-] NSS: cached client_random offset ${cached} implausible; ignored`);
+      return null;
+    }
+    log(`[*] ${sslModule.name}: NSS client_random +0x${cached.toString(16)} from the learned cache`);
+    return cached;
+  }
+  /**
+   * Start the read-only PK11_GenerateRandom observer of tier 2. It always records the
+   * outer/inner randoms per socket for ECH (NssEchRandomRecorder); with `learn` it also
+   * feeds the client_random learner, which learns until the offset is accepted (then
+   * cached for this build) or the sockets disagree (fail closed). One hook and one
+   * tracked-socket store serve both; the hook is detached on a learner disagreement and
+   * in the detach teardown.
+   */
+  static startRandomObserver(generateRandom, sslModule, learn) {
+    if (_NSS.randomObserverHook !== null)
+      return true;
+    if (_NSS.clientRandomLearnerDisagreed) {
+      if (_NSS.knownClientRandomOffset() === null) {
+        devlog("[-] NSS: client_random learner disagreed earlier; observer not restarted (fail closed)");
+        return false;
+      }
+      learn = false;
+    }
+    var sockets = _NSS.randomTrackedSockets ?? new NssTrackedSockets();
+    var learner = learn ? _NSS.createClientRandomLearner(sslModule, sockets) : null;
+    var recorder = new NssEchRandomRecorder(sockets);
+    try {
+      _NSS.randomObserverHook = attachGeneratedRandomObserver(generateRandom, (data) => {
+        _NSS.onGeneratedRandom(sockets, learner, _NSS.echRecorder, data);
+      });
+    } catch (e) {
+      devlog("[-] NSS: client_random learner could not hook PK11_GenerateRandom: " + e);
+      return false;
+    }
+    _NSS.randomTrackedSockets = sockets;
+    if (learner !== null || !_NSS.clientRandomLearnerDisagreed)
+      _NSS.clientRandomLearner = learner;
+    _NSS.echRecorder = recorder;
+    var owner2 = Process.findModuleByAddress(generateRandom);
+    var where = owner2 ? owner2.name : generateRandom;
+    if (learner !== null)
+      log(`[*] NSS: client_random learner started (read-only PK11_GenerateRandom hook in ${where})`);
+    else
+      _NSS.logEchObserverStaysOn();
+    return true;
+  }
+  /**
+   * Observer body: attribute one 32-byte generation into `data` ONCE (nearest-socket scan
+   * while learning, two O(1) lookups once the client_random offset is known) and hand it
+   * to the learner and the ECH recorder. Most RNG calls hit no socket and read no memory.
+   */
+  static onGeneratedRandom(sockets, learner, recorder, data) {
+    var learning = learner !== null && !learner.settled;
+    if (!learning && recorder === null)
+      return;
+    var hit = sockets.locate(addressOf(data), learning ? null : _NSS.knownClientRandomOffset());
+    if (hit === null)
+      return;
+    var generated = readClientRandomHex2(data);
+    if (generated === null)
+      return;
+    if (learning) {
+      var following = readClientRandomHex2(data.add(CLIENT_RANDOM_LENGTH));
+      if (following !== null)
+        learner.attributeAt(hit, generated, ALL_ZERO_RE.test(following));
+    }
+    recorder?.recordAt(hit, generated);
+  }
+  /** The client_random offset valid for every socket (decoded or learned/cached), or null. */
+  static knownClientRandomOffset() {
+    return nssClientRandomOffset() ?? _NSS.learnedClientRandomOffset;
+  }
+  static createClientRandomLearner(sslModule, sockets) {
+    return new NssClientRandomLearner({
+      onAccepted: (offset, count) => _NSS.onClientRandomOffsetAccepted(offset, count, sslModule),
+      onDisagreement: (offsets2) => {
+        log("[-] NSS: client_random learner: sockets disagree (" + offsets2.map((o) => "+0x" + o.toString(16)).join(" vs ") + "); fail closed, nothing cached");
+        _NSS.clientRandomLearnerDisagreed = true;
+        _NSS.stopRandomObserver();
+      }
+    }, void 0, sockets);
+  }
+  static logEchObserverStaysOn() {
+    log("[*] NSS: read-only PK11_GenerateRandom observer stays on for ECH (records outer/inner client_random; ECH-accepted secrets are keyed with both)");
+  }
+  static onClientRandomOffsetAccepted(offset, sockets, sslModule) {
+    _NSS.learnedClientRandomOffset = offset;
+    var cached = sslModule !== null && isCacheableModule(sslModule);
+    if (cached)
+      reportLearned(sslModule, { layout: { [LEARNED_NSS_CLIENT_RANDOM_OFF]: offset } });
+    log(`[*] NSS: client_random +0x${offset.toString(16)} learned from ${sockets} sockets; ${cached ? "cached" : "not cached (no build id)"}`);
+    _NSS.logEchObserverStaysOn();
+  }
+  /**
+   * Detach the PK11_GenerateRandom hook (the learner object stays for validated sockets)
+   * and drop the ECH recorder with it.
+   */
+  static stopRandomObserver() {
+    var hook = _NSS.randomObserverHook;
+    _NSS.randomObserverHook = null;
+    _NSS.echRecorder?.clear();
+    _NSS.echRecorder = null;
+    if (hook === null)
+      return;
+    try {
+      hook.detach();
+    } catch (e) {
+      devlog("[-] NSS: detaching the client_random learner failed: " + e);
+    }
+  }
+  /** The shared tracked-socket store while the learner learns or the ECH recorder runs, else null. */
+  static activeRandomTrackedSockets() {
+    var learner = _NSS.clientRandomLearner;
+    var learning = learner !== null && !learner.settled;
+    return learning || _NSS.echRecorder !== null ? _NSS.randomTrackedSockets : null;
+  }
+  /** SSL_ImportFD: a new (or reused) sslSocket the learner / ECH recorder may attribute randoms to. */
+  static trackLearnerSocket(pRFileDesc) {
+    var sockets = _NSS.activeRandomTrackedSockets();
+    if (sockets === null)
+      return;
+    var sslSocketFD = _NSS.findSslSocketUncached(pRFileDesc);
+    if (sslSocketFD.isNull())
+      return;
+    sockets.track(addressOf(sslSocketFD));
+  }
   static extractClientRandom(fd) {
     try {
       const sslSocketFD = _NSS.get_SSL_FD(fd);
@@ -26811,10 +31532,9 @@ var NSS = class _NSS {
       const cached = _NSS.clientRandomCache.get(cacheKey);
       if (cached !== void 0)
         return cached;
-      const sslSocketStr = _NSS.parse_struct_sslSocketStr(sslSocketFD);
-      const ssl3 = _NSS.parse_struct_ssl3Str(sslSocketStr.ssl3);
-      const clientRandom = _NSS.getClientRandom(ssl3) || "";
-      _NSS.clientRandomCache.set(cacheKey, clientRandom);
+      const clientRandom = _NSS.clientRandomHexFromSocket(sslSocketFD);
+      if (clientRandom)
+        _NSS.clientRandomCache.set(cacheKey, clientRandom);
       return clientRandom;
     } catch (e) {
       devlog(`NSS extractClientRandom error: ${e}`);
@@ -26930,6 +31650,9 @@ var NSS = class _NSS {
     if ((dumping_handshake_secrets == 1 || dumping_handshake_secrets == 2) && _NSS.SSL_SecretCallback_fn) {
       return;
     }
+    if (!_NSS.structReadsAllowed()) {
+      return;
+    }
     var sslSocketFD = _NSS.get_SSL_FD(pRFileDesc);
     if (sslSocketFD.isNull()) {
       return;
@@ -26937,7 +31660,10 @@ var NSS = class _NSS {
     var sslSocketStr = _NSS.parse_struct_sslSocketStr(sslSocketFD);
     var ssl3_struct = sslSocketStr.ssl3;
     var ssl3 = _NSS.parse_struct_ssl3Str(ssl3_struct);
-    var client_random = _NSS.getClientRandom(ssl3);
+    var client_random = _NSS.clientRandomHexFromSocket(sslSocketFD);
+    if (!client_random) {
+      return;
+    }
     if (_NSS.doTLS13_RTT0 == 1) {
       var early_exporter_secret = _NSS.get_Secret_As_HexString(ssl3.hs.earlyExporterSecret);
       var earlyExpDump = _NSS.get_Keylog_Dump("EARLY_EXPORTER_SECRET", client_random, early_exporter_secret);
@@ -27035,7 +31761,7 @@ var NSS = class _NSS {
         this.buf = ptr(args[1]);
       },
       onLeave: function(retval) {
-        if (retval.toInt32() <= 0 || _NSS.getDescType(this.fd) == PRDescType.PR_DESC_FILE) {
+        if (retval.toInt32() <= 0 || _NSS.descTypeOf(this.fd) == PRDescType.PR_DESC_FILE) {
           return;
         }
         var addr = Memory.alloc(32);
@@ -27113,110 +31839,492 @@ var NSS = class _NSS {
   
       // our old way to get the diffrent secrets from TLS 1.3 and above
       */
-  static parse_epoch_value_from_SSL_SetSecretCallback(sslSocketFD, epoch) {
-    if (epoch == 1) {
-      _NSS.getTLS_Keys(sslSocketFD, 2);
-    } else if (epoch == 2) {
-      _NSS.getTLS_Keys(sslSocketFD, 1);
-    } else if (epoch >= 3) {
-      return;
-    } else {
-      devlog("[-] secret_callback invocation: UNKNOWN");
-    }
+  /***** Key extraction tiers 2/3 (tier 1 lives in shared/nss_keylog_locator.ts) *****/
+  /** SSL_ImportFD addresses whose tier-2/3 hooks are installed (one install per NSS copy). */
+  static fallbackInstalledFor = /* @__PURE__ */ new Set();
+  /** sslSocket address -> PRFileDesc of every live socket carrying friTap's handshake callback (tier 3). */
+  static ownedHandshakeCallbackFds = /* @__PURE__ */ new Map();
+  /** PRFileDesc (top of stack, stable across layer pushes) -> sslSocket key, for PR_Close bookkeeping. */
+  static ownedSocketByFd = /* @__PURE__ */ new Map();
+  static teardownRegistered = false;
+  /** Bind the NSPR/NSS helpers both the plaintext and the key-extraction paths use. */
+  static bindNativeHelpers(fnAddrs) {
+    const bind2 = (name, ret, args) => {
+      const a = fnAddrs[name];
+      return a && !a.isNull() ? new NativeFunction(a, ret, args) : null;
+    };
+    _NSS.getDescType = bind2("PR_GetDescType", "int", ["pointer"]) ?? _NSS.getDescType;
+    _NSS.PR_GetNameForIdentity = bind2("PR_GetNameForIdentity", "pointer", ["pointer"]) ?? _NSS.PR_GetNameForIdentity;
+    _NSS.get_SSL_Callback = bind2("SSL_HandshakeCallback", "int", ["pointer", "pointer", "pointer"]) ?? _NSS.get_SSL_Callback;
+    _NSS.PK11_ExtractKeyValue = bind2("PK11_ExtractKeyValue", "int", ["pointer"]) ?? _NSS.PK11_ExtractKeyValue;
+    _NSS.PK11_GetKeyData = bind2("PK11_GetKeyData", "pointer", ["pointer"]) ?? _NSS.PK11_GetKeyData;
   }
-  static insert_hook_into_secretCallback(addr_of_installed_secretCallback) {
-    Interceptor.attach(addr_of_installed_secretCallback, {
-      onEnter(args) {
-        this.sslSocketFD = args[0];
-        this.epoch = args[1];
-        _NSS.parse_epoch_value_from_SSL_SetSecretCallback(this.sslSocketFD, this.epoch);
-      },
+  /**
+   * Tiers 2 and 3, installed only after tier 1 missed. Tier 2: friTap's secret_callback
+   * via the supported SSL_SecretCallback API on every socket from SSL_ImportFD, with
+   * call-through to the app's callback and restore on detach. Tier 3: read-only version
+   * table, only for NSS < TABLE_VERIFIED_BELOW. Nothing here writes target memory.
+   *
+   * @param fnAddrs resolved, module-scoped addresses (SSL_ImportFD, SSL_HandshakeCallback,
+   *        SSL_GetExperimentalAPI, PR_Close, ...); bindNativeHelpers must have run
+   * @returns true iff at least one key-extraction hook was installed
+   */
+  static installFallbackKeyHooks(fnAddrs) {
+    const importFd = fnAddrs["SSL_ImportFD"];
+    if (!importFd || importFd.isNull()) {
+      devlog("[-] NSS: SSL_ImportFD not resolved \u2014 no fallback key extraction");
+      return false;
+    }
+    if (_NSS.fallbackInstalledFor.has(importFd.toString()))
+      return true;
+    _NSS.detectVersionOffsets();
+    const tableTier = _NSS.structReadsAllowed();
+    const sslModule = Process.findModuleByAddress(importFd);
+    if (nssClientRandomOffset() === null && _NSS.learnedClientRandomOffset === null) {
+      _NSS.learnedClientRandomOffset = _NSS.loadCachedClientRandomOffset(sslModule);
+    }
+    const secretTier = _NSS.useSecretCallbackTier(fnAddrs, tableTier);
+    if (secretTier && _NSS.learnerResolvable(fnAddrs)) {
+      _NSS.startRandomObserver(fnAddrs["PK11_GenerateRandom"], sslModule, _NSS.needsClientRandomLearner());
+    }
+    if (!secretTier && !tableTier) {
+      log("[-] NSS: no usable key-extraction tier (keylog writer not located, layout unverified)");
+      return false;
+    }
+    _NSS.fallbackInstalledFor.add(importFd.toString());
+    _NSS.installImportFdHook(importFd, secretTier, tableTier);
+    if (secretTier) {
+      _NSS.installSecretCallbackInterceptor();
+    }
+    if (tableTier) {
+      _NSS.installHandshakeCallbackInterceptor(fnAddrs["SSL_HandshakeCallback"]);
+    }
+    _NSS.installCloseHook(fnAddrs["PR_Close"]);
+    _NSS.registerSecretCallbackTeardown();
+    log(`[*] NSS: key extraction via ${secretTier ? "SSL_SecretCallback API" : ""}${secretTier && tableTier ? " + " : ""}${tableTier ? "read-only struct table" : ""}`);
+    return true;
+  }
+  /** No decoded and no learned/cached client_random offset: tier 2 needs the learner. */
+  static needsClientRandomLearner() {
+    return nssClientRandomOffset() === null && _NSS.learnedClientRandomOffset === null;
+  }
+  /** The learner can run: PK11_GenerateRandom was resolved module-scoped. */
+  static learnerResolvable(fnAddrs) {
+    const generateRandom = fnAddrs["PK11_GenerateRandom"];
+    return !!generateRandom && !generateRandom.isNull();
+  }
+  /** Tier 2 needs the API, a client_random source and PR_Close (to know which sockets are still alive on detach). */
+  static useSecretCallbackTier(fnAddrs, tableTier) {
+    let usable = _NSS.resolveExperimentalAPI(fnAddrs["SSL_GetExperimentalAPI"]);
+    if (usable && _NSS.needsClientRandomLearner() && !_NSS.learnerResolvable(fnAddrs) && !tableTier) {
+      devlog("NSS: SSL_SecretCallback skipped \u2014 no client_random source (offset not decoded or cached, PK11_GenerateRandom not resolved, table unverified)");
+      usable = false;
+    }
+    const prClose = fnAddrs["PR_Close"];
+    if (usable && (!prClose || prClose.isNull())) {
+      devlog("NSS: SSL_SecretCallback skipped \u2014 PR_Close not resolved, callbacks could not be restored safely");
+      usable = false;
+    }
+    if (!usable) {
+      _NSS.SSL_SecretCallback_fn = null;
+      _NSS.SSL_SecretCallback_ptr = null;
+    }
+    return usable;
+  }
+  static installImportFdHook(importFd, secretTier, tableTier) {
+    Interceptor.attach(importFd, {
       onLeave(retval) {
+        if (retval.isNull())
+          return;
+        const fd = copyPointer(retval);
+        try {
+          if (secretTier)
+            _NSS.trackLearnerSocket(fd);
+          if (tableTier)
+            _NSS.register_handshake_callback(fd);
+          if (secretTier)
+            _NSS.register_secret_callback(fd);
+        } catch (e) {
+          devlog("[-] NSS SSL_ImportFD hook: " + e);
+        }
       }
     });
   }
+  /** Tier 3: friTap's handshake callback on a new socket (the app's own registration replaces it later). */
+  static register_handshake_callback(pRFileDesc) {
+    if (!_NSS.get_SSL_Callback)
+      return false;
+    var sslSocketFD = _NSS.findSslSocketUncached(pRFileDesc);
+    if (sslSocketFD.isNull())
+      return false;
+    if (_NSS.get_SSL_Callback(pRFileDesc, _NSS.keylog_callback, NULL) < 0) {
+      devlog("[-] NSS: SSL_HandshakeCallback registration failed");
+      return false;
+    }
+    _NSS.trackOwnedSocket(_NSS.ownedHandshakeCallbackFds, sslSocketFD, pRFileDesc);
+    devlog("[*] NSS keylog handshake callback installed");
+    return true;
+  }
+  /** Tier 3: hook each distinct app SSLHandshakeCallback (TLS 1.2 keys after the handshake). */
+  static installHandshakeCallbackInterceptor(sslHandshakeCallback) {
+    if (!sslHandshakeCallback || sslHandshakeCallback.isNull())
+      return;
+    Interceptor.attach(sslHandshakeCallback, {
+      onEnter(args) {
+        try {
+          var sslSocketFD = _NSS.findSslSocketUncached(args[0]);
+          if (!sslSocketFD.isNull())
+            _NSS.ownedHandshakeCallbackFds.delete(sslSocketFD.toString());
+          _NSS.hookAppHandshakeCallback(args[1]);
+        } catch (e) {
+          devlog("[-] NSS SSL_HandshakeCallback hook: " + e);
+        }
+      }
+    });
+  }
+  /** Attach once per distinct, executable app callback; the dedupe entry is added before attaching. */
+  static hookAppHandshakeCallback(cb) {
+    if (cb.isNull() || cb.equals(_NSS.keylog_callback))
+      return;
+    var key = cb.toString();
+    if (_NSS.hookedAppHandshakeCallbacks.has(key))
+      return;
+    _NSS.hookedAppHandshakeCallbacks.add(key);
+    if (!isExecutable(cb)) {
+      devlog("[-] NSS: app handshake callback " + cb + " is not executable \u2014 not hooked");
+      return;
+    }
+    try {
+      Interceptor.attach(cb, {
+        onEnter(args) {
+          devlog("[*] NSS keylog via the application's handshake callback");
+          _NSS.ssl_RecordKeyLog(args[0]);
+        }
+      });
+    } catch (e) {
+      devlog("[-] NSS: unable to hook app handshake callback " + cb + ": " + e);
+    }
+  }
+  /**
+   * Hook SSL_SecretCallback so an app registration on a socket that carries friTap's
+   * callback (e.g. Neqo right after SSL_ImportFD) becomes the original we call through
+   * to, and friTap's callback is registered again on top.
+   */
   static installSecretCallbackInterceptor() {
     if (!_NSS.SSL_SecretCallback_ptr)
       return;
     Interceptor.attach(_NSS.SSL_SecretCallback_ptr, {
       onEnter(args) {
-        this.fd = args[0];
-        this.cb = args[1];
-        this.arg = args[2];
-        this.isOurs = args[1].equals(_NSS.secret_callback);
+        this.fd = copyPointer(args[0]);
+        this.cb = copyPointer(args[1]);
+        this.arg = copyPointer(args[2]);
       },
       onLeave(retval) {
-        if (this.isOurs || _NSS.secretCallbackReentryGuard)
+        if (_NSS.secretCallbackReentryGuard || retval.toInt32() < 0)
           return;
-        if (retval.toInt32() < 0)
+        if (this.cb.equals(_NSS.secret_callback))
           return;
         try {
-          var sslSocketFD = _NSS.get_SSL_FD(this.fd);
-          if (sslSocketFD && !sslSocketFD.isNull()) {
-            _NSS.originalSecretCallbacks[sslSocketFD.toString()] = {
-              cb: this.cb,
-              arg: this.arg,
-              fn: new NativeFunction(this.cb, "void", [
-                "pointer",
-                "uint16",
-                "uint16",
-                "pointer",
-                "pointer"
-              ])
-            };
-          }
+          _NSS.adoptAppSecretCallback(this.fd, this.cb, this.arg);
         } catch (e) {
+          devlog("[-] NSS SSL_SecretCallback hook: " + e);
         }
-        _NSS.secretCallbackReentryGuard = true;
-        try {
-          _NSS.SSL_SecretCallback_fn(this.fd, _NSS.secret_callback, NULL);
-        } finally {
-          _NSS.secretCallbackReentryGuard = false;
-        }
-        devlog("Re-registered secret callback after external override");
       }
     });
     devlog("SSL_SecretCallback interceptor installed");
   }
-  /**
-       * Registers a secret_callback through inserting the address to our TLS 1.3 callback function at the apprioate offset of the  SSL Socket struct
-       * This is neccassy because the computed handshake secrets are already freed after the handshake is completed.
-       *
-       *
-       * @param {*} pRFileDesc a file descriptor (NSS PRFileDesc) to a SSL socket
-       * @returns
-       */
-  static register_secret_callback(pRFileDesc) {
-    var sslSocketFD = _NSS.get_SSL_FD(pRFileDesc);
-    if (sslSocketFD.isNull()) {
-      devlog("[-] register_secret_callback: unable to get SSL socket descriptor");
+  /** The app registered its own secret callback on `fd`: keep it as the call-through target, put ours back. */
+  static adoptAppSecretCallback(fd, cb, arg) {
+    var sslSocketFD = _NSS.findSslSocketUncached(fd);
+    if (sslSocketFD.isNull())
+      return;
+    var key = sslSocketFD.toString();
+    if (!_NSS.ownedSecretCallbackFds.has(key))
+      return;
+    if (cb.isNull()) {
+      _NSS.originalSecretCallbacks.delete(key);
+    } else {
+      _NSS.originalSecretCallbacks.set(key, {
+        cb,
+        arg,
+        fn: new NativeFunction(cb, "void", ["pointer", "uint16", "int", "pointer", "pointer"])
+      });
+    }
+    if (_NSS.setSecretCallback(fd, _NSS.secret_callback, NULL) < 0) {
+      _NSS.forgetOwnedSocket(key);
       return;
     }
-    if (_NSS.SSL_SecretCallback_fn) {
-      _NSS.secretCallbackReentryGuard = true;
-      var rv;
-      try {
-        rv = _NSS.SSL_SecretCallback_fn(pRFileDesc, _NSS.secret_callback, NULL);
-      } finally {
-        _NSS.secretCallbackReentryGuard = false;
+    devlog("Re-registered secret callback after the app's registration (call-through kept)");
+  }
+  /** SSL_SecretCallback(fd, cb, arg) with the interceptor's re-entry guard set. */
+  static setSecretCallback(fd, cb, arg) {
+    if (!_NSS.SSL_SecretCallback_fn)
+      return -1;
+    _NSS.secretCallbackReentryGuard = true;
+    try {
+      return _NSS.SSL_SecretCallback_fn(fd, cb, arg);
+    } finally {
+      _NSS.secretCallbackReentryGuard = false;
+    }
+  }
+  /**
+   * Register friTap's secret_callback on a new socket through the SSL_SecretCallback API
+   * (tier 2). A socket fresh from SSL_ImportFD has no secret callback (ssl_DupSocket does
+   * not copy it), so any entry under its address belongs to a freed socket and is dropped.
+   *
+   * @param {*} pRFileDesc a file descriptor (NSS PRFileDesc) to a SSL socket
+   * @returns true iff friTap's callback is registered on the socket
+   */
+  static register_secret_callback(pRFileDesc) {
+    if (!_NSS.SSL_SecretCallback_fn)
+      return false;
+    var sslSocketFD = _NSS.findSslSocketUncached(pRFileDesc);
+    if (sslSocketFD.isNull()) {
+      devlog("[-] register_secret_callback: unable to get SSL socket descriptor");
+      return false;
+    }
+    var key = sslSocketFD.toString();
+    _NSS.originalSecretCallbacks.delete(key);
+    if (_NSS.setSecretCallback(pRFileDesc, _NSS.secret_callback, NULL) < 0) {
+      devlog("[-] SSL_SecretCallback API call failed for " + pRFileDesc);
+      _NSS.ownedSecretCallbackFds.delete(key);
+      return false;
+    }
+    _NSS.trackOwnedSocket(_NSS.ownedSecretCallbackFds, sslSocketFD, pRFileDesc);
+    devlog("secret_callback registered via SSL_SecretCallback API");
+    return true;
+  }
+  static trackOwnedSocket(owned, sslSocketFD, pRFileDesc) {
+    owned.set(sslSocketFD.toString(), copyPointer(pRFileDesc));
+    _NSS.ownedSocketByFd.set(pRFileDesc.toString(), sslSocketFD.toString());
+  }
+  /** Drop every bookkeeping entry of a socket (closed, or no longer carrying friTap's callbacks). */
+  static forgetOwnedSocket(sslSocketKey) {
+    _NSS.ownedSecretCallbackFds.delete(sslSocketKey);
+    _NSS.ownedHandshakeCallbackFds.delete(sslSocketKey);
+    _NSS.originalSecretCallbacks.delete(sslSocketKey);
+  }
+  /** A closed socket's memory may be reused: the learner must not attribute randoms to it. */
+  static forgetLearnerSocket(sslSocketKey) {
+    var sockets = _NSS.activeRandomTrackedSockets();
+    if (sockets === null)
+      return;
+    try {
+      sockets.forget(addressOf(ptr(sslSocketKey)));
+    } catch (_e) {
+    }
+  }
+  /** PR_Close of an owned socket clears its entries, so detach never touches a freed socket. */
+  static installCloseHook(prClose) {
+    if (!prClose || prClose.isNull())
+      return;
+    Interceptor.attach(prClose, {
+      onEnter(args) {
+        if (_NSS.ownedSocketByFd.size === 0)
+          return;
+        var fdKey = args[0].toString();
+        var sslSocketKey = _NSS.ownedSocketByFd.get(fdKey);
+        if (sslSocketKey === void 0)
+          return;
+        _NSS.ownedSocketByFd.delete(fdKey);
+        _NSS.forgetOwnedSocket(sslSocketKey);
+        _NSS.forgetLearnerSocket(sslSocketKey);
       }
-      if (rv >= 0) {
-        devlog("secret_callback registered via SSL_SecretCallback API");
+    });
+  }
+  static registerSecretCallbackTeardown() {
+    if (_NSS.teardownRegistered)
+      return;
+    _NSS.teardownRegistered = true;
+    registerDetachTeardown("nss-key-callbacks", _NSS.restoreAppCallbacks);
+  }
+  /**
+   * Detach teardown: put the app's own secret callback (or NULL) back on every live socket
+   * that still carries friTap's secret_callback, and clear friTap's handshake callback, so
+   * no socket keeps a pointer into the unloaded agent. Never throws.
+   *
+   * Returns the counts for the DetachReport: `owned` sockets, restored `toApp` (the app's
+   * callback) or `toNull`, `stale` (no longer the same live socket, left alone), `failed`
+   * (negative rv or threw); `hsOwned` / `hsCleared` for the handshake callback.
+   */
+  static restoreAppCallbacks() {
+    var summary = {
+      owned: _NSS.ownedSecretCallbackFds.size,
+      toApp: 0,
+      toNull: 0,
+      stale: 0,
+      failed: 0,
+      hsOwned: _NSS.ownedHandshakeCallbackFds.size,
+      hsCleared: 0,
+      echDual: _NSS.echDualEmissions
+    };
+    _NSS.stopRandomObserver();
+    _NSS.ownedSecretCallbackFds.forEach((fd, key) => {
+      if (!_NSS.isSameLiveSocket(fd, key)) {
+        summary.stale++;
         return;
       }
-      devlog("SSL_SecretCallback API call failed (rv=" + rv + "), falling back to struct write");
+      var orig = _NSS.originalSecretCallbacks.get(key);
+      try {
+        var rv = _NSS.setSecretCallback(fd, orig ? orig.cb : NULL, orig ? orig.arg : NULL);
+        if (rv < 0)
+          summary.failed++;
+        else if (orig)
+          summary.toApp++;
+        else
+          summary.toNull++;
+      } catch (e) {
+        summary.failed++;
+        devlog("[-] NSS: restoring the secret callback failed: " + e);
+      }
+    });
+    _NSS.ownedHandshakeCallbackFds.forEach((fd, key) => {
+      if (!_NSS.isSameLiveSocket(fd, key) || !_NSS.get_SSL_Callback)
+        return;
+      try {
+        _NSS.get_SSL_Callback(fd, NULL, NULL);
+        summary.hsCleared++;
+      } catch (e) {
+        devlog("[-] NSS: clearing the handshake callback failed: " + e);
+      }
+    });
+    _NSS.ownedSecretCallbackFds.clear();
+    _NSS.ownedHandshakeCallbackFds.clear();
+    _NSS.originalSecretCallbacks.clear();
+    _NSS.ownedSocketByFd.clear();
+    return summary;
+  }
+  /** Defensive re-check before a teardown call: the fd is readable and still resolves to the same sslSocket. */
+  static isSameLiveSocket(fd, sslSocketKey) {
+    try {
+      return isReadable(fd, Process.pointerSize * 6) && _NSS.findSslSocketUncached(fd).toString() === sslSocketKey;
+    } catch (_e) {
+      return false;
     }
-    var sslSocketStr = _NSS.parse_struct_sslSocketStr(sslSocketFD);
-    if (_NSS.is_ptr_at_mem_location(sslSocketStr.secretCallback.readPointer()) == 1) {
-      _NSS.insert_hook_into_secretCallback(sslSocketStr.secretCallback.readPointer());
-    } else {
-      sslSocketStr.secretCallback.writePointer(_NSS.secret_callback);
-    }
-    devlog("secret_callback installed via struct write at: " + sslSocketStr.secretCallback);
   }
   install_tls_keys_callback_hook() {
   }
 };
+
+// agent/tls/libs/nss_install.ts
+init_node_globals();
+function sslModuleOf(moduleName, fnAddrs) {
+  const importFd = fnAddrs["SSL_ImportFD"];
+  if (importFd && !importFd.isNull()) {
+    const owner2 = Process.findModuleByAddress(importFd);
+    if (owner2 !== null)
+      return owner2;
+  }
+  return Process.findModuleByName(moduleName);
+}
+var FALLBACK_TIER_EXPORTS = ["SSL_ImportFD", "SSL_HandshakeCallback", "SSL_GetExperimentalAPI", "PR_Close", "PK11_GenerateRandom"];
+function withFallbackExports(fnAddrs, findExport) {
+  const filled = { ...fnAddrs };
+  for (const name of FALLBACK_TIER_EXPORTS) {
+    if (filled[name] && !filled[name].isNull())
+      continue;
+    const found = findExport(name);
+    if (found !== null)
+      filled[name] = found;
+  }
+  return filled;
+}
+async function tryKeylogWriterHook(sslModule, findExport) {
+  if (sslModule === null)
+    return false;
+  try {
+    return await installNssKeylogHook(sslModule, { findExport });
+  } catch (e) {
+    devlog(`[nss-keylog] ${sslModule.name}: keylog writer tier failed: ${e}`);
+    return false;
+  }
+}
+async function installNssKeyExtraction(moduleName, fnAddrs) {
+  NSS.bindNativeHelpers(fnAddrs);
+  const sslModule = sslModuleOf(moduleName, fnAddrs);
+  NSS.setExportScope([sslModule, Process.findModuleByName(moduleName)]);
+  const findExport = NSS.nssExportFinder();
+  if (await tryKeylogWriterHook(sslModule, findExport)) {
+    devlog(`[*] ${moduleName}: NSS keys via the keylog-writer hook; no callback hooks installed`);
+    return true;
+  }
+  try {
+    const filled = withFallbackExports(fnAddrs, findExport);
+    NSS.bindNativeHelpers(filled);
+    return NSS.installFallbackKeyHooks(filled);
+  } catch (e) {
+    devlog(`[-] ${moduleName}: NSS fallback key extraction failed: ${e}`);
+    return false;
+  }
+}
+
+// agent/tls/libs/nss_windows_libraries.ts
+init_node_globals();
+var NSPR_IO_SYMBOLS = [
+  "PR_Write",
+  "PR_Read",
+  "PR_FileDesc2NativeHandle",
+  "PR_GetPeerName",
+  "PR_GetSockName",
+  "PR_GetNameForIdentity",
+  "PR_GetDescType"
+];
+var NSS_PK11_SYMBOLS = ["PK11_ExtractKeyValue", "PK11_GetKeyData"];
+var NSS_SSL_SYMBOLS = [
+  "SSL_ImportFD",
+  "SSL_GetSessionID",
+  "SSL_HandshakeCallback",
+  "SSL_GetExperimentalAPI",
+  "NSSSSL_GetVersion"
+];
+var NSS_HPKE_SYMBOLS = ["PK11_HPKE_Seal", "PK11_HPKE_Open"];
+var NSS_WINDOWS_MODULE_PATTERN = /^(lib)?(nspr[0-9]*|nss3)\.dll$/i;
+var NSS3_MODULE_NAME = /^(lib)?nss3\.dll$/i;
+function isNss3ModuleName(moduleName) {
+  return NSS3_MODULE_NAME.test(moduleName);
+}
+function nssWindowsLibrarySymbols(moduleName) {
+  if (isNss3ModuleName(moduleName)) {
+    return [...NSPR_IO_SYMBOLS, ...NSS_PK11_SYMBOLS, ...NSS_SSL_SYMBOLS];
+  }
+  return [...NSPR_IO_SYMBOLS];
+}
+function nssWindowsAuxiliaryLibraries(moduleName) {
+  if (isNss3ModuleName(moduleName))
+    return [];
+  return [
+    { pattern: "*nss3.dll", symbols: [...NSS_PK11_SYMBOLS] },
+    { pattern: "*ssl3.dll", symbols: [...NSS_SSL_SYMBOLS] }
+  ];
+}
+function nssWindowsMethodMapping(moduleName, socketLibrary) {
+  const mapping = {};
+  mapping[`*${moduleName}*`] = nssWindowsLibrarySymbols(moduleName);
+  for (const aux of nssWindowsAuxiliaryLibraries(moduleName)) {
+    mapping[aux.pattern] = aux.symbols;
+  }
+  mapping[`*${socketLibrary}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"];
+  return mapping;
+}
+var nsprIoVerdicts = /* @__PURE__ */ new Map();
+function exportsNsprIo(moduleName) {
+  if (!isNss3ModuleName(moduleName))
+    return true;
+  const cached = nsprIoVerdicts.get(moduleName);
+  if (cached !== void 0)
+    return cached;
+  try {
+    const mod = Process.findModuleByName(moduleName);
+    if (mod === null)
+      return false;
+    const prRead = mod.findExportByName("PR_Read");
+    const verdict = prRead !== null && !prRead.isNull();
+    nsprIoVerdicts.set(moduleName, verdict);
+    return verdict;
+  } catch (_e) {
+    return false;
+  }
+}
 
 // agent/tls/definitions/nss.ts
 function createNssClientRandomDecoder() {
@@ -27225,64 +32333,8 @@ function createNssClientRandomDecoder() {
 function installNssKeylog(addresses, moduleName, _resolvedFns, _enableDefaultFd) {
   const modAddrs = addresses[moduleName];
   if (!modAddrs)
-    return false;
-  NSS.detectVersionOffsets();
-  NSS.resolveExperimentalAPI();
-  if (modAddrs["PR_GetDescType"]) {
-    NSS.getDescType = new NativeFunction(modAddrs["PR_GetDescType"], "int", ["pointer"]);
-  }
-  if (modAddrs["PR_GetNameForIdentity"]) {
-    NSS.PR_GetNameForIdentity = new NativeFunction(modAddrs["PR_GetNameForIdentity"], "pointer", ["pointer"]);
-  }
-  if (modAddrs["SSL_HandshakeCallback"]) {
-    NSS.get_SSL_Callback = new NativeFunction(modAddrs["SSL_HandshakeCallback"], "int", ["pointer", "pointer", "pointer"]);
-  }
-  if (modAddrs["PK11_ExtractKeyValue"]) {
-    NSS.PK11_ExtractKeyValue = new NativeFunction(modAddrs["PK11_ExtractKeyValue"], "int", ["pointer"]);
-  }
-  if (modAddrs["PK11_GetKeyData"]) {
-    NSS.PK11_GetKeyData = new NativeFunction(modAddrs["PK11_GetKeyData"], "pointer", ["pointer"]);
-  }
-  const sslImportFdAddr = modAddrs["SSL_ImportFD"];
-  if (sslImportFdAddr && !sslImportFdAddr.isNull()) {
-    Interceptor.attach(sslImportFdAddr, {
-      onEnter(args) {
-        this.fd = args[1];
-      },
-      onLeave(retval) {
-        if (retval.isNull()) {
-          devlog("[-] SSL_ImportFD error: unknown null");
-          return;
-        }
-        var retValue = NSS.get_SSL_Callback(retval, NSS.keylog_callback, NULL);
-        NSS.register_secret_callback(retval);
-        if (retValue < 0) {
-          devlog("Callback Error");
-        } else {
-          devlog("[*] NSS keylog callback successfully installed");
-        }
-      }
-    });
-  }
-  const sslHandshakeCbAddr = modAddrs["SSL_HandshakeCallback"];
-  if (sslHandshakeCbAddr && !sslHandshakeCbAddr.isNull()) {
-    Interceptor.attach(sslHandshakeCbAddr, {
-      onEnter(args) {
-        this.originalCallback = args[1];
-        Interceptor.attach(ptr(this.originalCallback), {
-          onEnter(args2) {
-            var sslSocketFD = args2[0];
-            devlog("[*] NSS keylog callback successfully installed via applications callback function");
-            NSS.ssl_RecordKeyLog(sslSocketFD);
-          }
-        });
-      }
-    });
-  }
-  NSS.installSecretCallbackInterceptor();
-  devlog("[*] NSS modern keylog hooks installed");
-  log(`[*] ${moduleName}: keylog hooks installed via NSS SSL_HandshakeCallback + SSL_SecretCallback`);
-  return true;
+    return Promise.resolve(false);
+  return installNssKeyExtraction(moduleName, modAddrs);
 }
 function createNssMacosDefinition() {
   const base = createNssDefinition();
@@ -27293,6 +32345,17 @@ function createNssMacosDefinition() {
       auxiliaryLibraries: [
         { pattern: "*libnss*", symbols: ["PK11_ExtractKeyValue", "PK11_GetKeyData", "SSL_ImportFD", "SSL_GetSessionID", "SSL_HandshakeCallback", "SSL_GetExperimentalAPI", "NSSSSL_GetVersion"] }
       ]
+    }
+  };
+}
+function createNssWindowsDefinition(moduleName) {
+  const base = createNssDefinition();
+  return {
+    ...base,
+    functions: {
+      ...base.functions,
+      librarySymbols: nssWindowsLibrarySymbols(moduleName),
+      auxiliaryLibraries: nssWindowsAuxiliaryLibraries(moduleName)
     }
   };
 }
@@ -27536,14 +32599,16 @@ var KeylogCallbackRegistry = class {
    * Record that our callback is about to be written into `key`. The entry
    * factory runs only for a new key, so the first-seen previous callback is
    * kept across re-installs. Returns false once sealed: the caller must then
-   * NOT install (teardown has started).
+   * NOT install (teardown has started). `destructionObserved` declares that
+   * noteDestroyed() will be called for this CTX's final free (mode 1 above).
    */
-  recordInstall(key, makeEntry) {
+  recordInstall(key, makeEntry, destructionObserved = false) {
     if (this.isSealed)
       return false;
     const existing = this.records.get(key);
-    const record = existing ?? { entry: makeEntry(), refs: 0 };
+    const record = existing ?? { entry: makeEntry(), refs: 0, destructionObserved };
     record.refs = Math.max(record.refs, 1);
+    record.destructionObserved = destructionObserved;
     this.records.delete(key);
     this.records.set(key, record);
     this.evictOverflow();
@@ -27554,13 +32619,33 @@ var KeylogCallbackRegistry = class {
     if (record)
       record.refs++;
   }
-  noteFree(key) {
+  /**
+   * An observed SSL_CTX_free. For a refcount-tracked entry whose bound reaches
+   * 0 the entry is removed and handed to `releaseLastRef` (which must restore
+   * the previous callback; a throw is swallowed). Destruction-observed entries
+   * are never dropped here -- only noteDestroyed() removes them.
+   */
+  noteFree(key, releaseLastRef) {
     const record = this.records.get(key);
     if (!record)
       return;
-    record.refs--;
-    if (record.refs <= 0)
-      this.records.delete(key);
+    record.refs = Math.max(record.refs - 1, 0);
+    if (record.refs > 0 || record.destructionObserved)
+      return;
+    this.records.delete(key);
+    if (releaseLastRef === void 0)
+      return;
+    try {
+      releaseLastRef(record.entry);
+    } catch (_e) {
+    }
+  }
+  /**
+   * The CTX is really being destroyed (final free observed): forget it without
+   * restoring -- it will never run another handshake.
+   */
+  noteDestroyed(key) {
+    this.records.delete(key);
   }
   /**
    * Seal (no further installs are accepted) and hand every remaining entry to
@@ -27600,6 +32685,12 @@ var KeylogCallbackRegistry = class {
 // agent/shared/keylog_callback_tracker.ts
 var registry = new KeylogCallbackRegistry();
 var lifetimeHookedModules = /* @__PURE__ */ new Map();
+var destructionObservedModules = /* @__PURE__ */ new Map();
+var destructionHookedLibcrypto = /* @__PURE__ */ new Map();
+var retainedKeylogCallbacks = [];
+var CRYPTO_EX_INDEX_SSL_CTX_OPENSSL_1_1 = 1;
+var BORINGSSL_LIBCRYPTO_MARKERS = ["CRYPTO_BUFFER_new", "BORINGSSL_self_test"];
+var LIBCRYPTO_NAME = /^libcrypto([-_.][\w.-]*)?\.(dylib|dll|so(\.[\w.]+)?)$/i;
 function findFunction(moduleName, name) {
   try {
     const mod = Process.findModuleByName(moduleName);
@@ -27618,8 +32709,11 @@ function attachLifetimeHooks(moduleName, freeAddress) {
   let attached = false;
   try {
     Interceptor.attach(freeAddress, {
+      // At refs 0 (fallback mode) restore while the CTX is still alive.
       onEnter(args) {
-        registry.noteFree(args[0].toString());
+        registry.noteFree(args[0].toString(), (tracked) => {
+          tracked.owner.restore(tracked);
+        });
       }
     });
     attached = true;
@@ -27636,16 +32730,98 @@ function attachLifetimeHooks(moduleName, freeAddress) {
         }
       });
     } catch (e) {
-      devlog(`[keylog-cb-registry] ${moduleName}: SSL_CTX_up_ref hook failed (fail-safe): ${e}`);
+      devlog(`[keylog-cb-registry] ${moduleName}: SSL_CTX_up_ref hook failed (refs-0 restore covers it): ${e}`);
     }
   }
   return attached;
+}
+function sslCtxExDataClassIndex(hasExport, versionNumber) {
+  if (BORINGSSL_LIBCRYPTO_MARKERS.some(hasExport))
+    return null;
+  if (versionNumber === null)
+    return null;
+  const isOpenSsl11 = versionNumber >= 269484032 && versionNumber < 270532608;
+  const isOpenSsl3 = versionNumber >= 805306368 && versionNumber < 1073741824;
+  return isOpenSsl11 || isOpenSsl3 ? CRYPTO_EX_INDEX_SSL_CTX_OPENSSL_1_1 : null;
+}
+function basename2(path) {
+  return path.split(/[\\/]/).pop() ?? path;
+}
+function asForeignLibcrypto(mod, self) {
+  if (mod === null || mod.name === self.name)
+    return null;
+  return LIBCRYPTO_NAME.test(mod.name) ? mod : null;
+}
+function findSiblingLibcrypto(ssl) {
+  const dirOf = (path) => path.slice(0, path.length - basename2(path).length);
+  const dir = dirOf(ssl.path);
+  return Process.enumerateModules().find((mod) => dirOf(mod.path) === dir && asForeignLibcrypto(mod, ssl) !== null) ?? null;
+}
+function findImportingLibcrypto(moduleName) {
+  const ssl = Process.findModuleByName(moduleName);
+  if (ssl === null || typeof ssl.enumerateImports !== "function")
+    return null;
+  const imp = ssl.enumerateImports().find((i) => i.name === "CRYPTO_free_ex_data");
+  if (imp === void 0)
+    return null;
+  const byAddress = imp.address ? Process.findModuleByAddress(imp.address) : null;
+  const byName = imp.module ? Process.findModuleByName(basename2(imp.module)) : null;
+  return asForeignLibcrypto(byAddress, ssl) ?? asForeignLibcrypto(byName, ssl) ?? findSiblingLibcrypto(ssl);
+}
+function readOpenSslVersionNumber(crypto) {
+  const address = crypto.findExportByName("OpenSSL_version_num");
+  if (address === null || address.isNull())
+    return null;
+  const raw = new NativeFunction(address, "ulong", [])();
+  return Number(String(raw));
+}
+function attachDestructionHook(crypto, classIndex) {
+  const known = destructionHookedLibcrypto.get(crypto.name);
+  if (known !== void 0)
+    return known;
+  let attached = false;
+  try {
+    const freeExData = crypto.findExportByName("CRYPTO_free_ex_data");
+    if (freeExData !== null && !freeExData.isNull()) {
+      Interceptor.attach(freeExData, {
+        onEnter(args) {
+          if (args[0].toInt32() === classIndex)
+            registry.noteDestroyed(args[1].toString());
+        }
+      });
+      attached = true;
+    }
+  } catch (e) {
+    devlog(`[keylog-cb-registry] ${crypto.name}: CRYPTO_free_ex_data hook failed: ${e}`);
+  }
+  destructionHookedLibcrypto.set(crypto.name, attached);
+  return attached;
+}
+function observeCtxDestruction(moduleName) {
+  const known = destructionObservedModules.get(moduleName);
+  if (known !== void 0)
+    return known;
+  let observed = false;
+  try {
+    const crypto = findImportingLibcrypto(moduleName);
+    const wineHosted = crypto !== null && /\.dll$/i.test(crypto.name) && Process.platform !== "windows";
+    if (crypto !== null && !wineHosted) {
+      const hasExport = (name) => crypto.findExportByName(name) !== null;
+      const classIndex = sslCtxExDataClassIndex(hasExport, readOpenSslVersionNumber(crypto));
+      observed = classIndex !== null && attachDestructionHook(crypto, classIndex);
+    }
+  } catch (e) {
+    devlog(`[keylog-cb-registry] ${moduleName}: SSL_CTX destruction not observable: ${e}`);
+  }
+  destructionObservedModules.set(moduleName, observed);
+  return observed;
 }
 var TrackerImpl = class {
   ourCallback;
   setter;
   getter;
   tracksLifetime;
+  observesDestruction;
   constructor(moduleName, setterAddress, ourCallback, trackLifetime) {
     this.ourCallback = ourCallback;
     this.setter = new NativeFunction(setterAddress, "void", ["pointer", "pointer"], { scheduling: "exclusive" });
@@ -27653,7 +32829,8 @@ var TrackerImpl = class {
     this.getter = getterAddress === null ? null : new NativeFunction(getterAddress, "pointer", ["pointer"], { scheduling: "exclusive" });
     const freeAddress = trackLifetime ? findFunction(moduleName, "SSL_CTX_free") : null;
     this.tracksLifetime = freeAddress !== null && attachLifetimeHooks(moduleName, freeAddress);
-    devlog(`[keylog-cb-registry] ${moduleName}: lifetime tracking=${this.tracksLifetime}, getter=${this.getter !== null}`);
+    this.observesDestruction = this.tracksLifetime && observeCtxDestruction(moduleName);
+    devlog(`[keylog-cb-registry] ${moduleName}: lifetime tracking=${this.tracksLifetime}, destruction observed=${this.observesDestruction}, getter=${this.getter !== null}`);
   }
   get sealed() {
     return registry.sealed;
@@ -27662,7 +32839,7 @@ var TrackerImpl = class {
     if (ctx.isNull() || registry.sealed)
       return;
     if (this.tracksLifetime) {
-      registry.recordInstall(ctx.toString(), () => ({ ctx, previous: this.readPrevious(ctx), owner: this }));
+      registry.recordInstall(ctx.toString(), () => ({ ctx, previous: this.readPrevious(ctx), owner: this }), this.observesDestruction);
     }
     this.setter(ctx, this.ourCallback);
   }
@@ -27692,7 +32869,12 @@ var TrackerImpl = class {
   }
 };
 function createKeylogCallbackTracker(moduleName, setterAddress, ourCallback, trackLifetime) {
+  retainKeylogCallback(ourCallback);
   return new TrackerImpl(moduleName, setterAddress, ourCallback, trackLifetime);
+}
+function retainKeylogCallback(callback) {
+  if (!retainedKeylogCallbacks.includes(callback))
+    retainedKeylogCallbacks.push(callback);
 }
 function restoreTrackedKeylogCallbacks() {
   const result = registry.sealAndDrain((_key, tracked) => tracked.owner.restore(tracked));
@@ -27973,6 +33155,73 @@ function httpengine_execute_modern(moduleName, is_base_hook) {
 
 // agent/tls/platforms/android/conscrypt.ts
 init_node_globals();
+
+// agent/shared/rtld_notifier_probe.ts
+init_node_globals();
+function decodeThumbBranchWTarget(address, hw1, hw2) {
+  const isBranchW = (hw1 & 63488) === 61440 && (hw2 & 53248) === 36864;
+  if (!isBranchW)
+    return null;
+  const s = hw1 >> 10 & 1;
+  const j1 = hw2 >> 13 & 1;
+  const j2 = hw2 >> 11 & 1;
+  const i1 = ~(j1 ^ s) & 1;
+  const i2 = ~(j2 ^ s) & 1;
+  const imm10 = hw1 & 1023;
+  const imm11 = hw2 & 2047;
+  let offset = s << 24 | i1 << 23 | i2 << 22 | imm10 << 12 | imm11 << 1;
+  if (s)
+    offset -= 1 << 25;
+  return address + 4 + offset >>> 0;
+}
+function isAddressInMaps(address, mapsText) {
+  for (const line of mapsText.split("\n")) {
+    const match = /^([0-9a-f]+)-([0-9a-f]+)\s/.exec(line);
+    if (match === null)
+      continue;
+    if (address >= parseInt(match[1], 16) && address < parseInt(match[2], 16))
+      return true;
+  }
+  return false;
+}
+function isNotifierBranchBroken(stubAddress, hw1, hw2, mapsText) {
+  const target = decodeThumbBranchWTarget(stubAddress, hw1, hw2);
+  return target !== null && !isAddressInMaps(target, mapsText);
+}
+function findNotifierStub() {
+  const linker = Process.findModuleByName("linker");
+  if (linker === null)
+    return null;
+  for (const symbol of linker.enumerateSymbols()) {
+    if (symbol.name.endsWith("rtld_db_dlactivity"))
+      return symbol.address.and(ptr("0xfffffffe"));
+  }
+  return null;
+}
+function isLinkerNotifierHookBroken() {
+  if (Process.arch !== "arm")
+    return false;
+  try {
+    const stub = findNotifierStub();
+    if (stub === null)
+      return false;
+    const maps = File.readAllText("/proc/self/maps");
+    return isNotifierBranchBroken(stub.toUInt32(), stub.readU16(), stub.add(2).readU16(), maps);
+  } catch (e) {
+    devlog(`[rtld-probe] linker notifier probe failed: ${e}`);
+    return false;
+  }
+}
+var LINKER_NOTIFIER_JAVA_SKIP_WARNING = "frida's linker hook (rtld_db_dlactivity) branches into unmapped memory in this 32-bit process: skipping Android TLS Java hooks, whose first Java.use() would load libopenjdkjvmti.so and freeze the app. Any library the app loads from now on may also crash it. This is a frida-gum bug on 32-bit ARM Android (present up to at least frida 17.27.4): the Thumb hook on rtld_db_dlactivity falls back to a NULL trampoline when SELinux denies patching the linker header cave. Capture 64-bit processes where possible.";
+var javaGateVerdict = null;
+function isJavaBlockedByBrokenLinkerNotifier(probe2 = isLinkerNotifierHookBroken, warn = log) {
+  if (javaGateVerdict === null) {
+    javaGateVerdict = probe2();
+    if (javaGateVerdict)
+      warn(LINKER_NOTIFIER_JAVA_SKIP_WARNING);
+  }
+  return javaGateVerdict;
+}
 
 // agent/legacy/tls/platforms/android/conscrypt.ts
 init_node_globals();
@@ -28850,7 +34099,7 @@ function execute() {
 function conscrypt_execute_modern(moduleName, is_base_hook) {
   const def = createOpenSslDefinition({ includeExSymbols: true });
   def.keylog = createBoringSSLKeylogApproach();
-  if (!pairip_safe) {
+  if (!pairip_safe && !isJavaBlockedByBrokenLinkerNotifier()) {
     def.extraHooks = [
       {
         install: () => {
@@ -28982,6 +34231,1273 @@ function s2ntls_execute_modern(moduleName, is_base_hook) {
   executeFromDefinition(createS2nTlsDefinition(), moduleName, socket_library, is_base_hook, enable_default_fd);
 }
 
+// agent/shared/fizz_install.ts
+init_node_globals();
+init_shared_structures();
+
+// agent/shared/fizz_locator.ts
+init_node_globals();
+var FIZZ_VOTING_LABELS = [
+  "c hs traffic",
+  "s hs traffic",
+  "c ap traffic",
+  "s ap traffic",
+  "exp master",
+  "c e traffic"
+];
+var FIZZ_KDF_RTTI_NAME = "N4fizz17KeyDerivationImplE";
+var FIZZ_HANDSHAKE_CONTEXT_RTTI_NAME = "N4fizz20HandshakeContextImplE";
+var HKDF_LABEL_PREFIX = "tls13 ";
+var APPEND_TO_TRANSCRIPT_SLOT = 8;
+var LABEL_BEGIN_REG = 5;
+var LABEL_END_REG = 6;
+var MIN_AGREEING_LABELS = 2;
+var CALL_WALK_MAX_WORDS = 192;
+var CALL_WALK_MAX_BRANCHES = 4;
+var CHAIN_BACK_MAX_WORDS = 48;
+var BODY_MAX_WORDS = 512;
+var ENTRY_WINDOW_WORDS = 48;
+var MAX_REACH_CALLEES = 64;
+var MAX_SEARCH_HITS = 16;
+var POINTER_SIZE = 8;
+var CALLEE_SAVED_MIN = 19;
+var CALLEE_SAVED_MAX = 28;
+var LINK_REG2 = 30;
+var LEARNED_FIZZ_DERIVE_SECRET = "fizz.derive_secret";
+var LEARNED_FIZZ_APPEND_TRANSCRIPT = "fizz.append_transcript";
+var LEARNED_FIZZ_KDF_VTABLE = "fizz.kdf_vtableRva";
+var LEARNED_FIZZ_HANDSHAKE_CONTEXT_VTABLE = "fizz.handshake_context_vtableRva";
+var LEARNED_FIZZ_DERIVE_SECRET_SLOT = "fizz.derive_secret_slot";
+var LEARNED_FIZZ_DERIVE_SECRET_MISS = learnedMissName(LEARNED_FIZZ_DERIVE_SECRET);
+var FIZZ_LOCATOR_MISS_FINGERPRINT = missFingerprint([
+  ...FIZZ_VOTING_LABELS,
+  FIZZ_KDF_RTTI_NAME,
+  FIZZ_HANDSHAKE_CONTEXT_RTTI_NAME,
+  "revision",
+  "2"
+]);
+function rangeHoldsArtefact(protection, region) {
+  if (!protection.startsWith("r"))
+    return false;
+  return region === "rodata" ? !protection.includes("w") : !protection.includes("x");
+}
+function rangesHolding(ranges, region) {
+  const held = ranges.filter((r) => rangeHoldsArtefact(r.protection, region));
+  return [...held.filter((r) => !r.protection.includes("x")), ...held.filter((r) => r.protection.includes("x"))];
+}
+function isCallerSaved(reg) {
+  return reg < CALLEE_SAVED_MIN || reg === LINK_REG2;
+}
+function isVptrLoad(w) {
+  return isLDRimmU64(w) && decodeLDRU64Imm(w) === 0;
+}
+var VtableChainTracker = class {
+  vptr = /* @__PURE__ */ new Set();
+  slotOf = /* @__PURE__ */ new Map();
+  targetSlot = /* @__PURE__ */ new Map();
+  /** Slot of the vtable entry held in `reg`, or null when `reg` was not built by the chain. */
+  slotIn(reg) {
+    return this.targetSlot.get(reg) ?? null;
+  }
+  step(w) {
+    const defined = this.definition(w);
+    const dest = regRd(w);
+    for (const reg of [...this.vptr])
+      if (writesReg(w, reg))
+        this.vptr.delete(reg);
+    for (const reg of [...this.slotOf.keys()])
+      if (writesReg(w, reg))
+        this.slotOf.delete(reg);
+    for (const reg of [...this.targetSlot.keys()])
+      if (writesReg(w, reg))
+        this.targetSlot.delete(reg);
+    if (defined === null)
+      return;
+    if (defined.kind === "vptr")
+      this.vptr.add(dest);
+    else if (defined.kind === "slot")
+      this.slotOf.set(dest, { slot: defined.slot, vreg: defined.vreg });
+    else
+      this.targetSlot.set(dest, defined.slot);
+  }
+  clobberCallerSaved() {
+    for (const map of [this.slotOf, this.targetSlot]) {
+      for (const reg of [...map.keys()])
+        if (isCallerSaved(reg))
+          map.delete(reg);
+    }
+    for (const reg of [...this.vptr])
+      if (isCallerSaved(reg))
+        this.vptr.delete(reg);
+  }
+  definition(w) {
+    if (isVptrLoad(w))
+      return { kind: "vptr" };
+    if (isLDRSWimmU(w) && this.vptr.has(regRn(w)))
+      return { kind: "slot", slot: decodeLDRSWImm(w), vreg: regRn(w) };
+    if (!isADDreg64(w))
+      return null;
+    for (const [v, s] of [[regRn(w), regRm(w)], [regRm(w), regRn(w)]]) {
+      const slot = this.slotOf.get(s);
+      if (slot !== void 0 && slot.vreg === v && this.vptr.has(v))
+        return { kind: "target", slot: slot.slot };
+    }
+    return null;
+  }
+};
+function definitionBefore(img, off, reg, maxWords = CHAIN_BACK_MAX_WORDS) {
+  for (let k = 1; k <= maxWords; k++) {
+    const at = off - 4 * k;
+    const w = at < 0 ? null : img.readU32(at);
+    if (w === null || endsFallThrough(w))
+      return null;
+    if (isAnyCall(w)) {
+      if (isCallerSaved(reg))
+        return null;
+      continue;
+    }
+    if (writesReg(w, reg))
+      return { off: at, w };
+  }
+  return null;
+}
+function backwardVtableCallSlot(img, blrOff) {
+  const blr = img.readU32(blrOff);
+  if (blr === null || !isBLR(blr))
+    return null;
+  const add = definitionBefore(img, blrOff, regRn(blr));
+  if (add === null || !isADDreg64(add.w))
+    return null;
+  for (const [v, s] of [[regRn(add.w), regRm(add.w)], [regRm(add.w), regRn(add.w)]]) {
+    const slotLoad = definitionBefore(img, add.off, s);
+    if (slotLoad === null || !isLDRSWimmU(slotLoad.w) || regRn(slotLoad.w) !== v)
+      continue;
+    const vptrAtAdd = definitionBefore(img, add.off, v);
+    const vptrAtSlot = definitionBefore(img, slotLoad.off, v);
+    if (vptrAtAdd === null || vptrAtSlot === null || vptrAtAdd.off !== vptrAtSlot.off)
+      continue;
+    if (isVptrLoad(vptrAtAdd.w))
+      return decodeLDRSWImm(slotLoad.w);
+  }
+  return null;
+}
+function completesLabelAddress(w, labelRegs) {
+  return (isADDimm64(w) || isLDRimmU64(w)) && regRd(w) === regRn(w) && labelRegs.has(regRd(w));
+}
+function labelCallSlot(img, siteOff) {
+  const first = img.readU32(siteOff);
+  if (first === null)
+    return null;
+  const labelRegs = /* @__PURE__ */ new Set([regRd(first)]);
+  const chain = new VtableChainTracker();
+  let pc = siteOff + 4;
+  let branches = 0;
+  for (let n = 0; n < CALL_WALK_MAX_WORDS; n++) {
+    const w = img.readU32(pc);
+    if (w === null || isAnyReturn(w) || isIndirectBranch(w) || isTrap(w))
+      return null;
+    if (isUnconditionalB(w)) {
+      if (++branches > CALL_WALK_MAX_BRANCHES)
+        return null;
+      pc += decodeBLImm(w);
+      continue;
+    }
+    if (isAnyCall(w)) {
+      if (labelRegs.has(LABEL_BEGIN_REG)) {
+        return isBLR(w) ? chain.slotIn(regRn(w)) ?? backwardVtableCallSlot(img, pc) : null;
+      }
+      for (const reg of [...labelRegs])
+        if (isCallerSaved(reg))
+          labelRegs.delete(reg);
+      chain.clobberCallerSaved();
+      pc += 4;
+      continue;
+    }
+    if (!completesLabelAddress(w, labelRegs)) {
+      const source = movRegSource(w);
+      const carries = source !== null && labelRegs.has(source);
+      for (const reg of [...labelRegs])
+        if (writesReg(w, reg))
+          labelRegs.delete(reg);
+      if (carries)
+        labelRegs.add(movRegDest(w));
+    }
+    chain.step(w);
+    pc += 4;
+  }
+  return null;
+}
+function voteSlot(slotsPerLabel) {
+  const labelsBySlot = /* @__PURE__ */ new Map();
+  for (const slots of slotsPerLabel) {
+    for (const slot of new Set(slots.filter((s) => s !== null))) {
+      labelsBySlot.set(slot, (labelsBySlot.get(slot) ?? 0) + 1);
+    }
+  }
+  let best = null;
+  let tie = false;
+  for (const [slot, labels] of labelsBySlot) {
+    if (best === null || labels > best.labels) {
+      best = { slot, labels };
+      tie = false;
+    } else if (labels === best.labels)
+      tie = true;
+  }
+  return best !== null && !tie && best.labels >= MIN_AGREEING_LABELS ? best : null;
+}
+function vtableSlotTarget(img, ap, slot) {
+  const rel = img.readS32(ap + slot);
+  if (rel === null)
+    return null;
+  const target = ap + rel;
+  return target % 4 === 0 && img.isCode(target) ? target : null;
+}
+function addressPointMatchesRtti(img, ap, rttiName) {
+  const offsetToTop = img.readS32(ap - 8);
+  const rel = img.readS32(ap - 4);
+  if (offsetToTop !== 0 || rel === null || rel === 0)
+    return false;
+  const typeinfo = img.readPointerOffset(ap + rel);
+  const name = typeinfo === null ? null : img.readPointerOffset(typeinfo + POINTER_SIZE);
+  return name !== null && img.readCString(name, rttiName.length + 1) === rttiName;
+}
+async function relativeVtablesFor(img, search, rttiName) {
+  const found = /* @__PURE__ */ new Set();
+  const [names] = await search.cStrings([rttiName]);
+  for (const name of names) {
+    for (const nameField of await search.pointerSlots(name)) {
+      const typeinfo = nameField - POINTER_SIZE;
+      if (typeinfo < 0)
+        continue;
+      for (const proxy3 of await search.pointerSlots(typeinfo)) {
+        for (const component of await search.relativeRefs(proxy3)) {
+          const ap = component + 4;
+          if (addressPointMatchesRtti(img, ap, rttiName))
+            found.add(ap);
+        }
+      }
+    }
+  }
+  return [...found];
+}
+function uniqueSlotTarget(img, aps, slot) {
+  let picked = null;
+  for (const ap of aps) {
+    const target = vtableSlotTarget(img, ap, slot);
+    if (target === null)
+      continue;
+    if (picked !== null && picked.target !== target)
+      return null;
+    picked ??= { ap, target };
+  }
+  return picked;
+}
+function functionWords2(img, fnOff, maxWords = BODY_MAX_WORDS) {
+  const words = img.readWords(fnOff, maxWords);
+  const ret = words.findIndex(isAnyReturn);
+  return ret < 0 ? words : words.slice(0, ret + 1);
+}
+function materialisedAddresses(words, fnOff) {
+  const out = [];
+  words.forEach((w, i) => {
+    const pc = fnOff + 4 * i;
+    if (isADR(w))
+      out.push(pc + decodeADRImm(w));
+    if (!isADRP(w))
+      return;
+    const page = Math.floor(pc / 4096) * 4096 + decodeADRPImm(w);
+    for (let j = i + 1; j < Math.min(words.length, i + 9); j++) {
+      if (isADDimm64(words[j]) && regRn(words[j]) === regRd(w)) {
+        out.push(page + decodeADDImm12(words[j]));
+        break;
+      }
+      if (writesReg(words[j], regRd(w)))
+        break;
+    }
+  });
+  return out;
+}
+function referencesCString(img, fnOff, text) {
+  return materialisedAddresses(functionWords2(img, fnOff), fnOff).some((addr) => img.readCString(addr, text.length + 1) === text);
+}
+function savesToCalleeSaved(words, src) {
+  return words.some((w) => {
+    const dest = movRegDest(w);
+    return movRegSource(w) === src && dest !== null && dest >= CALLEE_SAVED_MIN && dest <= CALLEE_SAVED_MAX;
+  });
+}
+function computesSecretLength(words) {
+  return words.some((w) => isSUBreg64(w) && regRn(w) === 4 && regRm(w) === 3);
+}
+function vtableCallees(img, fnOff, words, ap) {
+  const callees = [];
+  words.forEach((w, i) => {
+    if (!isBLR(w))
+      return;
+    const slot = backwardVtableCallSlot(img, fnOff + 4 * i);
+    const target = slot === null ? null : vtableSlotTarget(img, ap, slot);
+    if (target !== null)
+      callees.push(target);
+  });
+  return callees;
+}
+function bodyCallees(img, fnOff, words, ap) {
+  const direct = directCallTargets(words, fnOff);
+  const viaVtable = ap === null ? [] : vtableCallees(img, fnOff, words, ap);
+  return [.../* @__PURE__ */ new Set([...direct, ...viaVtable])].slice(0, MAX_REACH_CALLEES);
+}
+function validateDeriveSecretBody(img, fnOff, kdfAp) {
+  const words = functionWords2(img, fnOff);
+  const entry = words.slice(0, ENTRY_WINDOW_WORDS);
+  if (!savesToCalleeSaved(entry, LABEL_BEGIN_REG) || !savesToCalleeSaved(entry, LABEL_END_REG))
+    return false;
+  if (!computesSecretLength(entry))
+    return false;
+  if (referencesCString(img, fnOff, HKDF_LABEL_PREFIX))
+    return true;
+  return bodyCallees(img, fnOff, words, kdfAp).some((c) => referencesCString(img, c, HKDF_LABEL_PREFIX));
+}
+function isAlignedCodeEntry(img, off) {
+  return off > 0 && off % 4 === 0 && img.isCode(off) && img.readU32(off) !== null;
+}
+function miss(why) {
+  return { ok: false, why };
+}
+async function voteDeriveSecretSlot(img, search) {
+  const strings = await search.cStrings(FIZZ_VOTING_LABELS);
+  const flat = strings.flat();
+  const sites = await search.loadSites(flat);
+  let k = 0;
+  const slotsPerLabel = strings.map((offs) => offs.flatMap(() => sites[k++]).map((site) => labelCallSlot(img, site)));
+  return voteSlot(slotsPerLabel);
+}
+async function locateFizzInImage(img, search) {
+  const vote = await voteDeriveSecretSlot(img, search);
+  if (vote === null)
+    return miss("labels do not agree on a relative-vtable slot");
+  const kdf = uniqueSlotTarget(img, await relativeVtablesFor(img, search, FIZZ_KDF_RTTI_NAME), vote.slot);
+  if (kdf === null)
+    return miss(`no unique KeyDerivationImpl vtable target for slot 0x${vote.slot.toString(16)}`);
+  if (!validateDeriveSecretBody(img, kdf.target, kdf.ap))
+    return miss("deriveSecret body does not decode");
+  const hc = uniqueSlotTarget(img, await relativeVtablesFor(img, search, FIZZ_HANDSHAKE_CONTEXT_RTTI_NAME), APPEND_TO_TRANSCRIPT_SLOT);
+  if (hc === null || !isAlignedCodeEntry(img, hc.target))
+    return miss("no unique HandshakeContextImpl vtable");
+  return {
+    ok: true,
+    location: {
+      deriveSecret: kdf.target,
+      appendToTranscript: hc.target,
+      slot: vote.slot,
+      kdfVtable: kdf.ap,
+      handshakeContextVtable: hc.ap,
+      agreeingLabels: vote.labels
+    }
+  };
+}
+function revalidateFizzLocation(img, loc) {
+  return addressPointMatchesRtti(img, loc.kdfVtable, FIZZ_KDF_RTTI_NAME) && vtableSlotTarget(img, loc.kdfVtable, loc.slot) === loc.deriveSecret && validateDeriveSecretBody(img, loc.deriveSecret, loc.kdfVtable) && addressPointMatchesRtti(img, loc.handshakeContextVtable, FIZZ_HANDSHAKE_CONTEXT_RTTI_NAME) && vtableSlotTarget(img, loc.handshakeContextVtable, APPEND_TO_TRANSCRIPT_SLOT) === loc.appendToTranscript;
+}
+function moduleDataRanges(mod) {
+  return rangesHolding(mod.enumerateRanges("r--"), "relocated").map((r) => ({ base: r.base, size: r.size }));
+}
+function moduleRodataRanges(mod) {
+  return rangesHolding(mod.enumerateRanges("r--"), "rodata").map((r) => ({ base: r.base, size: r.size }));
+}
+function rangeStart(mod, range) {
+  return Number(range.base.sub(mod.base).toString());
+}
+var ModuleFizzImage = class {
+  mod;
+  code;
+  read;
+  constructor(mod) {
+    this.mod = mod;
+    this.read = boundedModuleReader(mod);
+    this.code = mod.enumerateRanges("r-x").map((r) => {
+      const start = rangeStart(mod, r);
+      return [start, start + r.size];
+    });
+  }
+  view(off, size) {
+    const bytes = this.read(off, size);
+    return bytes === null ? null : new DataView(bytes.buffer, bytes.byteOffset, size);
+  }
+  readU32(off) {
+    return this.view(off, 4)?.getUint32(0, true) ?? null;
+  }
+  readS32(off) {
+    return this.view(off, 4)?.getInt32(0, true) ?? null;
+  }
+  readWords(off, count) {
+    const inModule2 = Math.min(count, Math.floor((this.mod.size - off) / 4));
+    return off < 0 || inModule2 <= 0 ? [] : readInstructionWords(this.mod.base.add(off), inModule2);
+  }
+  readPointerOffset(off) {
+    if (this.read(off, POINTER_SIZE) === null)
+      return null;
+    try {
+      return rvaOf(this.mod, this.mod.base.add(off).readPointer(), this.mod.size);
+    } catch (_e) {
+      return null;
+    }
+  }
+  readCString(off, maxLen) {
+    if (off < 0 || off >= this.mod.size)
+      return null;
+    const p = this.mod.base.add(off);
+    const readable = readableByteCount(p, Math.min(maxLen, this.mod.size - off));
+    if (readable === 0)
+      return null;
+    try {
+      const bytes = new Uint8Array(p.readByteArray(readable));
+      const nul = bytes.indexOf(0);
+      return nul < 0 ? null : String.fromCharCode(...bytes.subarray(0, nul));
+    } catch (_e) {
+      return null;
+    }
+  }
+  isCode(off) {
+    return this.code.some(([start, end]) => off >= start && off < end);
+  }
+};
+var RELATIVE_REF_CHUNK_BYTES = 1048576;
+var RELATIVE_REF_NEEDLE_AT = 2;
+function relativeRefNeedles(target, chunkStart, chunkLen) {
+  const top12 = (v) => (v | 0) >>> 20 & 4095;
+  const tops = /* @__PURE__ */ new Set([top12(target - chunkStart - 4), top12(target - (chunkStart + chunkLen - 4) - 4)]);
+  return [...tops].map((t) => {
+    const b2 = ((t & 15) << 4).toString(16).padStart(2, "0");
+    const b3 = (t >>> 4).toString(16).padStart(2, "0");
+    return `${b2} ${b3} : f0 ff`;
+  });
+}
+var ModuleFizzSearch = class {
+  mod;
+  status;
+  dataRanges;
+  rodataRanges;
+  constructor(mod, status = { complete: true }) {
+    this.mod = mod;
+    this.status = status;
+    this.dataRanges = moduleDataRanges(mod);
+    this.rodataRanges = moduleRodataRanges(mod);
+  }
+  /** Module offsets of `hits` (addresses outside the module are dropped). */
+  offsets(hits) {
+    return hits.map((a) => rvaOf(this.mod, a, this.mod.size)).filter((off) => off !== null);
+  }
+  async cStrings(texts) {
+    const found = await findLiteralOccurrences(this.mod, [...texts], XREF_SCAN_CHUNK_BYTES, yieldToEventLoop, this.status);
+    return found.map((hits) => this.offsets(hits).slice(0, MAX_SEARCH_HITS));
+  }
+  async pointerSlots(target) {
+    const found = [];
+    const onMatch = (a) => {
+      const off = rvaOf(this.mod, a, this.mod.size);
+      if (off !== null && off % POINTER_SIZE === 0 && found.length < MAX_SEARCH_HITS)
+        found.push(off);
+    };
+    await scanRangesChunked(this.dataRanges, [{ pattern: pointerScanPattern(this.mod.base.add(target)), onMatch }], XREF_SCAN_CHUNK_BYTES, yieldToEventLoop, this.status);
+    return found;
+  }
+  async relativeRefs(target) {
+    const found = [];
+    for (const range of this.rodataRanges) {
+      const rangeOff = rangeStart(this.mod, range);
+      for (let c = 0; c + 4 <= range.size && found.length < MAX_SEARCH_HITS; c += RELATIVE_REF_CHUNK_BYTES) {
+        if (_isShuttingDownNow())
+          throw new XrefScanAborted();
+        const len = Math.min(RELATIVE_REF_CHUNK_BYTES, range.size - c) & ~3;
+        for (const needle of relativeRefNeedles(target, rangeOff + c, len)) {
+          this.scanRelativeChunk(range.base.add(c), len, needle, target, found);
+        }
+        await yieldToEventLoop();
+      }
+    }
+    return found;
+  }
+  /** Scan the int32s starting in [start, start+len) for `needle` at their byte 2 and verify each hit. */
+  scanRelativeChunk(start, len, needle, target, found) {
+    let hits = [];
+    try {
+      hits = Memory.scanSync(start.add(RELATIVE_REF_NEEDLE_AT), len - RELATIVE_REF_NEEDLE_AT, needle);
+    } catch (_e) {
+      this.status.complete = false;
+      return;
+    }
+    for (const hit of hits) {
+      const at = rvaOf(this.mod, hit.address, this.mod.size);
+      const component = at === null ? -1 : at - RELATIVE_REF_NEEDLE_AT;
+      if (component < 0 || component % 4 !== 0 || found.includes(component))
+        continue;
+      try {
+        if (this.mod.base.add(component).readS32() === target - (component + 4) && found.length < MAX_SEARCH_HITS) {
+          found.push(component);
+        }
+      } catch (_e) {
+      }
+    }
+  }
+  async loadSites(targets2) {
+    if (targets2.length === 0)
+      return [];
+    const sites = await findStringLoadSitesAsync(this.mod, targets2.map((t) => this.mod.base.add(t)), XREF_SCAN_CHUNK_BYTES, yieldToEventLoop, MAX_LOAD_SITES, this.status);
+    return sites.map((list) => this.offsets(list));
+  }
+};
+function toLocated(mod, loc, source) {
+  const located2 = {
+    deriveSecret: mod.base.add(loc.deriveSecret),
+    appendToTranscript: mod.base.add(loc.appendToTranscript),
+    slot: loc.slot,
+    source
+  };
+  log(`[*] ${mod.name}: Fizz deriveSecret ${moduleOffsetLabel(mod, located2.deriveSecret)} appendToTranscript ${moduleOffsetLabel(mod, located2.appendToTranscript)} slot 0x${loc.slot.toString(16)} (backend arm64, ${source})`);
+  return located2;
+}
+function missed2(mod, why) {
+  log(`[-] ${mod.name}: Fizz deriveSecret not located (backend ${Process.arch === "arm64" ? "arm64" : `none for ${Process.arch}`}): ${why}`);
+  return null;
+}
+function learnedLocation(mod) {
+  const deriveSecret = rvaOf(mod, learnedFunction(mod, LEARNED_FIZZ_DERIVE_SECRET), mod.size);
+  const appendToTranscript = rvaOf(mod, learnedFunction(mod, LEARNED_FIZZ_APPEND_TRANSCRIPT), mod.size);
+  const kdfVtable = learnedLayout(mod, LEARNED_FIZZ_KDF_VTABLE);
+  const handshakeContextVtable = learnedLayout(mod, LEARNED_FIZZ_HANDSHAKE_CONTEXT_VTABLE);
+  const slot = learnedLayout(mod, LEARNED_FIZZ_DERIVE_SECRET_SLOT);
+  if (deriveSecret === null || appendToTranscript === null || kdfVtable === null || handshakeContextVtable === null || slot === null)
+    return null;
+  return { deriveSecret, appendToTranscript, slot, kdfVtable, handshakeContextVtable };
+}
+function rejectLearnedLocation(mod) {
+  rejectLearnedFunction(mod, LEARNED_FIZZ_DERIVE_SECRET);
+  rejectLearnedFunction(mod, LEARNED_FIZZ_APPEND_TRANSCRIPT);
+  for (const name of [LEARNED_FIZZ_KDF_VTABLE, LEARNED_FIZZ_HANDSHAKE_CONTEXT_VTABLE, LEARNED_FIZZ_DERIVE_SECRET_SLOT]) {
+    rejectLearnedLayout(mod, name);
+  }
+}
+function reportLearnedLocation(mod, loc) {
+  reportLearned(mod, {
+    functions: {
+      [LEARNED_FIZZ_DERIVE_SECRET]: mod.base.add(loc.deriveSecret),
+      [LEARNED_FIZZ_APPEND_TRANSCRIPT]: mod.base.add(loc.appendToTranscript)
+    },
+    layout: {
+      [LEARNED_FIZZ_KDF_VTABLE]: loc.kdfVtable,
+      [LEARNED_FIZZ_HANDSHAKE_CONTEXT_VTABLE]: loc.handshakeContextVtable,
+      [LEARNED_FIZZ_DERIVE_SECRET_SLOT]: loc.slot
+    }
+  });
+}
+async function scanFizz(mod, img) {
+  const search = new ModuleFizzSearch(mod);
+  let result;
+  try {
+    result = await locateFizzInImage(img, search);
+  } catch (e) {
+    if (!(e instanceof XrefScanAborted))
+      devlog(`[fizz] ${mod.name}: locate failed: ${e}`);
+    return missed2(mod, "scan aborted");
+  }
+  if ("why" in result) {
+    reportLearnedMisses(mod, { [LEARNED_FIZZ_DERIVE_SECRET_MISS]: FIZZ_LOCATOR_MISS_FINGERPRINT }, search.status);
+    return missed2(mod, result.why);
+  }
+  devlog(`[fizz] ${mod.name}: ${result.location.agreeingLabels} labels agree on slot 0x${result.location.slot.toString(16)}`);
+  reportLearnedLocation(mod, result.location);
+  return toLocated(mod, result.location, "scan");
+}
+async function locateFizz(mod) {
+  if (Process.arch !== "arm64")
+    return missed2(mod, "only arm64 is covered");
+  const img = new ModuleFizzImage(mod);
+  const cached = learnedLocation(mod);
+  if (cached !== null && revalidateFizzLocation(img, cached))
+    return toLocated(mod, cached, "learned cache");
+  if (cached !== null) {
+    rejectLearnedLocation(mod);
+    devlog(`[fizz] ${mod.name}: learned Fizz location no longer validates; scanning`);
+  } else if (hasLearnedMiss(mod, LEARNED_FIZZ_DERIVE_SECRET_MISS, FIZZ_LOCATOR_MISS_FINGERPRINT)) {
+    return missed2(mod, "learned cache records no Fizz deriveSecret in this build");
+  }
+  return scanFizz(mod, img);
+}
+function locateFizzCached(mod) {
+  return locateFizz(mod);
+}
+
+// agent/shared/fizz_keylog.ts
+init_node_globals();
+init_shared_structures();
+var FIZZ_NSS_LABELS = {
+  "c e traffic": "CLIENT_EARLY_TRAFFIC_SECRET",
+  "e exp master": "EARLY_EXPORTER_SECRET",
+  "c hs traffic": "CLIENT_HANDSHAKE_TRAFFIC_SECRET",
+  "s hs traffic": "SERVER_HANDSHAKE_TRAFFIC_SECRET",
+  "c ap traffic": "CLIENT_TRAFFIC_SECRET_0",
+  "s ap traffic": "SERVER_TRAFFIC_SECRET_0",
+  "exp master": "EXPORTER_SECRET"
+};
+var FIZZ_SKIPPED_LABELS = [
+  "derived",
+  "ext binder",
+  "res binder",
+  "res master",
+  "traffic upd"
+];
+var PHASE_START_LABELS = /* @__PURE__ */ new Set(["c e traffic", "c hs traffic"]);
+var FINAL_SECRET_NSS_LABELS = /* @__PURE__ */ new Set(["SERVER_TRAFFIC_SECRET_0", "EXPORTER_SECRET"]);
+var FIZZ_PROBE_LABELS = {
+  2: "CLIENT_EARLY_TRAFFIC_SECRET",
+  3: "CLIENT_HANDSHAKE_TRAFFIC_SECRET",
+  4: "SERVER_HANDSHAKE_TRAFFIC_SECRET",
+  5: "CLIENT_TRAFFIC_SECRET_0",
+  6: "SERVER_TRAFFIC_SECRET_0",
+  7: "EARLY_EXPORTER_SECRET",
+  8: "EXPORTER_SECRET"
+};
+var FIZZ_PROBE_EXPORT = "fizz_probe_secret_available";
+function isKnownFizzLabel(label) {
+  return label !== null && (label in FIZZ_NSS_LABELS || FIZZ_SKIPPED_LABELS.includes(label));
+}
+var FIZZ_LABEL_MISMATCH_LIMIT = 8;
+function newFizzLabelSelfCheck() {
+  return new LabelSelfCheck(isKnownFizzLabel, FIZZ_LABEL_MISMATCH_LIMIT);
+}
+var TLS_CLIENT_HELLO = 1;
+var TLS_MESSAGE_HASH = 254;
+var HANDSHAKE_HEADER_LEN = 4;
+var CLIENT_RANDOM_AT = HANDSHAKE_HEADER_LEN + 2;
+var CLIENT_RANDOM_LEN2 = 32;
+var MAX_CONTEXTS = 64;
+var MAX_CHUNKS_PER_CONTEXT = 16;
+var MAX_CONTEXT_BYTES = 256 * 1024;
+var MAX_PENDING_SECRETS = 16;
+var MAX_DEDUPE_LINES2 = 4096;
+function hashAlgFor(length) {
+  return length === 32 ? "sha256" : length === 48 ? "sha384" : null;
+}
+function declaredMessageSize(chunk) {
+  if (chunk.length < HANDSHAKE_HEADER_LEN)
+    return 0;
+  return HANDSHAKE_HEADER_LEN + (chunk[1] << 16 | chunk[2] << 8 | chunk[3]);
+}
+function clientRandomOf(clientHello) {
+  if (clientHello.length < CLIENT_RANDOM_AT + CLIENT_RANDOM_LEN2)
+    return null;
+  return toHexString(clientHello.subarray(CLIENT_RANDOM_AT, CLIENT_RANDOM_AT + CLIENT_RANDOM_LEN2));
+}
+function prefixIndexKey(alg, hashHex) {
+  return `${alg}|${hashHex}`;
+}
+var FizzHandshakeBinder = class {
+  hash;
+  emit;
+  contexts = new LruMap(MAX_CONTEXTS, (_key, ctx) => this.unindex(ctx));
+  /** alg|prefix hash -> contexts with that transcript prefix (filled lazily, per algorithm). */
+  byPrefixHash = /* @__PURE__ */ new Map();
+  carried = /* @__PURE__ */ new Map();
+  pending = [];
+  lines = new FifoSet(MAX_DEDUPE_LINES2);
+  boundRandoms = new FifoSet(MAX_DEDUPE_LINES2);
+  probeSeen = /* @__PURE__ */ new Set();
+  counts = { contexts: 0, handshakes: 0, bound: 0, carried: 0, droppedPending: 0, lines: 0, f1: 0 };
+  /** Transcript state changed since the pending queue was last retried. */
+  transcriptChanged = false;
+  constructor(hash, emit3) {
+    this.hash = hash;
+    this.emit = emit3;
+  }
+  /**
+   * Whether the next append of `contextKey` may be stored, so the caller should
+   * read the whole message. false: HANDSHAKE_HEADER_LEN bytes plus the total length
+   * suffice (the context is full and only tracks message bounds).
+   */
+  wantsBody(contextKey) {
+    const ctx = this.contexts.peek(contextKey);
+    return ctx === void 0 || !ctx.full;
+  }
+  /**
+   * One appendToTranscript call of HandshakeContext `contextKey`: `bytes` are the
+   * message's first bytes, `length` its total size. Returns false, changing
+   * nothing, when `bytes` is only a prefix of a message that must be stored: the
+   * caller then passes the whole message.
+   */
+  onTranscriptAppend(contextKey, bytes, length = bytes.length) {
+    if (length === 0)
+      return true;
+    const existing = this.contexts.peek(contextKey);
+    if (existing !== void 0 && existing.owed > 0)
+      return this.append(existing, bytes, length, true);
+    const startsContext = bytes[0] === TLS_MESSAGE_HASH || bytes[0] === TLS_CLIENT_HELLO;
+    if (startsContext && bytes.length < length)
+      return false;
+    if (bytes[0] === TLS_MESSAGE_HASH) {
+      this.append(this.startContext(contextKey, null, true), bytes, length, false);
+    } else if (bytes[0] === TLS_CLIENT_HELLO) {
+      this.onClientHello(contextKey, existing, bytes);
+    } else if (existing !== void 0) {
+      return this.append(existing, bytes, length, false);
+    }
+    return true;
+  }
+  /** One successful deriveSecret; returns the lines emitted (incl. pending secrets bound by now). */
+  onSecret(ev) {
+    const emitted = this.retryPending();
+    const nss = FIZZ_NSS_LABELS[ev.label];
+    const alg = ev.messageHash === null ? null : hashAlgFor(ev.messageHash.length);
+    if (nss === void 0 || ev.secret.length === 0)
+      return emitted;
+    const hashHex = ev.messageHash === null ? null : toHexString(ev.messageHash);
+    const exact = alg === null || hashHex === null ? null : this.bindByHash(alg, hashHex);
+    const key = `${ev.deriver}|${ev.threadId}`;
+    if (PHASE_START_LABELS.has(ev.label) || exact !== null) {
+      if (exact !== null)
+        this.carried.set(key, exact.clientRandom);
+      else
+        this.carried.delete(key);
+    }
+    const clientRandom = exact?.clientRandom ?? this.carried.get(key) ?? null;
+    if (clientRandom === null) {
+      if (alg !== null && hashHex !== null)
+        this.addPending({ nss, hashHex, alg, secretHex: toHexString(ev.secret) });
+      return emitted;
+    }
+    if (exact === null)
+      this.counts.carried++;
+    else
+      this.releaseAfterFinalSecret(nss, exact);
+    this.counts.bound++;
+    return [...emitted, ...this.emitLine(nss, clientRandom, toHexString(ev.secret))];
+  }
+  /** One fizz_probe_secret_available call; only the first line per (random, label) (KeyUpdate reuses labels). */
+  onProbeSecret(labelEnum, clientRandom, secret) {
+    const nss = FIZZ_PROBE_LABELS[labelEnum];
+    if (nss === void 0 || clientRandom.length !== CLIENT_RANDOM_LEN2 || secret.length === 0)
+      return [];
+    const randomHex = toHexString(clientRandom);
+    const key = `${randomHex}|${labelEnum}`;
+    if (this.probeSeen.has(key))
+      return [];
+    this.probeSeen.add(key);
+    this.counts.f1++;
+    return this.emitLine(nss, randomHex, toHexString(secret));
+  }
+  get pendingCount() {
+    return this.pending.length;
+  }
+  summary() {
+    return {
+      contexts: this.counts.contexts,
+      handshakes: this.counts.handshakes,
+      bound: this.counts.bound,
+      carried: this.counts.carried,
+      unbound: this.pending.length + this.counts.droppedPending,
+      lines: this.counts.lines,
+      f1: this.counts.f1
+    };
+  }
+  // ---- transcript bookkeeping ----
+  onClientHello(contextKey, existing, bytes) {
+    if (existing !== void 0 && existing.hrr && existing.clientRandom === null) {
+      existing.clientRandom = clientRandomOf(bytes);
+      this.append(existing, bytes, bytes.length, false);
+      return;
+    }
+    const random = clientRandomOf(bytes);
+    if (random === null)
+      return;
+    this.counts.contexts++;
+    this.append(this.startContext(contextKey, random, false), bytes, bytes.length, false);
+  }
+  startContext(contextKey, clientRandom, hrr) {
+    const ctx = {
+      clientRandom,
+      hrr,
+      chunks: [],
+      bytes: 0,
+      owed: 0,
+      full: false,
+      boundaries: [],
+      hashed: { sha256: 0, sha384: 0 },
+      indexKeys: []
+    };
+    const replaced = this.contexts.peek(contextKey);
+    if (replaced !== void 0) {
+      this.contexts.delete(contextKey);
+      this.unindex(replaced);
+    }
+    this.contexts.set(contextKey, ctx);
+    return ctx;
+  }
+  /** See onTranscriptAppend: false only for a prefix of a message that must be stored. */
+  append(ctx, bytes, length, continuation) {
+    const stores = !ctx.full && ctx.chunks.length < MAX_CHUNKS_PER_CONTEXT && length <= MAX_APPEND_BYTES && ctx.bytes + length <= MAX_CONTEXT_BYTES;
+    if (stores && bytes.length < length)
+      return false;
+    ctx.owed = continuation ? Math.max(0, ctx.owed - length) : Math.max(0, declaredMessageSize(bytes) - length);
+    if (!stores) {
+      ctx.full = true;
+      return true;
+    }
+    ctx.chunks.push(bytes);
+    ctx.bytes += length;
+    if (ctx.owed === 0)
+      ctx.boundaries.push(ctx.chunks.length);
+    this.transcriptChanged = true;
+    return true;
+  }
+  // ---- binding ----
+  /** Add the message-boundary prefixes of `ctx` not yet hashed with `alg` to the index. */
+  indexPrefixes(ctx, alg) {
+    for (let i = ctx.hashed[alg]; i < ctx.boundaries.length; i++) {
+      const key = prefixIndexKey(alg, this.hash(alg, ctx.chunks.slice(0, ctx.boundaries[i])));
+      let owners = this.byPrefixHash.get(key);
+      if (owners === void 0)
+        this.byPrefixHash.set(key, owners = /* @__PURE__ */ new Set());
+      owners.add(ctx);
+      ctx.indexKeys.push(key);
+    }
+    ctx.hashed[alg] = ctx.boundaries.length;
+  }
+  unindex(ctx) {
+    for (const key of ctx.indexKeys) {
+      const owners = this.byPrefixHash.get(key);
+      if (owners === void 0)
+        continue;
+      owners.delete(ctx);
+      if (owners.size === 0)
+        this.byPrefixHash.delete(key);
+    }
+    ctx.indexKeys = [];
+    this.transcriptChanged = true;
+  }
+  /** The only client_random whose handshake has a transcript prefix hashing to `hashHex`, else null. */
+  bindByHash(alg, hashHex) {
+    for (const [, ctx] of this.contexts.entries())
+      this.indexPrefixes(ctx, alg);
+    const owners = this.byPrefixHash.get(prefixIndexKey(alg, hashHex));
+    if (owners === void 0)
+      return null;
+    const randoms = /* @__PURE__ */ new Set();
+    for (const ctx of owners)
+      if (ctx.clientRandom !== null)
+        randoms.add(ctx.clientRandom);
+    return randoms.size === 1 ? { clientRandom: [...randoms][0], owners } : null;
+  }
+  /** After a handshake's final secret: drop its chunks; its indexed prefix hashes and random stay. */
+  releaseAfterFinalSecret(nss, exact) {
+    if (!FINAL_SECRET_NSS_LABELS.has(nss))
+      return;
+    for (const ctx of exact.owners) {
+      ctx.chunks = [];
+      ctx.boundaries = [];
+      ctx.hashed = { sha256: 0, sha384: 0 };
+      ctx.full = true;
+    }
+  }
+  addPending(p) {
+    this.pending.push(p);
+    if (this.pending.length > MAX_PENDING_SECRETS) {
+      this.pending.shift();
+      this.counts.droppedPending++;
+    }
+  }
+  /** Re-bind queued secrets, only when the transcripts changed since the last try. */
+  retryPending() {
+    const changed = this.transcriptChanged;
+    this.transcriptChanged = false;
+    if (!changed)
+      return [];
+    const emitted = [];
+    for (let i = this.pending.length - 1; i >= 0; i--) {
+      const p = this.pending[i];
+      const exact = this.bindByHash(p.alg, p.hashHex);
+      if (exact === null)
+        continue;
+      this.pending.splice(i, 1);
+      this.counts.bound++;
+      this.releaseAfterFinalSecret(p.nss, exact);
+      emitted.push(...this.emitLine(p.nss, exact.clientRandom, p.secretHex));
+    }
+    return emitted;
+  }
+  emitLine(nss, clientRandom, secretHex) {
+    const line = `${nss} ${clientRandom} ${secretHex}`;
+    if (this.lines.has(line))
+      return [];
+    this.lines.add(line);
+    if (!this.boundRandoms.has(clientRandom)) {
+      this.boundRandoms.add(clientRandom);
+      this.counts.handshakes++;
+    }
+    this.counts.lines++;
+    this.emit(line);
+    return [line];
+  }
+};
+var IOBUF_LENGTH_AT = 0;
+var IOBUF_DATA_AT = 8;
+var IOBUF_NEXT_AT = 32;
+var MAX_IOBUF_SEGMENTS = 64;
+var MAX_APPEND_BYTES = 64 * 1024;
+var MAX_LABEL_LEN = 32;
+var MAX_HASH_LEN = 64;
+var STATUS_SUCCESS = 1;
+function concatParts(parts, length) {
+  if (parts.length === 1)
+    return parts[0];
+  const out = new Uint8Array(length);
+  let at = 0;
+  for (const part of parts) {
+    out.set(part, at);
+    at += part.length;
+  }
+  return out;
+}
+function readIOBufChain(head, maxBytes = MAX_APPEND_BYTES) {
+  maxBytes = Math.min(maxBytes, MAX_APPEND_BYTES);
+  const parts = [];
+  let total = 0;
+  let kept = 0;
+  let p = head;
+  for (let n = 0; n < MAX_IOBUF_SEGMENTS; n++) {
+    if (!isReadable(p, IOBUF_NEXT_AT + 8))
+      return null;
+    const length = p.add(IOBUF_LENGTH_AT).readU64().toNumber();
+    if (length > 0) {
+      const take = Math.min(length, maxBytes - kept);
+      if (take > 0) {
+        const data = p.add(IOBUF_DATA_AT).readPointer();
+        if (!isReadable(data, take))
+          return null;
+        parts.push(new Uint8Array(data.readByteArray(take)));
+        kept += take;
+      }
+      total += length;
+    }
+    p = p.add(IOBUF_NEXT_AT).readPointer();
+    if (p.equals(head))
+      break;
+  }
+  return { bytes: concatParts(parts, kept), total };
+}
+function readRange(begin, end, max) {
+  if (begin === null || end === null)
+    return null;
+  const length = Number(end.sub(begin).toString());
+  if (!(length >= 1 && length <= max) || !isReadable(begin, length))
+    return null;
+  try {
+    return new Uint8Array(begin.readByteArray(length));
+  } catch (_e) {
+    return null;
+  }
+}
+function readLabel2(begin, end) {
+  const bytes = readRange(begin, end, MAX_LABEL_LEN);
+  return bytes === null ? null : String.fromCharCode(...bytes);
+}
+function fridaFizzHasher(alg, chunks) {
+  const checksum = new Checksum(alg);
+  for (const c of chunks) {
+    const whole = c.byteOffset === 0 && c.byteLength === c.buffer.byteLength;
+    checksum.update(whole ? c.buffer : c.buffer.slice(c.byteOffset, c.byteOffset + c.byteLength));
+  }
+  return checksum.getString();
+}
+var processBinder = null;
+function fizzBinder() {
+  if (processBinder === null)
+    processBinder = new FizzHandshakeBinder(fridaFizzHasher, (line) => sendKeylog(line, null));
+  return processBinder;
+}
+var hookedF2Addresses = /* @__PURE__ */ new Map();
+var hookedProbeAddresses = /* @__PURE__ */ new Set();
+function recordTranscriptAppend(binder, contextKey, head) {
+  const read2 = readIOBufChain(head, binder.wantsBody(contextKey) ? MAX_APPEND_BYTES : HANDSHAKE_HEADER_LEN);
+  if (read2 === null || binder.onTranscriptAppend(contextKey, read2.bytes, read2.total))
+    return;
+  const whole = readIOBufChain(head);
+  if (whole !== null)
+    binder.onTranscriptAppend(contextKey, whole.bytes, whole.total);
+}
+var FizzHookSet = class {
+  mod;
+  binder;
+  labelCheck = newFizzLabelSelfCheck();
+  listeners = [];
+  derive = null;
+  deriveAt = null;
+  lastPendingLogged = 0;
+  constructor(mod, binder) {
+    this.mod = mod;
+    this.binder = binder;
+  }
+  attachTranscript(at) {
+    const binder = this.binder;
+    this.listeners.push(Interceptor.attach(at, {
+      onEnter(args) {
+        try {
+          resetReadableCache();
+          const head = safeReadPointer(args[2]);
+          if (head !== null && !head.isNull())
+            recordTranscriptAppend(binder, args[0].toString(), head);
+        } catch (e) {
+          devlog(`[fizz] appendToTranscript hook error: ${e}`);
+        }
+      }
+    }));
+  }
+  attachDeriveSecret(at) {
+    const self = this;
+    this.deriveAt = at;
+    this.derive = Interceptor.attach(at, {
+      onEnter(args) {
+        this.fizzLabel = null;
+        try {
+          resetReadableCache();
+          const label = readLabel2(args[5], args[6]);
+          const verdict = self.labelCheck.observe(label);
+          if (verdict === "detach") {
+            self.dropDeriveSecretHook();
+            return;
+          }
+          if (verdict !== "emit" || !(label in FIZZ_NSS_LABELS))
+            return;
+          const sp = this.context.sp;
+          this.fizzLabel = label;
+          this.fizzRet = args[1];
+          this.fizzDeriver = args[0].toString();
+          this.fizzHash = readRange(safeReadPointer(sp), safeReadPointer(sp.add(8)), MAX_HASH_LEN);
+        } catch (e) {
+          devlog(`[fizz] deriveSecret onEnter error: ${e}`);
+        }
+      },
+      onLeave(retval) {
+        if (this.fizzLabel === null || this.fizzLabel === void 0)
+          return;
+        try {
+          if ((retval.toUInt32() & 255) !== STATUS_SUCCESS)
+            return;
+          const ret = this.fizzRet;
+          const secret = readRange(safeReadPointer(ret), safeReadPointer(ret.add(8)), MAX_SECRET_LEN2);
+          if (secret === null)
+            return;
+          self.binder.onSecret({
+            deriver: this.fizzDeriver,
+            threadId: this.threadId,
+            label: this.fizzLabel,
+            messageHash: this.fizzHash,
+            secret
+          });
+          self.logPendingGrowth();
+        } catch (e) {
+          devlog(`[fizz] deriveSecret onLeave error: ${e}`);
+        }
+      }
+    });
+    this.listeners.push(this.derive);
+  }
+  attachProbe(at) {
+    const binder = this.binder;
+    this.listeners.push(Interceptor.attach(at, {
+      onEnter(args) {
+        try {
+          resetReadableCache();
+          const size = args[1].toUInt32() & 255;
+          const secret = readRange(args[0], args[0].add(size), MAX_SECRET_LEN2);
+          const random = readRange(args[3], args[3].add(CLIENT_RANDOM_LEN2), CLIENT_RANDOM_LEN2);
+          if (secret !== null && random !== null)
+            binder.onProbeSecret(args[2].toUInt32(), random, secret);
+        } catch (e) {
+          devlog(`[fizz] probe hook error: ${e}`);
+        }
+      }
+    }));
+  }
+  /** Detach this module's listeners (the shared binder and its counts stay). */
+  detachListeners() {
+    for (const l of this.listeners) {
+      try {
+        l.detach();
+      } catch (_e) {
+      }
+    }
+    this.listeners.length = 0;
+  }
+  dropDeriveSecretHook() {
+    if (this.derive === null)
+      return;
+    try {
+      this.derive.detach();
+    } catch (_e) {
+    }
+    this.derive = null;
+    if (this.deriveAt !== null)
+      hookedF2Addresses.delete(this.deriveAt.toString());
+    rejectLearnedFunction(this.mod, LEARNED_FIZZ_DERIVE_SECRET);
+    log(`[-] ${this.mod.name}: Fizz deriveSecret hook saw ${FIZZ_LABEL_MISMATCH_LIMIT} unknown labels in a row; removed`);
+  }
+  logPendingGrowth() {
+    const pending = this.binder.pendingCount;
+    if (pending > this.lastPendingLogged)
+      devlog_debug(`[fizz] ${this.mod.name}: ${pending} unbound secret(s) pending`);
+    this.lastPendingLogged = pending;
+  }
+};
+function findProbeExport(mod) {
+  return findModuleExport2(mod.name, FIZZ_PROBE_EXPORT, { ownModuleOnly: true });
+}
+function tryAttach2(mod, what, attach2) {
+  try {
+    attach2();
+    return true;
+  } catch (e) {
+    log(`[-] ${mod.name}: could not hook Fizz ${what}: ${e}`);
+    return false;
+  }
+}
+var installedHookSets = [];
+var teardownRegistered = false;
+function installF2(mod, hooks, located2) {
+  if (located2 === null)
+    return false;
+  const key = located2.deriveSecret.toString();
+  const owner2 = hookedF2Addresses.get(key);
+  if (owner2 !== void 0) {
+    log(`[*] ${mod.name}: Fizz deriveSecret ${moduleOffsetLabel(mod, located2.deriveSecret)} already hooked via ${owner2}`);
+    return false;
+  }
+  const ok = tryAttach2(mod, "appendToTranscript", () => hooks.attachTranscript(located2.appendToTranscript)) && tryAttach2(mod, "deriveSecret", () => hooks.attachDeriveSecret(located2.deriveSecret));
+  if (!ok) {
+    hooks.detachListeners();
+    return false;
+  }
+  hookedF2Addresses.set(key, mod.name);
+  return true;
+}
+function registerFizzTeardown() {
+  if (teardownRegistered)
+    return;
+  teardownRegistered = true;
+  registerDetachTeardown("fizz-keylog", () => {
+    const modules = installedHookSets.length;
+    const deriveSecretHooks = hookedF2Addresses.size;
+    for (const hooks of installedHookSets)
+      hooks.detachListeners();
+    installedHookSets.length = 0;
+    hookedF2Addresses.clear();
+    hookedProbeAddresses.clear();
+    return { ...fizzBinder().summary(), modules, deriveSecretHooks };
+  });
+}
+function install(mod, located2) {
+  const hooks = new FizzHookSet(mod, fizzBinder());
+  const f2 = installF2(mod, hooks, located2);
+  const probe2 = findProbeExport(mod);
+  const probeFresh = probe2 !== null && !hookedProbeAddresses.has(probe2.toString());
+  const f1 = probeFresh && tryAttach2(mod, FIZZ_PROBE_EXPORT, () => hooks.attachProbe(probe2));
+  if (f1)
+    hookedProbeAddresses.add(probe2.toString());
+  if (!f1 && !f2)
+    return false;
+  installedHookSets.push(hooks);
+  registerFizzTeardown();
+  log(`[*] ${mod.name}: Fizz key hooks installed (deriveSecret+transcript: ${f2 ? "yes" : "no"}, probe export: ${f1 ? moduleOffsetLabel(mod, probe2) : "no"})`);
+  return true;
+}
+function installFizzKeyHooks(mod, located2) {
+  return install(mod, located2);
+}
+
+// agent/shared/fizz_install.ts
+var SYSTEM_PATH_PREFIXES = ["/system/", "/system_ext/", "/apex/", "/vendor/", "/product/", "/odm/", "/data/dalvik-cache/"];
+var APP_PRIVATE_PATH = /^\/data\/(?:data|user(?:_de)?\/\d+)\/[^/]+\//;
+var FIZZ_HOST_NAME_HINT = /^lib(?:coldstart|startup|scrollmerged|streamingmerged)\.so$/;
+function classifyFizzModulePath(name, path) {
+  if (!path)
+    return "reject";
+  if (SYSTEM_PATH_PREFIXES.some((prefix) => path.startsWith(prefix)))
+    return "reject";
+  if (APP_PRIVATE_PATH.test(path) || FIZZ_HOST_NAME_HINT.test(name))
+    return "scan";
+  return "export-only";
+}
+var RTTI_PATTERN = toHexPattern(FIZZ_KDF_RTTI_NAME);
+async function hasFizzRtti(mod) {
+  for (const range of moduleRodataRanges(mod)) {
+    try {
+      if (Memory.scanSync(range.base, range.size, RTTI_PATTERN).length > 0)
+        return true;
+    } catch (_e) {
+    }
+    await yieldToEventLoop();
+  }
+  return false;
+}
+function fizzVerdict(mod) {
+  const cls = classifyFizzModulePath(mod.name, mod.path);
+  if (cls === "reject")
+    return false;
+  return cls === "scan" || findProbeExport(mod) !== null;
+}
+var verdictByPath = /* @__PURE__ */ new Map();
+function isFizzCandidateModule(moduleName, modulePath) {
+  if (Process.arch !== "arm64")
+    return false;
+  if (modulePath) {
+    if (classifyFizzModulePath(moduleName, modulePath) === "reject")
+      return false;
+    const known = verdictByPath.get(modulePath);
+    if (known !== void 0)
+      return known;
+  }
+  const mod = findLoadedModule(moduleName);
+  if (mod === null)
+    return false;
+  const cached = verdictByPath.get(mod.path);
+  if (cached !== void 0)
+    return cached;
+  let verdict = false;
+  try {
+    verdict = fizzVerdict(mod);
+  } catch (_e) {
+    verdict = false;
+  }
+  verdictByPath.set(mod.path, verdict);
+  if (verdict)
+    devlog(`[fizz] ${moduleName}: Fizz candidate (${mod.path})`);
+  return verdict;
+}
+var installByMapping = /* @__PURE__ */ new Map();
+async function confirmFizz(mod) {
+  return findProbeExport(mod) !== null || await hasFizzRtti(mod);
+}
+async function locateThenHook(mod) {
+  await yieldToEventLoop();
+  if (!await confirmFizz(mod)) {
+    devlog(`[fizz] ${mod.name}: no Fizz RTTI, skipped`);
+    return false;
+  }
+  const located2 = await locateFizzCached(mod);
+  return installFizzKeyHooks(mod, located2);
+}
+function installFizzKeylog(moduleName) {
+  if (!keylog_enabled) {
+    devlog(`[fizz] ${moduleName}: keylog disabled, Fizz hooks skipped`);
+    return Promise.resolve(false);
+  }
+  const mod = findLoadedModule(moduleName);
+  if (mod === null)
+    return Promise.resolve(false);
+  return memoizePerMapping(installByMapping, mod, () => locateThenHook(mod).catch((e) => {
+    devlog(`[fizz] ${moduleName}: install failed: ${e}`);
+    return false;
+  }));
+}
+
 // agent/tls/platforms/android/cronet_modern_android.ts
 init_node_globals();
 
@@ -29005,6 +35521,582 @@ function executeBoringSSLFamily(moduleName, socketLibrary, isBaseHook, enableDef
 // agent/tls/libs/cronet.ts
 init_node_globals();
 init_shared_structures();
+
+// agent/tls/shared/boringssl_plaintext_resolver.ts
+init_node_globals();
+init_shared_structures();
+
+// agent/tls/shared/boringssl_plaintext_locator.ts
+init_node_globals();
+var ERR_LIB_SSL = 16;
+var SSL_REASON = {
+  SHOULD_NOT_HAVE_BEEN_CALLED: 66,
+  // ERR_R_SHOULD_NOT_HAVE_BEEN_CALLED
+  BAD_LENGTH: 111,
+  // SSL_R_BAD_LENGTH
+  SSL_HANDSHAKE_FAILURE: 215,
+  // SSL_R_SSL_HANDSHAKE_FAILURE
+  UNINITIALIZED: 226
+  // SSL_R_UNINITIALIZED
+};
+var REASON_WINDOW_AFTER = 10;
+var REASON_WINDOW_BEFORE = 6;
+function decodeErrorReason(words, at) {
+  const lo = Math.max(0, at - REASON_WINDOW_BEFORE);
+  const hi = Math.min(words.length, at + REASON_WINDOW_AFTER + 1);
+  let isSslLib = false;
+  for (let i = lo; i < hi; i++)
+    if (movzW(words[i], 0) === ERR_LIB_SSL)
+      isSslLib = true;
+  if (!isSslLib)
+    return null;
+  for (let i = at + 1; i < hi; i++) {
+    const reason = movzW(words[i], 2);
+    if (reason !== null)
+      return reason;
+  }
+  for (let i = at - 1; i >= lo; i--) {
+    const reason = movzW(words[i], 2);
+    if (reason !== null)
+      return reason;
+  }
+  return null;
+}
+var ARGS_WINDOW = 10;
+function fileLoadAt(words, at) {
+  const first = words[at];
+  if (first === void 0)
+    return null;
+  if (isADR(first))
+    return { reg: regRd(first), end: at };
+  if (!isADRP(first))
+    return null;
+  const page = regRd(first);
+  const hi = Math.min(words.length, at + 1 + LOAD_SITE_WINDOW);
+  for (let i = at + 1; i < hi; i++) {
+    const w = words[i];
+    if ((isADDimm64(w) || isLDRimmU64(w)) && regRn(w) === page)
+      return { reg: regRd(w), end: i };
+  }
+  return null;
+}
+function isOutlinedErrorStub(words, load) {
+  const end = load.end;
+  return end + 2 < words.length && movzW(words[end + 1], 0) === ERR_LIB_SSL && isRET(words[end + 2]);
+}
+function decodeArgsAfter(words, start, fileReg, libSeen) {
+  if (fileReg < 2 || fileReg > 29)
+    return null;
+  let reason = null, line = null, lib = libSeen;
+  const hi = Math.min(words.length, start + ARGS_WINDOW);
+  for (let i = start; i < hi; i++) {
+    const w = words[i];
+    if (movzW(w, 0) === ERR_LIB_SSL)
+      lib = true;
+    if (reason === null)
+      reason = movzW(w, fileReg - 1);
+    if (line === null)
+      line = movzW(w, fileReg + 1);
+    if (isBL(w) || isUnconditionalB(w) || isRET(w))
+      break;
+  }
+  return lib && reason !== null ? { reason, line } : null;
+}
+function libLoadedBefore(words, at) {
+  for (let i = at - 1; i >= Math.max(0, at - REASON_WINDOW_BEFORE); i--) {
+    const w = words[i];
+    if (isBL(w) || isUnconditionalB(w) || isBLR(w) || isRET(w))
+      return false;
+    if (movzW(w, 0) === ERR_LIB_SSL)
+      return true;
+  }
+  return false;
+}
+function decodeFileLoad(words, at) {
+  const load = fileLoadAt(words, at);
+  if (load !== null && isOutlinedErrorStub(words, load))
+    return { kind: "stub", fileReg: load.reg };
+  if (load !== null && load.reg !== 3) {
+    const lib = libLoadedBefore(words, at);
+    const args = decodeArgsAfter(words, load.end + 1, load.reg, lib);
+    if (args !== null)
+      return { kind: "site", reason: args.reason };
+  }
+  const reason = decodeErrorReason(words, at);
+  return reason === null ? null : { kind: "site", reason };
+}
+function decodeStubCall(pc, words, stubs) {
+  const target = words.length > 0 ? blTargetOffset(pc, words[0]) : null;
+  const fileReg = target === null ? void 0 : stubs.get(target);
+  return fileReg === void 0 ? null : decodeArgsAfter(words, 1, fileReg, true);
+}
+function reasonsByFunction(sites) {
+  const groups = /* @__PURE__ */ new Map();
+  for (const { func, reason } of sites) {
+    if (!groups.has(func))
+      groups.set(func, /* @__PURE__ */ new Set());
+    groups.get(func).add(reason);
+  }
+  return groups;
+}
+function only(items) {
+  return items.length === 1 ? items[0] : null;
+}
+function funcsWhere(groups, pred) {
+  return [...groups.entries()].filter(([, reasons]) => pred(reasons)).map(([func]) => func);
+}
+function pickSslWrite(groups) {
+  const R = SSL_REASON;
+  return only(funcsWhere(groups, (r) => r.has(R.SHOULD_NOT_HAVE_BEEN_CALLED) && r.has(R.UNINITIALIZED) && r.has(R.BAD_LENGTH)));
+}
+function isReadImplShaped(r) {
+  const R = SSL_REASON;
+  return r.has(R.UNINITIALIZED) && r.has(R.SSL_HANDSHAKE_FAILURE) && !r.has(R.BAD_LENGTH);
+}
+function pickSslReadImpl(groups) {
+  return only(funcsWhere(groups, (r) => r.size === 2 && isReadImplShaped(r)));
+}
+function peekShapedFunctions(groups) {
+  return funcsWhere(groups, (r) => r.size === 1 && r.has(SSL_REASON.SHOULD_NOT_HAVE_BEEN_CALLED));
+}
+function pickInlinedSslRead(groups) {
+  return only(inlinedReadShapedFunctions(groups));
+}
+function inlinedReadShapedFunctions(groups) {
+  return funcsWhere(groups, (r) => isReadImplShaped(r) && r.has(SSL_REASON.SHOULD_NOT_HAVE_BEEN_CALLED));
+}
+function pickSslReadWithoutImpl(groups, stubCount) {
+  return stubCount > 0 ? pickInlinedSslRead(groups) : null;
+}
+function needsStubCallerScan(groups, stubCount) {
+  if (stubCount === 0)
+    return false;
+  const hasRead = pickSslReadImpl(groups) !== null || pickInlinedSslRead(groups) !== null;
+  return pickSslWrite(groups) === null || !hasRead;
+}
+function pickCalledSslReadImpl(groups, peekShaped) {
+  const called = new Set(peekShaped.flatMap((f2) => [...f2.callees]));
+  return only(funcsWhere(groups, isReadImplShaped).filter((func) => called.has(func)));
+}
+function chooseSslReadImpl(groups, peekShaped) {
+  return pickSslReadImpl(groups) ?? pickCalledSslReadImpl(groups, peekShaped);
+}
+function effectAfterCall(words, base, at, stopAtCalls) {
+  for (let j = at + 1; j < words.length; j++) {
+    const w = words[j];
+    if (isNonStackStore(w))
+      return "consumes";
+    if (isRET(w))
+      return "returns";
+    if (stopAtCalls && (blTargetOffset(base + j * 4, w) !== null || isBLR(w) || isUnconditionalB(w)))
+      return null;
+  }
+  return null;
+}
+function firstCallWhere(words, base, from2, pred) {
+  for (let i = from2; i < words.length; i++) {
+    const t = blTargetOffset(base + i * 4, words[i]);
+    if (t !== null && pred(t))
+      return i;
+  }
+  return -1;
+}
+function copyVerdict(words, base, readImpl) {
+  const impl = firstCallWhere(words, base, 0, (t) => t === readImpl);
+  const copy2 = impl < 0 ? -1 : firstCallWhere(words, base, impl + 1, (t) => t !== readImpl);
+  const effect = copy2 < 0 ? null : effectAfterCall(words, base, copy2, false);
+  return effect === null ? null : effect === "consumes";
+}
+function afterCallsTo(words, base, target) {
+  let consumes = false, returns = false;
+  for (let i = firstCallWhere(words, base, 0, (t) => t === target); i >= 0; i = firstCallWhere(words, base, i + 1, (t) => t === target)) {
+    const effect = effectAfterCall(words, base, i, true);
+    consumes ||= effect === "consumes";
+    returns ||= effect === "returns";
+  }
+  return { consumes, returns };
+}
+function directCallees({ func, words }) {
+  const out = /* @__PURE__ */ new Set();
+  for (let i = 0; i < words.length; i++) {
+    const t = blTargetOffset(func + i * 4, words[i]);
+    if (t !== null)
+      out.add(t);
+  }
+  return out;
+}
+function pickConsumingReader(bodies) {
+  if (bodies.length < 2)
+    return null;
+  const [first, ...rest] = bodies.map(directCallees);
+  const shared = [...first].filter((t) => rest.every((callees) => callees.has(t)));
+  const picks = /* @__PURE__ */ new Set();
+  for (const target of shared) {
+    const after = bodies.map((b) => afterCallsTo(b.words, b.func, target));
+    const consumers = bodies.filter((_, i) => after[i].consumes && !after[i].returns);
+    const othersReturn = after.every((a, i) => bodies[i] === consumers[0] || a.returns && !a.consumes);
+    if (consumers.length === 1 && othersReturn)
+      picks.add(consumers[0].func);
+  }
+  return only([...picks]);
+}
+function calleeSuperset(a, b) {
+  const contains = (x, y) => x.size > y.size && [...y].every((c) => x.has(c));
+  return contains(a.callees, b.callees) ? a : contains(b.callees, a.callees) ? b : null;
+}
+function resolveSslRead(peekShaped, readImpl, wrappersOf2, consumes = () => null) {
+  const readers = peekShaped.filter((f2) => f2.callees.has(readImpl));
+  const superset = readers.length === 2 ? calleeSuperset(readers[0], readers[1]) : null;
+  if (superset !== null)
+    return superset.func;
+  const leading = readers.length > 1 ? readers.filter((f2) => f2.callees.values().next().value === readImpl) : readers;
+  if (leading.length !== 1)
+    return only(leading.filter((f2) => consumes(f2.func) === true))?.func ?? null;
+  const [candidate] = leading;
+  const wrappers = wrappersOf2(candidate.func);
+  const wrapper = only(wrappers);
+  if (wrapper !== null)
+    return wrapper;
+  if (readers.length > 1)
+    return consumes(candidate.func) === true ? candidate.func : null;
+  return wrappers.length === 0 && consumes(candidate.func) === true ? candidate.func : null;
+}
+var MAX_BODY_BYTES = 4096;
+var WRAPPER_SEARCH_MARGIN = 65536;
+function readWords(at, count) {
+  try {
+    const buf = at.readByteArray(count * 4);
+    return buf ? new Uint32Array(buf) : null;
+  } catch (_e) {
+    return null;
+  }
+}
+function offsetOf(mod, p) {
+  return p.sub(mod.base).toInt32();
+}
+function wrappersOf(mod, table, peek, lo, hi) {
+  const start = Math.max(0, lo - WRAPPER_SEARCH_MARGIN, peek - WRAPPER_SEARCH_MARGIN);
+  const end = Math.min(hi + WRAPPER_SEARCH_MARGIN, peek + WRAPPER_SEARCH_MARGIN, mod.size);
+  const words = readWords(mod.base.add(start), end - start >> 2) ?? new Uint32Array(0);
+  const found = /* @__PURE__ */ new Set();
+  words.forEach((w, i) => {
+    const pc = start + i * 4;
+    if (blTargetOffset(pc, w) !== peek)
+      return;
+    const fn = table.bounds(mod.base.add(pc));
+    if (!fn)
+      return;
+    const fnOff = offsetOf(mod, fn.start);
+    const prefix = readWords(fn.start, pc - fnOff >> 2) ?? new Uint32Array(0);
+    if (prefix.length <= 16 && prefix.every((x, k) => blTargetOffset(fnOff + k * 4, x) === null))
+      found.add(fnOff);
+  });
+  return [...found];
+}
+var SSL_LIB_ANCHOR = { text: "/ssl/ssl_lib.cc", literalSuffix: true, maxSites: 512 };
+var LOAD_WINDOW_WORDS = REASON_WINDOW_BEFORE + 1 + Math.max(REASON_WINDOW_AFTER, LOAD_SITE_WINDOW + ARGS_WINDOW);
+function blThenMovzPattern(reasonReg) {
+  const [bl, blMask] = maskedWordScanPattern(2483027968, 4227858432).split(" : ");
+  const [mov, movMask] = maskedWordScanPattern((1384120320 | reasonReg) >>> 0, 4292870175).split(" : ");
+  return `${bl} ${mov} : ${blMask} ${movMask}`;
+}
+function addSite(mod, out, fn, reason) {
+  if (!fn)
+    return;
+  const func = offsetOf(mod, fn.start);
+  out.bodies.set(func, fn.end);
+  out.sites.push({ func, reason });
+}
+async function addStubCallerSites(mod, table, stubs, out) {
+  let hits = 0;
+  const onMatch = (hit) => {
+    hits++;
+    if (hit.and(ptr(3)).toInt32() !== 0)
+      return;
+    const pc = offsetOf(mod, hit);
+    const args = decodeStubCall(pc, readWords(hit, 1 + ARGS_WINDOW) ?? [], stubs);
+    if (args !== null)
+      addSite(mod, out, table.bounds(hit), args.reason);
+  };
+  const code4 = mod.enumerateRanges("r-x");
+  const reasonRegs = new Set([...stubs.values()].map((fileReg) => fileReg - 1).filter((r) => r > 0));
+  const started2 = Date.now();
+  await scanRangesChunked(code4, [...reasonRegs].map((r) => ({ pattern: blThenMovzPattern(r), onMatch })));
+  devlog(`[BoringSSL plaintext] ${mod.name}: stub-caller scan ${hits} hits in ${Date.now() - started2} ms`);
+}
+async function sslLibErrorSites(mod, table) {
+  const [loads] = await anchorSiteFunctions(mod, table, [SSL_LIB_ANCHOR]);
+  if (loads.length === 0)
+    return null;
+  const out = { sites: [], bodies: /* @__PURE__ */ new Map() };
+  const stubs = /* @__PURE__ */ new Map();
+  for (const { at, fn } of loads) {
+    const from2 = at.sub(REASON_WINDOW_BEFORE * 4);
+    const words = readWords(from2, LOAD_WINDOW_WORDS) ?? readWords(from2, REASON_WINDOW_BEFORE + REASON_WINDOW_AFTER + 1);
+    const decoded = words ? decodeFileLoad(words, REASON_WINDOW_BEFORE) : null;
+    if (decoded?.kind === "stub")
+      stubs.set(offsetOf(mod, at), decoded.fileReg);
+    else if (decoded?.kind === "site")
+      addSite(mod, out, fn, decoded.reason);
+  }
+  if (needsStubCallerScan(reasonsByFunction(out.sites), stubs.size))
+    await addStubCallerSites(mod, table, stubs, out);
+  return { ...out, stubs: stubs.size };
+}
+function bodyReader(mod, ends) {
+  const cache = /* @__PURE__ */ new Map();
+  return (func) => {
+    let body = cache.get(func);
+    if (body === void 0) {
+      const start = mod.base.add(func), end = ends.get(func) ?? null;
+      const size = Math.min(end ? end.sub(start).toInt32() : MAX_BODY_BYTES, MAX_BODY_BYTES);
+      body = { func, words: readWords(start, Math.max(0, size >> 2)) ?? [] };
+      cache.set(func, body);
+    }
+    return body;
+  };
+}
+function peekShapedCalls(groups, body) {
+  return peekShapedFunctions(groups).map((func) => ({ func, callees: directCallees(body(func)) }));
+}
+function locateSslRead(mod, table, groups, readImpl, body, peekShaped) {
+  const funcs = [...groups.keys()];
+  const lo = Math.min(...funcs), hi = Math.max(...funcs);
+  return resolveSslRead(peekShaped, readImpl, (peek) => wrappersOf(mod, table, peek, lo, hi), (func) => copyVerdict(body(func).words, func, readImpl));
+}
+var offsetLabel = (off) => off === null ? "?" : "+0x" + off.toString(16);
+async function locateBoringSslPlaintextApi(mod) {
+  if (Process.arch !== "arm64")
+    return null;
+  const table = functionBoundsFor(mod);
+  const found = await sslLibErrorSites(mod, table);
+  if (!found) {
+    devlog(`[BoringSSL plaintext] ${mod.name}: no BoringSSL ssl_lib.cc anchor string`);
+    return null;
+  }
+  const groups = reasonsByFunction(found.sites);
+  const sslWrite = pickSslWrite(groups);
+  const body = bodyReader(mod, found.bodies);
+  const peekShaped = peekShapedCalls(groups, body);
+  const readImpl = chooseSslReadImpl(groups, peekShaped);
+  const located2 = readImpl === null ? pickSslReadWithoutImpl(groups, found.stubs) : locateSslRead(mod, table, groups, readImpl, body, peekShaped);
+  const picked = located2 ?? pickConsumingReader(inlinedReadShapedFunctions(groups).map(body));
+  const sslRead = picked === sslWrite ? null : picked;
+  devlog(`[BoringSSL plaintext] ${mod.name}: ${found.sites.length} ssl_lib.cc error sites in ${groups.size} functions (${found.stubs} outlined stubs); SSL_write=${offsetLabel(sslWrite)} ssl_read_impl=${offsetLabel(readImpl)} SSL_read=${offsetLabel(sslRead)}`);
+  return {
+    sslRead: sslRead === null ? null : mod.base.add(sslRead),
+    sslWrite: sslWrite === null ? null : mod.base.add(sslWrite)
+  };
+}
+function describeLocated(mod, api3) {
+  const at = (p) => moduleOffsetLabel(mod, p, "not found");
+  return `SSL_read ${at(api3.sslRead)}, SSL_write ${at(api3.sslWrite)}`;
+}
+
+// agent/tls/shared/chromium_plaintext_coverage.ts
+init_node_globals();
+var CRONET_PLAINTEXT_MODULE_PATTERN = /^libcronet([_.].*)?\.so$/;
+var SIGNAL_MODULE_PATTERN = /libsignal_jni(?!_testing).*\.so/;
+var SIGNAL_MODULE_EXCLUDE_PATTERN = /_testing\.so$/;
+function matchesSignalRows(moduleName) {
+  return SIGNAL_MODULE_PATTERN.test(moduleName) && !SIGNAL_MODULE_EXCLUDE_PATTERN.test(moduleName);
+}
+function matchesCronetHookerPlaintextRow(moduleName) {
+  return CRONET_PLAINTEXT_MODULE_PATTERN.test(moduleName) || matchesSignalRows(moduleName);
+}
+var FLUTTER_PLAINTEXT_MODULE_PATTERN = /^libflutter\.so$/;
+var CHROMIUM_FRAMEWORK_MODULE_PATTERN = /^(Google Chrome|Electron) Framework$/;
+function plaintextLocatorRunsOn(arch = Process.arch) {
+  return arch === "arm64";
+}
+
+// agent/tls/shared/boringssl_plaintext_resolver.ts
+var BORINGSECRETHUNTER_DOCS = "docs/libraries/boringssl.md#boringsecrethunter";
+var PLAINTEXT_FUNCTIONS = ["SSL_read", "SSL_write"];
+var API_FIELD = { SSL_read: "sslRead", SSL_write: "sslWrite" };
+var NO_LEARNED_ENTRIES = { lookup: () => null };
+var IGNORE_LOCATOR_RESULT = () => {
+};
+var learnedSource = NO_LEARNED_ENTRIES;
+var locatorResolvedListener = IGNORE_LOCATOR_RESULT;
+var missNoticeShown = /* @__PURE__ */ new Set();
+function setLearnedPlaintextSource(source) {
+  learnedSource = source ?? NO_LEARNED_ENTRIES;
+}
+function setLocatorResolvedListener(listener) {
+  locatorResolvedListener = listener ?? IGNORE_LOCATOR_RESULT;
+}
+function exportsSslRecordApi(mod) {
+  return mod.findExportByName("SSL_read") !== null || mod.findExportByName("SSL_write") !== null;
+}
+function hasAnyFunction(api3) {
+  return api3 !== null && (api3.sslRead !== null || api3.sslWrite !== null);
+}
+function offsetAddress(mod, entry) {
+  if (!entry || entry.address === void 0 || entry.address === null)
+    return null;
+  const address = ptr(entry.address);
+  return entry.absolute ? address : mod.base.add(address);
+}
+function plaintextApiFromOffsets(allOffsets, mod) {
+  if (!allOffsets || typeof allOffsets !== "object")
+    return null;
+  const entry = allOffsets[moduleBasename(mod.name)];
+  if (!entry || typeof entry !== "object")
+    return null;
+  const api3 = { sslRead: offsetAddress(mod, entry.SSL_read), sslWrite: offsetAddress(mod, entry.SSL_write) };
+  return hasAnyFunction(api3) ? api3 : null;
+}
+function plaintextApiFromLearned(entry, mod, hashPrologue = sha256Prologue) {
+  if (!entry)
+    return null;
+  const sslRead = verifiedLearnedAddress(mod, entry.rvas.SSL_read, entry.prologueSha256.SSL_read, hashPrologue);
+  const sslWrite = verifiedLearnedAddress(mod, entry.rvas.SSL_write, entry.prologueSha256.SSL_write, hashPrologue);
+  return sslRead !== null && sslWrite !== null ? { sslRead, sslWrite } : null;
+}
+function defaultDeps3() {
+  return {
+    readOffsets: () => offsets,
+    learned: learnedSource,
+    hashPrologue: sha256Prologue,
+    locate: (mod) => locateBoringSslPlaintextApi(mod),
+    onLocatorResolved: locatorResolvedListener,
+    locatorRuns: () => plaintextLocatorRunsOn(),
+    warn: log,
+    now: () => Date.now(),
+    arch: () => Process.arch,
+    isAndroid
+  };
+}
+function noticeMissOnce(moduleName, deps) {
+  if (missNoticeShown.has(moduleName))
+    return;
+  missNoticeShown.add(moduleName);
+  if (!deps.locatorRuns()) {
+    devlog_debug(`[BoringSSL plaintext] ${moduleName}: not resolved; locator unavailable on ${Process.arch}`);
+    return;
+  }
+  deps.warn(`[!] ${moduleName}: BoringSSL SSL_read/SSL_write not located; TCP TLS plaintext unavailable (keys only). Supply them via --offsets; see ${BORINGSECRETHUNTER_DOCS}`);
+}
+var PlaintextApiMerge = class {
+  mod;
+  deps;
+  api = { sslRead: null, sslWrite: null };
+  sources = { SSL_read: null, SSL_write: null };
+  constructor(mod, deps) {
+    this.mod = mod;
+    this.deps = deps;
+  }
+  missing() {
+    return PLAINTEXT_FUNCTIONS.some((fn) => this.api[API_FIELD[fn]] === null);
+  }
+  take(candidate, source) {
+    if (candidate === null)
+      return;
+    for (const fn of PLAINTEXT_FUNCTIONS) {
+      const address = candidate[API_FIELD[fn]];
+      if (this.api[API_FIELD[fn]] !== null || address === null || !this.hookable(fn, address, source))
+        continue;
+      this.api[API_FIELD[fn]] = address;
+      this.sources[fn] = source;
+    }
+  }
+  hookable(fn, address, source) {
+    if (isHookableAddress(address, this.deps.arch()))
+      return true;
+    const reason = `${fn} at ${address} is an even (ARM-mode) address on 32-bit ARM; not hooked`;
+    if (source === "offsets") {
+      this.deps.warn(`[!] ${this.mod.name}: --offsets ${reason}. Pass the Thumb address (address|1).`);
+    } else {
+      devlog_debug(`[BoringSSL plaintext] ${this.mod.name}: ${source} ${reason}`);
+    }
+    return false;
+  }
+  result() {
+    if (!hasAnyFunction(this.api))
+      return null;
+    const used = [...new Set(PLAINTEXT_FUNCTIONS.map((fn) => this.sources[fn]).filter((s) => s !== null))];
+    const source = used.length === 1 ? used[0] : "mixed";
+    devlog_debug(`[BoringSSL plaintext] ${this.mod.name}: SSL_read via ${this.sources.SSL_read ?? "none"}, SSL_write via ${this.sources.SSL_write ?? "none"}`);
+    return { ...this.api, source, sources: { ...this.sources } };
+  }
+};
+function notifyLearnedAccepted(mod, entry, deps) {
+  try {
+    deps.learned.onAccepted?.(mod, entry);
+  } catch (e) {
+    devlog_debug(`[BoringSSL plaintext] ${mod.name}: learned-entry listener failed: ${e}`);
+  }
+}
+function learnedApi(mod, deps) {
+  const entry = deps.learned.lookup(mod);
+  const api3 = plaintextApiFromLearned(entry, mod, deps.hashPrologue);
+  if (api3 !== null && entry !== null)
+    notifyLearnedAccepted(mod, entry, deps);
+  return api3;
+}
+function notifyLocatorResolved(listener, mod, api3, elapsedMs) {
+  try {
+    listener(mod, api3, elapsedMs);
+  } catch (e) {
+    devlog_debug(`[BoringSSL plaintext] ${mod.name}: locator listener failed: ${e}`);
+  }
+}
+async function locatorApi(mod, deps) {
+  const startedAt = deps.now();
+  const located2 = await deps.locate(mod);
+  const elapsedMs = deps.now() - startedAt;
+  devlog_debug(`[BoringSSL plaintext] ${mod.name}: locator finished in ${elapsedMs} ms`);
+  if (!hasAnyFunction(located2))
+    return null;
+  notifyLocatorResolved(deps.onLocatorResolved, mod, located2, elapsedMs);
+  return located2;
+}
+async function mergedApi(mod, deps) {
+  const merge = new PlaintextApiMerge(mod, deps);
+  merge.take(plaintextApiFromOffsets(deps.readOffsets(), mod), "offsets");
+  if (merge.missing())
+    merge.take(learnedApi(mod, deps), "learned");
+  if (merge.missing())
+    merge.take(await locatorApi(mod, deps), "locator");
+  return merge.result();
+}
+async function resolveBoringSslPlaintext(mod, overrides = {}) {
+  const deps = { ...defaultDeps3(), ...overrides };
+  try {
+    const api3 = await mergedApi(mod, deps);
+    if (api3)
+      return api3;
+  } catch (e) {
+    devlog_debug(`[BoringSSL plaintext] ${mod.name}: resolver failed: ${e}`);
+  }
+  noticeMissOnce(mod.name, deps);
+  return null;
+}
+function cheapSourceHas(mod, fn, deps) {
+  const learned = plaintextApiFromLearned(deps.learned.lookup(mod), mod, deps.hashPrologue);
+  return [plaintextApiFromOffsets(deps.readOffsets(), mod), learned].some((api3) => {
+    const address = api3 === null ? null : api3[API_FIELD[fn]];
+    return address !== null && isHookableAddress(address, deps.arch());
+  });
+}
+function plaintextRowWillHandle(mod, fn, overrides = {}) {
+  const deps = { ...defaultDeps3(), ...overrides };
+  try {
+    if (!deps.isAndroid() || !matchesCronetHookerPlaintextRow(moduleBasename(mod.name)))
+      return false;
+    if (exportsSslRecordApi(mod))
+      return false;
+    if (deps.locatorRuns())
+      return true;
+    return (fn ? [fn] : PLAINTEXT_FUNCTIONS).some((f2) => cheapSourceHas(mod, f2, deps));
+  } catch (e) {
+    devlog_debug(`[BoringSSL plaintext] ${mod.name}: plaintextRowWillHandle failed: ${e}`);
+    return false;
+  }
+}
+
+// agent/tls/libs/cronet.ts
 var Cronet = class _Cronet {
   moduleName;
   socket_library;
@@ -29194,11 +36286,20 @@ var Cronet = class _Cronet {
   // Emit a single notice per (module, action, reason) explaining why stripped-Cronet
   // plaintext is unavailable: "missing" = no symbols and no byte-pattern at all;
   // "pending" = a byte-pattern exists but the SSL_get_fd hook point isn't wired yet.
+  // Same predicate the supplementary row applies, so the notice is suppressed only when that row really hooks.
+  plaintextRowWillHandle(action) {
+    const mod = Process.findModuleByName(this.module_name);
+    return mod !== null && plaintextRowWillHandle(mod, action === "SSL_Read" ? "SSL_read" : "SSL_write");
+  }
   noticePlaintext(action, reason) {
     const key = `${this.module_name}:${action}:${reason}`;
     if (_Cronet.plaintextNoticeShown.has(key))
       return;
     _Cronet.plaintextNoticeShown.add(key);
+    if (this.plaintextRowWillHandle(action)) {
+      devlog(`[Cronet modern] ${this.module_name}: ${action} not exported; plaintext is left to the BoringSSL plaintext row`);
+      return;
+    }
     if (reason === "missing") {
       log(`[!] ${this.module_name}: plaintext PCAP requested but neither ${action} symbols nor byte-patterns are available for this module; plaintext capture unavailable.`);
     } else {
@@ -29871,1210 +36972,17 @@ function wolfssl_execute(moduleName, is_base_hook) {
 // agent/legacy/tls/platforms/android/nss_android.ts
 init_node_globals();
 
-// agent/legacy/tls/libs/nss.ts
+// agent/legacy/tls/libs/nss_key_extraction.ts
 init_node_globals();
-init_shared_structures();
-var { readU32: readU323, readU64: readU642, readPointer: readPointer3, writeU32: writeU323, writeU64: writeU642, writePointer: writePointer3 } = NativePointer.prototype;
-var SECStatus2;
-(function(SECStatus3) {
-  SECStatus3[SECStatus3["SECWouldBlock"] = -2] = "SECWouldBlock";
-  SECStatus3[SECStatus3["SECFailure"] = -1] = "SECFailure";
-  SECStatus3[SECStatus3["SECSuccess"] = 0] = "SECSuccess";
-})(SECStatus2 || (SECStatus2 = {}));
-var PRDescType2;
-(function(PRDescType3) {
-  PRDescType3[PRDescType3["PR_DESC_FILE"] = 1] = "PR_DESC_FILE";
-  PRDescType3[PRDescType3["PR_DESC_SOCKET_TCP"] = 2] = "PR_DESC_SOCKET_TCP";
-  PRDescType3[PRDescType3["PR_DESC_SOCKET_UDP"] = 3] = "PR_DESC_SOCKET_UDP";
-  PRDescType3[PRDescType3["PR_DESC_LAYERED"] = 4] = "PR_DESC_LAYERED";
-  PRDescType3[PRDescType3["PR_DESC_PIPE"] = 5] = "PR_DESC_PIPE";
-})(PRDescType2 || (PRDescType2 = {}));
-var NSS2 = class _NSS {
-  moduleName;
-  socket_library;
-  passed_library_method_mapping;
-  // global definitions
-  static doTLS13_RTT0 = -1;
-  static SSL3_RANDOM_LENGTH = 32;
-  // global variables
-  library_method_mapping = {};
-  addresses;
-  module_name;
-  static SSL_SESSION_get_id;
-  static getsockname;
-  static getpeername;
-  static getDescType;
-  static PR_GetNameForIdentity;
-  static get_SSL_Callback;
-  static PK11_ExtractKeyValue;
-  static PK11_GetKeyData;
-  static SS3_VERSIONS_OFFSET;
-  // an offset in the SS3.HS strucht which changes on different NSS versions
-  static SS3_VERSIONS_CR_OFFSET;
-  constructor(moduleName, socket_library6, passed_library_method_mapping) {
-    this.moduleName = moduleName;
-    this.socket_library = socket_library6;
-    this.passed_library_method_mapping = passed_library_method_mapping;
-    if (typeof passed_library_method_mapping !== "undefined") {
-      this.library_method_mapping = passed_library_method_mapping;
-    } else {
-      this.library_method_mapping[`*${moduleName}*`] = ["PR_Write", "PR_Read", "PR_FileDesc2NativeHandle", "PR_GetPeerName", "PR_GetSockName", "PR_GetNameForIdentity", "PR_GetDescType"];
-      this.library_method_mapping[`*libnss.*`] = ["PK11_ExtractKeyValue", "PK11_GetKeyData"];
-      this.library_method_mapping["*libssl*.so"] = ["SSL_ImportFD", "SSL_GetSessionID", "SSL_HandshakeCallback"];
-      this.library_method_mapping[`*${socket_library6}*`] = ["getpeername", "getsockname", "ntohs", "ntohl"];
-    }
-    this.addresses = readAddresses(moduleName, this.library_method_mapping);
-    this.module_name = moduleName;
-    resolveOffsets(this.addresses, this.moduleName, socket_library6, "nss");
-    resolveWithPipelineAsync(this.addresses, this.moduleName, "nss", [
-      "PR_Write",
-      "PR_Read",
-      "PR_FileDesc2NativeHandle",
-      "SSL_ImportFD",
-      "PK11_ExtractKeyValue",
-      "PK11_GetKeyData"
-    ]).catch(() => {
-    });
-    if (!Java.available && this.addresses[this.moduleName]["SSL_GetSessionID"]) {
-      _NSS.SSL_SESSION_get_id = new NativeFunction(this.addresses[this.moduleName]["SSL_GetSessionID"], "pointer", ["pointer"]);
-    }
-    _NSS.getsockname = new NativeFunction(this.addresses[this.moduleName]["PR_GetSockName"], "int", ["pointer", "pointer"]);
-    _NSS.getpeername = new NativeFunction(this.addresses[this.moduleName]["PR_GetPeerName"], "int", ["pointer", "pointer"]);
-  }
-  // SSL_SecretCallback support (resolved via SSL_GetExperimentalAPI)
-  static SSL_SecretCallback_fn = null;
-  static SSL_SecretCallback_ptr = null;
-  // Cached NSPR/libc wrappers for getPortsAndAddressesFromNSS (built once, reused per packet).
-  static _cachedSocketFns = null;
-  static secretCallbackReentryGuard = false;
-  static originalSecretCallbacks = {};
-  // Version-dependent ssl3 offset
-  static SSL3_STATE_OFFSET = 1432;
-  static get_NSS_version() {
-    var getNSSversion = null;
-    var version_string = "0";
-    if (!Java.available) {
-      getNSSversion = new NativeFunction(Module.getGlobalExportByName("NSSSSL_GetVersion"), "pointer", []);
-    } else {
-      getNSSversion = new NativeFunction(Process.getModuleByName("libnss3.so").getExportByName("NSSSSL_GetVersion"), "pointer", []);
-    }
-    if (!getNSSversion.isNull()) {
-      var ptr_version_string = getNSSversion();
-      if (!ptr_version_string.isNull()) {
-        version_string = ptr_version_string.readCString();
-      }
-    }
-    var match = version_string.match(/^(\d+)\.(\d+)/);
-    if (!match) {
-      return 0;
-    }
-    var major = parseInt(match[1], 10);
-    var minor = parseInt(match[2], 10);
-    return major * 1e3 + minor;
-  }
-  static detectVersionOffsets() {
-    try {
-      var nss_version = _NSS.get_NSS_version();
-      if (nss_version >= 3115) {
-        _NSS.SSL3_STATE_OFFSET = 1464;
-      } else if (nss_version >= 3107) {
-        _NSS.SSL3_STATE_OFFSET = 1448;
-      } else if (nss_version >= 3101) {
-        _NSS.SSL3_STATE_OFFSET = 1440;
-      } else {
-        _NSS.SSL3_STATE_OFFSET = 1432;
-      }
-      devlog("NSS version " + nss_version + " \u2014 SSL3_STATE_OFFSET=" + _NSS.SSL3_STATE_OFFSET);
-    } catch (e) {
-      devlog("NSS version detection failed, using default ssl3 offset: " + e);
-    }
-  }
-  static resolveExperimentalAPI() {
-    try {
-      var getExpApiAddr = null;
-      try {
-        getExpApiAddr = Module.getGlobalExportByName("SSL_GetExperimentalAPI");
-      } catch (_) {
-      }
-      if (!getExpApiAddr || getExpApiAddr.isNull()) {
-        devlog("SSL_GetExperimentalAPI not found \u2014 secret callback will use struct-write fallback");
-        return;
-      }
-      var getExpApiFn = new NativeFunction(getExpApiAddr, "pointer", ["pointer"]);
-      var nameStr = Memory.allocUtf8String("SSL_SecretCallback");
-      var fnPtr = getExpApiFn(nameStr);
-      if (!fnPtr.isNull()) {
-        _NSS.SSL_SecretCallback_fn = new NativeFunction(fnPtr, "int", ["pointer", "pointer", "pointer"]);
-        _NSS.SSL_SecretCallback_ptr = fnPtr;
-        devlog("SSL_SecretCallback resolved via experimental API at " + fnPtr);
-      }
-    } catch (e) {
-      devlog("SSL_GetExperimentalAPI resolution failed: " + e);
-    }
-  }
-  /* PARSING functions */
-  static parse_struct_SECItem(secitem) {
-    return {
-      "type": secitem.readU64(),
-      "data": secitem.add(pointerSize2).readPointer(),
-      "len": secitem.add(pointerSize2 * 2).readU32()
-    };
-  }
-  // https://github.com/nss-dev/nss/blob/master/lib/ssl/sslimpl.h#L971
-  static parse_struct_sslSocketStr(sslSocketFD) {
-    return {
-      "fd": sslSocketFD.readPointer(),
-      "version": sslSocketFD.add(160),
-      "handshakeCallback": sslSocketFD.add(464),
-      "secretCallback": sslSocketFD.add(568),
-      "ssl3": sslSocketFD.add(_NSS.SSL3_STATE_OFFSET)
-    };
-  }
-  // https://github.com/nss-dev/nss/blob/master/lib/ssl/sslimpl.h#L771
-  static ssl3OffsetsInitialized = false;
-  static initSsl3Offsets() {
-    if (_NSS.ssl3OffsetsInitialized)
-      return;
-    _NSS.SS3_VERSIONS_OFFSET = 0;
-    _NSS.SS3_VERSIONS_CR_OFFSET = 0;
-    var nss_version = _NSS.get_NSS_version();
-    if (nss_version >= 3107) {
-      devlog("setting offsets for NSS version " + nss_version);
-      _NSS.SS3_VERSIONS_OFFSET = 96;
-      _NSS.SS3_VERSIONS_CR_OFFSET = 8;
-    }
-    _NSS.ssl3OffsetsInitialized = true;
-  }
-  static parse_struct_ssl3Str(ssl3_struct) {
-    _NSS.initSsl3Offsets();
-    return {
-      "crSpec": ssl3_struct.readPointer(),
-      "prSpec": ssl3_struct.add(pointerSize2).readPointer(),
-      "cwSpec": ssl3_struct.add(pointerSize2 * 2).readPointer(),
-      "pwSpec": ssl3_struct.add(pointerSize2 * 3).readPointer(),
-      "peerRequestedKeyUpdate": ssl3_struct.add(pointerSize2 * 4).readU32(),
-      "keyUpdateDeferred": ssl3_struct.add(pointerSize2 * 4 + 4).readU32(),
-      "deferredKeyUpdateRequest": ssl3_struct.add(pointerSize2 * 4 + 8).readU32(),
-      "clientCertRequested": ssl3_struct.add(pointerSize2 * 4 + 12).readU32(),
-      "clientCertificate": ssl3_struct.add(pointerSize2 * 4 + 16).readPointer(),
-      "clientPrivateKey": ssl3_struct.add(pointerSize2 * 5 + 16).readPointer(),
-      "clientCertChain": ssl3_struct.add(pointerSize2 * 6 + 16).readPointer(),
-      "sendEmptyCert": ssl3_struct.add(pointerSize2 * 7 + 16).readU32(),
-      "policy": ssl3_struct.add(pointerSize2 * 7 + 20).readU32(),
-      "peerCertArena": ssl3_struct.add(pointerSize2 * 7 + 24).readPointer(),
-      "peerCertChain": ssl3_struct.add(pointerSize2 * 8 + 24).readPointer(),
-      "ca_list": ssl3_struct.add(pointerSize2 * 9 + 24).readPointer(),
-      "hs": {
-        "client_random": ssl3_struct.add(pointerSize2 * 10 + 24 + _NSS.SS3_VERSIONS_CR_OFFSET),
-        //SSL3Random --> typedef PRUint8 SSL3Random[SSL3_RANDOM_LENGTH];
-        "server_random": ssl3_struct.add(pointerSize2 * 10 + 56 + _NSS.SS3_VERSIONS_CR_OFFSET),
-        "client_inner_random": ssl3_struct.add(pointerSize2 * 10 + 88 + _NSS.SS3_VERSIONS_CR_OFFSET),
-        "ws": ssl3_struct.add(pointerSize2 * 10 + 120 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-        "hashType": ssl3_struct.add(pointerSize2 * 10 + 124 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-        "messages": {
-          "data": ssl3_struct.add(pointerSize2 * 10 + 128 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-          "len": ssl3_struct.add(pointerSize2 * 11 + 128 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-          "space": ssl3_struct.add(pointerSize2 * 11 + 132 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-          "fixed": ssl3_struct.add(pointerSize2 * 11 + 136 + _NSS.SS3_VERSIONS_OFFSET).readU32()
-        },
-        "echInnerMessages": {
-          "data": ssl3_struct.add(pointerSize2 * 11 + 140 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-          "len": ssl3_struct.add(pointerSize2 * 12 + 140 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-          "space": ssl3_struct.add(pointerSize2 * 12 + 144 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-          "fixed": ssl3_struct.add(pointerSize2 * 12 + 148 + _NSS.SS3_VERSIONS_OFFSET).readU32()
-        },
-        "md5": ssl3_struct.add(pointerSize2 * 12 + 152 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-        "sha": ssl3_struct.add(pointerSize2 * 13 + 152 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-        "shaEchInner": ssl3_struct.add(pointerSize2 * 14 + 152 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-        "shaPostHandshake": ssl3_struct.add(pointerSize2 * 15 + 152 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-        "signatureScheme": ssl3_struct.add(pointerSize2 * 16 + 152 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-        "kea_def": ssl3_struct.add(pointerSize2 * 16 + 156 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-        "cipher_suite": ssl3_struct.add(pointerSize2 * 17 + 156 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-        "suite_def": ssl3_struct.add(pointerSize2 * 17 + 160 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-        "msg_body": {
-          "data": ssl3_struct.add(pointerSize2 * 18 + 160 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-          "len": ssl3_struct.add(pointerSize2 * 19 + 160 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-          "space": ssl3_struct.add(pointerSize2 * 19 + 164 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-          "fixed": ssl3_struct.add(pointerSize2 * 19 + 168 + _NSS.SS3_VERSIONS_OFFSET).readU32()
-        },
-        "header_bytes": ssl3_struct.add(pointerSize2 * 19 + 172 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-        "msg_type": ssl3_struct.add(pointerSize2 * 19 + 176 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-        "msg_len": ssl3_struct.add(pointerSize2 * 19 + 180 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-        "isResuming": ssl3_struct.add(pointerSize2 * 19 + 184 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-        "sendingSCSV": ssl3_struct.add(pointerSize2 * 19 + 188 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-        "receivedNewSessionTicket": ssl3_struct.add(pointerSize2 * 19 + 192 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-        "newSessionTicket": ssl3_struct.add(pointerSize2 * 19 + 196 + _NSS.SS3_VERSIONS_OFFSET),
-        // for now we calculate only its offset (44 bytes); detailes at https://github.com/nss-dev/nss/blob/master/lib/ssl/ssl3prot.h#L162
-        "finishedBytes": ssl3_struct.add(pointerSize2 * 19 + 240 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-        "finishedMsgs": ssl3_struct.add(pointerSize2 * 19 + 244 + _NSS.SS3_VERSIONS_OFFSET),
-        "authCertificatePending": ssl3_struct.add(pointerSize2 * 18 + 316 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-        "restartTarget": ssl3_struct.add(pointerSize2 * 19 + 320 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-        "canFalseStart": ssl3_struct.add(pointerSize2 * 19 + 324 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-        "preliminaryInfo": ssl3_struct.add(pointerSize2 * 19 + 328 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-        "remoteExtensions": {
-          "next": ssl3_struct.add(pointerSize2 * 19 + 332 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-          "prev": ssl3_struct.add(pointerSize2 * 20 + 332 + _NSS.SS3_VERSIONS_OFFSET).readPointer()
-        },
-        "echOuterExtensions": {
-          "next": ssl3_struct.add(pointerSize2 * 21 + 332 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-          "prev": ssl3_struct.add(pointerSize2 * 22 + 332 + _NSS.SS3_VERSIONS_OFFSET).readPointer()
-        },
-        "sendMessageSeq": ssl3_struct.add(pointerSize2 * 23 + 332 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-        //u16 but through alignment  U32
-        "lastMessageFlight": {
-          "next": ssl3_struct.add(pointerSize2 * 23 + 336 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-          "prev": ssl3_struct.add(pointerSize2 * 24 + 336 + _NSS.SS3_VERSIONS_OFFSET).readPointer()
-        },
-        "maxMessageSent": ssl3_struct.add(pointerSize2 * 25 + 336 + _NSS.SS3_VERSIONS_OFFSET).readU16(),
-        //u16
-        "recvMessageSeq": ssl3_struct.add(pointerSize2 * 25 + 338 + _NSS.SS3_VERSIONS_OFFSET).readU16(),
-        "recvdFragments": {
-          "data": ssl3_struct.add(pointerSize2 * 25 + 340 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-          "len": ssl3_struct.add(pointerSize2 * 26 + 340 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-          "space": ssl3_struct.add(pointerSize2 * 26 + 344 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-          "fixed": ssl3_struct.add(pointerSize2 * 26 + 348 + _NSS.SS3_VERSIONS_OFFSET).readU32()
-        },
-        "recvdHighWater": ssl3_struct.add(pointerSize2 * 26 + 352 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-        "cookie": {
-          "type": ssl3_struct.add(pointerSize2 * 26 + 356 + _NSS.SS3_VERSIONS_OFFSET).readU64(),
-          "data": ssl3_struct.add(pointerSize2 * 27 + 356 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-          "len": ssl3_struct.add(pointerSize2 * 28 + 356 + _NSS.SS3_VERSIONS_OFFSET).readU32()
-        },
-        "times_array": ssl3_struct.add(pointerSize2 * 28 + 360 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-        "rtTimer": ssl3_struct.add(pointerSize2 * 28 + 432 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-        "ackTimer": ssl3_struct.add(pointerSize2 * 29 + 432 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-        "hdTimer": ssl3_struct.add(pointerSize2 * 30 + 432 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-        "rtRetries": ssl3_struct.add(pointerSize2 * 31 + 432 + _NSS.SS3_VERSIONS_OFFSET).readU32(),
-        "srvVirtName": {
-          "type": ssl3_struct.add(pointerSize2 * 31 + 436 + _NSS.SS3_VERSIONS_OFFSET).readU64(),
-          "data": ssl3_struct.add(pointerSize2 * 32 + 436 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-          "len": ssl3_struct.add(pointerSize2 * 33 + 436 + _NSS.SS3_VERSIONS_OFFSET).readU32()
-        },
-        "currentSecret": ssl3_struct.add(pointerSize2 * 33 + 440 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-        "resumptionMasterSecret": ssl3_struct.add(pointerSize2 * 34 + 440 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-        "dheSecret": ssl3_struct.add(pointerSize2 * 35 + 440 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-        "clientEarlyTrafficSecret": ssl3_struct.add(pointerSize2 * 36 + 440 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-        "clientHsTrafficSecret": ssl3_struct.add(pointerSize2 * 37 + 440 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-        "serverHsTrafficSecret": ssl3_struct.add(pointerSize2 * 38 + 440 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-        "clientTrafficSecret": ssl3_struct.add(pointerSize2 * 39 + 440 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-        "serverTrafficSecret": ssl3_struct.add(pointerSize2 * 40 + 440 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-        "earlyExporterSecret": ssl3_struct.add(pointerSize2 * 41 + 440 + _NSS.SS3_VERSIONS_OFFSET).readPointer(),
-        "exporterSecret": ssl3_struct.add(pointerSize2 * 42 + 440 + _NSS.SS3_VERSIONS_OFFSET).readPointer()
-      }
-      // end of hs struct
-      /*
-              typedef struct SSL3HandshakeStateStr {
-          SSL3Random server_random;
-          SSL3Random client_random;
-          SSL3Random client_inner_random;
-          SSL3WaitState ws;                       --> enum type
-      
-          
-          SSL3HandshakeHashType hashType;         --> enum type
-          sslBuffer messages;                     --> struct of 20 bytes (1 ptr + 12 bytes;see lib/ssl/sslencode.h)
-          sslBuffer echInnerMessages;
-          
-          PK11Context *md5;
-          PK11Context *sha;
-          PK11Context *shaEchInner;
-          PK11Context *shaPostHandshake;
-          SSLSignatureScheme signatureScheme;     --> enum type( see lib/ssl/sslt.h)
-          const ssl3KEADef *kea_def;
-          ssl3CipherSuite cipher_suite;           --> typedef PRUint16 ssl3CipherSuite (see lib/ssl/ssl3prot.h)
-          const ssl3CipherSuiteDef *suite_def;
-          sslBuffer msg_body;
-                              
-          unsigned int header_bytes;
-          
-          SSLHandshakeType msg_type;
-          unsigned long msg_len;
-          PRBool isResuming;
-          PRBool sendingSCSV;
-      
-          
-          PRBool receivedNewSessionTicket;
-          NewSessionTicket newSessionTicket;      --> (see lib/ssl/ssl3prot.h)
-      
-          PRUint16 finishedBytes;
-          union {
-              TLSFinished tFinished[2];           --> 12 bytes
-              SSL3Finished sFinished[2];          --> 36 bytes
-              PRUint8 data[72];
-          } finishedMsgs;                         --> 72
-      
-          PRBool authCertificatePending;
-          
-          sslRestartTarget restartTarget;
-      
-          PRBool canFalseStart;
-          
-          PRUint32 preliminaryInfo;
-      
-          
-          PRCList remoteExtensions;
-          PRCList echOuterExtensions;
-      
-          
-          PRUint16 sendMessageSeq;
-          PRCList lastMessageFlight;
-          PRUint16 maxMessageSent;
-          PRUint16 recvMessageSeq;
-          sslBuffer recvdFragments;
-          PRInt32 recvdHighWater;
-          SECItem cookie;
-          dtlsTimer timers[3];       24 * 3
-          dtlsTimer *rtTimer;
-          dtlsTimer *ackTimer;
-          dtlsTimer *hdTimer;
-          PRUint32 rtRetries;
-          SECItem srvVirtName;
-                                          
-      
-          // This group of values is used for TLS 1.3 and above
-          PK11SymKey *currentSecret;            // The secret down the "left hand side"   --> ssl3_struct.add(704)
-                                                  //of the TLS 1.3 key schedule.
-          PK11SymKey *resumptionMasterSecret;   // The resumption_master_secret.          --> ssl3_struct.add(712)
-          PK11SymKey *dheSecret;                // The (EC)DHE shared secret.             --> ssl3_struct.add(720)
-          PK11SymKey *clientEarlyTrafficSecret; // The secret we use for 0-RTT.           --> ssl3_struct.add(728)
-          PK11SymKey *clientHsTrafficSecret;    // The source keys for handshake          --> ssl3_struct.add(736)
-          PK11SymKey *serverHsTrafficSecret;    // traffic keys.                          --> ssl3_struct.add(744)
-          PK11SymKey *clientTrafficSecret;      // The source keys for application        --> ssl3_struct.add(752)
-          PK11SymKey *serverTrafficSecret;      // traffic keys                           --> ssl3_struct.add(760)
-          PK11SymKey *earlyExporterSecret;      // for 0-RTT exporters                    --> ssl3_struct.add(768)
-          PK11SymKey *exporterSecret;           // for exporters                          --> ssl3_struct.add(776)
-          ...
-      
-      
-          typedef struct {
-          const char *label; 8
-          DTLSTimerCb cb; 8
-          PRIntervalTime started; 4
-          PRUint32 timeout; 4
-      } dtlsTimer;
-      
-              */
-    };
-  }
-  // https://github.com/nss-dev/nss/blob/master/lib/ssl/sslspec.h#L140 
-  static parse_struct_sl3CipherSpecStr(cwSpec) {
-    return {
-      "link": cwSpec.add,
-      "refCt": cwSpec.add(pointerSize2 * 2),
-      "direction": cwSpec.add(pointerSize2 * 2 + 4),
-      "version": cwSpec.add(pointerSize2 * 2 + 8),
-      "recordVersion": cwSpec.add(pointerSize2 * 2 + 12),
-      "cipherDef": cwSpec.add(pointerSize2 * 2 + 16).readPointer(),
-      "macDef": cwSpec.add(pointerSize2 * 3 + 16).readPointer(),
-      "cipher": cwSpec.add(pointerSize2 * 4 + 16),
-      "cipherContext": cwSpec.add(pointerSize2 * 4 + 24).readPointer(),
-      "master_secret": cwSpec.add(pointerSize2 * 5 + 24).readPointer()
-    };
-  }
-  /********* NSS Callbacks ************/
-  /*
-  This callback gets called whenever a SSL Handshake completed
-  
-  typedef void (*SSLHandshakeCallback)(
-          PRFileDesc *fd,
-          void *client_data);
-  */
-  static keylog_callback = new NativeCallback(function(sslSocketFD, client_data) {
-    if (typeof this !== "undefined") {
-      _NSS.ssl_RecordKeyLog(sslSocketFD);
-    } else {
-      devlog_error("[-] Error while installing ssl_RecordKeyLog() callback");
-    }
-    return 0;
-  }, "void", ["pointer", "pointer"]);
-  /**
-   * SSL_SetSecretCallback installs a callback that TLS calls when it installs new
-   * traffic secrets.
-   *
-   *
-   *
-   * SSLSecretCallback is called with the current epoch and the corresponding
-   * secret; this matches the epoch used in DTLS 1.3, even if the socket is
-   * operating in stream mode:
-   *
-   * - client_early_traffic_secret corresponds to epoch 1
-   * - {client|server}_handshake_traffic_secret is epoch 2
-   * - {client|server}_application_traffic_secret_{N} is epoch 3+N
-   *
-   * The callback is invoked separately for read secrets (client secrets on the
-   * server; server secrets on the client), and write secrets.
-   *
-   * This callback is only called if (D)TLS 1.3 is negotiated.
-   *
-   * typedef void(PR_CALLBACK *SSLSecretCallback)(
-   *   PRFileDesc *fd, PRUint16 epoch, SSLSecretDirection dir, PK11SymKey *secret,
-   *   void *arg);
-   *
-   *  More: https://github.com/nss-dev/nss/blob/master/lib/ssl/sslexp.h#L614
-   *
-   */
-  static SECRET_LABEL_MAP = {
-    "1:2": "CLIENT_EARLY_TRAFFIC_SECRET",
-    "2:2": "CLIENT_HANDSHAKE_TRAFFIC_SECRET",
-    "2:1": "SERVER_HANDSHAKE_TRAFFIC_SECRET",
-    "3:2": "CLIENT_TRAFFIC_SECRET_0",
-    "3:1": "SERVER_TRAFFIC_SECRET_0"
-  };
-  static secret_callback = new NativeCallback(function(fd, epoch, dir, secret, arg_ptr) {
-    try {
-      var label = _NSS.SECRET_LABEL_MAP[epoch + ":" + dir];
-      if (!label)
-        return;
-      if (secret.isNull())
-        return;
-      var secretHex = _NSS.get_Secret_As_HexString(secret);
-      if (!secretHex || secretHex.length === 0)
-        return;
-      var sslSocketFD = _NSS.get_SSL_FD(fd);
-      if (sslSocketFD.isNull())
-        return;
-      var sslSocketStr = _NSS.parse_struct_sslSocketStr(sslSocketFD);
-      var ssl3 = _NSS.parse_struct_ssl3Str(sslSocketStr.ssl3);
-      var client_random = _NSS.getClientRandom(ssl3);
-      sendKeylog(_NSS.get_Keylog_Dump(label, client_random, secretHex));
-      var sockKey = sslSocketFD.toString();
-      var orig = _NSS.originalSecretCallbacks[sockKey];
-      if (orig && orig.cb && !orig.cb.isNull() && !orig.cb.equals(_NSS.secret_callback)) {
-        try {
-          orig.fn(fd, epoch, dir, secret, orig.arg);
-        } catch (e2) {
-          devlog("secret_callback: original callback call-through failed: " + e2);
-        }
-      }
-    } catch (e) {
-      devlog_error("secret_callback error: " + e);
-    }
-  }, "void", ["pointer", "uint16", "uint16", "pointer", "pointer"]);
-  /********* NSS helper functions  ********/
-  /**
-      * Returns a dictionary of a sockfd's "src_addr", "src_port", "dst_addr", and
-      * "dst_port".
-      * @param {pointer} sockfd The file descriptor of the socket to inspect as PRFileDesc.
-      * @param {boolean} isRead If true, the context is an SSL_read call. If
-      *     false, the context is an SSL_write call.
-      * @param {{ [key: string]: NativePointer}} methodAddresses Dictionary containing (at least) addresses for getpeername, getsockname, ntohs and ntohl
-      * @return {{ [key: string]: string | number }} Dictionary of sockfd's "src_addr", "src_port", "dst_addr",
-      *     and "dst_port".
-  
-    PRStatus PR_GetPeerName(
-      PRFileDesc *fd,
-      PRNetAddr *addr);
-  
-      PRStatus PR_GetSockName(
-      PRFileDesc *fd,
-      PRNetAddr *addr);
-  
-      PRStatus PR_NetAddrToString(
-      const PRNetAddr *addr,
-      char *string,
-      PRUint32 size);
-  
-  
-      union PRNetAddr {
-      struct {
-     PRUint16 family;
-     char data[14];
-      } raw;
-      struct {
-     PRUint16 family;
-     PRUint16 port;
-     PRUint32 ip;
-     char pad[8];
-      } inet;
-      #if defined(_PR_INET6)
-      struct {
-     PRUint16 family;
-     PRUint16 port;
-     PRUint32 flowinfo;
-     PRIPv6Addr ip;
-      } ipv6;
-      #endif // defined(_PR_INET6)
-      };
-  
-      typedef union PRNetAddr PRNetAddr;
-  
-      */
-  static getPortsAndAddressesFromNSS(sockfd, isRead, methodAddresses, enable_default_fd2) {
-    var message = {};
-    if (enable_default_fd2 && sockfd === null) {
-      message["src_port"] = 1234;
-      message["src_addr"] = "127.0.0.1";
-      message["dst_port"] = 2345;
-      message["dst_addr"] = "127.0.0.1";
-      message["ss_family"] = "AF_INET";
-      return message;
-    }
-    if (!_NSS._cachedSocketFns) {
-      _NSS._cachedSocketFns = {
-        getpeername: new NativeFunction(methodAddresses["PR_GetPeerName"], "int", ["pointer", "pointer"]),
-        getsockname: new NativeFunction(methodAddresses["PR_GetSockName"], "int", ["pointer", "pointer"]),
-        ntohs: new NativeFunction(methodAddresses["ntohs"], "uint16", ["uint16"]),
-        ntohl: new NativeFunction(methodAddresses["ntohl"], "uint32", ["uint32"])
-      };
-    }
-    var getpeername = _NSS._cachedSocketFns.getpeername;
-    var getsockname = _NSS._cachedSocketFns.getsockname;
-    var ntohs = _NSS._cachedSocketFns.ntohs;
-    var ntohl = _NSS._cachedSocketFns.ntohl;
-    var addrType = Memory.alloc(2);
-    var addrlen = Memory.alloc(4);
-    var addr = Memory.alloc(128);
-    var src_dst = ["src", "dst"];
-    for (var i = 0; i < src_dst.length; i++) {
-      addrlen.writeU32(128);
-      if (src_dst[i] == "src" !== isRead) {
-        getsockname(sockfd, addr);
-      } else {
-        getpeername(sockfd, addr);
-      }
-      const decoded = decodeSockaddr(addr, false, { ntohs, ntohl });
-      if (!decoded) {
-        devlog("[-] PIPE descriptor error: Only supporting IPv4/6: " + addr.readU16());
-        throw "Only supporting IPv4/6";
-      }
-      message[src_dst[i] + "_port"] = decoded.port;
-      message[src_dst[i] + "_addr"] = decoded.addr;
-      message["ss_family"] = decoded.family;
-    }
-    return message;
-  }
-  /**
-  * This functions tests if a given address is a readable pointer
-  *
-  * @param {*} ptr_addr is a pointer to the memory location where we want to check if there is already an address
-  * @returns 1 to indicate that there is a ptr at
-  */
-  static is_ptr_at_mem_location(ptr_addr) {
-    try {
-      ptr_addr.readPointer();
-      return 1;
-    } catch (error) {
-      return -1;
-    }
-  }
-  /**
-  *
-  * typedef struct PRFileDesc {
-  *       const struct PRIOMethods *methods;
-  *       PRFilePrivate *secret;
-  *       PRFileDesc *lower;
-  *       PRFileDesc *higher;
-  *       void (*dtor) (PRFileDesc *);
-  *       PRDescIdentity identity;
-  *  } PRFileDesc;
-  *
-  * @param {*} pRFileDesc
-  * @param {*} layer_name
-  * @returns
-  */
-  static NSS_FindIdentityForName(pRFileDesc, layer_name) {
-    var lower_ptr = pRFileDesc.add(pointerSize2 * 2).readPointer();
-    var higher_ptr = pRFileDesc.add(pointerSize2 * 3).readPointer();
-    var identity2 = pRFileDesc.add(pointerSize2 * 5).readPointer();
-    if (!identity2.isNull()) {
-      var nameptr = _NSS.PR_GetNameForIdentity(identity2).readCString();
-      if (nameptr == layer_name) {
-        return pRFileDesc;
-      }
-    }
-    if (!lower_ptr.isNull()) {
-      return this.NSS_FindIdentityForName(lower_ptr, layer_name);
-    }
-    if (!higher_ptr.isNull()) {
-      devlog("Have upper");
-    }
-    devlog("[-] error while getting SSL layer");
-    return NULL;
-  }
-  static getSessionIdString(session_id_ptr, len) {
-    var session_id = "";
-    for (var i = 0; i < len; i++) {
-      session_id += ("0" + session_id_ptr.add(i).readU8().toString(16).toUpperCase()).substr(-2);
-    }
-    return session_id;
-  }
-  static getSSL_Layer(pRFileDesc) {
-    var ssl_layer_id = 3;
-    var getIdentitiesLayer = new NativeFunction(Process.getModuleByName("libnspr4.so").getExportByName("PR_GetIdentitiesLayer"), "pointer", ["pointer", "int"]);
-    var ssl_layer = getIdentitiesLayer(pRFileDesc, ssl_layer_id);
-    if (ptr(ssl_layer.toString()).isNull()) {
-      devlog("PR_BAD_DESCRIPTOR_ERROR: " + ssl_layer);
-      return -1;
-    }
-    return ssl_layer;
-  }
-  /**
-  *
-  * @param {*} readAddr is the address where we start reading the bytes
-  * @param {*} len is the length of bytes we want to convert to a hex string
-  * @returns a hex string with the length of len
-  */
-  static getHexString(readAddr, len) {
-    var secret_str = "";
-    for (var i = 0; i < len; i++) {
-      secret_str += ("0" + readAddr.add(i).readU8().toString(16).toLowerCase()).substr(-2);
-    }
-    return secret_str;
-  }
-  /**
-  * Get the session_id of SSL object and return it as a hex string.
-  * @param {!NativePointer} ssl A pointer to an SSL object.
-  * @return {dict} A string representing the session_id of the SSL object's
-  *     SSL_SESSION. For example,
-  *     "59FD71B7B90202F359D89E66AE4E61247954E28431F6C6AC46625D472FF76336".
-  *
-  * On NSS the return type of SSL_GetSessionID is a SECItem:
-       typedef enum {
-  * siBuffer = 0,
-  * siClearDataBuffer = 1,
-  * siCipherDataBuffer = 2,
-  * siDERCertBuffer = 3,
-  * siEncodedCertBuffer = 4,
-  * siDERNameBuffer = 5,
-  * siEncodedNameBuffer = 6,
-  * siAsciiNameString = 7,
-  * siAsciiString = 8,
-  * siDEROID = 9,
-  * siUnsignedInteger = 10,
-  * siUTCTime = 11,
-  * siGeneralizedTime = 12,
-  * siVisibleString = 13,
-  * siUTF8String = 14,
-  * siBMPString = 15
-  * } SECItemType;
-  *
-  * typedef struct SECItemStr SECItem;
-  *
-  * struct SECItemStr {
-  * SECItemType type;
-  * unsigned char *data;
-  * unsigned int len;
-  * }; --> size = 20
-  *
-  *
-  */
-  static getSslSessionIdFromFD(pRFileDesc) {
-    var dummySSL_SessionID = "3E8ABF58649A1A1C58824D704173BA9AAFA2DA33B45FFEA341D218B29BBACF8F";
-    var fdType = _NSS.getDescType(pRFileDesc);
-    var layer = _NSS.NSS_FindIdentityForName(pRFileDesc, "SSL");
-    if (!layer || Java.available || !_NSS.SSL_SESSION_get_id) {
-      return dummySSL_SessionID;
-    }
-    var sslSessionIdSECItem = ptr(_NSS.SSL_SESSION_get_id(layer).toString());
-    if (sslSessionIdSECItem == null || sslSessionIdSECItem.isNull()) {
-      try {
-        devlog("---- getSslSessionIdFromFD -----");
-        devlog("ERROR");
-        devlog("pRFileDescType: " + _NSS.getDescType(pRFileDesc));
-        if (fdType == 2) {
-          var c = Memory.dup(pRFileDesc, 32);
-          var getLayersIdentity = null;
-          var getNameOfIdentityLayer;
-          try {
-            getLayersIdentity = new NativeFunction(Process.getModuleByName("libnspr4.so").getExportByName("PR_GetLayersIdentity"), "uint32", ["pointer"]);
-            getNameOfIdentityLayer = new NativeFunction(Process.getModuleByName("libnspr4.so").getExportByName("PR_GetNameForIdentity"), "pointer", ["uint32"]);
-          } catch (e) {
-            getLayersIdentity = new NativeFunction(Process.getModuleByName("libnss3.so").getExportByName("PR_GetLayersIdentity"), "uint32", ["pointer"]);
-            getNameOfIdentityLayer = new NativeFunction(Process.getModuleByName("libnss3.so").getExportByName("PR_GetNameForIdentity"), "pointer", ["uint32"]);
-          }
-          var layerID = getLayersIdentity(pRFileDesc);
-          devlog("LayerID: " + layerID);
-          var nameIDentity = getNameOfIdentityLayer(layerID);
-          devlog("name address: " + nameIDentity);
-          devlog("name: " + ptr(nameIDentity.toString()).readCString());
-          var sslSessionIdSECItem2 = ptr(_NSS.getSSL_Layer(pRFileDesc).toString());
-          devlog("sslSessionIdSECItem2 =" + sslSessionIdSECItem2);
-          if (sslSessionIdSECItem2.toString().startsWith("0x7f")) {
-            var aa = Memory.dup(sslSessionIdSECItem2, 32);
-            var sslSessionIdSECItem3 = ptr(_NSS.SSL_SESSION_get_id(sslSessionIdSECItem2).toString());
-            devlog("sslSessionIdSECItem3 =" + sslSessionIdSECItem3);
-          }
-          var sslSessionIdSECItem4 = ptr(_NSS.SSL_SESSION_get_id(pRFileDesc).toString());
-          devlog("sslSessionIdSECItem4 =" + sslSessionIdSECItem4);
-          devlog("Using Dummy Session ID");
-          devlog("");
-        } else if (fdType == 4) {
-          pRFileDesc = ptr(_NSS.getSSL_Layer(pRFileDesc).toString());
-          var sslSessionIdSECItem = ptr(_NSS.SSL_SESSION_get_id(pRFileDesc).toString());
-          devlog("new sessionid_ITEM: " + sslSessionIdSECItem);
-        } else {
-          devlog("---- SSL Session Analysis ------------");
-          var c = Memory.dup(sslSessionIdSECItem, 32);
-          devlog(hexdump(c));
-        }
-        devlog("---- getSslSessionIdFromFD finished -----");
-        devlog("");
-      } catch (error) {
-        devlog("Error:" + error);
-      }
-      return dummySSL_SessionID;
-    }
-    var len = sslSessionIdSECItem.add(pointerSize2 * 2).readU32();
-    var session_id_ptr = sslSessionIdSECItem.add(pointerSize2).readPointer();
-    var session_id = _NSS.getSessionIdString(session_id_ptr, len);
-    return session_id;
-  }
-  static get_SSL_FD(pRFileDesc) {
-    var ssl_layer = _NSS.NSS_FindIdentityForName(pRFileDesc, "SSL");
-    if (!ssl_layer) {
-      devlog("error: couldn't get SSL Layer from pRFileDesc");
-      return NULL;
-    }
-    var sslSocketFD = _NSS.get_SSL_Socket(ssl_layer);
-    if (!sslSocketFD) {
-      devlog("error: couldn't get sslSocketFD");
-      return NULL;
-    }
-    return sslSocketFD;
-  }
-  /**
-  *
-  *
-  *
-  *
-  *
-  *
-  * /* This function tries to find the SSL layer in the stack.
-  * It searches for the first SSL layer at or below the argument fd,
-  * and failing that, it searches for the nearest SSL layer above the
-  * argument fd.  It returns the private sslSocket from the found layer.
-  *
-  sslSocket *
-  ssl_FindSocket(PRFileDesc *fd)
-  {
-  PRFileDesc *layer;
-  sslSocket *ss;
-  
-  PORT_Assert(fd != NULL);
-  PORT_Assert(ssl_layer_id != 0);
-  
-  layer = PR_GetIdentitiesLayer(fd, ssl_layer_id);
-  if (layer == NULL) {
-  PORT_SetError(PR_BAD_DESCRIPTOR_ERROR);
-  return NULL;
-  }
-  
-  ss = (sslSocket *)layer->secret;
-  /* Set ss->fd lazily. We can't rely on the value of ss->fd set by
-  * ssl_PushIOLayer because another PR_PushIOLayer call will switch the
-  * contents of the PRFileDesc pointed by ss->fd and the new layer.
-  * See bug 807250.
-  *
-  ss->fd = layer;
-  return ss;
-  }
-  
-  *
-  *
-  */
-  static get_SSL_Socket(ssl_layer) {
-    var sslSocket = ssl_layer.add(pointerSize2 * 1).readPointer();
-    return sslSocket;
-  }
-  /******** NSS Encryption Keys *******/
-  /**
-   *
-   * ss->ssl3.cwSpec->masterSecret
-   *
-   * @param {*} ssl3  the parsed ssl3 struct
-   * @returns the client_random as hex string (lower case)
-   */
-  static getMasterSecret(ssl3) {
-    var cwSpec = ssl3.cwSpec;
-    var masterSecret_Ptr = _NSS.parse_struct_sl3CipherSpecStr(cwSpec).master_secret;
-    var master_secret = _NSS.get_Secret_As_HexString(masterSecret_Ptr);
-    return master_secret;
-  }
-  /**
-   * ss->ssl3.hs.client_random
-   *
-   * @param {*} ssl3 is a ptr to current parsed ssl3 struct
-   * @returns the client_random as hex string (lower case)
-   */
-  static getClientRandom(ssl3) {
-    var client_random = _NSS.getHexString(ssl3.hs.client_random, _NSS.SSL3_RANDOM_LENGTH);
-    return client_random;
-  }
-  /**
-  
-   
-  typedef struct sslSocketStr sslSocket;
-   *
-  
-      SSL Socket struct (https://github.com/nss-dev/nss/blob/master/lib/ssl/sslimpl.h#L971)
-  struct sslSocketStr {
-  PRFileDesc *fd;                                                                     +8
-  
-  /* Pointer to operations vector for this socket *
-  const sslSocketOps *ops;                                                            +8
-  
-  /* SSL socket options *
-  sslOptions opt;                                                                     sizeOf(sslOptions) --> 40
-  /* Enabled version range *
-  SSLVersionRange vrange;                                                             + 4
-  
-  /* A function that returns the current time. *
-  SSLTimeFunc now;                                                                    +8
-  void *nowArg;                                                                       +8
-  
-  /* State flags *
-  unsigned long clientAuthRequested;                                                  +8
-  unsigned long delayDisabled;     /* Nagle delay disabled *                          +8
-  unsigned long firstHsDone;       /* first handshake is complete. *                  +8
-  unsigned long enoughFirstHsDone; /* enough of the first handshake is                +8
-                                    * done for callbacks to be able to
-                                    * retrieve channel security
-                                    * parameters from the SSL socket. *
-  unsigned long handshakeBegun;                                                       +8
-  unsigned long lastWriteBlocked;                                                     +8
-  unsigned long recvdCloseNotify; /* received SSL EOF. *                              +8
-  unsigned long TCPconnected;                                                         +8
-  unsigned long appDataBuffered;                                                      +8
-  unsigned long peerRequestedProtection; /* from old renegotiation *                  +8
-  
-  /* version of the protocol to use *
-  SSL3ProtocolVersion version;                                                        +4
-  SSL3ProtocolVersion clientHelloVersion; /* version sent in client hello. *          --> at offset 160
-   */
-  static get_SSL_Version(pRFileDesc) {
-    var ssl_version_internal_Code = -1;
-    var sslSocket = _NSS.get_SSL_FD(pRFileDesc);
-    if (sslSocket.isNull()) {
-      return -1;
-    }
-    var sslVersion_pointerSize = 160;
-    ssl_version_internal_Code = sslSocket.add(sslVersion_pointerSize).readU16();
-    return ssl_version_internal_Code;
-  }
-  static get_Secret_As_HexString(secret_key_Ptr) {
-    var secret_as_hexString = "";
-    var rv = _NSS.PK11_ExtractKeyValue(secret_key_Ptr);
-    if (rv != SECStatus2.SECSuccess) {
-      devlog("ERROR access the secret key: " + secret_key_Ptr + " return value: " + rv);
-      return "";
-    }
-    var keyData = _NSS.PK11_GetKeyData(secret_key_Ptr);
-    var keyData_SECITem = _NSS.parse_struct_SECItem(keyData);
-    try {
-      if (keyData_SECITem.len > 64) {
-        devlog("[!] error in identifiying the real key_len: " + keyData_SECITem.len);
-        secret_as_hexString = _NSS.getHexString(keyData_SECITem.data, 32);
-      } else {
-        secret_as_hexString = _NSS.getHexString(keyData_SECITem.data, keyData_SECITem.len);
-      }
-    } catch (e) {
-      devlog("[-] Error in extracting key from: " + keyData_SECITem.data + " with length: " + keyData_SECITem.len + " derived from secret_key_Ptr: " + secret_key_Ptr);
-      dumpMemory(keyData_SECITem.data, 128);
-    }
-    return secret_as_hexString;
-  }
-  /**
-   *
-   * @param {*} ssl_version_internal_Code
-   * @returns
-   *
-   *      https://github.com/nss-dev/nss/blob/c989bde00fe64c1b37df13c773adf3e91cc258c7/lib/ssl/sslproto.h#L16
-   *      #define SSL_LIBRARY_VERSION_TLS_1_2             0x0303
-   *      #define SSL_LIBRARY_VERSION_TLS_1_3             0x0304
-   *
-   *      0x0303 -->  771
-   *      0x0304 -->  772
-   *
-   */
-  static is_TLS_1_3(ssl_version_internal_Code) {
-    if (ssl_version_internal_Code > 771) {
-      return true;
-    } else {
-      return false;
-    }
-  }
-  //see nss/lib/ssl/sslinfo.c for details */
-  static get_Keylog_Dump(type, client_random, key) {
-    return type + " " + client_random + " " + key;
-  }
-  /**
-   *
-   * @param {*} pRFileDesc
-   * @param {*} dumping_handshake_secrets  a zero indicates an false and that the handshake just completed. A 1 indicates a true so that we are during the handshake itself
-   * @returns
-   */
-  static getTLS_Keys(pRFileDesc, dumping_handshake_secrets) {
-    devlog("trying to log some keying materials ...");
-    if ((dumping_handshake_secrets == 1 || dumping_handshake_secrets == 2) && _NSS.SSL_SecretCallback_fn) {
-      return;
-    }
-    var sslSocketFD = _NSS.get_SSL_FD(pRFileDesc);
-    if (sslSocketFD.isNull()) {
-      return;
-    }
-    var sslSocketStr = _NSS.parse_struct_sslSocketStr(sslSocketFD);
-    var ssl3_struct = sslSocketStr.ssl3;
-    var ssl3 = _NSS.parse_struct_ssl3Str(ssl3_struct);
-    var client_random = _NSS.getClientRandom(ssl3);
-    if (_NSS.doTLS13_RTT0 == 1) {
-      var early_exporter_secret = _NSS.get_Secret_As_HexString(ssl3.hs.earlyExporterSecret);
-      var earlyExpDump = _NSS.get_Keylog_Dump("EARLY_EXPORTER_SECRET", client_random, early_exporter_secret);
-      devlog(earlyExpDump);
-      sendKeylog(earlyExpDump);
-      _NSS.doTLS13_RTT0 = -1;
-    }
-    if (dumping_handshake_secrets == 1) {
-      devlog("exporting TLS 1.3 handshake keying material");
-      var client_handshake_traffic_secret = _NSS.get_Secret_As_HexString(ssl3.hs.clientHsTrafficSecret);
-      var chsDump = _NSS.get_Keylog_Dump("CLIENT_HANDSHAKE_TRAFFIC_SECRET", client_random, client_handshake_traffic_secret);
-      devlog(chsDump);
-      sendKeylog(chsDump);
-      var server_handshake_traffic_secret = _NSS.get_Secret_As_HexString(ssl3.hs.serverHsTrafficSecret);
-      var shsDump = _NSS.get_Keylog_Dump("SERVER_HANDSHAKE_TRAFFIC_SECRET", client_random, server_handshake_traffic_secret);
-      devlog(shsDump);
-      sendKeylog(shsDump);
-      return;
-    } else if (dumping_handshake_secrets == 2) {
-      devlog("exporting TLS 1.3 RTT0 handshake keying material");
-      var client_early_traffic_secret = _NSS.get_Secret_As_HexString(ssl3.hs.clientEarlyTrafficSecret);
-      var cetsDump = _NSS.get_Keylog_Dump("CLIENT_EARLY_TRAFFIC_SECRET", client_random, client_early_traffic_secret);
-      devlog(cetsDump);
-      sendKeylog(cetsDump);
-      _NSS.doTLS13_RTT0 = 1;
-      return;
-    }
-    var ssl_version_internal_Code = _NSS.get_SSL_Version(pRFileDesc);
-    if (_NSS.is_TLS_1_3(ssl_version_internal_Code)) {
-      devlog("exporting TLS 1.3 keying material");
-      if (!_NSS.SSL_SecretCallback_fn) {
-        var client_traffic_secret = _NSS.get_Secret_As_HexString(ssl3.hs.clientTrafficSecret);
-        var ctsDump = _NSS.get_Keylog_Dump("CLIENT_TRAFFIC_SECRET_0", client_random, client_traffic_secret);
-        devlog(ctsDump);
-        sendKeylog(ctsDump);
-        var server_traffic_secret = _NSS.get_Secret_As_HexString(ssl3.hs.serverTrafficSecret);
-        var stsDump = _NSS.get_Keylog_Dump("SERVER_TRAFFIC_SECRET_0", client_random, server_traffic_secret);
-        devlog(stsDump);
-        sendKeylog(stsDump);
-      }
-      var exporter_secret = _NSS.get_Secret_As_HexString(ssl3.hs.exporterSecret);
-      if (exporter_secret) {
-        var expDump = _NSS.get_Keylog_Dump("EXPORTER_SECRET", client_random, exporter_secret);
-        devlog(expDump);
-        sendKeylog(expDump);
-      }
-    } else {
-      devlog("exporting TLS 1.2 keying material");
-      var master_secret = _NSS.getMasterSecret(ssl3);
-      var crDump = _NSS.get_Keylog_Dump("CLIENT_RANDOM", client_random, master_secret);
-      devlog(crDump);
-      sendKeylog(crDump);
-    }
-    _NSS.doTLS13_RTT0 = -1;
-    return;
-  }
-  static ssl_RecordKeyLog(sslSocketFD) {
-    _NSS.getTLS_Keys(sslSocketFD, 0);
-  }
-  /***** Installing the hooks *****/
-  install_plaintext_read_hook() {
-    if (!pcap_enabled)
-      return;
-    var current_module_name = this.module_name;
-    var lib_addesses = this.addresses;
-    Interceptor.attach(this.addresses[this.moduleName]["PR_Read"], {
-      onEnter: function(args) {
-        this.fd = ptr(args[0]);
-        this.buf = ptr(args[1]);
-      },
-      onLeave: function(retval) {
-        if (retval.toInt32() <= 0 || _NSS.getDescType(this.fd) == PRDescType2.PR_DESC_FILE) {
-          return;
-        }
-        var addr = Memory.alloc(32);
-        var res = _NSS.getpeername(this.fd, addr);
-        var family = readSockaddrFamily(addr, false);
-        if (family == 2 || family == 10 || family == 100) {
-          var message = _NSS.getPortsAndAddressesFromNSS(this.fd, true, lib_addesses[current_module_name], enable_default_fd);
-          message["ssl_session_id"] = _NSS.getSslSessionIdFromFD(this.fd);
-          message["function"] = "NSS_read";
-          stampRecordLibrary(message, current_module_name);
-          this.message = message;
-          var data = this.buf.readByteArray(new Uint32Array([retval])[0]);
-          sendDatalog(message, data);
-        } else {
-        }
-      }
-    });
-  }
-  install_plaintext_write_hook() {
-    if (!pcap_enabled)
-      return;
-    var current_module_name = this.module_name;
-    var lib_addesses = this.addresses;
-    attachPlaintextWriteHook(this.addresses[this.moduleName]["PR_Write"], (args) => {
-      var fd = args[0];
-      var addr = Memory.alloc(32);
-      _NSS.getsockname(fd, addr);
-      var family = readSockaddrFamily(addr, false);
-      if (family != 2 && family != 10 && family != 100)
-        return null;
-      var message = _NSS.getPortsAndAddressesFromNSS(fd, false, lib_addesses[current_module_name], enable_default_fd);
-      message["ssl_session_id"] = _NSS.getSslSessionIdFromFD(fd);
-      message["function"] = "NSS_write";
-      stampRecordLibrary(message, current_module_name);
-      return message;
-    });
-  }
-  /***** install callbacks for key logging ******/
-  /**
-   *
-   * This callback gets only called in TLS 1.3 and newer versions
-   *
-   * @param {*} pRFileDesc
-   * @param {*} secret_label
-   * @param {*} secret
-   * @returns
-   *
-      function tls13_RecordKeyLog(pRFileDesc, secret_label, secret){
-  
-      var sslSocketFD = get_SSL_FD(pRFileDesc);
-      if(sslSocketFD == -1){
-          return;
-      }
-  
-      var sslSocketStr = parse_struct_sslSocketStr(sslSocketFD);
-  
-      var ssl3_struct = sslSocketStr.ssl3;
-      var ssl3 = parse_struct_ssl3Str(ssl3_struct);
-      
-  
-      var secret_as_hexString = get_Secret_As_HexString(secret);
-      
-  
-      log(get_Keylog_Dump(secret_label,getClientRandom(ssl3),secret_as_hexString));
-  
-  
-      return 0;
-      }
-  
-      // our old way to get the diffrent secrets from TLS 1.3 and above
-      */
-  static parse_epoch_value_from_SSL_SetSecretCallback(sslSocketFD, epoch) {
-    if (epoch == 1) {
-      _NSS.getTLS_Keys(sslSocketFD, 2);
-    } else if (epoch == 2) {
-      _NSS.getTLS_Keys(sslSocketFD, 1);
-    } else if (epoch >= 3) {
-      return;
-    } else {
-      devlog("[-] secret_callback invocation: UNKNOWN");
-    }
-  }
-  static insert_hook_into_secretCallback(addr_of_installed_secretCallback) {
-    Interceptor.attach(addr_of_installed_secretCallback, {
-      onEnter(args) {
-        this.sslSocketFD = args[0];
-        this.epoch = args[1];
-        _NSS.parse_epoch_value_from_SSL_SetSecretCallback(this.sslSocketFD, this.epoch);
-      },
-      onLeave(retval) {
-      }
-    });
-  }
-  /**
-       * Registers a secret_callback through inserting the address to our TLS 1.3 callback function at the apprioate offset of the  SSL Socket struct
-       * This is neccassy because the computed handshake secrets are already freed after the handshake is completed.
-       *
-       *
-       * @param {*} pRFileDesc a file descriptor (NSS PRFileDesc) to a SSL socket
-       * @returns
-       */
-  static installSecretCallbackInterceptor() {
-    if (!_NSS.SSL_SecretCallback_ptr)
-      return;
-    Interceptor.attach(_NSS.SSL_SecretCallback_ptr, {
-      onEnter(args) {
-        this.fd = args[0];
-        this.cb = args[1];
-        this.arg = args[2];
-        this.isOurs = args[1].equals(_NSS.secret_callback);
-      },
-      onLeave(retval) {
-        if (this.isOurs || _NSS.secretCallbackReentryGuard)
-          return;
-        if (retval.toInt32() < 0)
-          return;
-        try {
-          var sslSocketFD = _NSS.get_SSL_FD(this.fd);
-          if (sslSocketFD && !sslSocketFD.isNull()) {
-            _NSS.originalSecretCallbacks[sslSocketFD.toString()] = {
-              cb: this.cb,
-              arg: this.arg,
-              fn: new NativeFunction(this.cb, "void", [
-                "pointer",
-                "uint16",
-                "uint16",
-                "pointer",
-                "pointer"
-              ])
-            };
-          }
-        } catch (e) {
-        }
-        _NSS.secretCallbackReentryGuard = true;
-        try {
-          _NSS.SSL_SecretCallback_fn(this.fd, _NSS.secret_callback, NULL);
-        } finally {
-          _NSS.secretCallbackReentryGuard = false;
-        }
-        devlog("Re-registered secret callback after external override");
-      }
-    });
-    devlog("SSL_SecretCallback interceptor installed");
-  }
-  /**
-       * Registers a secret_callback through inserting the address to our TLS 1.3 callback function at the apprioate offset of the  SSL Socket struct
-       * This is neccassy because the computed handshake secrets are already freed after the handshake is completed.
-       *
-       *
-       * @param {*} pRFileDesc a file descriptor (NSS PRFileDesc) to a SSL socket
-       * @returns
-       */
-  static register_secret_callback(pRFileDesc) {
-    var sslSocketFD = _NSS.get_SSL_FD(pRFileDesc);
-    if (sslSocketFD.isNull()) {
-      devlog("[-] register_secret_callback: unable to get SSL socket descriptor");
-      return;
-    }
-    if (_NSS.SSL_SecretCallback_fn) {
-      _NSS.secretCallbackReentryGuard = true;
-      var rv;
-      try {
-        rv = _NSS.SSL_SecretCallback_fn(pRFileDesc, _NSS.secret_callback, NULL);
-      } finally {
-        _NSS.secretCallbackReentryGuard = false;
-      }
-      if (rv >= 0) {
-        devlog("secret_callback registered via SSL_SecretCallback API");
-        return;
-      }
-      devlog("SSL_SecretCallback API call failed (rv=" + rv + "), falling back to struct write");
-    }
-    var sslSocketStr = _NSS.parse_struct_sslSocketStr(sslSocketFD);
-    if (_NSS.is_ptr_at_mem_location(sslSocketStr.secretCallback.readPointer()) == 1) {
-      _NSS.insert_hook_into_secretCallback(sslSocketStr.secretCallback.readPointer());
-    } else {
-      sslSocketStr.secretCallback.writePointer(_NSS.secret_callback);
-    }
-    devlog("secret_callback installed via struct write at: " + sslSocketStr.secretCallback);
-  }
-  install_tls_keys_callback_hook() {
-    if (!keylog_enabled)
-      return;
-  }
-};
+function installLegacyNssKeyExtraction(moduleName, fnAddrs) {
+  return installNssKeyExtraction(moduleName, fnAddrs).then((installed) => {
+    devlog(installed ? "[*] NSS key extraction installed via shared implementation" : "[-] NSS key extraction: no tier could be installed");
+    return installed;
+  });
+}
 
 // agent/legacy/tls/platforms/android/nss_android.ts
-var NSS_Android = class extends NSS2 {
+var NSS_Android = class extends NSS {
   moduleName;
   socket_library;
   constructor(moduleName, socket_library6, is_base_hook) {
@@ -31087,6 +36995,8 @@ var NSS_Android = class extends NSS2 {
     this.socket_library = socket_library6;
   }
   execute_hooks() {
+    this.install_plaintext_read_hook();
+    this.install_plaintext_write_hook();
     try {
       devlog("[!] NSS 1.3 Client Random working; keys are still not exported..");
       this.install_tls_keys_callback_hook();
@@ -31096,54 +37006,7 @@ var NSS_Android = class extends NSS2 {
     }
   }
   install_tls_keys_callback_hook() {
-    NSS2.detectVersionOffsets();
-    NSS2.resolveExperimentalAPI();
-    NSS2.getDescType = new NativeFunction(this.addresses[this.module_name]["PR_GetDescType"], "int", ["pointer"]);
-    NSS2.PR_GetNameForIdentity = new NativeFunction(this.addresses[this.module_name]["PR_GetNameForIdentity"], "pointer", ["pointer"]);
-    NSS2.get_SSL_Callback = new NativeFunction(this.addresses[this.module_name]["SSL_HandshakeCallback"], "int", ["pointer", "pointer", "pointer"]);
-    NSS2.PK11_ExtractKeyValue = new NativeFunction(this.addresses[this.module_name]["PK11_ExtractKeyValue"], "int", ["pointer"]);
-    NSS2.PK11_GetKeyData = new NativeFunction(this.addresses[this.module_name]["PK11_GetKeyData"], "pointer", ["pointer"]);
-    Interceptor.attach(this.addresses[this.module_name]["SSL_ImportFD"], {
-      onEnter(args) {
-        this.fd = args[1];
-      },
-      onLeave(retval) {
-        if (retval.isNull()) {
-          devlog("[-] SSL_ImportFD error: unknow null");
-          return;
-        }
-        var retValue = NSS2.get_SSL_Callback(retval, NSS2.keylog_callback, NULL);
-        NSS2.register_secret_callback(retval);
-        if (retValue < 0) {
-          devlog("Callback Error");
-          var getErrorText = new NativeFunction(Process.getModuleByName("libnspr4.so").getExportByName("PR_GetErrorText"), "int", ["pointer"]);
-          var outbuffer = Memory.alloc(200);
-          devlog("typeof outbuffer: " + typeof outbuffer);
-          devlog("outbuffer: " + outbuffer);
-          getErrorText(outbuffer.readPointer());
-          devlog("Error msg: " + outbuffer);
-        } else {
-          devlog("[*] keylog callback successfull installed");
-        }
-      }
-    });
-    Interceptor.attach(this.addresses[this.module_name]["SSL_HandshakeCallback"], {
-      onEnter(args) {
-        this.originalCallback = args[1];
-        Interceptor.attach(ptr(this.originalCallback), {
-          onEnter(args2) {
-            var sslSocketFD = args2[0];
-            devlog("[*] NSS keylog callback successfull installed via applications callback function");
-            NSS2.ssl_RecordKeyLog(sslSocketFD);
-          },
-          onLeave(retval) {
-          }
-        });
-      },
-      onLeave(retval) {
-      }
-    });
-    NSS2.installSecretCallbackInterceptor();
+    void installLegacyNssKeyExtraction(this.module_name, this.addresses[this.module_name]);
   }
 };
 function nss_execute(moduleName, is_base_hook) {
@@ -31604,10 +37467,17 @@ var PatternBasedHooking2 = class {
   // hook_tls_keylog_callback, the per-JSON-module loop).
   cascadeCompleted = false;
   activeCascades = 0;
+  // Entry address of the hooked match, so callers can cache it.
+  matchedAddress = null;
   module;
   patterns = {};
   rescannedRanges = /* @__PURE__ */ new Set();
   // Set to keep track of memory ranges that have been rescanned
+  recordMatch(address) {
+    this.found_ssl_log_secret = true;
+    this.no_hooking_success = false;
+    this.matchedAddress = address;
+  }
   constructor(module) {
     this.found_ssl_log_secret = false;
     this.module = module;
@@ -31653,8 +37523,7 @@ var PatternBasedHooking2 = class {
     }
     Memory.scan(moduleBase, moduleSize, pattern, {
       onMatch: (address) => {
-        this.found_ssl_log_secret = true;
-        this.no_hooking_success = false;
+        this.recordMatch(address);
         var module_by_address = Process.findModuleByAddress(address);
         devlog_info(`Pattern found at (${pattern_name}) address: ${address} in module ${module_by_address.name}`);
         log(`[*] ${module_by_address?.name ?? "<unknown>"}: keylog hooks installed via pattern (${pattern_name}, onReturn @ ${address})`);
@@ -31774,7 +37643,7 @@ var PatternBasedHooking2 = class {
     }
   }
   // Method to hook by pattern, with a custom function to handle onEnter and onLeave
-  hookByPattern(patterns2, pattern_name, onMatchCallback, onCompleteCallback) {
+  hookByPattern(patterns2, pattern_name, onMatchCallback, dumpKeysEntry, onCompleteCallback) {
     const moduleName = this.module?.name;
     devlog(`Trying to scan ${moduleName} ...`);
     hookBreadcrumb(`pattern-scan: ${moduleName}`);
@@ -31795,24 +37664,20 @@ var PatternBasedHooking2 = class {
     }
     if (moduleSize >= LARGE_MODULE_SCAN_BYTES) {
       devlog(`[pattern-scan] ${moduleName ?? "<unknown>"}: large module (${Math.floor(moduleSize / 1048576)} MiB) \u2014 scanning executable (r-x) ranges only for ${pattern_name}, skipping whole-module scan`);
-      this.hookByPatternOnlyReadableParts(patterns2, pattern_name, onMatchCallback, onCompleteCallback);
+      this.hookByPatternOnlyReadableParts(patterns2, pattern_name, onMatchCallback, dumpKeysEntry, onCompleteCallback);
       return;
     }
     Memory.scan(moduleBase, moduleSize, pattern, {
       onMatch: (address) => {
-        this.found_ssl_log_secret = true;
-        this.no_hooking_success = false;
+        if (!attachPatternEntryHook(address, onMatchCallback, dumpKeysEntry))
+          return;
+        this.recordMatch(address);
         if (moduleName) {
           devlog_info(`Pattern found at (${pattern_name}) address: ${address} for module ${moduleName}`);
         } else {
           devlog_info(`Pattern found at (${pattern_name}) address: ${address}`);
         }
         log(`[*] ${moduleName ?? "<unknown>"}: keylog hooks installed via pattern (${pattern_name} @ ${address})`);
-        attachGoFunctionEntry(address, {
-          onEnter: function(args) {
-            onMatchCallback.call(this, args);
-          }
-        });
       },
       onError: (reason) => {
         if (this.found_ssl_log_secret)
@@ -31820,15 +37685,15 @@ var PatternBasedHooking2 = class {
         devlog_error("There was an error scanning memory: " + reason);
         devlog_error(`Trying to rescan memory with permissions in mind on ${moduleName}`);
         this.beginCascade();
-        this.hookByPatternOnlyReadableParts(patterns2, pattern_name, onMatchCallback, (primary_success) => {
+        this.hookByPatternOnlyReadableParts(patterns2, pattern_name, onMatchCallback, dumpKeysEntry, (primary_success) => {
           if (this.found_ssl_log_secret || primary_success)
             return this.endCascade();
           devlog(`Primary pattern failed, trying fallback pattern on ${moduleName}`);
-          this.hookByPatternOnlyReadableParts(patterns2, "fallback_pattern", onMatchCallback, (fallback_success) => {
+          this.hookByPatternOnlyReadableParts(patterns2, "fallback_pattern", onMatchCallback, dumpKeysEntry, (fallback_success) => {
             if (this.found_ssl_log_secret || fallback_success)
               return this.endCascade();
             devlog(`Fallback pattern failed, trying second fallback pattern on ${moduleName}`);
-            this.hookByPatternOnlyReadableParts(patterns2, "second_fallback_pattern", onMatchCallback, (second_fallback_success) => {
+            this.hookByPatternOnlyReadableParts(patterns2, "second_fallback_pattern", onMatchCallback, dumpKeysEntry, (second_fallback_success) => {
               if (this.found_ssl_log_secret)
                 return this.endCascade();
               if (!second_fallback_success) {
@@ -31847,7 +37712,7 @@ var PatternBasedHooking2 = class {
     });
   }
   // Method to hook by pattern, with a custom function to handle onEnter and onLeave
-  hookByPatternOnlyReadableParts(patterns2, pattern_name, onMatchCallback, onCompleteCallback) {
+  hookByPatternOnlyReadableParts(patterns2, pattern_name, onMatchCallback, dumpKeysEntry, onCompleteCallback) {
     if (this.found_ssl_log_secret) {
       onCompleteCallback(true);
       return;
@@ -31907,18 +37772,16 @@ var PatternBasedHooking2 = class {
             if (patternFound || callbackDone)
               return "stop";
             patternFound = true;
-            this.found_ssl_log_secret = true;
-            this.no_hooking_success = false;
-            devlog_info(`Pattern found at (${pattern_name}) address: ${address} on ${moduleName}`);
-            log(`[*] ${moduleName ?? "<unknown>"}: keylog hooks installed via pattern (${pattern_name}, readable-ranges @ ${address})`);
+            let attached = false;
             try {
-              attachGoFunctionEntry(address, {
-                onEnter: function(args) {
-                  onMatchCallback.call(this, args);
-                }
-              });
+              attached = attachPatternEntryHook(address, onMatchCallback, dumpKeysEntry);
             } catch (e) {
               devlog_error(`Interceptor.attach failed at ${address}: ${e}`);
+            }
+            if (attached) {
+              this.recordMatch(address);
+              devlog_info(`Pattern found at (${pattern_name}) address: ${address} on ${moduleName}`);
+              log(`[*] ${moduleName ?? "<unknown>"}: keylog hooks installed via pattern (${pattern_name}, readable-ranges @ ${address})`);
             }
             executeOnce(true);
             return "stop";
@@ -32027,8 +37890,7 @@ var PatternBasedHooking2 = class {
             if (patternFound || callbackDone)
               return "stop";
             patternFound = true;
-            this.found_ssl_log_secret = true;
-            this.no_hooking_success = false;
+            this.recordMatch(address);
             const m2 = Process.findModuleByAddress(address);
             if (m2) {
               log(`Pattern found at (${pattern_name}) address: ${address} in module ${m2.name}`);
@@ -32119,7 +37981,9 @@ var PatternBasedHooking2 = class {
     });
   }
   // Method to hook the module with patterns provided as arguments
-  hookModuleByPattern(patterns2, onMatchCallback) {
+  // Direct callers hook a keylog (ssl_log_secret) function; action-driven
+  // callers pass whether their action is Dump-Keys.
+  hookModuleByPattern(patterns2, onMatchCallback, dumpKeysEntry = true) {
     if (!patterns2 || !patterns2.primary && !patterns2.fallback) {
       devlog_debug("hookModuleByPattern: no usable pattern, skipping scan");
       this.no_hooking_success = true;
@@ -32134,14 +37998,14 @@ var PatternBasedHooking2 = class {
     }
     const moduleName = this.module?.name;
     this.beginCascade();
-    this.hookByPattern(patterns2, "primary_pattern", onMatchCallback, (primary_success) => {
+    this.hookByPattern(patterns2, "primary_pattern", onMatchCallback, dumpKeysEntry, (primary_success) => {
       if (primary_success)
         return this.endCascade();
       devlog("Primary pattern failed, trying fallback pattern...");
-      this.hookByPattern(patterns2, "fallback_pattern", onMatchCallback, (fallback_success) => {
+      this.hookByPattern(patterns2, "fallback_pattern", onMatchCallback, dumpKeysEntry, (fallback_success) => {
         if (!fallback_success && patterns2.second_fallback) {
           devlog("Fallback pattern failed, trying second fallback pattern...");
-          this.hookByPattern(patterns2, "second_fallback_pattern", onMatchCallback, (second_fallback_success) => {
+          this.hookByPattern(patterns2, "second_fallback_pattern", onMatchCallback, dumpKeysEntry, (second_fallback_success) => {
             if (!second_fallback_success) {
               devlog_debug(`None of the patterns worked. You may need to adjust the patterns for ${moduleName}`);
               this.no_hooking_success = true;
@@ -32169,7 +38033,7 @@ var PatternBasedHooking2 = class {
   invoke_pattern_based_hooking(action, module_name, platform, arch, hookCallback) {
     var action_specific_patterns = this.get_action_specific_pattern(module_name, platform, arch, action);
     devlog(`Using ${action} patterns for ${platform} on ${arch}`);
-    this.hookModuleByPattern(action_specific_patterns, hookCallback);
+    this.hookModuleByPattern(action_specific_patterns, hookCallback, action === "Dump-Keys");
   }
   // Function to retrieve patterns based on the current CPU architecture and action
   get_action_specific_pattern(module_name, platform, arch, action) {
@@ -32296,15 +38160,24 @@ var Cronet_Android = class extends Cronet2 {
     const m2 = modulePath.match(/([^\/\\]+\.so)$/);
     return m2 ? m2[1] : modulePath;
   }
+  findCronetModule() {
+    const cronetModule = Process.findModuleByName(this.module_name);
+    if (cronetModule !== null)
+      return cronetModule;
+    return Process.findModuleByName(this.getSoName(this.module_name));
+  }
+  user_dump_keys_patterns() {
+    return { json: isPatternReplaced() ? patterns : void 0, fallbackModuleName: "libcronet.so" };
+  }
+  // Reuses the ssl_log_secret a previous scan learned for this build; true skips the pattern scan.
+  install_key_extraction_from_learned_cache() {
+    return hookLearnedSslLogSecretByName(this.module_name, (label, ssl, data, len) => this.dumpKeys(label, ssl, data, len), this.user_dump_keys_patterns(), () => this.findCronetModule());
+  }
   install_key_extraction_pattern_hook() {
-    let cronetModule = Process.findModuleByName(this.module_name);
+    const cronetModule = this.findCronetModule();
     if (cronetModule === null) {
-      const soName = this.getSoName(this.module_name);
-      cronetModule = Process.findModuleByName(soName);
-      if (cronetModule === null) {
-        devlog_error("Cronet Error: Unable to find module: " + this.module_name);
-        return;
-      }
+      devlog_error("Cronet Error: Unable to find module: " + this.module_name);
+      return;
     }
     const hooker = new PatternBasedHooking2(cronetModule);
     const patternDumpKeys = guardKeylogDumpKeys(this.module_name, "pattern", (label, ssl, data, len) => this.dumpKeys(label, ssl, data, len));
@@ -32325,8 +38198,10 @@ var Cronet_Android = class extends Cronet2 {
   // once per secret, so the log lives here and waits for the scan's match.
   logPatternHookInstalledOnce(hooker) {
     pollPatternOutcome(hooker, this.module_name).then((matched) => {
-      if (matched)
-        devlog("Installed ssl_log_secret() hooks using byte patterns for module " + this.module_name + ".");
+      if (!matched)
+        return;
+      devlog("Installed ssl_log_secret() hooks using byte patterns for module " + this.module_name + ".");
+      reportPatternMatchedSslLogSecret(hooker.module, hooker.matchedAddress);
     }).catch(() => {
     });
   }
@@ -32418,6 +38293,11 @@ var Cronet_Android = class extends Cronet2 {
       this.install_plaintext_write_hook();
       return [true, null];
     } else {
+      if (this.install_key_extraction_from_learned_cache()) {
+        this.install_plaintext_read_hook();
+        this.install_plaintext_write_hook();
+        return [true, null];
+      }
       hooker_instance = this.install_key_extraction_pattern_hook();
       if (hooker_instance === void 0 || hooker_instance === null) {
         return [false, null];
@@ -32858,7 +38738,7 @@ var Flutter = class {
     const s3_ptr = ssl_st_ptr.add(offset_s3).readPointer();
     return this.get_client_random(s3_ptr, SSL3_RANDOM_SIZE3);
   }
-  dumpKeys(labelPtr, sslStructPtr, keyPtr) {
+  dumpKeys(labelPtr, sslStructPtr, keyPtr, keyLen) {
     const KEY_LENGTH = 32;
     let labelStr = "";
     let client_random = "";
@@ -32874,7 +38754,7 @@ var Flutter = class {
       devlog("[Error] Argument 'sslStructPtr' is NULL");
     }
     if (!keyPtr.isNull()) {
-      const keyData = keyPtr.readByteArray(KEY_LENGTH);
+      const keyData = keyPtr.readByteArray(secretLenOrFallback(keyLen, labelStr, keyPtr, KEY_LENGTH));
       const hexKey = get_hex_string_from_byte_array(keyData);
       secret_key = hexKey;
     } else {
@@ -32883,6 +38763,10 @@ var Flutter = class {
     devlog("invoking ssl_log_secret() from BoringSSL statically linked into Flutter");
     sendKeylog(labelStr + " " + client_random + " " + secret_key, sslStructPtr, this.module_name);
   }
+  // Plaintext is installed by the supplementary "BoringSSL plaintext (Flutter)"
+  // row (chromium_plaintext_execute -> resolveBoringSslPlaintext). Not called
+  // from here: importing chromium_plaintext would put this base class in an
+  // import cycle with its Flutter_iOS/Flutter_Android subclasses.
   install_plaintext_read_hook() {
     if (!pcap_enabled)
       return;
@@ -32938,14 +38822,15 @@ var Flutter_Android = class extends Flutter {
     if (flutterModule === null)
       return null;
     const hooker = new PatternBasedHooking2(flutterModule);
+    const patternDumpKeys = guardKeylogDumpKeys(this.module_name, "pattern", (label, ssl, data, len) => this.dumpKeys(label, ssl, data, len));
     if (isPatternReplaced() && hasUsablePatternsFor(patterns, this.module_name, "libflutter.so", "Dump-Keys")) {
       devlog("Hooking libflutter functions by patterns from JSON file");
       hooker.hook_DumpKeys(this.module_name, "libflutter.so", patterns, (args) => {
-        this.dumpKeys(args[1], args[0], args[2]);
+        patternDumpKeys(args[1], args[0], args[2], lenArg(args[3]));
       });
     } else {
       hooker.hookModuleByPattern(get_CPU_specific_pattern2(this.default_pattern), (args) => {
-        this.dumpKeys(args[1], args[0], args[2]);
+        patternDumpKeys(args[1], args[0], args[2], lenArg(args[3]));
       });
     }
     return hooker;
@@ -32954,6 +38839,22 @@ var Flutter_Android = class extends Flutter {
     return this.install_key_extraction_hook();
   }
 };
+function scheduleFlutterKeylogFallback(moduleName, hooker, dumpKeys, pairipSafe = pairip_safe) {
+  if (!pairipSafe) {
+    scheduleBoringSSLSymbolFallback(moduleName, hooker, () => installBoringSSLSymbolHook(moduleName, dumpKeys), dumpKeys);
+    return;
+  }
+  setTimeout(() => {
+    try {
+      if (hooker !== null && !hooker.no_hooking_success)
+        return;
+      devlog_debug("Trying symbol-based ssl_log_secret hook on " + moduleName);
+      installBoringSSLSymbolHook(moduleName, dumpKeys);
+    } catch (e) {
+      devlog_error("flutter_execute symbol fallback error: " + e);
+    }
+  }, 1e3);
+}
 function flutter_execute(moduleName, is_base_hook) {
   const flutter = new Flutter_Android(moduleName, socket_library, is_base_hook);
   let hooker = null;
@@ -32963,16 +38864,7 @@ function flutter_execute(moduleName, is_base_hook) {
     devlog_error(`flutter_execute error: ${e}`);
   }
   if (is_base_hook) {
-    setTimeout(() => {
-      try {
-        if (hooker !== null && !hooker.no_hooking_success)
-          return;
-        devlog_debug("Trying symbol-based ssl_log_secret hook on " + moduleName);
-        installBoringSSLSymbolHook(moduleName, (label, ssl, data, _len) => flutter.dumpKeys(label, ssl, data));
-      } catch (e) {
-        devlog_error("flutter_execute symbol fallback error: " + e);
-      }
-    }, 1e3);
+    scheduleFlutterKeylogFallback(moduleName, hooker, (label, ssl, data, len) => flutter.dumpKeys(label, ssl, data, len));
   }
   if (is_base_hook) {
     try {
@@ -33853,7 +39745,7 @@ var TLS13_SECRET_LABELS = {
   6: "EXPORTER_SECRET"
 };
 var OKM_BLOCK_CAPACITY = 64;
-var CLIENT_RANDOM_LEN = 32;
+var CLIENT_RANDOM_LEN3 = 32;
 var MASTER_SECRET_LEN = 48;
 function readEntryValue(value, args, context) {
   return "arg" in value ? args[value.arg] : context[value.reg];
@@ -33867,7 +39759,7 @@ function tls13KeylogLine(secretKind, clientRandom, okm) {
 function tls12KeylogLineAt(out) {
   if (out.isNull() || out.readPointer().isNull())
     return null;
-  const clientRandom = out.add(8).readByteArray(CLIENT_RANDOM_LEN);
+  const clientRandom = out.add(8).readByteArray(CLIENT_RANDOM_LEN3);
   const masterSecret = out.add(72).readByteArray(MASTER_SECRET_LEN);
   if (!clientRandom || !masterSecret)
     return null;
@@ -33879,7 +39771,7 @@ function tls13KeylogLineAt(out, secretKind, clientRandomPtr) {
   const used = out.add(OKM_BLOCK_CAPACITY).readU64().toNumber();
   if (used === 0 || used > OKM_BLOCK_CAPACITY)
     return null;
-  return tls13KeylogLine(secretKind, clientRandomPtr.readByteArray(CLIENT_RANDOM_LEN), out.readByteArray(used));
+  return tls13KeylogLine(secretKind, clientRandomPtr.readByteArray(CLIENT_RANDOM_LEN3), out.readByteArray(used));
 }
 function emit2(line, what) {
   if (line === null) {
@@ -36158,11 +42050,11 @@ var MetaRTC_Android = class extends Flutter {
     if (isPatternReplaced() && hasUsablePatternsFor(patterns, this.module_name, "libstartup.so", "Dump-Keys")) {
       devlog("Hooking libstartup (metartc) functions by patterns from JSON file");
       hooker.hook_DumpKeys(this.module_name, "libstartup.so", patterns, (args) => {
-        this.dumpKeys(args[1], args[0], args[2]);
+        this.dumpKeys(args[1], args[0], args[2], lenArg(args[3]));
       });
     } else {
       hooker.hookModuleByPattern(get_CPU_specific_pattern2(this.default_pattern), (args) => {
-        this.dumpKeys(args[1], args[0], args[2]);
+        this.dumpKeys(args[1], args[0], args[2], lenArg(args[3]));
       });
     }
   }
@@ -36196,138 +42088,6 @@ init_shared_structures();
 // agent/ipsec/libs/strongswan_keys.ts
 init_node_globals();
 init_shared_structures();
-
-// agent/shared/string_anchor_functions.ts
-init_node_globals();
-var DEFAULT_MAX_ANCHOR_SITES = 64;
-var MAX_LITERAL_OCCURRENCES = 16;
-var LEA_RIP_OVERLAP = 6;
-var NO_FUNCTIONS = { functions: [], unboundedSites: [] };
-function dataRanges2(mod) {
-  return mod.enumerateRanges("r--").filter((r) => !r.protection.includes("x"));
-}
-function codeRanges(mod) {
-  return mod.enumerateRanges("r-x");
-}
-async function findLiteralOccurrences(mod, texts, chunkBytes, yieldFn) {
-  const found = texts.map(() => []);
-  for (const ranges of [dataRanges2(mod), codeRanges(mod)]) {
-    const missing = texts.map((_t, i) => i).filter((i) => found[i].length === 0);
-    if (missing.length === 0)
-      break;
-    const jobs = missing.map((i) => ({
-      pattern: toHexPattern(texts[i] + "\0"),
-      onMatch: (a) => {
-        if (found[i].length < MAX_LITERAL_OCCURRENCES)
-          found[i].push(a);
-      }
-    }));
-    await scanRangesChunked(ranges, jobs, chunkBytes, yieldFn);
-  }
-  return found;
-}
-function anchorTargets(spec, occurrences) {
-  const targets2 = spec.literalSuffix ? occurrences.map((hit) => literalStart(hit)) : occurrences;
-  const unique = /* @__PURE__ */ new Map();
-  for (const t of targets2)
-    unique.set(t.toString(), t);
-  return [...unique.values()];
-}
-async function findRipLeaSitesAsync(mod, targetSets, chunkBytes, yieldFn) {
-  const owner2 = /* @__PURE__ */ new Map();
-  targetSets.forEach((set, i) => set.forEach((t) => {
-    const a = Number(t.toString());
-    owner2.set(a, [...owner2.get(a) ?? [], i]);
-  }));
-  const sites = targetSets.map(() => []);
-  if (owner2.size === 0)
-    return sites;
-  const targets2 = new Set(owner2.keys());
-  for (const range of codeRanges(mod)) {
-    for (let off = 0; off < range.size; off += chunkBytes) {
-      if (_isShuttingDownNow())
-        throw new XrefScanAborted();
-      const at = range.base.add(off);
-      const own = Math.min(chunkBytes, range.size - off);
-      let code4 = null;
-      try {
-        const bytes = at.readByteArray(Math.min(own + LEA_RIP_OVERLAP, range.size - off));
-        code4 = bytes ? new Uint8Array(bytes) : null;
-      } catch (_e) {
-        code4 = null;
-      }
-      if (code4 !== null) {
-        for (const ref of findRipLeaRefs(code4, Number(at.toString()), targets2, own)) {
-          for (const i of owner2.get(ref.target) ?? [])
-            sites[i].push(at.add(ref.site - Number(at.toString())));
-        }
-      }
-      await yieldFn();
-    }
-  }
-  return sites;
-}
-async function loadSitesFor(mod, targetSets, maxSites, chunkBytes, yieldFn) {
-  if (Process.arch === "x64")
-    return findRipLeaSitesAsync(mod, targetSets, chunkBytes, yieldFn);
-  if (Process.arch !== "arm64")
-    return targetSets.map(() => []);
-  const flat = targetSets.flat();
-  if (flat.length === 0)
-    return targetSets.map(() => []);
-  const perTarget = await findStringLoadSitesAsync(mod, flat, chunkBytes, yieldFn, maxSites);
-  let k = 0;
-  return targetSets.map((set) => set.flatMap(() => perTarget[k++]));
-}
-function groupSitesByFunction(sites, functions) {
-  const byStart = /* @__PURE__ */ new Map();
-  const unboundedSites = [];
-  const sorted = [...sites].sort((a, b) => a.compare(b)).filter((p, k, all) => k === 0 || !p.equals(all[k - 1]));
-  for (const site of sorted) {
-    const fn = functions.bounds(site);
-    if (fn === null) {
-      unboundedSites.push(site);
-      continue;
-    }
-    const key = fn.start.toString();
-    const entry = byStart.get(key) ?? { start: fn.start, end: fn.end, sites: [] };
-    entry.sites.push(site);
-    byStart.set(key, entry);
-  }
-  const list = [...byStart.values()].sort((a, b) => a.start.compare(b.start));
-  return { functions: list, unboundedSites };
-}
-async function locateFunctionsByAnchors(mod, specs, options = {}) {
-  const functions = options.functions !== void 0 ? options.functions : ehFrameTableFor(mod);
-  if (!functions || specs.length === 0)
-    return specs.map(() => NO_FUNCTIONS);
-  const chunkBytes = options.chunkBytes ?? XREF_SCAN_CHUNK_BYTES;
-  const yieldFn = options.yieldFn ?? yieldToEventLoop;
-  const occurrences = await findLiteralOccurrences(mod, specs.map((s) => s.text), chunkBytes, yieldFn);
-  const targetSets = specs.map((s, i) => anchorTargets(s, occurrences[i]));
-  const maxSites = Math.max(DEFAULT_MAX_ANCHOR_SITES, ...specs.map((s) => s.maxSites ?? 0));
-  const sites = await loadSitesFor(mod, targetSets, maxSites, chunkBytes, yieldFn);
-  return specs.map((s, i) => groupSitesByFunction(sites[i].slice(0, s.maxSites ?? DEFAULT_MAX_ANCHOR_SITES), functions));
-}
-function agreedFunction(perAnchor, excluded = []) {
-  let agreed = null;
-  for (const result of perAnchor) {
-    if (result.functions.length === 0 && result.unboundedSites.length === 0)
-      continue;
-    if (result.functions.length !== 1 || result.unboundedSites.length > 0)
-      return null;
-    const fn = result.functions[0];
-    if (agreed !== null && !agreed.start.equals(fn.start))
-      return null;
-    agreed = agreed ?? fn;
-  }
-  if (agreed === null)
-    return null;
-  const home = agreed.start;
-  return excluded.some((other) => other.functions.some((f2) => f2.start.equals(home))) ? null : agreed;
-}
-
-// agent/ipsec/libs/strongswan_keys.ts
 var IKE_FUNC_ANCHORS = [
   { text: "SKEYSEED %B" },
   { text: "Sk_ei secret %B" },
@@ -37235,7 +42995,7 @@ init_shared_structures();
 init_node_globals();
 var MAX_KEYLOG_LINE = 256;
 var MIN_KEYLOG_LINE = 16;
-var NSS_KEYLOG_LABELS = [
+var NSS_KEYLOG_LABELS2 = [
   "CLIENT_RANDOM",
   "CLIENT_EARLY_TRAFFIC_SECRET",
   "CLIENT_HANDSHAKE_TRAFFIC_SECRET",
@@ -37249,7 +43009,7 @@ function isNssKeylogLine(line) {
   if (line.length < MIN_KEYLOG_LINE)
     return false;
   const body = line.startsWith("QUIC_") ? line.substring(5) : line;
-  for (const label of NSS_KEYLOG_LABELS) {
+  for (const label of NSS_KEYLOG_LABELS2) {
     if (!body.startsWith(label))
       continue;
     const separator = body.charAt(label.length);
@@ -38042,57 +43802,7 @@ var NSS_MacOS = class extends NSS {
     }
   }
   install_tls_keys_callback_hook() {
-    var nssModuleName = this.module_name;
-    NSS.detectVersionOffsets();
-    NSS.resolveExperimentalAPI();
-    NSS.getDescType = new NativeFunction(this.addresses[this.module_name]["PR_GetDescType"], "int", ["pointer"]);
-    NSS.PR_GetNameForIdentity = new NativeFunction(this.addresses[this.module_name]["PR_GetNameForIdentity"], "pointer", ["pointer"]);
-    NSS.get_SSL_Callback = new NativeFunction(this.addresses[this.module_name]["SSL_HandshakeCallback"], "int", ["pointer", "pointer", "pointer"]);
-    NSS.PK11_ExtractKeyValue = new NativeFunction(this.addresses[this.module_name]["PK11_ExtractKeyValue"], "int", ["pointer"]);
-    NSS.PK11_GetKeyData = new NativeFunction(this.addresses[this.module_name]["PK11_GetKeyData"], "pointer", ["pointer"]);
-    Interceptor.attach(this.addresses[this.module_name]["SSL_ImportFD"], {
-      onEnter(args) {
-        this.fd = args[1];
-      },
-      onLeave(retval) {
-        if (retval.isNull()) {
-          devlog("[-] SSL_ImportFD error: unknown null");
-          return;
-        }
-        var retValue = NSS.get_SSL_Callback(retval, NSS.keylog_callback, NULL);
-        NSS.register_secret_callback(retval);
-        if (retValue < 0) {
-          devlog("Callback Error");
-          try {
-            var getErrorText = new NativeFunction(Process.getModuleByName(nssModuleName).getExportByName("PR_GetErrorText"), "int", ["pointer"]);
-            var outbuffer = Memory.alloc(200);
-            getErrorText(outbuffer.readPointer());
-            devlog("Error msg: " + outbuffer);
-          } catch (e) {
-            devlog("Could not retrieve NSS error text: " + e);
-          }
-        } else {
-          devlog("[*] NSS keylog callback successfully installed");
-        }
-      }
-    });
-    Interceptor.attach(this.addresses[this.module_name]["SSL_HandshakeCallback"], {
-      onEnter(args) {
-        this.originalCallback = args[1];
-        Interceptor.attach(ptr(this.originalCallback), {
-          onEnter(args2) {
-            var sslSocketFD = args2[0];
-            devlog("[*] NSS keylog callback successfully installed via applications callback function");
-            NSS.ssl_RecordKeyLog(sslSocketFD);
-          },
-          onLeave(retval) {
-          }
-        });
-      },
-      onLeave(retval) {
-      }
-    });
-    NSS.installSecretCallbackInterceptor();
+    void installLegacyNssKeyExtraction(this.module_name, this.addresses[this.module_name]);
   }
 };
 function nss_execute2(moduleName, is_base_hook) {
@@ -38584,14 +44294,14 @@ function readShortCString(p, max) {
 function readU32BE(p) {
   return (p.readU8() << 24 | p.add(1).readU8() << 16 | p.add(2).readU8() << 8 | p.add(3).readU8()) >>> 0;
 }
-function isKexinitBody(view) {
+function isKexinitBody(view3) {
   try {
-    if (!view || view.len < KEX_COOKIE_LEN + 4 + 1)
+    if (!view3 || view3.len < KEX_COOKIE_LEN + 4 + 1)
       return false;
-    const listLen = readU32BE(view.data.add(KEX_COOKIE_LEN));
-    if (listLen < 1 || listLen > MAX_NAME_LIST_LEN || listLen > view.len - KEX_COOKIE_LEN - 4)
+    const listLen = readU32BE(view3.data.add(KEX_COOKIE_LEN));
+    if (listLen < 1 || listLen > MAX_NAME_LIST_LEN || listLen > view3.len - KEX_COOKIE_LEN - 4)
       return false;
-    const names = view.data.add(KEX_COOKIE_LEN + 4).readByteArray(Math.min(listLen, 64));
+    const names = view3.data.add(KEX_COOKIE_LEN + 4).readByteArray(Math.min(listLen, 64));
     if (!names)
       return false;
     return /^[a-z0-9@.,+_=-]+$/i.test(String.fromCharCode(...new Uint8Array(names)));
@@ -38600,24 +44310,24 @@ function isKexinitBody(view) {
   }
 }
 function kexinitCookie(buf, toHex) {
-  const view = readSshbuf(buf);
-  if (!isKexinitBody(view))
+  const view3 = readSshbuf(buf);
+  if (!isKexinitBody(view3))
     return null;
   try {
-    const bytes = view.data.readByteArray(KEX_COOKIE_LEN);
+    const bytes = view3.data.readByteArray(KEX_COOKIE_LEN);
     return bytes ? toHex(bytes) : null;
   } catch {
     return null;
   }
 }
-function sharedSecretBytes(view) {
+function sharedSecretBytes(view3) {
   try {
-    if (!view || view.len <= 0)
+    if (!view3 || view3.len <= 0)
       return null;
-    if (view.len > 4 && readU32BE(view.data) === view.len - 4) {
-      return view.data.add(4).readByteArray(view.len - 4);
+    if (view3.len > 4 && readU32BE(view3.data) === view3.len - 4) {
+      return view3.data.add(4).readByteArray(view3.len - 4);
     }
-    return view.data.readByteArray(view.len);
+    return view3.data.readByteArray(view3.len);
   } catch {
     return null;
   }
@@ -38780,11 +44490,11 @@ async function resolveOpenSshFunctions(moduleName) {
   const lost = missing.filter((n) => !found.has(n));
   devlog(`[SSH] ${moduleName}: located by string anchors: ${where.join(", ") || "none"}` + (lost.length > 0 ? `; not located: ${lost.join(", ")}` : ""));
 }
-function withOpenSshFunctions(moduleName, install) {
+function withOpenSshFunctions(moduleName, install2) {
   if (!needsAnchorResolution(moduleName))
-    return install();
+    return install2();
   const protocol = activeRecordProtocol();
-  return resolveOpenSshFunctions(moduleName).then(() => protocol === void 0 ? install() : runHookExecutor(protocol, install));
+  return resolveOpenSshFunctions(moduleName).then(() => protocol === void 0 ? install2() : runHookExecutor(protocol, install2));
 }
 
 // agent/ssh/platforms/linux/ssh_packet_hooks.ts
@@ -38793,38 +44503,38 @@ var MAX_SSH_PACKET = 65535;
 var MIN_SSH_PACKET = 6;
 var SEND_HEADER_LEN = 5;
 var RECV_CONSUMED_LEN = 6;
-function isPendingOutgoingPacket(view) {
+function isPendingOutgoingPacket(view3) {
   try {
-    if (!view || view.len < MIN_SSH_PACKET || view.len > MAX_SSH_PACKET)
+    if (!view3 || view3.len < MIN_SSH_PACKET || view3.len > MAX_SSH_PACKET)
       return false;
     for (let i = 0; i < SEND_HEADER_LEN; i++)
-      if (view.data.add(i).readU8() !== 0)
+      if (view3.data.add(i).readU8() !== 0)
         return false;
-    return view.data.add(SEND_HEADER_LEN).readU8() !== 0;
+    return view3.data.add(SEND_HEADER_LEN).readU8() !== 0;
   } catch {
     return false;
   }
 }
-function isDecodedIncomingPacket(view, type) {
+function isDecodedIncomingPacket(view3, type) {
   try {
-    if (!view || view.off !== RECV_CONSUMED_LEN || view.len > MAX_SSH_PACKET)
+    if (!view3 || view3.off !== RECV_CONSUMED_LEN || view3.len > MAX_SSH_PACKET)
       return false;
-    if (view.base.add(RECV_CONSUMED_LEN - 1).readU8() !== type)
+    if (view3.base.add(RECV_CONSUMED_LEN - 1).readU8() !== type)
       return false;
-    return view.base.add(4).readU8() >= 4;
+    return view3.base.add(4).readU8() >= 4;
   } catch {
     return false;
   }
 }
-function messageBytes(view, label, type) {
+function messageBytes(view3, label, type) {
   if (label === "outgoing_packet") {
-    const body = view.data.add(SEND_HEADER_LEN).readByteArray(view.len - SEND_HEADER_LEN);
+    const body = view3.data.add(SEND_HEADER_LEN).readByteArray(view3.len - SEND_HEADER_LEN);
     return body ? new Uint8Array(body) : null;
   }
-  const payload = view.len > 0 ? view.data.readByteArray(view.len) : new ArrayBuffer(0);
+  const payload = view3.len > 0 ? view3.data.readByteArray(view3.len) : new ArrayBuffer(0);
   if (!payload)
     return null;
-  const message = new Uint8Array(1 + view.len);
+  const message = new Uint8Array(1 + view3.len);
   message[0] = type;
   message.set(new Uint8Array(payload), 1);
   return message;
@@ -38837,8 +44547,8 @@ function probeBufferOffset(sshPtr, state3, label, type) {
   if (sessionState === null)
     return null;
   for (let off = 0; off < 1024; off += ptrSize) {
-    const view = readSshbuf(readPointerAt(sessionState, off));
-    const matches = label === "outgoing_packet" ? isPendingOutgoingPacket(view) : isDecodedIncomingPacket(view, type);
+    const view3 = readSshbuf(readPointerAt(sessionState, off));
+    const matches = label === "outgoing_packet" ? isPendingOutgoingPacket(view3) : isDecodedIncomingPacket(view3, type);
     if (!matches)
       continue;
     if (label === "outgoing_packet") {
@@ -38859,12 +44569,12 @@ function capturePacket(sshPtr, state3, label, type) {
     const sessionState = readPointerAt(sshPtr, 0);
     if (sessionState === null)
       return null;
-    const view = readSshbuf(readPointerAt(sessionState, off));
-    if (view === null)
+    const view3 = readSshbuf(readPointerAt(sessionState, off));
+    if (view3 === null)
       return null;
-    if (label === "outgoing_packet" && !isPendingOutgoingPacket(view))
+    if (label === "outgoing_packet" && !isPendingOutgoingPacket(view3))
       return null;
-    const message = messageBytes(view, label, type);
+    const message = messageBytes(view3, label, type);
     return message ? frameSshMessage(message) : null;
   } catch (e) {
     devlog(`[SSH] capturePacket(${label}) error: ${e}`);
@@ -39149,8 +44859,8 @@ var isServerSide = (() => {
     if (!modules || modules.length === 0)
       return false;
     const mainPath = modules[0].path || modules[0].name || "";
-    const basename2 = mainPath.split("/").pop() || mainPath;
-    return /^sshd(-session)?$/.test(basename2);
+    const basename3 = mainPath.split("/").pop() || mainPath;
+    return /^sshd(-session)?$/.test(basename3);
   } catch {
     return false;
   }
@@ -39405,10 +45115,10 @@ function hookKexDeriveKeys(moduleName) {
           return;
         if (!secretBuf || secretBuf.isNull())
           return;
-        const view = readSshbuf(secretBuf);
-        if (view === null || view.len <= 0 || view.len > 16384)
+        const view3 = readSshbuf(secretBuf);
+        if (view3 === null || view3.len <= 0 || view3.len > 16384)
           return;
-        const secret = sharedSecretBytes(view);
+        const secret = sharedSecretBytes(view3);
         if (secret === null)
           return;
         const len = secret.byteLength;
@@ -39659,16 +45369,23 @@ function sendOhttpPlaintext(direction, source, data) {
   sendWithProtocol({ contentType: "ohttp_plaintext", direction, source }, data);
 }
 
-// agent/ohttp/definitions/nss_hpke.ts
-function readSECItem(ptr2) {
-  if (ptr2.isNull())
+// agent/shared/sec_item.ts
+init_node_globals();
+function readSecItemView(item) {
+  try {
+    if (item.isNull() || !isReadable(item, Process.pointerSize * 2 + 4))
+      return null;
+    const data = item.add(Process.pointerSize).readPointer();
+    const len = item.add(Process.pointerSize * 2).readU32();
+    if (len === 0 || data.isNull() || !isReadable(data, len))
+      return null;
+    return { data, len };
+  } catch (_e) {
     return null;
-  const dataPtr = ptr2.add(Process.pointerSize).readPointer();
-  const len = ptr2.add(Process.pointerSize * 2).readU32();
-  if (len === 0 || dataPtr.isNull())
-    return null;
-  return { data: dataPtr, len };
+  }
 }
+
+// agent/ohttp/definitions/nss_hpke.ts
 function installNssHpkeOhttp(addresses, moduleName) {
   if (!pcap_enabled)
     return;
@@ -39677,7 +45394,7 @@ function installNssHpkeOhttp(addresses, moduleName) {
   if (sealAddr && !sealAddr.isNull()) {
     Interceptor.attach(sealAddr, {
       onEnter(args) {
-        const ptItem = readSECItem(args[2]);
+        const ptItem = readSecItemView(args[2]);
         if (!ptItem || !looksLikeBhttp(ptItem.data, ptItem.len))
           return;
         devlog(`[*] OHTTP: PK11_HPKE_Seal fired \u2014 ${ptItem.len} bytes bhttp request`);
@@ -39702,7 +45419,7 @@ function installNssHpkeOhttp(addresses, moduleName) {
         const outPt = this.outPtPtr.readPointer();
         if (outPt.isNull())
           return;
-        const ptItem = readSECItem(outPt);
+        const ptItem = readSecItemView(outPt);
         if (!ptItem || !looksLikeBhttp(ptItem.data, ptItem.len))
           return;
         devlog(`[*] OHTTP: PK11_HPKE_Open fired \u2014 ${ptItem.len} bytes bhttp response`);
@@ -39719,11 +45436,8 @@ function createNssHpkeDefinition() {
     libraryId: "nss_hpke",
     offsetKey: "nss_hpke",
     functions: {
-      librarySymbols: [],
-      socketSymbols: [],
-      auxiliaryLibraries: [
-        { pattern: "*libnss*", symbols: ["PK11_HPKE_Seal", "PK11_HPKE_Open"] }
-      ]
+      librarySymbols: [...NSS_HPKE_SYMBOLS],
+      socketSymbols: []
     },
     nativeFunctions: [],
     fdDecoder: () => -1,
@@ -39747,7 +45461,7 @@ init_shared_structures();
 
 // agent/quic/shared/quic_connection_tracker.ts
 init_node_globals();
-function buildQuicMessage(info, connKey, functionLabel, direction = "read", library) {
+function buildQuicMessage(info, connKey, functionLabel, direction = "read", library, clientRandom) {
   const isWrite = direction === "write";
   const message = {
     src_addr: isWrite ? info.localAddr : info.peerAddr,
@@ -39761,11 +45475,21 @@ function buildQuicMessage(info, connKey, functionLabel, direction = "read", libr
   };
   if (library)
     message.library = library;
+  if (clientRandom)
+    message.client_random = clientRandom;
+  if (info.synthetic)
+    message.endpoints_synthetic = true;
   return message;
 }
 var MAX_LINKED_CONNECTIONS = 4096;
+function usableSelf(self, peer) {
+  return self && self.family === peer.family ? self : null;
+}
 function infoHasEndpoint(info, side, e) {
   return info.ssFamily === e.family && (side === "local" ? info.localAddr === e.addr && info.localPort === e.port : info.peerAddr === e.addr && info.peerPort === e.port);
+}
+function localOf(self) {
+  return { localAddr: self.addr, localPort: self.port };
 }
 function hashPtr(connPtr) {
   let h = 2166136261;
@@ -39809,7 +45533,7 @@ var NON_QUIC_UDP_PORTS = /* @__PURE__ */ new Set([
   1900
   // SSDP
 ]);
-var QuicConnectionTracker = class {
+var QuicConnectionTracker = class _QuicConnectionTracker {
   _connections = /* @__PURE__ */ new Map();
   // Maps a QuicSpdyStream*/visitor pointer to its owning connection pointer,
   // so the per-stream read/write hooks can find the registered connection.
@@ -39834,6 +45558,9 @@ var QuicConnectionTracker = class {
   _lastLoggedIgnoredKey = null;
   // Native connection pointer -> its resolved key/4-tuple (see resolveLinked).
   _linked = new LruMap(MAX_LINKED_CONNECTIONS);
+  // client_random of connections without a linked entry (layout unknown or
+  // addresses unreadable), keyed by pointer; their connKey is the pointer.
+  _unlinkedClientRandom = new LruMap(MAX_LINKED_CONNECTIONS);
   /**
    * Register a new QUIC connection.
    * @param connPtr  Native pointer to the connection object (as hex string key)
@@ -39920,7 +45647,8 @@ var QuicConnectionTracker = class {
         ssFamily: "AF_INET6",
         peerAddr: peer.addr,
         peerPort: peer.port,
-        ...syntheticLocal(h, "AF_INET6")
+        ...syntheticLocal(h, "AF_INET6"),
+        synthetic: true
       };
     }
     const peerAddr = peer && peer.family === "AF_INET" ? peer.addr : (4026531840 | h & 268435455) >>> 0;
@@ -39932,7 +45660,8 @@ var QuicConnectionTracker = class {
       ssFamily: "AF_INET",
       peerAddr,
       peerPort,
-      ...syntheticLocal(h, "AF_INET")
+      ...syntheticLocal(h, "AF_INET"),
+      synthetic: true
     };
   }
   /**
@@ -39947,33 +45676,71 @@ var QuicConnectionTracker = class {
    *     a synthetic client, upgraded in place once the self address appears
    *     (same connKey, so the host keeps it one connection);
    *   - neither -> the deterministic synthetic tuple of the pointer.
-   * A different peer (or a different known self) behind the same pointer is a
-   * new connection reusing freed memory: it gets a new generation and key so
-   * it never folds into the previous connection's streams.
+   * A different peer behind the same pointer is a new connection reusing
+   * freed memory: it gets a new generation and key so it never folds into the
+   * previous connection's streams. A different self with the same peer is
+   * migration (see selfChanged) until a new handshake proves reuse
+   * (resolveNewHandshake, or a different client_random in bindClientRandom).
    */
   resolveLinked(connPtr, self, peer) {
     const prev = this._linked.get(connPtr);
-    const selfUsable = !!(self && peer && self.family === peer.family);
     if (!peer)
-      return prev ?? { connKey: connPtr, info: this.synthesizeInfo(connPtr) };
+      return prev ?? this.unlinkedConnection(connPtr);
+    const local = usableSelf(self, peer);
     if (prev && infoHasEndpoint(prev.info, "peer", peer)) {
-      if (!selfUsable)
+      if (!local)
         return prev;
       if (prev.provisionalLocal) {
-        prev.info = { ...prev.info, localAddr: self.addr, localPort: self.port };
+        prev.info = { ...prev.info, ...localOf(local), synthetic: false };
         prev.provisionalLocal = false;
         return prev;
       }
-      if (infoHasEndpoint(prev.info, "local", self))
+      if (infoHasEndpoint(prev.info, "local", local))
         return prev;
+      prev.info = { ...prev.info, ...localOf(local) };
+      prev.selfChanged = true;
+      return prev;
     }
+    const entry = this.startGeneration(connPtr, prev, local, peer);
+    const unlinkedClientRandom = prev ? void 0 : this._unlinkedClientRandom.get(connPtr);
+    if (unlinkedClientRandom)
+      entry.clientRandom = unlinkedClientRandom;
+    this._unlinkedClientRandom.delete(connPtr);
+    return entry;
+  }
+  /**
+   * resolveLinked for a client handshake start (TlsClientHandshaker::CryptoConnect):
+   * it runs once per new connection and never on migration, so a pointer whose
+   * generation already started a handshake or carried records is a reused one
+   * even with the same peer and no client_random to compare.
+   */
+  resolveNewHandshake(connPtr, self, peer) {
+    const prev = this._linked.get(connPtr);
+    if (prev && peer && (prev.carriedTraffic || prev.handshakeStarted) && infoHasEndpoint(prev.info, "peer", peer)) {
+      this.startGeneration(connPtr, prev, usableSelf(self, peer), peer);
+    }
+    const linked = this.resolveLinked(connPtr, self, peer);
+    const entry = this._linked.get(connPtr);
+    if (entry && entry.connKey === linked.connKey)
+      entry.handshakeStarted = true;
+    return linked;
+  }
+  /** Note that a record was built for a connection resolveLinked just returned. */
+  noteLinkedTraffic(linked) {
+    const entry = linked;
+    if (entry.carriedTraffic || entry.generation === void 0)
+      return;
+    entry.carriedTraffic = true;
+  }
+  /** A new connection behind `connPtr`: next generation, own key and 4-tuple. */
+  startGeneration(connPtr, prev, self, peer) {
     const generation = prev ? prev.generation + 1 : 0;
     const connKey = generation === 0 ? connPtr : connPtr + "#" + generation;
-    const local = selfUsable ? { localAddr: self.addr, localPort: self.port } : syntheticLocal(hashPtr(connKey), peer.family);
+    const local = self ? localOf(self) : syntheticLocal(hashPtr(connKey), peer.family);
     const entry = {
       connKey,
       generation,
-      provisionalLocal: !selfUsable,
+      provisionalLocal: !self,
       info: {
         serverName: "",
         scid: "",
@@ -39981,11 +45748,61 @@ var QuicConnectionTracker = class {
         ssFamily: peer.family,
         peerAddr: peer.addr,
         peerPort: peer.port,
-        ...local
+        ...local,
+        // A guessed local makes the tuple provisional for the host.
+        synthetic: !self
       }
     };
     this._linked.set(connPtr, entry);
     return entry;
+  }
+  /** Self of a linked entry: after a self change, the migrated address its info carries. */
+  static selfOf(entry) {
+    return { family: entry.info.ssFamily, addr: entry.info.localAddr, port: entry.info.localPort };
+  }
+  /** Peer of a linked entry, as the endpoint resolveLinked compares against. */
+  static peerOf(entry) {
+    return { family: entry.info.ssFamily, addr: entry.info.peerAddr, port: entry.info.peerPort };
+  }
+  /** Identity of a connection without readable addresses: the pointer key and a synthetic tuple. */
+  unlinkedConnection(connPtr) {
+    const unlinked = {
+      connKey: connPtr,
+      info: this.synthesizeInfo(connPtr),
+      reuseUndetectable: true
+    };
+    const clientRandom = this._unlinkedClientRandom.get(connPtr);
+    if (clientRandom)
+      unlinked.clientRandom = clientRandom;
+    return unlinked;
+  }
+  /**
+   * Attach `clientRandom` to the connection behind `connPtr` only while it is
+   * still generation `connKey`, so a reused pointer never inherits it. A
+   * different client_random after a self change starts the next generation.
+   * Without the CryptoConnect hook (resolveNewHandshake) a reused pointer to
+   * the same peer whose old generation never got a client_random cannot be
+   * told from migration and keeps the old key.
+   */
+  bindClientRandom(connPtr, connKey, clientRandom) {
+    if (!clientRandom)
+      return false;
+    const entry = this._linked.get(connPtr);
+    if (entry) {
+      if (entry.connKey !== connKey)
+        return false;
+      if (entry.selfChanged && entry.clientRandom && entry.clientRandom !== clientRandom) {
+        const next = this.startGeneration(connPtr, entry, _QuicConnectionTracker.selfOf(entry), _QuicConnectionTracker.peerOf(entry));
+        next.clientRandom = clientRandom;
+        return true;
+      }
+      entry.clientRandom = clientRandom;
+      return true;
+    }
+    if (connKey !== connPtr)
+      return false;
+    this._unlinkedClientRandom.set(connPtr, clientRandom);
+    return true;
   }
   /**
    * Number of tracked connections.
@@ -40081,7 +45898,7 @@ function createConnectTracker(ref, keylogPipeWriteFd) {
               devlog("[quiche] failed to set keylog fd: " + e);
             }
           }
-          sendConnectionLifecycle("created", buildQuicMessage(info, connKey, "quiche_connect"));
+          sendQuicConnectionLifecycle("created", buildQuicMessage(info, connKey, "quiche_connect"));
         }
       });
     }
@@ -40138,7 +45955,7 @@ function createAcceptTracker(ref, keylogPipeWriteFd) {
               devlog("[quiche] failed to set keylog fd: " + e);
             }
           }
-          sendConnectionLifecycle("created", buildQuicMessage(info, connKey, "quiche_accept"));
+          sendQuicConnectionLifecycle("created", buildQuicMessage(info, connKey, "quiche_accept"));
         }
       });
     }
@@ -40174,7 +45991,7 @@ function createStreamRecvHook() {
           if (this.finPtr && !this.finPtr.isNull()) {
             try {
               if (this.finPtr.readU8() !== 0) {
-                sendConnectionLifecycle("stream_fin", {
+                sendQuicConnectionLifecycle("stream_fin", {
                   ...message,
                   stream_id: this.streamId
                 });
@@ -40219,7 +46036,7 @@ function createStreamSendHook() {
           }
           if (this.fin) {
             const message = buildQuicMessage(connInfo, connKey, "quiche_stream_send", "write");
-            sendConnectionLifecycle("stream_fin", {
+            sendQuicConnectionLifecycle("stream_fin", {
               ...message,
               stream_id: this.streamId
             });
@@ -40241,7 +46058,7 @@ function createConnFreeHook() {
           const connKey = args[0].toString();
           const info = quicConnectionTracker.remove(connKey);
           if (info) {
-            sendConnectionLifecycle("destroyed", buildQuicMessage(info, connKey, "quiche_conn_free"));
+            sendQuicConnectionLifecycle("destroyed", buildQuicMessage(info, connKey, "quiche_conn_free"));
           }
         }
       });
@@ -40569,6 +46386,9 @@ init_shared_structures();
 
 // agent/quic/shared/quiche_layout.ts
 init_node_globals();
+function toAddress(p) {
+  return BigInt(p.toString());
+}
 var QUIC_SOCKET_ADDRESS_SIZE = 24;
 var ADDRESS_PAIR_SIZE = 2 * QUIC_SOCKET_ADDRESS_SIZE;
 var FAMILY_OFFSET = 16;
@@ -40577,13 +46397,13 @@ var STREAM_SCAN_BYTES = 512;
 var SESSION_SCAN_BYTES = 512;
 var CONNECTION_SCAN_BYTES = 8192;
 var MAX_SUBOBJECT_DELTA = 0x100n;
-function u32le2(bytes, offset) {
+function u32le3(bytes, offset) {
   return (bytes[offset] | bytes[offset + 1] << 8 | bytes[offset + 2] << 16 | bytes[offset + 3] << 24) >>> 0;
 }
 function decodeQuicSocketAddress(bytes, offset) {
   if (offset < 0 || offset + QUIC_SOCKET_ADDRESS_SIZE > bytes.length)
     return null;
-  const family = u32le2(bytes, offset + FAMILY_OFFSET);
+  const family = u32le3(bytes, offset + FAMILY_OFFSET);
   const port = bytes[offset + PORT_OFFSET] | bytes[offset + PORT_OFFSET + 1] << 8;
   if (family === 0) {
     const addr = (bytes[offset] << 24 | bytes[offset + 1] << 16 | bytes[offset + 2] << 8 | bytes[offset + 3]) >>> 0;
@@ -40636,11 +46456,11 @@ function containsPointer(bytes, value, pointerSize12) {
     return false;
   const lo = Number(value & 0xffffffffn);
   const hi = Number(value >> 32n & 0xffffffffn);
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const view3 = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   for (let offset = 0; offset + pointerSize12 <= bytes.length; offset += pointerSize12) {
-    if (view.getUint32(offset, true) !== lo)
+    if (view3.getUint32(offset, true) !== lo)
       continue;
-    if (!wide || view.getUint32(offset + 4, true) === hi)
+    if (!wide || view3.getUint32(offset + 4, true) === hi)
       return true;
   }
   return false;
@@ -40658,21 +46478,12 @@ function isSessionSlot(mem, stream, offset, session) {
   const delta = delegate - session;
   return delta > 0n && delta <= MAX_SUBOBJECT_DELTA && delta % BigInt(mem.pointerSize) === 0n && hasModuleVtable(mem, session) && hasModuleVtable(mem, delegate);
 }
-function findConnectionLink(mem, session) {
+function findConnectionLink(mem, session, known) {
   const ps = mem.pointerSize;
   for (let offset = ps; offset + ps <= SESSION_SCAN_BYTES; offset += ps) {
-    const connection = mem.readPointer(session + BigInt(offset));
-    if (connection === null || connection === 0n || connection === session)
-      continue;
-    if (!hasModuleVtable(mem, connection))
-      continue;
-    const bytes = mem.readBytes(connection, CONNECTION_SCAN_BYTES);
-    if (!bytes || !containsPointer(bytes, session, ps))
-      continue;
-    const connectionAddresses = findAddressPairOffset(bytes);
-    if (connectionAddresses === null)
-      continue;
-    return { sessionConnection: offset, connectionAddresses, connectionVtable: mem.readPointer(connection) };
+    const match = sessionConnectionMatch(mem, session, offset, known);
+    if (match)
+      return { sessionConnection: offset, ...match.layout };
   }
   return null;
 }
@@ -40682,7 +46493,7 @@ function discoverQuicheLayout(mem, stream) {
     const session = mem.readPointer(stream + BigInt(offset));
     if (session === null || !isSessionSlot(mem, stream, offset, session))
       continue;
-    const link = findConnectionLink(mem, session);
+    const link = findConnectionLink(mem, session, null);
     if (link)
       return { streamSession: offset, ...link };
   }
@@ -40720,7 +46531,38 @@ function readStreamLink(mem, layout, stream) {
   const idBytes = mem.readBytes(stream + BigInt(layout.streamSession - mem.pointerSize), 4);
   if (!addresses || !idBytes || idBytes.length < 4)
     return null;
-  return { connection, streamId: u32le2(idBytes, 0), ...addresses };
+  return { connection, streamId: u32le3(idBytes, 0), ...addresses };
+}
+function streamSessionAt(mem, stream, streamSession) {
+  const session = mem.readPointer(stream + BigInt(streamSession));
+  return session !== null && isSessionSlot(mem, stream, streamSession, session) ? session : null;
+}
+function sessionConnectionAt(mem, session, sessionConnection2, known) {
+  return sessionConnectionMatch(mem, session, sessionConnection2, known)?.connection ?? null;
+}
+function sessionConnectionMatch(mem, session, sessionConnection2, known) {
+  if (session === 0n)
+    return null;
+  const connection = mem.readPointer(session + BigInt(sessionConnection2));
+  if (connection === null || connection === 0n || connection === session)
+    return null;
+  const vtable2 = mem.readPointer(connection);
+  if (known ? vtable2 !== known.connectionVtable : !hasModuleVtable(mem, connection))
+    return null;
+  const bytes = mem.readBytes(connection, CONNECTION_SCAN_BYTES);
+  if (!bytes || !containsPointer(bytes, session, mem.pointerSize))
+    return null;
+  if (known)
+    return { connection, layout: known };
+  const connectionAddresses = findAddressPairOffset(bytes);
+  return connectionAddresses === null ? null : { connection, layout: { connectionAddresses, connectionVtable: vtable2 } };
+}
+function connectionLayoutHolds(mem, layout, connection) {
+  const addresses = readConnectionAddresses(mem, layout, connection);
+  if (addresses === null || !isRoutableEndpoint(addresses.peer))
+    return false;
+  const self = addresses.self;
+  return self !== null && (self.family === "UNSPEC" || isRoutableEndpoint(self));
 }
 function readSessionLink(mem, layout, session, streamId) {
   const connection = mem.readPointer(session + BigInt(layout.sessionConnection));
@@ -40739,54 +46581,364 @@ function discoverConnectionLayout(mem, connection) {
   return { connectionAddresses, connectionVtable: mem.readPointer(connection) };
 }
 function discoverSessionLayout(mem, session, known = null) {
-  if (session === 0n)
-    return null;
-  if (!known)
-    return findConnectionLink(mem, session);
-  const ps = mem.pointerSize;
-  for (let offset = ps; offset + ps <= SESSION_SCAN_BYTES; offset += ps) {
-    const connection = mem.readPointer(session + BigInt(offset));
-    if (connection === null || connection === 0n || connection === session)
-      continue;
-    if (mem.readPointer(connection) !== known.connectionVtable)
-      continue;
-    const bytes = mem.readBytes(connection, CONNECTION_SCAN_BYTES);
-    if (bytes && containsPointer(bytes, session, ps))
-      return { sessionConnection: offset, ...known };
-  }
-  return null;
+  return session === 0n ? null : findConnectionLink(mem, session, known);
 }
 function readConnectionLink(mem, layout, connection, streamId) {
   const addresses = readConnectionAddresses(mem, layout, connection);
   return addresses ? { connection, streamId, ...addresses } : null;
 }
+var HANDSHAKER_SESSION_OFFSET = 264;
+var HANDSHAKER_SCAN_BYTES = 512;
+function connectionViaHandshakerSlot(mem, handshaker, offset, link) {
+  const session = mem.readPointer(handshaker + BigInt(offset));
+  if (session === null || session === 0n || session === handshaker)
+    return null;
+  const connection = mem.readPointer(session + BigInt(link.sessionConnection));
+  if (connection === null || connection === 0n)
+    return null;
+  return mem.readPointer(connection) === link.connectionVtable ? connection : null;
+}
+function findHandshakerConnection(mem, handshaker, link, preferred = HANDSHAKER_SESSION_OFFSET) {
+  if (handshaker === 0n)
+    return null;
+  const ps = mem.pointerSize;
+  const offsets2 = [preferred];
+  for (let offset = ps; offset + ps <= HANDSHAKER_SCAN_BYTES; offset += ps)
+    if (offset !== preferred)
+      offsets2.push(offset);
+  for (const offset of offsets2) {
+    const connection = connectionViaHandshakerSlot(mem, handshaker, offset, link);
+    if (connection !== null)
+      return { handshakerSession: offset, connection };
+  }
+  return null;
+}
+
+// agent/quic/shared/quiche_layout_hints.ts
+init_node_globals();
+var QUICHE_HINT_NAMES = {
+  /** QuicStream::session_ offset inside the stream. */
+  streamSession: "quiche.layout.streamSession",
+  /** QuicSession::connection_ offset inside the session. */
+  sessionConnection: "quiche.layout.sessionConnection",
+  /** (self, peer) QuicSocketAddress pair offset inside QuicConnection. */
+  connectionAddresses: "quiche.layout.connectionAddresses",
+  /** QuicConnection vptr minus the module base. */
+  connectionVtableRva: "quiche.layout.connectionVtableRva",
+  /** TlsClientHandshaker::session_ offset inside the handshaker. */
+  handshakerSession: "quiche.layout.handshakerSession",
+  /** QuicStream::id_ offset relative to session_'s offset (signed). */
+  streamIdFromSession: "quiche.layout.streamIdFromSession"
+};
+var SCALAR_FIELDS = ["streamSession", "sessionConnection", "handshakerSession", "streamIdFromSession"];
+var SIGNED_FIELDS = /* @__PURE__ */ new Set(["streamIdFromSession"]);
+var CONNECTION_ITEMS = [QUICHE_HINT_NAMES.connectionAddresses, QUICHE_HINT_NAMES.connectionVtableRva];
+function readConnectionHint(mod, isModuleAddress) {
+  const addresses = learnedLayout(mod, QUICHE_HINT_NAMES.connectionAddresses);
+  const rva = learnedLayout(mod, QUICHE_HINT_NAMES.connectionVtableRva);
+  const vtable2 = rva === null ? null : toAddress(mod.base) + BigInt(rva);
+  if (addresses !== null && addresses >= 0 && vtable2 !== null && isModuleAddress(vtable2)) {
+    return { connectionAddresses: addresses, connectionVtable: vtable2 };
+  }
+  forgetRejectedHint(mod, "connection");
+  return void 0;
+}
+function readQuicheLayoutHints(mod, isModuleAddress) {
+  const hints = {};
+  for (const field of SCALAR_FIELDS) {
+    const value = learnedLayout(mod, QUICHE_HINT_NAMES[field]);
+    if (value !== null && (SIGNED_FIELDS.has(field) || value >= 0))
+      hints[field] = value;
+    else if (value !== null)
+      forgetRejectedHint(mod, field);
+  }
+  const connection = readConnectionHint(mod, isModuleAddress);
+  if (connection)
+    hints.connection = connection;
+  return hints;
+}
+function describeHints(hints) {
+  const hex2 = (v) => (v < 0 ? "-0x" : "0x") + Math.abs(v).toString(16);
+  const parts = [];
+  for (const field of SCALAR_FIELDS) {
+    const value = hints[field];
+    if (value !== void 0)
+      parts.push(`${field}=${hex2(value)}`);
+  }
+  if (hints.connection) {
+    parts.push(`connectionAddresses=${hex2(hints.connection.connectionAddresses)}`, `connectionVtable=0x${hints.connection.connectionVtable.toString(16)}`);
+  }
+  return parts.join(", ");
+}
+function forgetRejectedHint(mod, field) {
+  const names = field === "connection" ? CONNECTION_ITEMS : [QUICHE_HINT_NAMES[field]];
+  for (const name of names)
+    rejectLearnedLayout(mod, name);
+}
+function reportQuicheLayout(mod, values) {
+  const layout = {};
+  for (const field of SCALAR_FIELDS) {
+    const value = values[field];
+    if (value !== void 0)
+      layout[QUICHE_HINT_NAMES[field]] = value;
+  }
+  if (values.connection) {
+    layout[QUICHE_HINT_NAMES.connectionAddresses] = values.connection.connectionAddresses;
+    const rva = values.connection.connectionVtable - toAddress(mod.base);
+    if (rva > 0n && isLayoutRva(Number(rva)))
+      layout[QUICHE_HINT_NAMES.connectionVtableRva] = Number(rva);
+  }
+  if (Object.keys(layout).length > 0)
+    reportLearned(mod, { layout });
+}
+
+// agent/quic/shared/quiche_stream_id.ts
+init_node_globals();
+var MIN_DISTINCT_MATCHES = 4;
+var MAX_MISSES = 1;
+var MAX_LEARNING_OBSERVATIONS = 512;
+var ID_SCAN_AFTER_SESSION = 192;
+var MAX_ORACLE_CONNECTIONS = 64;
+var MAX_ORACLE_IDS = 256;
+function isStreamIdPending(learning) {
+  return learning === "learning" || learning === "awaiting";
+}
+function readStreamIdWindow(mem, stream, streamSession) {
+  const base = -mem.pointerSize;
+  const bytes = mem.readBytes(stream + BigInt(streamSession + base), mem.pointerSize + ID_SCAN_AFTER_SESSION + 4);
+  return bytes ? { base, bytes } : null;
+}
+function lazyStreamIdWindow(mem, stream, streamSession) {
+  let read2 = false;
+  let window = null;
+  return () => {
+    if (!read2) {
+      window = readStreamIdWindow(mem, stream, streamSession);
+      read2 = true;
+    }
+    return window;
+  };
+}
+function newCandidate(offset) {
+  return { offset, matched: /* @__PURE__ */ new Set(), misses: 0 };
+}
+function score(candidate, value, known) {
+  if (known.has(value))
+    candidate.matched.add(value);
+  else
+    candidate.misses++;
+}
+function isRuledOut(candidate) {
+  return candidate.misses > MAX_MISSES;
+}
+function isDecided(candidate) {
+  return candidate.matched.size >= MIN_DISTINCT_MATCHES;
+}
+function u32le4(bytes, offset) {
+  return (bytes[offset] | bytes[offset + 1] << 8 | bytes[offset + 2] << 16 | bytes[offset + 3] << 24) >>> 0;
+}
+function readWindowU32(window, offset) {
+  const at = offset - window.base;
+  return at >= 0 && at + 4 <= window.bytes.length ? u32le4(window.bytes, at) : null;
+}
+function legacyStreamIdFromWindow(window) {
+  return window === null ? null : readWindowU32(window, window.base);
+}
+function candidateOffsets(pointerSize12) {
+  const offsets2 = [-pointerSize12];
+  for (let o = 2 * pointerSize12; o <= ID_SCAN_AFTER_SESSION; o += 4)
+    offsets2.push(o);
+  return offsets2;
+}
+var QuicheStreamIdLearner = class {
+  /** The STREAM-frame hooks: not expected, being located, or live (their ids are the oracle). */
+  oracle = "none";
+  learnedOffset = null;
+  failed = false;
+  observations = 0;
+  candidates = null;
+  seeded = false;
+  /** The seeded offset's score while it is still unconfirmed. */
+  seedCheck = null;
+  seen = new LruMap(MAX_ORACLE_CONNECTIONS);
+  /** Called once when a seeded offset is confirmed (true) or contradicted and dropped (false). */
+  onSeedSettled;
+  /** Called once when learning ends: an offset was adopted ("learned") or the budget ran out ("failed"). */
+  onLearningSettled;
+  /** The STREAM-frame hooks are live: from now on ids are learned against them. */
+  enableOracle() {
+    this.oracle = "live";
+  }
+  /** The frame hooks are being located: until they settle, ids without a seed stay unknown. */
+  awaitOracle() {
+    if (this.oracle !== "live")
+      this.oracle = "awaiting";
+  }
+  /** The frame hooks will never be live: fall back to the legacy slot. */
+  oracleUnavailable() {
+    if (this.oracle === "awaiting")
+      this.oracle = "none";
+  }
+  get learning() {
+    if (this.oracle === "none")
+      return "legacy";
+    if (this.oracle === "awaiting")
+      return "awaiting";
+    if (this.learnedOffset !== null)
+      return "learned";
+    return this.failed ? "failed" : "learning";
+  }
+  /** id_ offset relative to session_, once learned (or seeded). */
+  get offset() {
+    return this.learnedOffset;
+  }
+  /** id_ offset once learned or a seed confirmed; null while a seed is unconfirmed. */
+  get validatedOffset() {
+    return this.seedCheck === null ? this.learnedOffset : null;
+  }
+  /**
+   * Use `offset` (relative to session_, e.g. from an earlier run) right away.
+   * It is still checked against the frame-path ids with the learning miss rule
+   * and dropped, back to learning, once they contradict it. Ignored after
+   * learning has started deciding, or for an offset outside the scan window.
+   */
+  seedOffset(offset) {
+    if (this.learnedOffset !== null || this.failed || this.candidates !== null || this.seeded)
+      return false;
+    if (!Number.isInteger(offset) || offset < -8 || offset > ID_SCAN_AFTER_SESSION)
+      return false;
+    this.learnedOffset = offset;
+    this.seeded = true;
+    this.seedCheck = newCandidate(offset);
+    return true;
+  }
+  /** A real stream id the frame path saw on `connection` (the capture connection key). */
+  noteStream(connection, streamId) {
+    let ids = this.seen.get(connection);
+    if (ids === void 0) {
+      ids = /* @__PURE__ */ new Set();
+      this.seen.set(connection, ids);
+    }
+    if (ids.has(streamId))
+      return;
+    if (ids.size >= MAX_ORACLE_IDS)
+      ids.delete(ids.values().next().value);
+    ids.add(streamId);
+  }
+  /**
+   * Stream id of `stream` (whose session_ is at `streamSession`) on `connection`,
+   * or null while it cannot be trusted (frame hooks pending, still learning, or learning failed).
+   * Only `canTeach` records (ingress bodies, decoded after their STREAM frame
+   * reached the frame hooks) are compared; an egress body may precede its frame.
+   * `window`, when given, is the stream's shared window source (read at most once).
+   */
+  streamId(mem, stream, streamSession, connection, canTeach, window) {
+    const ps = mem.pointerSize;
+    if (this.learnedOffset !== null) {
+      const id = this.readAt(mem, stream, streamSession + this.learnedOffset);
+      if (this.seedCheck === null || !canTeach || this.oracle !== "live")
+        return id;
+      this.checkSeed(id, connection);
+      if (this.learnedOffset !== null)
+        return id;
+    }
+    if (this.oracle === "none")
+      return this.readAt(mem, stream, streamSession - ps);
+    if (this.oracle === "awaiting")
+      return null;
+    if (this.failed || !canTeach)
+      return null;
+    this.observe(mem, stream, streamSession, connection, window);
+    return this.learnedOffset === null ? null : this.readAt(mem, stream, streamSession + this.learnedOffset);
+  }
+  /** id_ read from a window copied while learning, through the now known offset; null while unknown. */
+  streamIdFromWindow(window) {
+    if (this.learnedOffset === null || window === null)
+      return null;
+    return readWindowU32(window, this.learnedOffset);
+  }
+  checkSeed(id, connection) {
+    const known = this.seen.get(connection);
+    const check = this.seedCheck;
+    if (id === null || known === void 0 || known.size === 0)
+      return;
+    score(check, id, known);
+    const holds = !isRuledOut(check);
+    if (holds && !isDecided(check))
+      return;
+    this.seedCheck = null;
+    if (!holds)
+      this.learnedOffset = null;
+    this.onSeedSettled?.(holds);
+  }
+  readAt(mem, stream, offset) {
+    const bytes = mem.readBytes(stream + BigInt(offset), 4);
+    return bytes && bytes.length >= 4 ? u32le4(bytes, 0) : null;
+  }
+  observe(mem, stream, streamSession, connection, windowOf) {
+    const known = this.seen.get(connection);
+    if (known === void 0 || known.size === 0)
+      return;
+    const window = windowOf ? windowOf() : readStreamIdWindow(mem, stream, streamSession);
+    if (!window)
+      return;
+    this.candidates ??= candidateOffsets(mem.pointerSize).map(newCandidate);
+    for (const c of this.candidates) {
+      const value = readWindowU32(window, c.offset);
+      if (value !== null)
+        score(c, value, known);
+    }
+    this.candidates = this.candidates.filter((c) => !isRuledOut(c));
+    this.adoptIfDecided();
+    if (this.learnedOffset !== null) {
+      this.onLearningSettled?.("learned");
+    } else if (++this.observations >= MAX_LEARNING_OBSERVATIONS) {
+      this.failed = true;
+      this.candidates = null;
+      this.onLearningSettled?.("failed");
+    }
+  }
+  adoptIfDecided() {
+    let best = null;
+    for (const c of this.candidates) {
+      if (!isDecided(c))
+        continue;
+      if (best === null || c.matched.size > best.matched.size)
+        best = c;
+    }
+    if (best === null)
+      return;
+    this.learnedOffset = best.offset;
+    this.candidates = null;
+  }
+};
 
 // agent/quic/shared/quiche_records.ts
 var MAX_LAYOUT_ATTEMPTS = 64;
-var quicheLayoutStates = /* @__PURE__ */ new Map();
-function toAddress(p) {
-  return BigInt(p.toString());
+function streamIdLearner(state3) {
+  state3.streamIds ??= new QuicheStreamIdLearner();
+  return state3.streamIds;
 }
+var quicheLayoutStates = /* @__PURE__ */ new Map();
 function toNativePointer(a) {
   return ptr("0x" + a.toString(16));
 }
-function readClamped(p, address, length) {
+function readClamped(p, length) {
   if (isReadable(p, length)) {
     const buf2 = p.readByteArray(length);
     return buf2 ? new Uint8Array(buf2) : null;
   }
-  const range = Process.findRangeByAddress(p);
-  if (!range || range.protection[0] !== "r")
+  const range = findRange(p);
+  if (range === null || range.protection[0] !== "r")
     return null;
-  const n = Math.min(length, Number(toAddress(range.base) + BigInt(range.size) - address));
+  const n = Math.min(length, Number(toAddress(range.end) - toAddress(untag(p))));
   if (n <= 0)
     return null;
   const buf = p.readByteArray(n);
   return buf ? new Uint8Array(buf) : null;
 }
 function fridaQuicheMemory(module) {
-  const lo = toAddress(module.base);
-  const hi = lo + BigInt(module.size);
+  const [lo, hi] = moduleImageBounds(module).map(toAddress);
   return {
     pointerSize: Process.pointerSize,
     readPointer(address) {
@@ -40795,7 +46947,7 @@ function fridaQuicheMemory(module) {
     },
     readBytes(address, length) {
       try {
-        return readClamped(toNativePointer(address), address, length);
+        return readClamped(toNativePointer(address), length);
       } catch (_e) {
         return null;
       }
@@ -40811,7 +46963,7 @@ function quicheLayoutState(moduleName) {
   let state3 = null;
   try {
     const module = Process.findModuleByName(moduleName);
-    if (module)
+    if (module) {
       state3 = {
         moduleName,
         mem: fridaQuicheMemory(module),
@@ -40822,18 +46974,160 @@ function quicheLayoutState(moduleName) {
         sessionConnection: null,
         connAttempts: 0
       };
+      try {
+        seedQuicheLayout(state3, module);
+      } catch (e) {
+        devlog_debug(`[Google QUICHE] ${moduleName}: seeding layout hints failed: ${e}`);
+      }
+    }
   } catch (_e) {
     state3 = null;
   }
   quicheLayoutStates.set(moduleName, state3);
   return state3;
 }
+var SEED_REJECT_FAILURES = 2;
+function seedQuicheLayout(state3, mod) {
+  state3.cacheModule = mod;
+  const hints = readQuicheLayoutHints(mod, (a) => state3.mem.isModuleAddress(a));
+  const seeded = /* @__PURE__ */ new Map();
+  if (hints.connection) {
+    state3.connLayout = hints.connection;
+    seeded.set("connection", 0);
+  }
+  if (hints.sessionConnection !== void 0) {
+    state3.sessionConnection = hints.sessionConnection;
+    seeded.set("sessionConnection", 0);
+  }
+  if (hints.streamSession !== void 0 && hints.connection && hints.sessionConnection !== void 0) {
+    state3.layout = { streamSession: hints.streamSession, sessionConnection: hints.sessionConnection, ...hints.connection };
+    seeded.set("streamSession", 0);
+  } else if (hints.streamSession !== void 0) {
+    forgetRejectedHint(mod, "streamSession");
+  }
+  if (hints.handshakerSession !== void 0) {
+    state3.handshakerSession = hints.handshakerSession;
+    seeded.set("handshakerSession", 0);
+  }
+  const seededStreamId = hints.streamIdFromSession !== void 0 && seedStreamIdOffset(state3, hints.streamIdFromSession);
+  if (hints.streamIdFromSession !== void 0 && !seededStreamId)
+    forgetRejectedHint(mod, "streamIdFromSession");
+  state3.seeded = seeded;
+  if (seeded.size > 0 || seededStreamId) {
+    devlog_debug(`[Google QUICHE] ${state3.moduleName}: seeded cached layout hints (${describeHints(hints)})`);
+  }
+}
+function seedStreamIdOffset(state3, offset) {
+  const learner = streamIdLearner(state3);
+  if (!learner.seedOffset(offset))
+    return false;
+  learner.onSeedSettled = (holds) => applySeedOutcome(state3, "streamIdFromSession", holds);
+  return true;
+}
+function isSeeded(state3, field) {
+  return state3.seeded?.has(field) ?? false;
+}
+var CLEAR_SEEDED = {
+  connection: (state3) => {
+    state3.connLayout = null;
+    state3.layout = null;
+  },
+  sessionConnection: (state3) => {
+    state3.sessionConnection = null;
+    state3.layout = null;
+  },
+  streamSession: (state3) => {
+    state3.layout = null;
+  },
+  handshakerSession: (state3) => {
+    state3.handshakerSession = void 0;
+  }
+};
+var SEED_DEPENDENTS = {
+  connection: ["streamSession"],
+  sessionConnection: ["streamSession"]
+};
+function settleSeed(state3, field, holds) {
+  if (!isSeeded(state3, field))
+    return;
+  if (!holds) {
+    const failures = state3.seeded.get(field) + 1;
+    state3.seeded.set(field, failures);
+    if (failures < SEED_REJECT_FAILURES)
+      return;
+  }
+  decideSeed(state3, field, holds);
+}
+function decideSeed(state3, field, holds) {
+  if (!state3.seeded?.delete(field))
+    return;
+  applySeedOutcome(state3, field, holds);
+}
+function applySeedOutcome(state3, field, holds) {
+  if (holds) {
+    if (state3.cacheModule)
+      reportCacheHit(state3.cacheModule);
+    return;
+  }
+  CLEAR_SEEDED[field]?.(state3);
+  if (state3.cacheModule)
+    forgetRejectedHint(state3.cacheModule, field);
+  devlog_debug(`[Google QUICHE] ${state3.moduleName}: cached ${field} hint failed live validation; rediscovering`);
+  for (const dependent of SEED_DEPENDENTS[field] ?? [])
+    decideSeed(state3, dependent, false);
+}
+function checkSeededConnection(state3, connection) {
+  if (!isSeeded(state3, "connection") || connection === null || connection === 0n)
+    return;
+  settleSeed(state3, "connection", connectionLayoutHolds(state3.mem, state3.connLayout, connection));
+}
+function checkSeededSession(state3, session) {
+  if (!isSeeded(state3, "sessionConnection"))
+    return;
+  settleSeed(state3, "sessionConnection", sessionConnectionAt(state3.mem, session, state3.sessionConnection, state3.connLayout) !== null);
+}
+function checkSeededStream(state3, stream) {
+  if (!isSeeded(state3, "streamSession") || !state3.layout)
+    return;
+  const session = streamSessionAt(state3.mem, stream, state3.layout.streamSession);
+  settleSeed(state3, "streamSession", session !== null);
+  if (session === null)
+    return;
+  checkSeededSession(state3, session);
+  if (state3.sessionConnection !== null) {
+    checkSeededConnection(state3, state3.mem.readPointer(session + BigInt(state3.sessionConnection)));
+  }
+}
+function reconcileSeeds(state3, learned) {
+  if (isSeeded(state3, "connection")) {
+    decideSeed(state3, "connection", state3.connLayout.connectionAddresses === learned.connectionAddresses && state3.connLayout.connectionVtable === learned.connectionVtable);
+  }
+  if (isSeeded(state3, "sessionConnection")) {
+    decideSeed(state3, "sessionConnection", state3.sessionConnection === learned.sessionConnection);
+  }
+}
+function markLearned(state3) {
+  if (state3.cacheModule)
+    reportQuicheLayout(state3.cacheModule, validatedLayout(state3));
+}
+function validatedLayout(state3) {
+  const trusted = (field) => !isSeeded(state3, field);
+  return {
+    streamSession: state3.layout && trusted("streamSession") ? state3.layout.streamSession : void 0,
+    sessionConnection: state3.sessionConnection !== null && trusted("sessionConnection") ? state3.sessionConnection : void 0,
+    connection: state3.connLayout && trusted("connection") ? state3.connLayout : void 0,
+    handshakerSession: trusted("handshakerSession") ? state3.handshakerSession : void 0,
+    streamIdFromSession: state3.streamIds?.validatedOffset ?? void 0
+  };
+}
 function adoptFullLayout(state3, learned) {
+  reconcileSeeds(state3, learned);
   const layout = state3.connLayout ? { ...learned, ...state3.connLayout } : learned;
   state3.layout = layout;
   state3.connLayout = layout;
   state3.sessionConnection = layout.sessionConnection;
   state3.triedStreams.clear();
+  markLearned(state3);
   return layout;
 }
 function learnQuicheLayout(state3, stream) {
@@ -40853,10 +47147,13 @@ function learnQuicheLayout(state3, stream) {
 function routable(a) {
   return isRoutableEndpoint(a) ? a : null;
 }
-function linkedRecord(state3, link, label, direction) {
-  const linked = quicConnectionTracker.resolveLinked("0x" + link.connection.toString(16), routable(link.self), routable(link.peer));
+function linkedConnection(link) {
+  return quicConnectionTracker.resolveLinked("0x" + link.connection.toString(16), routable(link.self), routable(link.peer));
+}
+function linkedRecord(state3, link, label, direction, linked = linkedConnection(link)) {
+  quicConnectionTracker.noteLinkedTraffic(linked);
   return {
-    message: buildQuicMessage(linked.info, linked.connKey, label, direction, state3.moduleName),
+    message: buildQuicMessage(linked.info, linked.connKey, label, direction, state3.moduleName, linked.clientRandom),
     streamId: link.streamId
   };
 }
@@ -40871,17 +47168,47 @@ function resolveQuicheRecord(moduleName, obj, kind, label, direction = "read") {
     resetReadableCache();
     const stream = streamFromHookObject(state3.mem, toAddress(obj), kind);
     if (stream !== null && stream !== 0n) {
-      learnQuicheLayout(state3, stream);
-      const link = state3.layout ? readStreamLink(state3.mem, state3.layout, stream) : null;
-      if (link)
-        return { ...linkedRecord(state3, link, label, direction), connection: link.connection };
+      const record = resolveStreamRecord(state3, stream, label, direction);
+      if (record)
+        return record;
       legacyKey = "0x" + stream.toString(16);
     }
   }
   return { message: legacyMessage(legacyKey, label, direction, moduleName), streamId: null };
 }
+function resolveStreamRecord(state3, stream, label, direction) {
+  checkSeededStream(state3, stream);
+  learnQuicheLayout(state3, stream);
+  const link = state3.layout ? readStreamLink(state3.mem, state3.layout, stream) : null;
+  return link ? streamLinkedRecord(state3, state3.layout, stream, link, label, direction) : null;
+}
+function streamLinkedRecord(state3, layout, stream, link, label, direction) {
+  const linked = linkedConnection(link);
+  const learner = streamIdLearner(state3);
+  const before = learner.learning;
+  const window = lazyStreamIdWindow(state3.mem, stream, layout.streamSession);
+  const streamId = learner.streamId(state3.mem, stream, layout.streamSession, linked.connKey, direction === "read", window);
+  if (learner.learning !== before)
+    logStreamIdLearning(state3, learner.learning, learner.offset);
+  const record = linkedRecord(state3, { ...link, streamId: streamId ?? -1 }, label, direction, linked);
+  const result = { message: record.message, streamId, connection: link.connection };
+  if (streamId === null && isStreamIdPending(learner.learning))
+    result.pending = { state: state3, window };
+  return result;
+}
+function logStreamIdLearning(state3, learning, offset) {
+  if (learning === "learned" && offset !== null) {
+    markLearned(state3);
+    const sign = offset < 0 ? "-" : "+";
+    log(`[*] Google QUICHE (${state3.moduleName}): learned QuicStream::id_ at session_ ${sign}0x${Math.abs(offset).toString(16)} (matched against STREAM-frame stream ids)`);
+  } else if (learning === "failed") {
+    log(`[!] Google QUICHE (${state3.moduleName}): could not locate QuicStream::id_; de-framed bodies are kept only on connections the STREAM-frame path does not report`);
+  }
+}
 function resolveQuicheSessionRecord(moduleName, session, streamId, label, direction) {
   const state3 = quicheLayoutState(moduleName);
+  if (state3)
+    checkSeededSession(state3, toAddress(session));
   if (state3 && state3.layout) {
     resetReadableCache();
     const link = readSessionLink(state3.mem, state3.layout, toAddress(session), streamId);
@@ -40894,29 +47221,81 @@ function noteConnectionLayout(state3, layout, source) {
   if (state3.connLayout)
     return;
   state3.connLayout = { connectionAddresses: layout.connectionAddresses, connectionVtable: layout.connectionVtable };
+  markLearned(state3);
   log(`[*] Google QUICHE (${state3.moduleName}): resolved QUIC connection addressing from a ${source} (connection+0x${layout.connectionAddresses.toString(16)} -> self/peer address)`);
 }
 function sessionConnection(state3, session) {
+  checkSeededSession(state3, session);
   if (state3.sessionConnection === null && state3.connAttempts < MAX_LAYOUT_ATTEMPTS) {
     state3.connAttempts++;
     const learned = discoverSessionLayout(state3.mem, session, state3.connLayout);
     if (learned) {
       state3.sessionConnection = learned.sessionConnection;
+      markLearned(state3);
       noteConnectionLayout(state3, learned, "session");
     }
   }
   const offset = state3.sessionConnection;
   return offset === null ? null : state3.mem.readPointer(session + BigInt(offset));
 }
-function resolveConnectionRecord(state3, connection, streamId, label, direction) {
+function isSessionLayoutPending(state3) {
+  return state3.sessionConnection === null && state3.connAttempts < MAX_LAYOUT_ATTEMPTS;
+}
+function handshakerConnection(state3, handshaker) {
+  if (state3.sessionConnection === null || state3.connLayout === null)
+    return null;
+  const link = { sessionConnection: state3.sessionConnection, connectionVtable: state3.connLayout.connectionVtable };
+  const preferred = state3.handshakerSession ?? HANDSHAKER_SESSION_OFFSET;
+  const found = findHandshakerConnection(state3.mem, handshaker, link, preferred);
+  if (found === null)
+    return null;
+  if (isSeeded(state3, "handshakerSession"))
+    settleSeed(state3, "handshakerSession", found.handshakerSession === preferred);
+  noteHandshakerSession(state3, handshaker, found.handshakerSession);
+  return found.connection;
+}
+function noteHandshakerSession(state3, handshaker, offset) {
+  if (offset === (state3.handshakerSession ?? HANDSHAKER_SESSION_OFFSET)) {
+    if (state3.handshakerSession === offset)
+      return;
+    state3.handshakerSession = offset;
+    markLearned(state3);
+    return;
+  }
+  const candidate = state3.handshakerCandidate;
+  if (candidate && candidate.offset === offset && candidate.handshaker !== handshaker) {
+    state3.handshakerSession = offset;
+    state3.handshakerCandidate = void 0;
+    markLearned(state3);
+  } else {
+    state3.handshakerCandidate = { offset, handshaker };
+  }
+}
+function connectionLink(state3, connection, streamId) {
+  checkSeededConnection(state3, connection);
   if (!state3.connLayout && state3.connAttempts < MAX_LAYOUT_ATTEMPTS) {
     state3.connAttempts++;
     const learned = discoverConnectionLayout(state3.mem, connection);
     if (learned)
       noteConnectionLayout(state3, learned, "connection");
   }
-  const link = state3.connLayout ? readConnectionLink(state3.mem, state3.connLayout, connection, streamId) : null;
+  return state3.connLayout ? readConnectionLink(state3.mem, state3.connLayout, connection, streamId) : null;
+}
+function resolveConnectionRecord(state3, connection, streamId, label, direction) {
+  const link = connectionLink(state3, connection, streamId);
   return link ? linkedRecord(state3, link, label, direction) : null;
+}
+function resolveConnectionIdentity(state3, connection) {
+  return linkedConnection(connectionOnlyLink(state3, connection));
+}
+function resolveNewHandshakeIdentity(state3, connection) {
+  const link = connectionOnlyLink(state3, connection);
+  return quicConnectionTracker.resolveNewHandshake("0x" + connection.toString(16), routable(link.self), routable(link.peer));
+}
+function connectionOnlyLink(state3, connection) {
+  checkSeededConnection(state3, connection);
+  const link = state3.connLayout ? readConnectionLink(state3.mem, state3.connLayout, connection, 0) : null;
+  return link ?? { connection, streamId: 0, self: null, peer: null };
 }
 function unresolvedConnectionRecord(state3, connection, streamId, label, direction) {
   return linkedRecord(state3, { connection, streamId, self: null, peer: null }, label, direction);
@@ -40990,6 +47369,8 @@ var QuicStreamReassembler = class {
       this.drain(state3, out);
     }
     if (state3.next !== IGNORED && state3.finalSize !== null && state3.next >= state3.finalSize) {
+      if (out.length > 0)
+        out[out.length - 1].fin = true;
       this.ignore(state3);
     }
     return out;
@@ -41044,11 +47425,15 @@ var QuicStreamReassembler = class {
 // agent/quic/shared/quiche_connection_capture.ts
 init_node_globals();
 var MAX_TRACKED_CONNECTIONS = 1024;
+var MAX_TRACKED_STREAM_OWNERS = 4096;
 function isUniStream(streamId) {
   return (streamId & 2) !== 0;
 }
 var QuicheConnectionCapture = class {
   modes = new LruMap(MAX_TRACKED_CONNECTIONS);
+  streamOwners = new LruMap(MAX_TRACKED_STREAM_OWNERS);
+  /** "bodies" connections with at least one frame-owned stream. */
+  frameOwning = new LruMap(MAX_TRACKED_CONNECTIONS);
   /** Capture path already decided for `connection`, or undefined (does not decide). */
   modeOf(connection) {
     return this.modes.get(connection);
@@ -41071,7 +47456,210 @@ var QuicheConnectionCapture = class {
     }
     return mode;
   }
+  /** Path reporting `streamId` for its STREAM-frame chunk at `offset` (decided on first sight). */
+  onStreamFrame(connection, streamId, offset) {
+    return this.onStreamFrameKeys(streamFrameKeys(connection, streamId), offset);
+  }
+  /** onStreamFrame with the fragment's precomputed keys (hot path). */
+  onStreamFrameKeys(keys, offset) {
+    const mode = keys.mode ?? this.onFrame(keys.connection, keys.streamId, offset);
+    if (mode === "frames")
+      return "frames";
+    if (isUniStream(keys.streamId))
+      return "bodies";
+    const capture = this.decideStreamOwner(keys.owner, offset === 0 ? "frames" : "bodies");
+    if (capture === "midstream")
+      this.frameOwning.set(keys.connection, true);
+    return capture;
+  }
+  /** Path reporting a de-framed body of `streamId` (null: stream unknown, see onUnknownBodyStream). */
+  onBodyStream(connection, streamId) {
+    if (streamId === null)
+      return this.onUnknownBodyStream(connection);
+    return this.onBodyStreamKeys(streamFrameKeys(connection, streamId));
+  }
+  /** onBodyStream with the same precomputed keys the frame path decides on. */
+  onBodyStreamKeys(keys) {
+    if (this.onBody(keys.connection) === "frames")
+      return "frames";
+    if (isUniStream(keys.streamId))
+      return "bodies";
+    return this.decideStreamOwner(keys.owner, "bodies");
+  }
+  /**
+   * Path for a de-framed body whose stream id is not known: the body path only
+   * while the frame path owns no stream of the connection — the body could be
+   * one of those streams' bytes, and a dropped body beats a duplicated one.
+   */
+  onUnknownBodyStream(connection) {
+    if (this.onBody(connection) === "frames")
+      return "frames";
+    return this.frameOwning.get(connection) === true ? "midstream" : "bodies";
+  }
+  /** False when no STREAM-frame chunk of `streamId` can be reported any more (does not decide). */
+  mayReportFrame(connection, streamId) {
+    return this.mayReportFrameKeys(streamFrameKeys(connection, streamId));
+  }
+  /** mayReportFrame with the fragment's precomputed keys; remembers a decided mode in `keys`. */
+  mayReportFrameKeys(keys) {
+    const mode = this.modes.get(keys.connection);
+    if (mode !== void 0)
+      keys.mode = mode;
+    if (mode !== "bodies")
+      return true;
+    if (isUniStream(keys.streamId))
+      return false;
+    return this.streamOwners.get(keys.owner) !== "bodies";
+  }
+  decideStreamOwner(key, firstSight) {
+    let owner2 = this.streamOwners.get(key);
+    if (owner2 === void 0) {
+      owner2 = firstSight;
+      this.streamOwners.set(key, owner2);
+    }
+    return owner2 === "frames" ? "midstream" : "bodies";
+  }
 };
+function streamFrameKeys(connection, streamId) {
+  return { connection, streamId, owner: streamOwnerKey(connection, streamId) };
+}
+function streamOwnerKey(connection, streamId) {
+  return `${connection}|${streamId}`;
+}
+
+// agent/quic/shared/quiche_crypto_binding.ts
+init_node_globals();
+init_keylog_ssl_observer();
+
+// agent/quic/shared/quic_ssl_binding.ts
+init_node_globals();
+function createQuicSslBinder(deps) {
+  const byThread = /* @__PURE__ */ new Map();
+  const current = () => byThread.size === 0 ? void 0 : byThread.get(deps.currentThreadId());
+  const bindCurrent = (conn, rawClientRandom) => {
+    const clientRandom = normalizeClientRandom(rawClientRandom);
+    return clientRandom !== "" && deps.bind(conn.connPtr, conn.connKey, clientRandom);
+  };
+  return {
+    enterCryptoFrame(conn) {
+      const thread = deps.currentThreadId();
+      const previous = byThread.get(thread);
+      byThread.set(thread, conn);
+      return previous;
+    },
+    leaveCryptoFrame(previous) {
+      const thread = deps.currentThreadId();
+      if (previous === void 0)
+        byThread.delete(thread);
+      else
+        byThread.set(thread, previous);
+    },
+    onKeylogClientRandom(clientRandom) {
+      const conn = current();
+      return conn !== void 0 && bindCurrent(conn, clientRandom);
+    },
+    onSslSecret(ssl, module) {
+      const conn = current();
+      if (conn === void 0 || ssl.isNull())
+        return false;
+      return bindCurrent(conn, deps.readClientRandom(ssl, module));
+    }
+  };
+}
+function wantsObserveOnlySslHook(gate) {
+  return !gate.pairipSafe && gate.arch === "arm64";
+}
+function wantsCryptoFrameBinding(gate) {
+  return gate.keylogEnabled || wantsObserveOnlySslHook(gate);
+}
+
+// agent/quic/shared/quiche_crypto_binding.ts
+var CRYPTO_IN_LABEL = "QuicConnection_OnCryptoFrame";
+var CRYPTO_CONNECT_LABEL = "TlsClientHandshaker_CryptoConnect";
+var quicSslBinder = createQuicSslBinder({
+  currentThreadId: () => Process.getCurrentThreadId(),
+  readClientRandom: (ssl, module) => readSslClientRandom(ssl, module),
+  bind: (connPtr, connKey, clientRandom) => quicConnectionTracker.bindClientRandom(connPtr, connKey, clientRandom)
+});
+var bindKeylogClientRandom = (_ssl, clientRandom) => {
+  quicSslBinder.onKeylogClientRandom(clientRandom);
+};
+var cryptoFrameHooked = /* @__PURE__ */ new Set();
+function startObserveOnly(moduleName) {
+  prefetchSslLayout(moduleName, "hook-install");
+  void runAnchorLocatorObserveOnly(moduleName, (ssl) => {
+    quicSslBinder.onSslSecret(ssl, moduleName);
+  }).then((hooked) => devlog(`[Google QUICHE] ${moduleName}: observe-only ssl_log_secret hook ` + (hooked ? "installed" : "not installed") + " (QUIC client_random binding)"));
+}
+function unboundCryptoFrameConnection(state3, address, resolve) {
+  const linked = resolve(state3, address);
+  if (linked.clientRandom && !linked.reuseUndetectable && !linked.selfChanged)
+    return null;
+  return { connPtr: "0x" + address.toString(16), connKey: linked.connKey };
+}
+function connectionScopeListener(state3, crumb, label, connectionOf, resolve) {
+  return {
+    onEnter(args) {
+      this.entered = false;
+      if (_isShuttingDownNow())
+        return;
+      hookBreadcrumb(crumb);
+      try {
+        resetReadableCache();
+        const connection = connectionOf(args[0]);
+        if (connection === null)
+          return;
+        const conn = unboundCryptoFrameConnection(state3, connection, resolve);
+        if (conn === null)
+          return;
+        this.prev = quicSslBinder.enterCryptoFrame(conn);
+        this.entered = true;
+      } catch (e) {
+        devlog_error(`[${label}] onEnter threw: ${e}`);
+      }
+    },
+    onLeave() {
+      if (this.entered)
+        quicSslBinder.leaveCryptoFrame(this.prev);
+    }
+  };
+}
+function onCryptoFrameListener(state3) {
+  return connectionScopeListener(state3, `QuicConnection::OnCryptoFrame (${state3.moduleName})`, CRYPTO_IN_LABEL, toAddress, resolveConnectionIdentity);
+}
+function cryptoConnectListener(state3) {
+  return connectionScopeListener(state3, `TlsClientHandshaker::CryptoConnect (${state3.moduleName})`, CRYPTO_CONNECT_LABEL, (handshaker) => handshakerConnection(state3, toAddress(handshaker)), resolveNewHandshakeIdentity);
+}
+function hookCryptoConnect(moduleName, state3, cryptoConnect) {
+  if (cryptoConnect === null)
+    return;
+  try {
+    Interceptor.attach(cryptoConnect, cryptoConnectListener(state3));
+    devlog(`[Google QUICHE] ${moduleName}: hooked TlsClientHandshaker::CryptoConnect (0-RTT client_random binding)`);
+  } catch (e) {
+    devlog_error(`[Google QUICHE] failed to hook TlsClientHandshaker::CryptoConnect in ${moduleName}: ${e}`);
+  }
+}
+function installQuicheCryptoBinding(moduleName, state3, onCryptoFrame, cryptoConnect = null) {
+  const gate = { keylogEnabled: keylog_enabled, pairipSafe: pairip_safe, arch: Process.arch };
+  if (onCryptoFrame === null || !wantsCryptoFrameBinding(gate))
+    return false;
+  if (cryptoFrameHooked.has(moduleName))
+    return true;
+  try {
+    Interceptor.attach(onCryptoFrame, onCryptoFrameListener(state3));
+    cryptoFrameHooked.add(moduleName);
+  } catch (e) {
+    devlog_error(`[Google QUICHE] failed to hook QuicConnection::OnCryptoFrame in ${moduleName}: ${e}`);
+    return false;
+  }
+  hookCryptoConnect(moduleName, state3, cryptoConnect);
+  addKeylogSslListener(bindKeylogClientRandom);
+  if (wantsObserveOnlySslHook(gate))
+    startObserveOnly(moduleName);
+  devlog(`[Google QUICHE] ${moduleName}: hooked QuicConnection::OnCryptoFrame (QUIC client_random binding)`);
+  return true;
+}
 
 // agent/quic/shared/quiche_frame_locator.ts
 init_node_globals();
@@ -41082,6 +47670,16 @@ var ON_STREAM_FRAME_ANCHORS = [
 var WRITE_STREAM_DATA_ANCHORS = [
   " does not exist when trying to write data."
 ];
+var ON_CRYPTO_FRAME_ANCHORS = [
+  "Processing CRYPTO frame when connection is closed. Received packet info: "
+];
+var CRYPTO_CONNECT_ANCHORS = [
+  "Client failed to set ALPN",
+  "Client failed to set Transport Parameters",
+  "Client failed to set ECHConfigList",
+  "QUIC client pre-shared keys not yet supported with TLS"
+];
+var MIN_CRYPTO_CONNECT_ANCHORS = 2;
 var STREAM_FRAME_FIN = 1;
 var STREAM_FRAME_DATA_LENGTH = 2;
 var STREAM_FRAME_STREAM_ID = 4;
@@ -41108,53 +47706,448 @@ function agreeOnFunction(sitesPerAnchor) {
   }
   return agreed;
 }
+function agreeOnFunctionPartial(sitesPerAnchor, minAnchors) {
+  const present = sitesPerAnchor.filter((sites) => sites.length > 0);
+  return present.length < minAnchors ? null : agreeOnFunction(present);
+}
 function siteFunction(mod, site) {
   const fn = site.fn;
   if (!fn)
     return null;
   return { start: fn.start.sub(mod.base).toInt32(), size: fn.end ? fn.end.sub(fn.start).toInt32() : null };
 }
-async function locateQuicheFrameApi(mod) {
-  const none = { onStreamFrame: null, writeStreamData: null };
+var NO_FRAME_API = { onStreamFrame: null, writeStreamData: null, onCryptoFrame: null, cryptoConnect: null };
+var FRAME_FUNCTIONS = [
+  { field: "onStreamFrame", name: "quiche.frame.OnStreamFrame", anchors: ON_STREAM_FRAME_ANCHORS, optional: false },
+  {
+    field: "writeStreamData",
+    name: "quiche.frame.WriteStreamData",
+    anchors: WRITE_STREAM_DATA_ANCHORS,
+    optional: false
+  },
+  { field: "onCryptoFrame", name: "quiche.frame.OnCryptoFrame", anchors: ON_CRYPTO_FRAME_ANCHORS, optional: true },
+  {
+    field: "cryptoConnect",
+    name: "quiche.frame.CryptoConnect",
+    anchors: CRYPTO_CONNECT_ANCHORS,
+    optional: true,
+    minAnchors: MIN_CRYPTO_CONNECT_ANCHORS
+  }
+];
+var MANDATORY_FRAME_API = FRAME_FUNCTIONS.filter((f2) => !f2.optional);
+var OPTIONAL_FRAME_API = FRAME_FUNCTIONS.filter((f2) => f2.optional);
+var LEARNED_FRAME_API_NAMES = Object.fromEntries(FRAME_FUNCTIONS.map((f2) => [f2.field, f2.name]));
+function frameApiMissFingerprint(field) {
+  return missFingerprint(FRAME_FUNCTIONS.find((f2) => f2.field === field).anchors);
+}
+function defaultFrameApiSources() {
+  return { scan: scanQuicheFrameApi };
+}
+function learnedFrameApi(mod) {
+  const api3 = { ...NO_FRAME_API };
+  for (const f2 of FRAME_FUNCTIONS) {
+    api3[f2.field] = learnedFunction(mod, f2.name);
+    if (!f2.optional && api3[f2.field] === null)
+      return null;
+  }
+  return api3;
+}
+function optionalFieldsToScan(mod, api3) {
+  return OPTIONAL_FRAME_API.filter((f2) => api3[f2.field] === null && !hasLearnedMiss(mod, learnedMissName(f2.name), frameApiMissFingerprint(f2.field))).map((f2) => f2.field);
+}
+function reportFrameApi(mod, scan) {
+  const { api: api3 } = scan;
+  if (MANDATORY_FRAME_API.some((f2) => api3[f2.field] === null))
+    return;
+  const functions = {};
+  for (const f2 of FRAME_FUNCTIONS) {
+    const addr = api3[f2.field];
+    if (addr !== null)
+      functions[f2.name] = addr;
+  }
+  reportLearned(mod, { functions });
+  reportLearnedMisses(mod, Object.fromEntries(OPTIONAL_FRAME_API.filter((f2) => api3[f2.field] === null).map((f2) => [learnedMissName(f2.name), frameApiMissFingerprint(f2.field)])), scan);
+}
+function withScannedOptionals(cached, scanned) {
+  const api3 = { ...cached };
+  for (const { field } of OPTIONAL_FRAME_API)
+    api3[field] = cached[field] ?? scanned[field];
+  return api3;
+}
+async function resolveFrameApi(mod, sources) {
+  const startedAt = Date.now();
+  const cached = learnedFrameApi(mod);
+  const unknownOptionals = cached === null ? [] : optionalFieldsToScan(mod, cached);
+  let api3;
+  if (cached !== null && unknownOptionals.length === 0) {
+    api3 = cached;
+  } else {
+    const scan = await sources.scan(mod);
+    api3 = cached === null ? scan.api : withScannedOptionals(cached, scan.api);
+    reportFrameApi(mod, { api: api3, complete: scan.complete });
+  }
+  const source = cached === null ? "anchor scan" : unknownOptionals.length === 0 ? "from learned cache" : `from learned cache, anchor scan for ${unknownOptionals.join(", ")}`;
+  devlog_debug(`[Google QUICHE] ${mod.name}: STREAM-frame API resolved in ${Date.now() - startedAt} ms (${source})`);
+  return api3;
+}
+var frameApiByModule = /* @__PURE__ */ new Map();
+function locateQuicheFrameApi(mod, sources = defaultFrameApiSources()) {
   if (Process.arch !== "arm64")
-    return none;
+    return Promise.resolve({ ...NO_FRAME_API });
+  return memoizePerMapping(frameApiByModule, mod, () => resolveFrameApi(mod, sources).catch((e) => {
+    devlog(`[Google QUICHE] ${mod.name}: STREAM-frame lookup failed: ${e}`);
+    return { ...NO_FRAME_API };
+  }));
+}
+async function scanQuicheFrameApi(mod) {
+  const status = { complete: true };
   try {
-    const anchors = [...ON_STREAM_FRAME_ANCHORS, ...WRITE_STREAM_DATA_ANCHORS];
+    const anchors = FRAME_FUNCTIONS.flatMap((f2) => f2.anchors);
     const table = functionBoundsFor(mod);
-    const sites = await anchorSiteFunctions(mod, table, anchors.map((text) => ({ text })));
+    const sites = await anchorSiteFunctions(mod, table, anchors.map((text) => ({ text })), status);
     const functions = sites.map((list) => list.map((site) => siteFunction(mod, site)));
-    const pick = (group) => {
-      const off = agreeOnFunction(group);
-      return off === null ? null : mod.base.add(off);
-    };
-    const onStreamFrame = pick(functions.slice(0, ON_STREAM_FRAME_ANCHORS.length));
-    const writeStreamData = pick(functions.slice(ON_STREAM_FRAME_ANCHORS.length));
-    devlog(`[Google QUICHE] ${mod.name}: STREAM-frame anchors -> QuicConnection::OnStreamFrame ${moduleOffsetLabel(mod, onStreamFrame)}, QuicSession::WriteStreamData ${moduleOffsetLabel(mod, writeStreamData)}`);
-    return { onStreamFrame, writeStreamData };
+    const api3 = { ...NO_FRAME_API };
+    let start = 0;
+    for (const f2 of FRAME_FUNCTIONS) {
+      const group2 = functions.slice(start, start + f2.anchors.length);
+      start += f2.anchors.length;
+      const off = f2.minAnchors === void 0 ? agreeOnFunction(group2) : agreeOnFunctionPartial(group2, f2.minAnchors);
+      api3[f2.field] = off === null ? null : mod.base.add(off);
+    }
+    devlog(`[Google QUICHE] ${mod.name}: STREAM-frame anchors -> QuicConnection::OnStreamFrame ${moduleOffsetLabel(mod, api3.onStreamFrame)}, QuicSession::WriteStreamData ${moduleOffsetLabel(mod, api3.writeStreamData)}, QuicConnection::OnCryptoFrame ${moduleOffsetLabel(mod, api3.onCryptoFrame)}, TlsClientHandshaker::CryptoConnect ${moduleOffsetLabel(mod, api3.cryptoConnect)}`);
+    return { api: api3, complete: status.complete };
   } catch (e) {
     devlog(`[Google QUICHE] ${mod.name}: STREAM-frame locator failed: ${e}`);
-    return none;
+    return { api: { ...NO_FRAME_API }, complete: false };
   }
 }
+
+// agent/quic/shared/quiche_body_queue.ts
+init_node_globals();
+
+// agent/quic/shared/hold_timer.ts
+init_node_globals();
+
+// agent/shared/pre_shutdown.ts
+init_node_globals();
+var flushes = makeHookRegistry({ reverse: false });
+function registerPreShutdownFlush(fn) {
+  flushes.register(fn);
+}
+function runPreShutdownFlushes() {
+  flushes.run();
+}
+
+// agent/quic/shared/hold_timer.ts
+function holdClock(timeoutMs) {
+  return {
+    timeoutMs,
+    now: () => Date.now(),
+    schedule: (fn, ms) => {
+      const handle2 = setTimeout(fn, ms);
+      handle2?.unref?.();
+      return handle2;
+    },
+    cancel: (handle2) => clearTimeout(handle2),
+    isShuttingDown: _isShuttingDownNow
+  };
+}
+var HoldTimer = class {
+  clock;
+  onDue;
+  handle = null;
+  /**
+   * `onDue` runs when the timer fires (not during shutdown); `onPreShutdown`
+   * must release everything held and be a no-op when nothing is.
+   */
+  constructor(clock, onDue, onPreShutdown) {
+    this.clock = clock;
+    this.onDue = onDue;
+    registerPreShutdownFlush(onPreShutdown);
+  }
+  get armed() {
+    return this.handle !== null;
+  }
+  /** While `holding`, arm (after `delayMs`) unless armed; once nothing is held, cancel. */
+  sync(holding, delayMs = this.clock.timeoutMs) {
+    if (!holding) {
+      this.cancel();
+      return;
+    }
+    if (this.handle === null)
+      this.handle = this.clock.schedule(() => this.fire(), delayMs);
+  }
+  /** Re-arm from now (e.g. the held items' release condition just changed). */
+  restart(holding, delayMs) {
+    this.cancel();
+    this.sync(holding, delayMs);
+  }
+  /** Disarm: nothing is held any more. */
+  cancel() {
+    if (this.handle !== null)
+      this.clock.cancel(this.handle);
+    this.handle = null;
+  }
+  fire() {
+    this.handle = null;
+    try {
+      if (this.clock.isShuttingDown())
+        return;
+      this.onDue();
+    } catch (_e) {
+    }
+  }
+};
+
+// agent/quic/shared/quiche_body_queue.ts
+var MAX_PENDING_BODIES = 256;
+var MAX_PENDING_BODY_BYTES = 1 << 20;
+var PENDING_BODY_TIMEOUT_MS = 1500;
+var MAX_PENDING_BODY_HOLD_MS = 15e3;
+function sizeOf(entry) {
+  return entry.data.byteLength + (entry.window?.bytes.length ?? 0);
+}
+var QuicheBodyQueue = class {
+  release;
+  maxRecords;
+  maxBytes;
+  clock;
+  entries = [];
+  bytes = 0;
+  timer;
+  /** While true, a timeout keeps holding (up to MAX_PENDING_BODY_HOLD_MS from the oldest record). */
+  holdWhile = () => false;
+  constructor(release, maxRecords = MAX_PENDING_BODIES, maxBytes = MAX_PENDING_BODY_BYTES, clock = holdClock(PENDING_BODY_TIMEOUT_MS)) {
+    this.release = release;
+    this.maxRecords = maxRecords;
+    this.maxBytes = maxBytes;
+    this.clock = clock;
+    this.timer = new HoldTimer(clock, () => this.onTimeout(), () => this.flushUnattributed());
+  }
+  get size() {
+    return this.entries.length;
+  }
+  get heldBytes() {
+    return this.bytes;
+  }
+  get timerArmed() {
+    return this.timer.armed;
+  }
+  /** Hold `entry`; past the bound the oldest records go out with an unknown id. */
+  push(entry) {
+    this.entries.push({ entry, heldAt: this.clock.now() });
+    this.bytes += sizeOf(entry);
+    while (this.entries.length > 0 && (this.entries.length > this.maxRecords || this.bytes > this.maxBytes)) {
+      const oldest = this.entries.shift();
+      this.bytes -= sizeOf(oldest.entry);
+      this.releaseHeld(oldest, null);
+    }
+    this.timer.sync(this.entries.length > 0);
+  }
+  /** Release every held record in arrival order, each with the id `idOf` reads from its own window. */
+  flush(idOf) {
+    const held = this.entries;
+    this.entries = [];
+    this.bytes = 0;
+    this.timer.cancel();
+    for (const body of held)
+      this.releaseHeld(body, idOf(body.entry.window));
+  }
+  /** Release every held record with an unknown stream id. */
+  flushUnattributed() {
+    this.flush(() => null);
+  }
+  /** Give the held records a fresh timeout (the id source just changed, e.g. the frame hooks went live). */
+  restartTimer() {
+    this.timer.restart(this.entries.length > 0);
+  }
+  releaseHeld(body, streamId) {
+    this.release(body.entry, streamId, Math.max(0, this.clock.now() - body.heldAt));
+  }
+  /** Ms the oldest record may still be held on request of `holdWhile` (0: release now). */
+  extendedHoldMs() {
+    if (this.entries.length === 0 || !this.holdWhile())
+      return 0;
+    return MAX_PENDING_BODY_HOLD_MS - (this.clock.now() - this.entries[0].heldAt);
+  }
+  onTimeout() {
+    const extra = this.extendedHoldMs();
+    if (extra > 0)
+      this.timer.sync(true, Math.min(this.clock.timeoutMs, extra));
+    else
+      this.flushUnattributed();
+  }
+};
+
+// agent/quic/shared/quiche_egress_hold.ts
+init_node_globals();
+var MAX_EGRESS_HELD_CHUNKS = 256;
+var MAX_EGRESS_HELD_SESSIONS = 32;
+var MAX_EGRESS_HELD_BYTES = 1 << 20;
+var EGRESS_HOLD_TIMEOUT_MS = 3e3;
+var MAX_EGRESS_HOLD_MS = 15e3;
+var QuicheEgressHold = class {
+  release;
+  sessions;
+  timer;
+  clock;
+  maxChunks;
+  maxBytes;
+  sizeOf;
+  holdWhile;
+  bytes = 0;
+  constructor(release, options = {}) {
+    this.release = release;
+    this.clock = options.clock ?? holdClock(EGRESS_HOLD_TIMEOUT_MS);
+    this.maxChunks = options.maxChunks ?? MAX_EGRESS_HELD_CHUNKS;
+    this.maxBytes = options.maxBytes ?? MAX_EGRESS_HELD_BYTES;
+    this.sizeOf = options.sizeOf ?? (() => 0);
+    this.holdWhile = options.holdWhile ?? (() => false);
+    this.sessions = new LruMap(options.maxSessions ?? MAX_EGRESS_HELD_SESSIONS, (key, held) => this.releaseSession(key, held, "evicted"));
+    this.timer = new HoldTimer(this.clock, () => this.onTimeout(), () => this.releaseAll("shutdown"));
+  }
+  has(key) {
+    return this.sessions.has(key);
+  }
+  get size() {
+    return this.sessions.size;
+  }
+  get heldBytes() {
+    return this.bytes;
+  }
+  get timerArmed() {
+    return this.timer.armed;
+  }
+  /** Hold `chunk` for `key`; past a budget chunks go out at once. */
+  hold(key, chunk) {
+    const existing = this.sessions.peek(key);
+    const held = existing ?? { chunks: [], bytes: 0, dueAt: this.clock.now() + this.clock.timeoutMs };
+    const size = this.sizeOf(chunk);
+    held.chunks.push({ chunk, heldAt: this.clock.now() });
+    held.bytes += size;
+    this.bytes += size;
+    if (held.chunks.length > this.maxChunks) {
+      this.sessions.delete(key);
+      this.releaseSession(key, held, "budget");
+    } else {
+      if (existing === void 0)
+        this.sessions.set(key, held);
+      this.enforceByteBudget();
+    }
+    this.syncTimer();
+  }
+  /** Remove and return the session's held chunks (its connection resolved). */
+  take(key) {
+    const held = this.sessions.peek(key);
+    if (held === void 0)
+      return [];
+    this.sessions.delete(key);
+    this.bytes -= held.bytes;
+    this.syncTimer();
+    return this.withHeldMs(held);
+  }
+  /** Release every held session. */
+  releaseAll(reason) {
+    while (this.releaseOldest(reason)) {
+    }
+    this.syncTimer();
+  }
+  /** Oldest sessions first (the LRU order) until the held bytes fit. */
+  enforceByteBudget() {
+    while (this.bytes > this.maxBytes && this.releaseOldest("budget")) {
+    }
+  }
+  /** Release the oldest-held session (the LRU order: hold() never promotes); false when none is held. */
+  releaseOldest(reason) {
+    const oldest = this.sessions.oldest();
+    if (oldest === void 0)
+      return false;
+    const [key, held] = oldest;
+    this.sessions.delete(key);
+    this.releaseSession(key, held, reason);
+    return true;
+  }
+  /** Release a session already removed from `sessions`; one failure must not keep the others held. */
+  releaseSession(key, held, reason) {
+    this.bytes -= held.bytes;
+    try {
+      this.release(key, this.withHeldMs(held), reason);
+    } catch (_e) {
+    }
+  }
+  withHeldMs(held) {
+    const now = this.clock.now();
+    return held.chunks.map(({ chunk, heldAt }) => ({ chunk, heldMs: Math.max(0, now - heldAt) }));
+  }
+  /** Earliest due time of a held session, or null when nothing is held. */
+  nextDueAt() {
+    let next = null;
+    for (const [, held] of this.sessions.entries()) {
+      if (next === null || held.dueAt < next)
+        next = held.dueAt;
+    }
+    return next;
+  }
+  /** The timer is due when the first held session is (a new session is never due before an armed timer). */
+  syncTimer() {
+    const next = this.timer.armed ? null : this.nextDueAt();
+    if (this.sessions.size === 0)
+      this.timer.cancel();
+    else if (next !== null)
+      this.timer.sync(true, Math.max(0, next - this.clock.now()));
+  }
+  onTimeout() {
+    const now = this.clock.now();
+    for (const [key, held] of this.sessions.entries()) {
+      if (held.dueAt > now)
+        continue;
+      const extendUntil = held.chunks[0].heldAt + MAX_EGRESS_HOLD_MS;
+      if (now < extendUntil && this.mayResolve(held)) {
+        held.dueAt = Math.min(now + this.clock.timeoutMs, extendUntil);
+        continue;
+      }
+      this.sessions.delete(key);
+      this.releaseSession(key, held, "timeout");
+    }
+    this.syncTimer();
+  }
+  mayResolve(held) {
+    try {
+      return this.holdWhile(held.chunks[0].chunk);
+    } catch (_e) {
+      return false;
+    }
+  }
+};
 
 // agent/quic/shared/quiche_frame_capture.ts
 var FRAME_IN_LABEL = "QuicConnection_OnStreamFrame";
 var FRAME_OUT_LABEL = "QuicSession_WriteStreamData";
-var MAX_DEFERRED_CHUNKS = 256;
-var MAX_DEFERRED_SESSIONS = 32;
+var MAX_LOGGED_UNRESOLVED = 256;
 var frameReassembler = new QuicStreamReassembler();
 var frameCapture = new QuicheConnectionCapture();
-var deferredEgress = new LruMap(MAX_DEFERRED_SESSIONS);
+var deferredEgress = new QuicheEgressHold(releaseHeldEgress, {
+  sizeOf: (f2) => f2.bytes.byteLength,
+  holdWhile: (f2) => isSessionLayoutPending(f2.state)
+});
+var loggedUnresolved = new FifoSet(MAX_LOGGED_UNRESOLVED);
 function recordKey(record) {
   return String(record.message["ssl_session_id"]);
 }
-function streamKey(direction, record) {
-  return `${direction}|${recordKey(record)}|${record.streamId}`;
+function streamKey(direction, ownerKey) {
+  return `${direction}|${ownerKey}`;
 }
-function wantsFragment(record, direction, offset, length, fin) {
-  if (frameCapture.modeOf(recordKey(record)) === "bodies")
+function captureKeys(record, streamId) {
+  return streamFrameKeys(recordKey(record), streamId);
+}
+function fragmentKeys(direction, record) {
+  const keys = captureKeys(record, record.streamId);
+  return { ...keys, stream: streamKey(direction, keys.owner) };
+}
+function wantsFragment(keys, offset, length, fin) {
+  if (!frameCapture.mayReportFrameKeys(keys))
     return false;
-  return fin || frameReassembler.canDeliver(streamKey(direction, record), offset, length);
+  return fin || frameReassembler.canDeliver(keys.stream, offset, length);
 }
 function toArrayBuffer(bytes) {
   const whole = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength;
@@ -41168,14 +48161,15 @@ function copyBytes(at, length) {
   const buf = at.readByteArray(length);
   return buf ? new Uint8Array(buf) : null;
 }
-function emitFragment(record, direction, offset, bytes, fin) {
-  const chunks = frameReassembler.push(streamKey(direction, record), offset, bytes, fin);
+function emitFragment(record, direction, offset, bytes, fin, keys = fragmentKeys(direction, record)) {
+  const chunks = frameReassembler.push(keys.stream, offset, bytes, fin);
   if (chunks.length === 0)
     return;
-  if (frameCapture.onFrame(recordKey(record), record.streamId, chunks[0].offset) !== "frames")
+  const capture = frameCapture.onStreamFrameKeys(keys, chunks[0].offset);
+  if (capture === "bodies")
     return;
   for (const chunk of chunks) {
-    sendQuicDatalog(record.message, toArrayBuffer(chunk.data), record.streamId, void 0, void 0, "udp", void 0, "stream");
+    sendQuicStreamChunk(record.message, toArrayBuffer(chunk.data), record.streamId, { offset: chunk.offset, fin: chunk.fin === true, midstream: capture === "midstream" });
   }
 }
 function connectionRecord(state3, connection, streamId, label, direction, resolvable = true) {
@@ -41187,44 +48181,134 @@ function emitIngressFrame(state3, connection, frame) {
   const streamId = frame.add(STREAM_FRAME_STREAM_ID).readU32();
   const offset = frame.add(STREAM_FRAME_OFFSET).readU64().toNumber();
   const record = connectionRecord(state3, toAddress(connection), streamId, FRAME_IN_LABEL, "read");
-  if (!wantsFragment(record, "read", offset, length, fin))
+  const keys = fragmentKeys("read", record);
+  noteFrameStream(state3, keys);
+  if (!wantsFragment(keys, offset, length, fin))
     return;
   const bytes = copyBytes(length > 0 ? frame.add(STREAM_FRAME_DATA_BUFFER).readPointer() : NULL, length);
   if (bytes)
-    emitFragment(record, "read", offset, bytes, fin);
+    emitFragment(record, "read", offset, bytes, fin, keys);
 }
 function emitEgressWrite(state3, session, write3) {
   const key = session.toString();
-  const connection = sessionConnection(state3, toAddress(session));
-  const resolvable = connection !== null && connection !== 0n && state3.connLayout !== null;
-  const held = deferredEgress.get(key);
-  if (resolvable && held === void 0) {
+  const connection = resolvableConnection(state3, knownConnection(state3, toAddress(session)));
+  if (connection !== null && !deferredEgress.has(key)) {
     const record = connectionRecord(state3, connection, write3.streamId, FRAME_OUT_LABEL, "write");
-    if (!wantsFragment(record, "write", write3.offset, write3.length, false))
+    const keys = fragmentKeys("write", record);
+    noteFrameStream(state3, keys);
+    if (!wantsFragment(keys, write3.offset, write3.length, false))
       return;
     const bytes2 = copyBytes(write3.at, write3.length);
     if (bytes2)
-      emitFragment(record, "write", write3.offset, bytes2, false);
+      emitFragment(record, "write", write3.offset, bytes2, false, keys);
     return;
   }
   const bytes = copyBytes(write3.at, write3.length);
   if (!bytes)
     return;
-  const pending = held ?? [];
-  pending.push({ streamId: write3.streamId, offset: write3.offset, bytes });
-  if (!resolvable && pending.length <= MAX_DEFERRED_CHUNKS) {
-    deferredEgress.set(key, pending);
+  const fragment = { state: state3, session: toAddress(session), streamId: write3.streamId, offset: write3.offset, bytes };
+  if (connection === null) {
+    deferredEgress.hold(key, fragment);
     return;
   }
-  deferredEgress.delete(key);
-  const conn = resolvable ? connection : toAddress(session);
-  for (const f2 of pending) {
-    const record = connectionRecord(state3, conn, f2.streamId, FRAME_OUT_LABEL, "write", resolvable);
+  emitEgressFragments([...deferredEgress.take(key), { chunk: fragment, heldMs: 0 }], connection, true);
+}
+function resolvableConnection(state3, connection) {
+  return connection !== null && state3.connLayout !== null ? connection : null;
+}
+function knownConnection(state3, session) {
+  const connection = sessionConnection(state3, session);
+  return connection !== null && connection !== 0n ? connection : null;
+}
+function emitEgressFragments(fragments, connection, resolvable) {
+  if (fragments.length === 0)
+    return;
+  const first = fragments[0].chunk;
+  const { message } = connectionRecord(first.state, connection, first.streamId, FRAME_OUT_LABEL, "write", resolvable);
+  for (const { chunk: f2, heldMs } of fragments) {
+    const record = { message: { ...message }, streamId: f2.streamId };
+    if (heldMs > 0)
+      record.message.held_ms = Math.round(heldMs);
     emitFragment(record, "write", f2.offset, f2.bytes, false);
   }
 }
+function releaseHeldEgress(key, fragments, reason) {
+  if (fragments.length === 0)
+    return;
+  const { state: state3, session } = fragments[0].chunk;
+  const connection = knownConnection(state3, session);
+  const resolvable = resolvableConnection(state3, connection) !== null;
+  if (!resolvable && !loggedUnresolved.has(key)) {
+    loggedUnresolved.add(key);
+    devlog_debug(`[Google QUICHE] releasing ${fragments.length} held egress chunk(s) of session ${key} with an unresolved connection (${reason})`);
+  }
+  emitEgressFragments(fragments, connection ?? session, resolvable);
+}
+function noteFrameStream(state3, keys) {
+  if (!isUniStream(keys.streamId))
+    streamIdLearner(state3).noteStream(keys.connection, keys.streamId);
+}
 function bodyHookReports(record) {
-  return record.connection !== void 0 && frameCapture.onBody(String(record.message["ssl_session_id"])) === "bodies";
+  if (record.connection === void 0)
+    return false;
+  const streamId = record.streamId ?? null;
+  if (streamId === null || streamId < 0)
+    return frameCapture.onUnknownBodyStream(recordKey(record)) === "bodies";
+  return frameCapture.onBodyStreamKeys(captureKeys(record, streamId)) === "bodies";
+}
+function releasePendingBody(entry, streamId, heldMs) {
+  const message = { ...entry.record.message, held_ms: Math.round(heldMs) };
+  const record = { ...entry.record, message, streamId, pending: void 0 };
+  if (entry.frameHooksLive === false || bodyHookReports(record))
+    sendQuicheBody(record, entry.data);
+}
+function attachBodyQueue(queue, learner) {
+  learner.onLearningSettled = () => queue.flush((window) => learner.streamIdFromWindow(window));
+  queue.holdWhile = () => isStreamIdPending(learner.learning);
+  return queue;
+}
+function awaitFrameHookOutcome(learner, install2, queueOf) {
+  learner.awaitOracle();
+  const settle = (hooked) => {
+    try {
+      if (hooked) {
+        learner.enableOracle();
+        queueOf()?.restartTimer();
+        return;
+      }
+      if (learner.learning !== "awaiting")
+        return;
+      learner.oracleUnavailable();
+      queueOf()?.flush(legacyStreamIdFromWindow);
+    } catch (e) {
+      devlog_error(`[Google QUICHE] releasing held bodies failed: ${e}`);
+    }
+  };
+  install2.then(settle, () => settle(false));
+}
+function awaitQuicheFrameHooks(moduleName, install2) {
+  const state3 = quicheLayoutState(moduleName);
+  if (state3)
+    awaitFrameHookOutcome(streamIdLearner(state3), install2, () => state3.bodyQueue);
+}
+function bodyQueue(state3) {
+  if (state3.bodyQueue === void 0) {
+    const queue = attachBodyQueue(new QuicheBodyQueue(releasePendingBody), streamIdLearner(state3));
+    state3.bodyQueue = queue;
+  }
+  return state3.bodyQueue;
+}
+function reportQuicheBody(record, data, frameHooksLive) {
+  if (record.pending !== void 0) {
+    if (frameHooksLive && frameCapture.modeOf(recordKey(record)) === "frames")
+      return;
+    const { state: state3, window } = record.pending;
+    bodyQueue(state3).push({ record, data, window: window(), frameHooksLive });
+    return;
+  }
+  if (frameHooksLive && !bodyHookReports(record))
+    return;
+  sendQuicheBody(record, data);
 }
 function onStreamFrameListener(state3) {
   const crumb = `QuicConnection::OnStreamFrame (${state3.moduleName})`;
@@ -41308,8 +48392,134 @@ async function installQuicheFrameHooks(moduleName) {
     devlog_error(`[Google QUICHE] failed to hook the STREAM-frame boundary in ${moduleName}: ${e}`);
     return false;
   }
+  streamIdLearner(state3).enableOracle();
   log(`[*] Hooked QuicConnection::OnStreamFrame + QuicSession::WriteStreamData in ${moduleName} (raw HTTP/3 streams: request/response headers via QPACK, bodies, control streams)`);
+  installQuicheCryptoBinding(moduleName, state3, api3.onCryptoFrame, api3.cryptoConnect);
   return true;
+}
+
+// agent/quic/shared/quiche_frame_hook_gate.ts
+init_node_globals();
+var FrameHookGate = class {
+  frameHooked = false;
+  outcome;
+  constructor(install2) {
+    this.outcome = install2.then((hooked) => {
+      this.frameHooked = hooked;
+      return hooked;
+    });
+    this.outcome.catch(() => void 0);
+  }
+  /** True once the frame hooks are live; false while pending, failed or rejected. */
+  get hooked() {
+    return this.frameHooked;
+  }
+  /** The final install outcome (rejects when the install rejected). */
+  settled() {
+    return this.outcome;
+  }
+};
+
+// agent/quic/shared/quiche_symbol_resolution.ts
+init_node_globals();
+var LEARNED_QUICHE_PREFIX = "quiche";
+function safeItemSegment(key) {
+  return key.replace(/[^A-Za-z0-9_]/g, "_");
+}
+function learnedQuicheName(key) {
+  return `${LEARNED_QUICHE_PREFIX}.${safeItemSegment(key)}`;
+}
+function learnedQuicheMissName(key) {
+  return learnedMissName(learnedQuicheName(key));
+}
+function fillMissing(resolved, learned, found) {
+  found.forEach((addr, key) => {
+    if (resolved.has(key) || addr.isNull())
+      return;
+    resolved.set(key, addr);
+    learned.set(key, addr);
+  });
+}
+function consultCache(mod, keys, sources) {
+  const hits = /* @__PURE__ */ new Map();
+  const knownMisses = /* @__PURE__ */ new Set();
+  if (mod === null)
+    return { hits, knownMisses };
+  for (const key of keys) {
+    if (sources.hasUserOffset(key))
+      continue;
+    const addr = learnedFunction(mod, learnedQuicheName(key));
+    if (addr !== null)
+      hits.set(key, addr);
+    else if (hasLearnedMiss(mod, learnedQuicheMissName(key), sources.missFingerprint(key)))
+      knownMisses.add(key);
+  }
+  if (knownMisses.size > 0) {
+    devlog_debug(`[Google QUICHE] ${mod.name}: learned cache records no ${[...knownMisses].join(", ")} in this build; not scanned`);
+  }
+  return { hits, knownMisses };
+}
+function reportScanResults(mod, learned, misses, scan, sources) {
+  if (mod === null)
+    return;
+  if (learned.size > 0) {
+    const functions = {};
+    learned.forEach((addr, key) => {
+      functions[learnedQuicheName(key)] = addr;
+    });
+    reportLearned(mod, { functions });
+  }
+  reportLearnedMisses(mod, Object.fromEntries(misses.map((key) => [learnedQuicheMissName(key), sources.missFingerprint(key)])), scan);
+}
+function withMemoizedFingerprint(sources) {
+  const memo = /* @__PURE__ */ new Map();
+  return {
+    ...sources,
+    missFingerprint: (key) => {
+      if (!memo.has(key))
+        memo.set(key, sources.missFingerprint(key));
+      return memo.get(key);
+    }
+  };
+}
+async function resolveQuicheSymbolsWith(mod, keys, sources) {
+  sources = withMemoizedFingerprint(sources);
+  const resolved = /* @__PURE__ */ new Map();
+  for (const key of keys) {
+    const addr = sources.exported(key);
+    if (addr !== null && !addr.isNull())
+      resolved.set(key, addr);
+  }
+  const { hits, knownMisses } = consultCache(mod, keys.filter((k) => !resolved.has(k)), sources);
+  hits.forEach((addr, key) => resolved.set(key, addr));
+  const toScan = () => keys.filter((k) => !resolved.has(k) && !knownMisses.has(k));
+  const learned = /* @__PURE__ */ new Map();
+  const scan = { complete: true };
+  if (toScan().length > 0) {
+    const symtab = sources.symtab(toScan());
+    fillMissing(resolved, learned, symtab.found);
+    scan.complete = symtab.complete;
+  }
+  if (toScan().length > 0) {
+    try {
+      const patterns2 = await sources.patterns(toScan());
+      fillMissing(resolved, learned, patterns2.found);
+      scan.complete = scan.complete && patterns2.complete;
+    } catch (e) {
+      scan.complete = false;
+      devlog_debug(`[Google QUICHE] pattern strategy failed: ${e}`);
+    }
+  }
+  const misses = toScan();
+  for (const key of keys.filter((k) => !resolved.has(k))) {
+    const addr = sources.userOffset(key);
+    if (addr === null)
+      continue;
+    resolved.set(key, addr);
+    devlog(`[Google QUICHE] applied --offsets entry for ${key}`);
+  }
+  reportScanResults(mod, learned, misses, scan, sources);
+  return { resolved, fromCache: hits.size };
 }
 
 // agent/quic/definitions/google_quiche.ts
@@ -41542,10 +48752,10 @@ function readIovec(iovPtr, iovLen, maxBytes) {
     return parts[0];
   const totalLen = maxBytes - remaining;
   const result = new ArrayBuffer(totalLen);
-  const view = new Uint8Array(result);
+  const view3 = new Uint8Array(result);
   let offset = 0;
   for (const part of parts) {
-    view.set(new Uint8Array(part), offset);
+    view3.set(new Uint8Array(part), offset);
     offset += part.byteLength;
   }
   return result;
@@ -41857,74 +49067,89 @@ function dumpHits(linePrefix, hits, maxShown, render) {
     devlog_debug(`[chain-debug]    ${linePrefix}: ... and ${hits.length - shown.length} more`);
   }
 }
+function exportedQuicheSymbol(mod, moduleName, key) {
+  if (!mod)
+    return null;
+  try {
+    const addr = mod.findExportByName(getMangledSymbol(key));
+    if (addr && !addr.isNull()) {
+      devlog("[Google QUICHE] found " + key + " via symbol export in " + moduleName);
+      return addr;
+    }
+  } catch (_e) {
+  }
+  return null;
+}
+function symtabQuicheSymbols(moduleName, keys) {
+  const found = /* @__PURE__ */ new Map();
+  const status = { complete: true };
+  const symResults = findNonExportedSymbols(moduleName, keys.map(getMangledSymbol), status);
+  for (const key of keys) {
+    const addr = symResults.get(getMangledSymbol(key));
+    if (addr && !addr.isNull()) {
+      devlog("[Google QUICHE] found " + key + " via symbol table in " + moduleName);
+      found.set(key, addr);
+    }
+  }
+  return { found, complete: status.complete };
+}
+async function patternQuicheSymbols(strategy, moduleName, keys) {
+  const found = /* @__PURE__ */ new Map();
+  if (!strategy)
+    throw new Error("no patterns loaded");
+  const labels = keys.map((k) => KEY_TO_LABEL[k]).filter(Boolean);
+  const status = { complete: true };
+  const res = await strategy.tryHookAsync(moduleName, "google_quiche", labels, status);
+  res.resolvedAddresses.forEach((addr, label) => {
+    const key = LABEL_TO_KEY[label];
+    if (key && keys.includes(key) && !found.has(key)) {
+      found.set(key, addr);
+      devlog(`[Google QUICHE] found ${key} via pattern in ${moduleName}`);
+    }
+  });
+  return { found, complete: status.complete };
+}
+function userQuicheOffsetEntry(key) {
+  if (offsets === "{OFFSETS}" || !offsets.google_quiche)
+    return null;
+  return offsets.google_quiche[KEY_TO_LABEL[key]] || null;
+}
+function userQuicheOffset(mod, key) {
+  const entry = userQuicheOffsetEntry(key);
+  if (!entry)
+    return null;
+  const a = ptr(entry.address);
+  return entry.absolute || mod === null ? a : mod.base.add(a);
+}
+function quicheMissFingerprinter(strategy, moduleName) {
+  return (key) => {
+    const patterns2 = strategy ? strategy.patternsFor(moduleName, "google_quiche", KEY_TO_LABEL[key]) : [];
+    return missFingerprint(["symbols", ...Object.values(MANGLED_SYMBOLS[key]), "patterns", ...patterns2]);
+  };
+}
+function quicheSymbolSources(mod, moduleName) {
+  const parsed = getParsedPatterns();
+  const strategy = parsed ? new PatternStrategy(parsed) : null;
+  return {
+    exported: (key) => exportedQuicheSymbol(mod, moduleName, key),
+    symtab: (keys) => symtabQuicheSymbols(moduleName, keys),
+    patterns: (keys) => patternQuicheSymbols(strategy, moduleName, keys),
+    userOffset: (key) => userQuicheOffset(mod, key),
+    hasUserOffset: (key) => userQuicheOffsetEntry(key) !== null,
+    missFingerprint: quicheMissFingerprinter(strategy, moduleName)
+  };
+}
 async function resolveQuicheSymbols(moduleName) {
-  const resolved = /* @__PURE__ */ new Map();
-  const keys = Object.keys(MANGLED_SYMBOLS);
-  const remaining = [];
+  const startedAt = Date.now();
   let mod = null;
   try {
     mod = Process.findModuleByName(moduleName);
   } catch (_e) {
   }
-  for (const key of keys) {
-    const mangledName = getMangledSymbol(key);
-    if (mod) {
-      try {
-        const addr = mod.findExportByName(mangledName);
-        if (addr && !addr.isNull()) {
-          devlog("[Google QUICHE] found " + key + " via symbol export in " + moduleName);
-          resolved.set(key, addr);
-          continue;
-        }
-      } catch (_e) {
-      }
-    }
-    remaining.push(key);
-  }
-  if (remaining.length === 0)
-    return resolved;
-  const symResults = findNonExportedSymbols(moduleName, remaining.map(getMangledSymbol));
-  for (const key of remaining) {
-    const addr = symResults.get(getMangledSymbol(key));
-    if (addr && !addr.isNull()) {
-      devlog("[Google QUICHE] found " + key + " via symbol table in " + moduleName);
-      resolved.set(key, addr);
-    }
-  }
-  let missing = Object.keys(MANGLED_SYMBOLS).filter((k) => !resolved.has(k));
-  if (missing.length > 0) {
-    const parsed = getParsedPatterns();
-    if (parsed) {
-      const labels = missing.map((k) => KEY_TO_LABEL[k]).filter(Boolean);
-      try {
-        const ps = new PatternStrategy(parsed);
-        const res = await ps.tryHookAsync(moduleName, "google_quiche", labels);
-        res.resolvedAddresses.forEach((addr, label) => {
-          const key = LABEL_TO_KEY[label];
-          if (key && !resolved.has(key)) {
-            resolved.set(key, addr);
-            devlog(`[Google QUICHE] found ${key} via pattern in ${moduleName}`);
-          }
-        });
-      } catch (e) {
-        devlog_debug(`[Google QUICHE] pattern strategy failed: ${e}`);
-      }
-    }
-  }
-  missing = Object.keys(MANGLED_SYMBOLS).filter((k) => !resolved.has(k));
-  if (missing.length > 0 && offsets !== "{OFFSETS}" && offsets.google_quiche) {
-    const base = getBaseAddress(moduleName);
-    const gq = offsets.google_quiche;
-    for (const k of missing) {
-      const entry = gq[KEY_TO_LABEL[k]];
-      if (!entry)
-        continue;
-      const a = ptr(entry.address);
-      resolved.set(k, entry.absolute || base == null ? a : base.add(a));
-      devlog(`[Google QUICHE] applied offset for ${k} in ${moduleName}`);
-    }
-  }
-  await dumpChainCandidatesDebug(moduleName, resolved);
+  const keys = Object.keys(MANGLED_SYMBOLS);
+  const { resolved, fromCache } = await resolveQuicheSymbolsWith(mod, keys, quicheSymbolSources(mod, moduleName));
+  devlog_debug(`[Google QUICHE] ${moduleName}: symbols resolved in ${Date.now() - startedAt} ms (${fromCache} from learned cache)`);
+  dumpChainCandidatesDebug(moduleName, resolved).catch((e) => devlog_debug(`[chain-debug] enumeration failed in ${moduleName}: ${e}`));
   return resolved;
 }
 async function installGoogleQuicheHooks(moduleName) {
@@ -41932,10 +49157,9 @@ async function installGoogleQuicheHooks(moduleName) {
     return false;
   log("[*] Google QUICHE: attempting to hook QuicSpdyStream in " + moduleName);
   installQuicSocketObserver();
-  const [frameHooked, resolved] = await Promise.all([
-    quic_capture_mode !== "app-api" ? installQuicheFrameHooks(moduleName) : Promise.resolve(false),
-    resolveQuicheSymbols(moduleName)
-  ]);
+  const frameGate = new FrameHookGate(quic_capture_mode !== "app-api" ? installQuicheFrameHooks(moduleName) : Promise.resolve(false));
+  awaitQuicheFrameHooks(moduleName, frameGate.settled());
+  const resolved = await resolveQuicheSymbols(moduleName);
   const readvAddr = resolved.get("readv") || null;
   const quicStreamReadvAddr = resolved.get("quicStreamReadv") || null;
   const sequencerReadvAddr = resolved.get("sequencerReadv") || null;
@@ -41977,7 +49201,7 @@ async function installGoogleQuicheHooks(moduleName) {
     log(`[*] Google QUICHE: --quic-egress-headers-layer=${requestedLayer} (forced; other egress-headers layers will NOT be installed even if their patterns resolve)`);
   }
   const hasAnyResolvedAddress = !!(readvAddr || writeAddr || quicStreamReadvAddr || sequencerReadvAddr || onDataFramePayloadAddr || onHeadersDecodedAddr || writeHeadersAddr || chromiumWriteHeadersAddr || sessionWriteHeadersOnHeadersStreamAddr);
-  if (!hasAnyResolvedAddress && frameHooked)
+  if (!hasAnyResolvedAddress && await frameGate.settled())
     return true;
   if (!hasAnyResolvedAddress) {
     devlog("[Google QUICHE] could not resolve any stream functions in " + moduleName);
@@ -41988,23 +49212,6 @@ async function installGoogleQuicheHooks(moduleName) {
     return false;
   }
   log(`[*] Google QUICHE: quic_capture_mode = "${quic_capture_mode}"`);
-  if (quic_capture_mode !== "app-api" && !frameHooked) {
-    const readvTargets = [
-      [readvAddr, "QuicSpdyStream_Readv", "QuicSpdyStream::Readv", "stream"],
-      [quicStreamReadvAddr, "QuicStream_Readv", "QuicStream::Readv", "stream"],
-      [sequencerReadvAddr, "QuicStreamSequencer_Readv", "QuicStreamSequencer::Readv", "sequencer"]
-    ];
-    for (const [addr, label, prettyName, kind] of readvTargets) {
-      if (!addr || addr.isNull())
-        continue;
-      try {
-        installReadvHook(addr, label, moduleName, kind);
-        log(`[*] Hooked ${prettyName} for plaintext capture`);
-      } catch (e) {
-        devlog_error(`[Google QUICHE] failed to hook ${prettyName}: ${e}`);
-      }
-    }
-  }
   if (onDataFramePayloadAddr && !onDataFramePayloadAddr.isNull()) {
     try {
       const breadcrumb = `QuicSpdyStream::OnDataFramePayload (${moduleName})`;
@@ -42027,9 +49234,7 @@ async function installGoogleQuicheHooks(moduleName) {
             if (!data)
               return;
             const record = resolveQuicheRecord(moduleName, args[0], "decoder-visitor", "QuicSpdyStream_OnDataFramePayload");
-            if (frameHooked && !bodyHookReports(record))
-              return;
-            sendQuicheBody(record, data);
+            reportQuicheBody(record, data, frameGate.hooked);
           } catch (e) {
             devlog_error("[QuicSpdyStream_OnDataFramePayload] onEnter threw: " + e);
           }
@@ -42263,14 +49468,30 @@ async function installGoogleQuicheHooks(moduleName) {
           if (!this.data || this.dataLen === 0)
             return;
           const record = resolveQuicheRecord(moduleName, this.streamObj, "stream", "QuicSpdyStream_WriteOrBufferBody", "write");
-          if (frameHooked && !bodyHookReports(record))
-            return;
-          sendQuicheBody(record, this.data);
+          reportQuicheBody(record, this.data, frameGate.hooked);
         }
       });
       log("[*] Hooked QuicSpdyStream::WriteOrBufferBody for plaintext capture");
     } catch (e) {
       devlog_error("[Google QUICHE] failed to hook WriteOrBufferBody: " + e);
+    }
+  }
+  const frameHooked = await frameGate.settled();
+  if (quic_capture_mode !== "app-api" && !frameHooked) {
+    const readvTargets = [
+      [readvAddr, "QuicSpdyStream_Readv", "QuicSpdyStream::Readv", "stream"],
+      [quicStreamReadvAddr, "QuicStream_Readv", "QuicStream::Readv", "stream"],
+      [sequencerReadvAddr, "QuicStreamSequencer_Readv", "QuicStreamSequencer::Readv", "sequencer"]
+    ];
+    for (const [addr, label, prettyName, kind] of readvTargets) {
+      if (!addr || addr.isNull())
+        continue;
+      try {
+        installReadvHook(addr, label, moduleName, kind);
+        log(`[*] Hooked ${prettyName} for plaintext capture`);
+      } catch (e) {
+        devlog_error(`[Google QUICHE] failed to hook ${prettyName}: ${e}`);
+      }
     }
   }
   if (quic_capture_mode === "app-api") {
@@ -42442,7 +49663,7 @@ function createNeqoConnNewHook() {
               dcid: ""
             };
             quicConnectionTracker.register(connKey, info);
-            sendConnectionLifecycle("created", buildQuicMessage(info, connKey, "neqo_http3conn_new"));
+            sendQuicConnectionLifecycle("created", buildQuicMessage(info, connKey, "neqo_http3conn_new"));
           } catch (e) {
             devlog("[neqo] failed to register connection: " + e);
           }
@@ -42488,7 +49709,7 @@ function createNeqoReadResponseHook() {
             sendQuicDatalog(message, data, this.streamId, connInfo.scid, connInfo.dcid);
             if (this.finPtr && !this.finPtr.isNull()) {
               if (this.finPtr.readU8() !== 0) {
-                sendConnectionLifecycle("stream_fin", {
+                sendQuicConnectionLifecycle("stream_fin", {
                   ...message,
                   stream_id: this.streamId
                 });
@@ -42582,7 +49803,7 @@ function createNeqoCloseHook() {
           const connKey = args[0].toString();
           const info = quicConnectionTracker.remove(connKey);
           if (info) {
-            sendConnectionLifecycle("destroyed", buildQuicMessage(info, connKey, "neqo_http3conn_close"));
+            sendQuicConnectionLifecycle("destroyed", buildQuicMessage(info, connKey, "neqo_http3conn_close"));
           }
         }
       });
@@ -42680,14 +49901,14 @@ function findGoBuildInfoMagic(bytes) {
   return -1;
 }
 function parsePeSections(headers) {
-  const view = new DataView(headers.buffer, headers.byteOffset, headers.byteLength);
-  if (headers.length < 64 || view.getUint16(0, true) !== 23117)
+  const view3 = new DataView(headers.buffer, headers.byteOffset, headers.byteLength);
+  if (headers.length < 64 || view3.getUint16(0, true) !== 23117)
     return null;
-  const nt = view.getUint32(60, true);
-  if (nt + 24 > headers.length || view.getUint32(nt, true) !== 17744)
+  const nt = view3.getUint32(60, true);
+  if (nt + 24 > headers.length || view3.getUint32(nt, true) !== 17744)
     return null;
-  const count = view.getUint16(nt + 6, true);
-  const optionalHeaderSize = view.getUint16(nt + 20, true);
+  const count = view3.getUint16(nt + 6, true);
+  const optionalHeaderSize = view3.getUint16(nt + 20, true);
   const table = nt + 24 + optionalHeaderSize;
   const sections = [];
   for (let i = 0; i < count; i++) {
@@ -42697,7 +49918,7 @@ function parsePeSections(headers) {
     let name = "";
     for (let j = 0; j < 8 && headers[entry + j] !== 0; j++)
       name += String.fromCharCode(headers[entry + j]);
-    sections.push({ name, virtualSize: view.getUint32(entry + 8, true), virtualAddress: view.getUint32(entry + 12, true) });
+    sections.push({ name, virtualSize: view3.getUint32(entry + 8, true), virtualAddress: view3.getUint32(entry + 12, true) });
   }
   return sections;
 }
@@ -42759,6 +49980,150 @@ function isGoModule(moduleName) {
 }
 var GO_LINUX_NAMED_MODULE = /(\.go.so|go[0-9.]+)$/;
 
+// agent/shared/chromium_boringssl.ts
+init_node_globals();
+var CHROMIUM_BORINGSSL_MODULES = [
+  /^libcef\.dll$/i,
+  /^chrome\.dll$/i,
+  /^msedge\.dll$/i,
+  /^Qt[56]WebEngineCore\.dll$/i
+];
+var ELECTRON_EXE_MIN_SIZE = 64 * 1024 * 1024;
+var started = /* @__PURE__ */ new Set();
+function chromium_boringssl_execute(moduleName, winePe = false) {
+  if (!keylog_enabled)
+    return;
+  const key = moduleName.toLowerCase();
+  if (started.has(key))
+    return;
+  started.add(key);
+  if (winePe)
+    setModuleCallAbi(moduleName, "win64");
+  log(`[*] ${moduleName}: Chromium-embedded BoringSSL \u2014 locating ssl_log_secret via keylog-label xrefs`);
+  void onAllKeylogTiersMissed(moduleName, makeBoringSslDumpKeys(moduleName), {
+    detail: "Chromium-embedded BoringSSL (no exports/symbols; anchor locator only)",
+    pairipDisabled: false
+  });
+}
+function chromium_boringssl_hook(winePe) {
+  return (moduleName) => chromium_boringssl_execute(moduleName, winePe);
+}
+function hookElectronStyleExecutables(images, winePe) {
+  if (!keylog_enabled || !isTlsFamilyRequested())
+    return;
+  for (const m2 of images) {
+    if (!/\.exe$/i.test(m2.name) || m2.size < ELECTRON_EXE_MIN_SIZE)
+      continue;
+    const key = m2.name.toLowerCase();
+    if (!keylog_enabled || started.has(key))
+      continue;
+    started.add(key);
+    if (winePe)
+      setModuleCallAbi(m2.name, "win64");
+    devlog(`[chromium] ${m2.name}: large executable (${(m2.size / (1024 * 1024)).toFixed(0)} MB); checking for embedded BoringSSL`);
+    startTier4Once(m2.name, makeBoringSslDumpKeys(m2.name), "Electron-style executable");
+  }
+}
+function hookMappedChromiumPeImages() {
+  if (!keylog_enabled || !isTlsFamilyRequested())
+    return;
+  const images = listPeImages();
+  for (const m2 of images) {
+    if (CHROMIUM_BORINGSSL_MODULES.some((re) => re.test(m2.name)))
+      chromium_boringssl_execute(m2.name, true);
+  }
+  hookElectronStyleExecutables(images, true);
+}
+
+// agent/tls/platforms/macos/chromium_plaintext_macos.ts
+init_node_globals();
+
+// agent/tls/shared/chromium_plaintext.ts
+init_node_globals();
+var installedModules2 = /* @__PURE__ */ new Set();
+var NO_MODIFICATIONS = { readmod: null, writemod: null };
+var STOCK_BORINGSSL_LAYOUT = { s3Off: 48, crOff: 48, source: "stock", validated: false };
+function installStockSslLayout(moduleName) {
+  if (Process.pointerSize !== 8 || sslLayoutFor(moduleName) !== null)
+    return;
+  setSslLayout(moduleName, STOCK_BORINGSSL_LAYOUT);
+}
+function prepareSslLayout(moduleName) {
+  installStockSslLayout(moduleName);
+  prefetchSslLayout(moduleName, "chromium-install");
+}
+function chromiumPlaintextHost(moduleName, socketLibrary, isBaseHook) {
+  let addresses = { [moduleName]: {} };
+  try {
+    addresses = readAddresses(moduleName, {
+      [`*${socketLibrary}*`]: ["getpeername", "getsockname", "ntohs", "ntohl"]
+    });
+  } catch (e) {
+    devlog(`[Chromium plaintext] ${moduleName}: socket helpers not resolved: ${e}`);
+  }
+  return {
+    moduleName,
+    module_name: moduleName,
+    is_base_hook: isBaseHook,
+    addresses,
+    // No fd on Chrome's SSL objects: always take the deferred (SSL-scoped) path.
+    SSL_get_fd: fdLessSslGetFd,
+    SSL_get_session: null,
+    SSL_SESSION_get_id: sessionlessSslSessionGetId,
+    getSslSessionId: (_ssl) => "",
+    fdLess: true
+  };
+}
+function attachChromiumPlaintextHooks(hooks, api3) {
+  if (api3.sslRead)
+    hooks.attachRead(api3.sslRead);
+  if (api3.sslWrite)
+    hooks.attachWrite(api3.sslWrite);
+}
+var SOURCE_DESCRIPTION = {
+  offsets: "from --offsets",
+  learned: "from the learned-offset cache",
+  locator: "located via ssl_lib.cc error-site anchors"
+};
+function describeSource(api3) {
+  if (api3.source !== "mixed")
+    return SOURCE_DESCRIPTION[api3.source];
+  const part = (fn) => `${fn} ${api3.sources[fn] ? SOURCE_DESCRIPTION[api3.sources[fn]] : "unresolved"}`;
+  return `${part("SSL_read")}, ${part("SSL_write")}`;
+}
+async function installChromiumPlaintextHooks(moduleName, socketLibrary, isBaseHook) {
+  if (!pcap_enabled || installedModules2.has(moduleName))
+    return false;
+  installedModules2.add(moduleName);
+  try {
+    const mod = Process.findModuleByName(moduleName);
+    if (!mod)
+      return false;
+    if (exportsSslRecordApi(mod)) {
+      devlog(`[Chromium plaintext] ${moduleName}: SSL_read/SSL_write are exported; left to the export-based hooks`);
+      return false;
+    }
+    const api3 = await resolveBoringSslPlaintext(mod);
+    if (!api3)
+      return false;
+    const hooks = new SslPlaintextHooks(chromiumPlaintextHost(moduleName, socketLibrary, isBaseHook), NO_MODIFICATIONS, false);
+    prepareSslLayout(moduleName);
+    attachChromiumPlaintextHooks(hooks, api3);
+    hooks.installScopeHooks();
+    log(`[*] ${moduleName}: hooked statically linked BoringSSL for TCP TLS plaintext (${describeLocated(mod, api3)}; ${describeSource(api3)})`);
+    return true;
+  } catch (e) {
+    devlog(`[Chromium plaintext] ${moduleName}: install failed: ${e}`);
+    return false;
+  }
+}
+function chromiumPlaintextExecutor(socketLibrary) {
+  return (moduleName, isBaseHook) => pcap_enabled ? installChromiumPlaintextHooks(moduleName, socketLibrary(), isBaseHook) : false;
+}
+
+// agent/tls/platforms/macos/chromium_plaintext_macos.ts
+var chromium_plaintext_execute = chromiumPlaintextExecutor(() => socket_library3);
+
 // agent/platforms/macos.ts
 var plattform_name = PLATFORM_DARWIN;
 var socket_library3 = "libSystem.B.dylib";
@@ -42810,6 +50175,12 @@ function load_macos_hooking_agent() {
     // omits SSL_CTX_set_keylog_callback, so only legacy's ssl_log_secret
     // byte-pattern works. cronet_execute_modern kept imported for a future fix.
     { platform: plattform_name, pattern: /.*cronet.*\.dylib/, hookFn: cronet_execute2, library: "Cronet", libraryType: "boringssl", protocol: "tls" },
+    // Chrome / Electron frameworks: stripped, statically linked BoringSSL with no
+    // keylog export, so keys come from the tier-4 ssl_log_secret anchor locator
+    // (same executor as the Windows Chromium rows). Tree-independent.
+    { platform: plattform_name, pattern: CHROMIUM_FRAMEWORK_MODULE_PATTERN, hookFn: chromium_boringssl_hook(false), library: "BoringSSL (Chromium Framework)", libraryType: "boringssl", protocol: "tls" },
+    // TCP TLS plaintext for the same frameworks via the ssl_lib.cc locator; keys stay with the row above.
+    { platform: plattform_name, pattern: CHROMIUM_FRAMEWORK_MODULE_PATTERN, hookFn: chromium_plaintext_execute, library: "BoringSSL plaintext (Chromium Framework)", protocol: "tls", supplementary: true },
     { platform: plattform_name, pattern: /.*libnss[0-9]*\.dylib/, hookFn: use_modern ? nss_execute_modern2 : nss_execute2, library: "NSS", libraryType: "nss", protocol: "tls" },
     // GnuTLS (Homebrew libgnutls.30.dylib); not libgnutlsxx, the C++ wrapper over it.
     { platform: plattform_name, pattern: /.*libgnutls(\.[0-9]+)*\.dylib/, hookFn: use_modern ? gnutls_execute_modern2 : gnutls_execute3, library: "GnuTLS", libraryType: "gnutls", protocol: "tls" },
@@ -42824,7 +50195,7 @@ function load_macos_hooking_agent() {
     { platform: plattform_name, pattern: /.*libnss[0-9]*\.dylib/, hookFn: nss_hpke_execute_macos, library: "NSS HPKE (OHTTP)", protocol: "tls", libraryType: "nss_hpke" },
     // QUIC libraries — gated under the TLS family for `--protocol tls`
     { platform: plattform_name, pattern: /.*libquiche\.dylib/, hookFn: quiche_execute, library: "Cloudflare QUICHE", libraryType: "quiche", protocol: "tls" },
-    { platform: plattform_name, pattern: /Google Chrome Framework/, hookFn: google_quiche_execute, library: "Google QUICHE (Chrome)", libraryType: "google_quiche", protocol: "tls", supplementary: true },
+    { platform: plattform_name, pattern: CHROMIUM_FRAMEWORK_MODULE_PATTERN, hookFn: google_quiche_execute, library: "Google QUICHE (Chrome)", libraryType: "google_quiche", protocol: "tls", supplementary: true },
     // Neqo (Firefox HTTP/3) — module is "XUL" at /Applications/Firefox.app/Contents/MacOS/XUL
     { platform: plattform_name, pattern: /^XUL$/, hookFn: neqo_execute, library: "Mozilla Neqo (Firefox HTTP/3)", libraryType: "neqo", protocol: "tls", supplementary: true },
     // Hooks contributed by optional units (e.g. the public RC4 key-capture
@@ -43535,54 +50906,7 @@ var NSS_Linux = class extends NSS {
     this.install_tls_keys_callback_hook();
   }
   install_tls_keys_callback_hook() {
-    NSS.detectVersionOffsets();
-    NSS.resolveExperimentalAPI();
-    NSS.getDescType = new NativeFunction(this.addresses[this.module_name]["PR_GetDescType"], "int", ["pointer"]);
-    NSS.PR_GetNameForIdentity = new NativeFunction(this.addresses[this.module_name]["PR_GetNameForIdentity"], "pointer", ["pointer"]);
-    NSS.get_SSL_Callback = new NativeFunction(this.addresses[this.module_name]["SSL_HandshakeCallback"], "int", ["pointer", "pointer", "pointer"]);
-    NSS.PK11_ExtractKeyValue = new NativeFunction(this.addresses[this.module_name]["PK11_ExtractKeyValue"], "int", ["pointer"]);
-    NSS.PK11_GetKeyData = new NativeFunction(this.addresses[this.module_name]["PK11_GetKeyData"], "pointer", ["pointer"]);
-    Interceptor.attach(this.addresses[this.module_name]["SSL_ImportFD"], {
-      onEnter(args) {
-        this.fd = args[1];
-      },
-      onLeave(retval) {
-        if (retval.isNull()) {
-          devlog("[-] SSL_ImportFD error: unknow null");
-          return;
-        }
-        var retValue = NSS.get_SSL_Callback(retval, NSS.keylog_callback, NULL);
-        NSS.register_secret_callback(retval);
-        if (retValue < 0) {
-          devlog("Callback Error");
-          var getErrorText = new NativeFunction(Process.getModuleByName("libnspr4.so").getExportByName("PR_GetErrorText"), "int", ["pointer"]);
-          var outbuffer = Memory.alloc(200);
-          devlog("typeof outbuffer: " + typeof outbuffer);
-          devlog("outbuffer: " + outbuffer);
-          getErrorText(outbuffer.readPointer());
-          devlog("Error msg: " + outbuffer);
-        } else {
-          devlog("[*] NSS keylog callback successfull installed");
-        }
-      }
-    });
-    Interceptor.attach(this.addresses[this.module_name]["SSL_HandshakeCallback"], {
-      onEnter(args) {
-        this.originalCallback = args[1];
-        Interceptor.attach(ptr(this.originalCallback), {
-          onEnter(args2) {
-            var sslSocketFD = args2[0];
-            devlog("[*] keylog callback successfull installed via applications callback function");
-            NSS.ssl_RecordKeyLog(sslSocketFD);
-          },
-          onLeave(retval) {
-          }
-        });
-      },
-      onLeave(retval) {
-      }
-    });
-    NSS.installSecretCallbackInterceptor();
+    void installLegacyNssKeyExtraction(this.module_name, this.addresses[this.module_name]);
   }
 };
 function nss_execute3(moduleName, is_base_hook) {
@@ -45846,304 +53170,14 @@ async function google_quiche_execute3(moduleName, _is_base_hook) {
 
 // agent/tls/platforms/android/chromium_plaintext_android.ts
 init_node_globals();
-
-// agent/tls/shared/chromium_plaintext.ts
-init_node_globals();
-
-// agent/tls/shared/boringssl_plaintext_locator.ts
-init_node_globals();
-var ERR_LIB_SSL = 16;
-var SSL_REASON = {
-  SHOULD_NOT_HAVE_BEEN_CALLED: 66,
-  // ERR_R_SHOULD_NOT_HAVE_BEEN_CALLED
-  BAD_LENGTH: 111,
-  // SSL_R_BAD_LENGTH
-  SSL_HANDSHAKE_FAILURE: 215,
-  // SSL_R_SSL_HANDSHAKE_FAILURE
-  UNINITIALIZED: 226
-  // SSL_R_UNINITIALIZED
-};
-var REASON_WINDOW_AFTER = 10;
-var REASON_WINDOW_BEFORE = 6;
-function decodeErrorReason(words, at) {
-  const lo = Math.max(0, at - REASON_WINDOW_BEFORE);
-  const hi = Math.min(words.length, at + REASON_WINDOW_AFTER + 1);
-  let isSslLib = false;
-  for (let i = lo; i < hi; i++)
-    if (movzW(words[i], 0) === ERR_LIB_SSL)
-      isSslLib = true;
-  if (!isSslLib)
-    return null;
-  for (let i = at + 1; i < hi; i++) {
-    const reason = movzW(words[i], 2);
-    if (reason !== null)
-      return reason;
-  }
-  for (let i = at - 1; i >= lo; i--) {
-    const reason = movzW(words[i], 2);
-    if (reason !== null)
-      return reason;
-  }
-  return null;
-}
-function reasonsByFunction(sites) {
-  const groups = /* @__PURE__ */ new Map();
-  for (const { func, reason } of sites) {
-    if (!groups.has(func))
-      groups.set(func, /* @__PURE__ */ new Set());
-    groups.get(func).add(reason);
-  }
-  return groups;
-}
-function only(items) {
-  return items.length === 1 ? items[0] : null;
-}
-function funcsWhere(groups, pred) {
-  return [...groups.entries()].filter(([, reasons]) => pred(reasons)).map(([func]) => func);
-}
-function pickSslWrite(groups) {
-  const R = SSL_REASON;
-  return only(funcsWhere(groups, (r) => r.has(R.SHOULD_NOT_HAVE_BEEN_CALLED) && r.has(R.UNINITIALIZED) && r.has(R.BAD_LENGTH)));
-}
-function pickSslReadImpl(groups) {
-  const R = SSL_REASON;
-  return only(funcsWhere(groups, (r) => r.size === 2 && r.has(R.UNINITIALIZED) && r.has(R.SSL_HANDSHAKE_FAILURE)));
-}
-function peekShapedFunctions(groups) {
-  return funcsWhere(groups, (r) => r.size === 1 && r.has(SSL_REASON.SHOULD_NOT_HAVE_BEEN_CALLED));
-}
-function resolveSslRead(peekShaped, readImpl, wrappersOf2) {
-  const readers = peekShaped.filter((f2) => f2.callees.has(readImpl));
-  if (readers.length === 1)
-    return only(wrappersOf2(readers[0].func));
-  if (readers.length === 2) {
-    const [a, b] = readers;
-    const contains = (x, y) => x.size > y.size && [...y].every((c) => x.has(c));
-    if (contains(a.callees, b.callees))
-      return a.func;
-    if (contains(b.callees, a.callees))
-      return b.func;
-  }
-  return null;
-}
-var MAX_BODY_BYTES = 4096;
-var WRAPPER_SEARCH_MARGIN = 65536;
-function readWords(at, count) {
-  try {
-    const buf = at.readByteArray(count * 4);
-    return buf ? new Uint32Array(buf) : null;
-  } catch (_e) {
-    return null;
-  }
-}
-function offsetOf(mod, p) {
-  return p.sub(mod.base).toInt32();
-}
-function calleesOf(mod, start, end) {
-  const size = Math.min(end ? end.sub(start).toInt32() : MAX_BODY_BYTES, MAX_BODY_BYTES);
-  const words = readWords(start, Math.max(0, size >> 2)) ?? new Uint32Array(0);
-  const base = offsetOf(mod, start);
-  const callees = /* @__PURE__ */ new Set();
-  words.forEach((w, i) => {
-    const t = blTargetOffset(base + i * 4, w);
-    if (t !== null)
-      callees.add(t);
-  });
-  return callees;
-}
-function wrappersOf(mod, table, peek, lo, hi) {
-  const start = Math.max(0, lo - WRAPPER_SEARCH_MARGIN);
-  const end = Math.min(hi + WRAPPER_SEARCH_MARGIN, mod.size);
-  const words = readWords(mod.base.add(start), end - start >> 2) ?? new Uint32Array(0);
-  const found = /* @__PURE__ */ new Set();
-  words.forEach((w, i) => {
-    const pc = start + i * 4;
-    if (blTargetOffset(pc, w) !== peek)
-      return;
-    const fn = table.bounds(mod.base.add(pc));
-    if (!fn)
-      return;
-    const fnOff = offsetOf(mod, fn.start);
-    const prefix = readWords(fn.start, pc - fnOff >> 2) ?? new Uint32Array(0);
-    if (prefix.length <= 16 && prefix.every((x, k) => blTargetOffset(fnOff + k * 4, x) === null))
-      found.add(fnOff);
-  });
-  return [...found];
-}
-var SSL_LIB_ANCHOR = { text: "/ssl/ssl_lib.cc", literalSuffix: true, maxSites: 512 };
-async function sslLibErrorSites(mod, table) {
-  const [loads] = await anchorSiteFunctions(mod, table, [SSL_LIB_ANCHOR]);
-  if (loads.length === 0)
-    return null;
-  const sites = [];
-  const bodies = /* @__PURE__ */ new Map();
-  for (const { at, fn } of loads) {
-    const words = readWords(at.sub(REASON_WINDOW_BEFORE * 4), REASON_WINDOW_BEFORE + REASON_WINDOW_AFTER + 1);
-    const reason = words ? decodeErrorReason(words, REASON_WINDOW_BEFORE) : null;
-    if (reason === null || !fn)
-      continue;
-    const func = offsetOf(mod, fn.start);
-    bodies.set(func, fn.end);
-    sites.push({ func, reason });
-  }
-  return { sites, bodies };
-}
-function locateSslRead(mod, table, groups, readImpl, bodies) {
-  const peekShaped = peekShapedFunctions(groups).map((func) => ({
-    func,
-    callees: calleesOf(mod, mod.base.add(func), bodies.get(func) ?? null)
-  }));
-  const funcs = [...groups.keys()];
-  const lo = Math.min(...funcs), hi = Math.max(...funcs);
-  return resolveSslRead(peekShaped, readImpl, (peek) => wrappersOf(mod, table, peek, lo, hi));
-}
-var offsetLabel = (off) => off === null ? "?" : "+0x" + off.toString(16);
-async function locateBoringSslPlaintextApi(mod) {
-  if (Process.arch !== "arm64")
-    return null;
-  const table = functionBoundsFor(mod);
-  const found = await sslLibErrorSites(mod, table);
-  if (!found) {
-    devlog(`[BoringSSL plaintext] ${mod.name}: no BoringSSL ssl_lib.cc anchor string`);
-    return null;
-  }
-  const groups = reasonsByFunction(found.sites);
-  const sslWrite = pickSslWrite(groups);
-  const readImpl = pickSslReadImpl(groups);
-  const sslRead = readImpl === null ? null : locateSslRead(mod, table, groups, readImpl, found.bodies);
-  devlog(`[BoringSSL plaintext] ${mod.name}: ${found.sites.length} ssl_lib.cc error sites in ${groups.size} functions; SSL_write=${offsetLabel(sslWrite)} ssl_read_impl=${offsetLabel(readImpl)} SSL_read=${offsetLabel(sslRead)}`);
-  return {
-    sslRead: sslRead === null ? null : mod.base.add(sslRead),
-    sslWrite: sslWrite === null ? null : mod.base.add(sslWrite)
-  };
-}
-function describeLocated(mod, api3) {
-  const at = (p) => moduleOffsetLabel(mod, p, "not found");
-  return `SSL_read ${at(api3.sslRead)}, SSL_write ${at(api3.sslWrite)}`;
-}
-
-// agent/tls/shared/chromium_plaintext.ts
-var installedModules2 = /* @__PURE__ */ new Set();
-var NO_MODIFICATIONS = { readmod: null, writemod: null };
-var STOCK_BORINGSSL_LAYOUT = { s3Off: 48, crOff: 48, source: "stock", validated: false };
-function installStockSslLayout(moduleName) {
-  if (Process.pointerSize !== 8 || sslLayoutFor(moduleName) !== null)
-    return;
-  setSslLayout(moduleName, STOCK_BORINGSSL_LAYOUT);
-}
-function prepareSslLayout(moduleName) {
-  installStockSslLayout(moduleName);
-  prefetchSslLayout(moduleName, "chromium-install");
-}
-function chromiumPlaintextHost(moduleName, socketLibrary, isBaseHook) {
-  let addresses = { [moduleName]: {} };
-  try {
-    addresses = readAddresses(moduleName, {
-      [`*${socketLibrary}*`]: ["getpeername", "getsockname", "ntohs", "ntohl"]
-    });
-  } catch (e) {
-    devlog(`[Chromium plaintext] ${moduleName}: socket helpers not resolved: ${e}`);
-  }
-  return {
-    moduleName,
-    module_name: moduleName,
-    is_base_hook: isBaseHook,
-    addresses,
-    // No fd on Chrome's SSL objects: always take the deferred (SSL-scoped) path.
-    SSL_get_fd: fdLessSslGetFd,
-    SSL_get_session: null,
-    SSL_SESSION_get_id: sessionlessSslSessionGetId,
-    getSslSessionId: (_ssl) => "",
-    fdLess: true
-  };
-}
-function attachChromiumPlaintextHooks(hooks, api3) {
-  if (api3.sslRead)
-    hooks.attachRead(api3.sslRead);
-  if (api3.sslWrite)
-    hooks.attachWrite(api3.sslWrite);
-}
-function exportsSslRecordApi(mod) {
-  return mod.findExportByName("SSL_read") !== null || mod.findExportByName("SSL_write") !== null;
-}
-async function installChromiumPlaintextHooks(moduleName, socketLibrary, isBaseHook) {
-  if (!pcap_enabled || installedModules2.has(moduleName))
-    return false;
-  installedModules2.add(moduleName);
-  try {
-    const mod = Process.findModuleByName(moduleName);
-    if (!mod)
-      return false;
-    if (exportsSslRecordApi(mod)) {
-      devlog(`[Chromium plaintext] ${moduleName}: SSL_read/SSL_write are exported; left to the export-based hooks`);
-      return false;
-    }
-    const api3 = await locateBoringSslPlaintextApi(mod);
-    if (!api3 || !api3.sslRead && !api3.sslWrite) {
-      log(`[!] ${moduleName}: BoringSSL SSL_read/SSL_write not located; TCP TLS plaintext unavailable (keys only)`);
-      return false;
-    }
-    const hooks = new SslPlaintextHooks(chromiumPlaintextHost(moduleName, socketLibrary, isBaseHook), NO_MODIFICATIONS, false);
-    prepareSslLayout(moduleName);
-    attachChromiumPlaintextHooks(hooks, api3);
-    hooks.installScopeHooks();
-    log(`[*] ${moduleName}: hooked statically linked BoringSSL for TCP TLS plaintext (${describeLocated(mod, api3)}; located via ssl_lib.cc error-site anchors)`);
-    return true;
-  } catch (e) {
-    devlog(`[Chromium plaintext] ${moduleName}: install failed: ${e}`);
-    return false;
-  }
-}
-
-// agent/tls/platforms/android/chromium_plaintext_android.ts
-function chromium_plaintext_execute(moduleName, is_base_hook) {
-  if (!pcap_enabled)
-    return false;
-  return installChromiumPlaintextHooks(moduleName, socket_library, is_base_hook);
-}
+var chromium_plaintext_execute2 = chromiumPlaintextExecutor(() => socket_library);
 
 // agent/shared/java_request_context.ts
 init_node_globals();
-
-// agent/shared/detach_teardown.ts
-init_node_globals();
-var teardowns = [];
-function registerDetachTeardown(label, fn) {
-  teardowns.push({ label, fn });
-}
-function runDetachTeardowns() {
-  for (let i = teardowns.length - 1; i >= 0; i--) {
-    try {
-      teardowns[i].fn();
-    } catch (_e) {
-    }
-  }
-  teardowns.length = 0;
-}
-function revertJavaOverloads(bridge, overloads, label) {
-  if (overloads.length === 0)
-    return;
-  try {
-    if (!bridge || !bridge.available)
-      return;
-    bridge.perform(() => {
-      for (const overload of overloads) {
-        try {
-          overload.implementation = null;
-        } catch (e) {
-          devlog(`[${label}] revert failed: ${e}`);
-        }
-      }
-    });
-  } catch (e) {
-    devlog(`[${label}] Java-hook teardown skipped: ${e}`);
-  }
-}
-
-// agent/shared/java_request_context.ts
 init_shared_structures();
 function requestContextHooksWanted(cfg) {
-  return cfg.attribute_sdk && cfg.pcap_enabled && !cfg.pairip_safe && !cfg.quic_only;
+  const flowsAvailable = cfg.pcap_enabled || cfg.full_capture && cfg.keylog_enabled;
+  return cfg.attribute_sdk && flowsAvailable && !cfg.pairip_safe && !cfg.quic_only;
 }
 var MAX_REQUEST_FRAMES = 32;
 var STACK_FRAME_LINE = /^\s*at\s+([^\s(]+)\(/;
@@ -46199,7 +53233,7 @@ function buildWebviewRequestPayload(req_id, webviewId, url, method2, mainFrame, 
 function javaString(value) {
   return value === null || value === void 0 ? null : `${value}`;
 }
-var defaultDeps = {
+var defaultDeps4 = {
   emit: (payload) => sendRequestContext(payload),
   isShuttingDown: () => _isShuttingDown,
   now: () => Date.now(),
@@ -46519,10 +53553,10 @@ function webviewLoadHandler(rt, deps, method2) {
     deps.emit(buildWebviewLoadPayload(state.nextReqId(), `${rt.identity(self)}`, javaString(a[0]), method2, rt.frames(), rt.meta()));
   };
 }
-function emitWebviewRequest(rt, deps, view, req) {
+function emitWebviewRequest(rt, deps, view3, req) {
   if (req === null || req === void 0)
     return;
-  const webviewId = view === null || view === void 0 ? "" : `${rt.identity(view)}`;
+  const webviewId = view3 === null || view3 === void 0 ? "" : `${rt.identity(view3)}`;
   let mainFrame = null;
   try {
     mainFrame = !!req.isForMainFrame();
@@ -46619,7 +53653,7 @@ function runStep(label, fn) {
     devlog(`[request-context] ${label} not hooked: ${e}`);
   }
 }
-function installJavaRequestContextHooks(bridge = Java, deps = defaultDeps) {
+function installJavaRequestContextHooks(bridge = Java, deps = defaultDeps4) {
   if (state.installed)
     return;
   if (!bridge || !bridge.available) {
@@ -46742,6 +53776,19 @@ var MODERN_PAIRIP_EXECUTORS = {
 function pairipSafeExecutors(modern) {
   return modern ? MODERN_PAIRIP_EXECUTORS : LEGACY_PAIRIP_EXECUTORS;
 }
+var FIZZ_MODULE_PATTERN = /\.so$/;
+function fizzAndroidRow() {
+  return {
+    platform: plattform_name3,
+    pattern: FIZZ_MODULE_PATTERN,
+    contentFilter: isFizzCandidateModule,
+    hookFn: installFizzKeylog,
+    library: "Fizz (Meta)",
+    libraryType: "fizz",
+    protocol: "tls",
+    supplementary: true
+  };
+}
 function load_android_hooking_agent() {
   const __androidHooks = [
     // TLS libraries (TLS protocol family — also covers QUIC and OHTTP below)
@@ -46796,7 +53843,7 @@ function load_android_hooking_agent() {
     // (tombstone_12, 2026-06-15: SIGSEGV inside frida-agent Memory.scan).
     // Exclude it under `--protocol signal`; still scanned for generic TLS.
     { platform: plattform_name3, pattern: /.*libringrtc_rffi.*\.so/, hookFn: use_modern ? cronet_execute_modern : cronet_execute, library: "Cronet (RingRTC)", libraryType: "boringssl", protocol: "tls", excludeProtocols: ["signal"] },
-    { platform: plattform_name3, pattern: /.*libsignal_jni.*\.so/, excludePattern: /_testing\.so$/, hookFn: use_modern ? cronet_execute_modern : cronet_execute, library: "Cronet (Signal)", libraryType: "boringssl", protocol: "tls" },
+    { platform: plattform_name3, pattern: SIGNAL_MODULE_PATTERN, excludePattern: SIGNAL_MODULE_EXCLUDE_PATTERN, hookFn: use_modern ? cronet_execute_modern : cronet_execute, library: "Cronet (Signal)", libraryType: "boringssl", protocol: "tls" },
     { platform: plattform_name3, pattern: /.*monochrome.*\.so/, hookFn: use_modern ? cronet_execute_modern : cronet_execute, library: "Cronet (Monochrome)", libraryType: "boringssl", protocol: "tls" },
     // Android System WebView monolith — full Chromium with BoringSSL statically linked
     // (same shape as libmonochrome). The ssl_log_secret arm64 prologue is already covered
@@ -46813,6 +53860,7 @@ function load_android_hooking_agent() {
     { platform: plattform_name3, pattern: /.*libwarp_mobile.*\.so/, hookFn: use_modern ? cronet_execute_modern : cronet_execute, library: "Cronet (Warp Mobile)", libraryType: "boringssl", protocol: "tls" },
     { platform: plattform_name3, pattern: /.*lib*quiche*.*\.so/, hookFn: use_modern ? cronet_execute_modern : cronet_execute, library: "Cronet (QUICHE)", libraryType: "boringssl", protocol: "tls" },
     { platform: plattform_name3, pattern: /.*librustls.*\.so/, hookFn: use_modern ? rustls_execute_modern : rustls_execute, library: "Rustls", libraryType: "rustls", protocol: "tls" },
+    fizzAndroidRow(),
     { platform: plattform_name3, pattern: /.*libstartup.*\.so/, hookFn: metartc_execute, library: "metaRTC", protocol: "tls" },
     { platform: plattform_name3, pattern: /libgojni.*\.so/, hookFn: use_modern ? gotls_execute_modern : gotls_execute, library: "Go TLS", libraryType: "gotls", protocol: "tls" },
     // IPSec libraries — strongSwan VPN is common on Android (detection stub, key extraction still needs to be done)
@@ -46854,13 +53902,18 @@ function load_android_hooking_agent() {
     // and stripped: SSL_read/SSL_write are located via ssl_lib.cc error-site anchors
     // (tls/shared/boringssl_plaintext_locator.ts). `supplementary`: keys still come from
     // the Cronet rows above; these rows only add the plaintext hooks.
-    { platform: plattform_name3, pattern: /.*monochrome.*\.so/, hookFn: chromium_plaintext_execute, library: "BoringSSL plaintext (Monochrome)", protocol: "tls", supplementary: true },
-    { platform: plattform_name3, pattern: /.*libchrome\.so/, hookFn: chromium_plaintext_execute, library: "BoringSSL plaintext (Chrome)", protocol: "tls", supplementary: true },
-    { platform: plattform_name3, pattern: /.*libwebviewchromium.*\.so/, hookFn: chromium_plaintext_execute, library: "BoringSSL plaintext (WebView Chromium)", protocol: "tls", supplementary: true },
+    { platform: plattform_name3, pattern: /.*monochrome.*\.so/, hookFn: chromium_plaintext_execute2, library: "BoringSSL plaintext (Monochrome)", protocol: "tls", supplementary: true },
+    { platform: plattform_name3, pattern: /.*libchrome\.so/, hookFn: chromium_plaintext_execute2, library: "BoringSSL plaintext (Chrome)", protocol: "tls", supplementary: true },
+    { platform: plattform_name3, pattern: /.*libwebviewchromium.*\.so/, hookFn: chromium_plaintext_execute2, library: "BoringSSL plaintext (WebView Chromium)", protocol: "tls", supplementary: true },
     // Stripped Cronet (embedded libcronet.<ver>.so and GMS Dynamite's): the Cronet row
     // above only extracts keys when SSL_* are not exported. Builds that do export them
     // are skipped inside chromium_plaintext (exportsSslRecordApi), so no double hooks.
-    { platform: plattform_name3, pattern: /^libcronet([_.].*)?\.so$/, hookFn: chromium_plaintext_execute, library: "BoringSSL plaintext (Cronet)", protocol: "tls", supplementary: true },
+    { platform: plattform_name3, pattern: CRONET_PLAINTEXT_MODULE_PATTERN, hookFn: chromium_plaintext_execute2, library: "BoringSSL plaintext (Cronet)", protocol: "tls", supplementary: true },
+    // Signal's chat TLS: BoringSSL statically linked into libsignal_jni.so (Rust `boring`),
+    // SSL_read/SSL_write not exported. Keys stay with the "Cronet (Signal)" row.
+    { platform: plattform_name3, pattern: SIGNAL_MODULE_PATTERN, excludePattern: SIGNAL_MODULE_EXCLUDE_PATTERN, hookFn: chromium_plaintext_execute2, library: "BoringSSL plaintext (Signal)", protocol: "tls", supplementary: true },
+    // Flutter statically links a stripped BoringSSL too; keys stay with the Flutter row.
+    { platform: plattform_name3, pattern: FLUTTER_PLAINTEXT_MODULE_PATTERN, hookFn: chromium_plaintext_execute2, library: "BoringSSL plaintext (Flutter)", protocol: "tls", supplementary: true },
     { platform: plattform_name3, pattern: /.*libxul\.so/, hookFn: neqo_execute3, library: "Mozilla Neqo (Firefox HTTP/3)", libraryType: "neqo", protocol: "tls", supplementary: true },
     // Hooks contributed by optional, separately bundled units (empty in the
     // public build; a full build's private unit registers its rows before the
@@ -46907,7 +53960,9 @@ function load_android_hooking_agent() {
   const phases = [];
   if (pairip_safe)
     log("[*] --pairip-safe: symbol-only keylog on libssl/libjavacrypto/conscrypt; loader hook, pattern scan, Java & OHTTP hooks disabled.");
-  if (!quic_only && !pairip_safe && isTlsFamilyRequested()) {
+  const linkerNotifierBroken = !quic_only && !pairip_safe && isTlsFamilyRequested() && isJavaBlockedByBrokenLinkerNotifier();
+  if (linkerNotifierBroken) {
+  } else if (!quic_only && !pairip_safe && isTlsFamilyRequested()) {
     phases.push({ label: "java", fn: () => install_java_hooks() });
   } else if (!quic_only && !pairip_safe) {
     log("[*] TLS not in the selected protocol set \u2014 skipping Android TLS Java hooks (ART instrumentation); this also avoids the frida-java-bridge deopt that can crash the app on detach.");
@@ -46939,7 +53994,7 @@ function load_android_hooking_agent() {
           install_pattern_based_hooks();
       }
     });
-  if (requestContextHooksWanted({ attribute_sdk, pcap_enabled, pairip_safe, quic_only }))
+  if (requestContextHooksWanted({ attribute_sdk, pcap_enabled, full_capture, keylog_enabled, pairip_safe, quic_only }))
     phases.push({
       label: "java-request-context",
       fn: () => installJavaRequestContextHooks()
@@ -47209,7 +54264,7 @@ var Flutter2 = class {
     const s3_ptr = ssl_st_ptr.add(offset_s3).readPointer();
     return this.get_client_random(s3_ptr, SSL3_RANDOM_SIZE3);
   }
-  dumpKeys(labelPtr, sslStructPtr, keyPtr) {
+  dumpKeys(labelPtr, sslStructPtr, keyPtr, keyLen) {
     const KEY_LENGTH = 32;
     let labelStr = "";
     let client_random = "";
@@ -47225,7 +54280,7 @@ var Flutter2 = class {
       devlog("[Error] Argument 'sslStructPtr' is NULL");
     }
     if (!keyPtr.isNull()) {
-      const keyData = keyPtr.readByteArray(KEY_LENGTH);
+      const keyData = keyPtr.readByteArray(secretLenOrFallback(keyLen, labelStr, keyPtr, KEY_LENGTH));
       const hexKey = get_hex_string_from_byte_array(keyData);
       secret_key = hexKey;
     } else {
@@ -47234,6 +54289,10 @@ var Flutter2 = class {
     devlog("invoking ssl_log_secret() from BoringSSL statically linked into Flutter");
     sendKeylog(labelStr + " " + client_random + " " + secret_key, sslStructPtr, this.module_name);
   }
+  // Plaintext is installed by the supplementary "BoringSSL plaintext (Flutter)"
+  // row (chromium_plaintext_execute -> resolveBoringSslPlaintext). Not called
+  // from here: importing chromium_plaintext would put this base class in an
+  // import cycle with its Flutter_iOS/Flutter_Android subclasses.
   install_plaintext_read_hook() {
     if (!pcap_enabled)
       return;
@@ -47272,11 +54331,11 @@ var Flutter_iOS = class extends Flutter2 {
     if (isPatternReplaced() && hasUsablePatternsFor(patterns, this.module_name, "Flutter", "Dump-Keys")) {
       devlog("Hooking Flutter functions by patterns from JSON file");
       hooker.hook_DumpKeys(this.module_name, "Flutter", patterns, (args) => {
-        this.dumpKeys(args[1], args[0], args[2]);
+        this.dumpKeys(args[1], args[0], args[2], lenArg(args[3]));
       });
     } else {
       hooker.hookModuleByPattern(get_CPU_specific_pattern(this.default_pattern), (args) => {
-        this.dumpKeys(args[1], args[0], args[2]);
+        this.dumpKeys(args[1], args[0], args[2], lenArg(args[3]));
       });
     }
     return hooker;
@@ -47305,7 +54364,7 @@ function flutter_execute2(moduleName, is_base_hook) {
         if (hooker !== null && !hooker.no_hooking_success)
           return;
         devlog_debug("Trying symbol-based ssl_log_secret hook on " + moduleName);
-        installBoringSSLSymbolHook(moduleName, (label, ssl, data, _len) => flutter.dumpKeys(label, ssl, data));
+        installBoringSSLSymbolHook(moduleName, (label, ssl, data, len) => flutter.dumpKeys(label, ssl, data, len));
       } catch (e) {
         devlog_error("flutter_execute symbol fallback error: " + e);
       }
@@ -48215,18 +55274,23 @@ var NSS_Windows = class extends NSS {
   moduleName;
   socket_library;
   constructor(moduleName, socket_library6, is_base_hook) {
-    var library_method_mapping = {};
-    library_method_mapping[`*${moduleName}*`] = ["PR_Write", "PR_Read", "PR_FileDesc2NativeHandle", "PR_GetPeerName", "PR_GetSockName", "PR_GetNameForIdentity"];
-    library_method_mapping["*ssl*.dll"] = ["SSL_ImportFD", "SSL_GetSessionID", "SSL_HandshakeCallback"];
+    var library_method_mapping = nssWindowsMethodMapping(moduleName, String(socket_library6));
     super(moduleName, socket_library6, library_method_mapping);
     this.moduleName = moduleName;
     this.socket_library = socket_library6;
   }
   install_tls_keys_callback_hook() {
+    void installLegacyNssKeyExtraction(this.module_name, this.addresses[this.module_name]);
   }
   execute_hooks() {
     this.install_plaintext_read_hook();
     this.install_plaintext_write_hook();
+    try {
+      this.install_tls_keys_callback_hook();
+    } catch (e) {
+      devlog("Installing NSS key hooking failed");
+      devlog("NSS Error code: " + e);
+    }
   }
 };
 function nss_execute4(moduleName, is_base_hook) {
@@ -48236,7 +55300,7 @@ function nss_execute4(moduleName, is_base_hook) {
 // agent/tls/platforms/windows/nss_windows.ts
 init_node_globals();
 function nss_execute_modern4(moduleName, is_base_hook) {
-  executeFromDefinition(createNssDefinition(), moduleName, socket_library5, is_base_hook, enable_default_fd);
+  executeFromDefinition(createNssWindowsDefinition(moduleName), moduleName, socket_library5, is_base_hook, enable_default_fd);
 }
 
 // agent/legacy/tls/platforms/windows/wolfssl_windows.ts
@@ -48719,61 +55783,6 @@ function gotls_execute_modern4(moduleName, is_base_hook) {
   }
 }
 
-// agent/shared/chromium_boringssl.ts
-init_node_globals();
-var CHROMIUM_BORINGSSL_MODULES = [
-  /^libcef\.dll$/i,
-  /^chrome\.dll$/i,
-  /^msedge\.dll$/i,
-  /^Qt[56]WebEngineCore\.dll$/i
-];
-var ELECTRON_EXE_MIN_SIZE = 64 * 1024 * 1024;
-var started = /* @__PURE__ */ new Set();
-function chromium_boringssl_execute(moduleName, winePe = false) {
-  if (!keylog_enabled)
-    return;
-  const key = moduleName.toLowerCase();
-  if (started.has(key))
-    return;
-  started.add(key);
-  if (winePe)
-    setModuleCallAbi(moduleName, "win64");
-  log(`[*] ${moduleName}: Chromium-embedded BoringSSL \u2014 locating ssl_log_secret via keylog-label xrefs`);
-  void onAllKeylogTiersMissed(moduleName, makeBoringSslDumpKeys(moduleName), {
-    detail: "Chromium-embedded BoringSSL (no exports/symbols; anchor locator only)",
-    pairipDisabled: false
-  });
-}
-function chromium_boringssl_hook(winePe) {
-  return (moduleName) => chromium_boringssl_execute(moduleName, winePe);
-}
-function hookElectronStyleExecutables(images, winePe) {
-  if (!keylog_enabled || !isTlsFamilyRequested())
-    return;
-  for (const m2 of images) {
-    if (!/\.exe$/i.test(m2.name) || m2.size < ELECTRON_EXE_MIN_SIZE)
-      continue;
-    const key = m2.name.toLowerCase();
-    if (!keylog_enabled || started.has(key))
-      continue;
-    started.add(key);
-    if (winePe)
-      setModuleCallAbi(m2.name, "win64");
-    devlog(`[chromium] ${m2.name}: large executable (${(m2.size / (1024 * 1024)).toFixed(0)} MB); checking for embedded BoringSSL`);
-    startTier4Once(m2.name, makeBoringSslDumpKeys(m2.name), "Electron-style executable");
-  }
-}
-function hookMappedChromiumPeImages() {
-  if (!keylog_enabled || !isTlsFamilyRequested())
-    return;
-  const images = listPeImages();
-  for (const m2 of images) {
-    if (CHROMIUM_BORINGSSL_MODULES.some((re) => re.test(m2.name)))
-      chromium_boringssl_execute(m2.name, true);
-  }
-  hookElectronStyleExecutables(images, true);
-}
-
 // agent/platforms/windows.ts
 var plattform_name5 = PLATFORM_WINDOWS;
 var socket_library5 = "WS2_32.dll";
@@ -48796,7 +55805,10 @@ function load_windows_hooking_agent() {
     { platform: plattform_name5, pattern: /__libressl_scan_only__/, hookFn: use_modern ? libressl_execute_modern4 : libressl_execute4, library: "LibreSSL", libraryType: "libressl", protocol: "tls" },
     { platform: plattform_name5, pattern: /^.*(wolfssl|WOLFSSL).*\.dll$/, hookFn: use_modern ? wolfssl_execute_modern3 : wolfssl_execute3, library: "WolfSSL", libraryType: "wolfssl", protocol: "tls" },
     { platform: plattform_name5, pattern: /^.*(libgnutls|LIBGNUTLS)-[0-9]+\.dll$/, hookFn: use_modern ? gnutls_execute_modern4 : gnutls_execute4, library: "GnuTLS", libraryType: "gnutls", protocol: "tls" },
-    { platform: plattform_name5, pattern: /^(nspr|NSPR)[0-9]*\.dll/, hookFn: use_modern ? nss_execute_modern4 : nss_execute4, library: "NSS", libraryType: "nss", protocol: "tls" },
+    // NSPR's PR_Read/PR_Write live in (lib)nspr4.dll, or in nss3.dll when Firefox/Thunderbird
+    // fold NSPR into it (MOZ_FOLD_LIBS). exportsNsprIo admits an nss3.dll only when it exports
+    // PR_Read, so an unfolded build is hooked once, via its nspr4.dll.
+    { platform: plattform_name5, pattern: NSS_WINDOWS_MODULE_PATTERN, contentFilter: exportsNsprIo, hookFn: use_modern ? nss_execute_modern4 : nss_execute4, library: "NSS", libraryType: "nss", protocol: "tls" },
     { platform: plattform_name5, pattern: /(sspicli|SSPICLI|SspiCli)\.dll$/, hookFn: use_modern ? sspi_execute_modern : sspi_execute, library: "SSPI", libraryType: "sspi", protocol: "tls" },
     { platform: plattform_name5, pattern: /mbedTLS\.dll/, hookFn: use_modern ? mbedTLS_execute_modern3 : mbedTLS_execute3, library: "mbedTLS", libraryType: "mbedtls", protocol: "tls" },
     { platform: plattform_name5, pattern: /^.*(cronet|CRONET).*\.dll/, hookFn: use_modern ? cronet_execute_modern3 : cronet_execute5, library: "Cronet", libraryType: "boringssl", protocol: "tls" },
@@ -48809,8 +55821,11 @@ function load_windows_hooking_agent() {
     // shared/go_binary_detection.ts), not by name; c-shared Go DLLs likewise.
     { platform: plattform_name5, pattern: /.*/, contentFilter: isGoModule, hookFn: use_modern ? gotls_execute_modern4 : gotls_execute4, library: "Go TLS", libraryType: "gotls", protocol: "tls" },
     { platform: plattform_name5, pattern: /matrixSSL\.dll/, hookFn: use_modern ? matrixSSL_execute_modern2 : matrixSSL_execute2, library: "MatrixSSL", libraryType: "matrixssl", protocol: "tls" },
-    // OHTTP (NSS HPKE) — gated under the TLS family for `--protocol tls`
-    { platform: plattform_name5, pattern: /^(nspr|NSPR)[0-9]*\.dll/, hookFn: nss_hpke_execute_windows, library: "NSS HPKE (OHTTP)", protocol: "tls", libraryType: "nss_hpke" },
+    // OHTTP (NSS HPKE) — gated under the TLS family for `--protocol tls`. PK11_HPKE_* live in
+    // (lib)nss3.dll whether or not NSPR is folded into it (was /^(nspr|NSPR)[0-9]*\.dll/, whose
+    // *libnss* lookup never matched nss3.dll). Supplementary: a folded nss3.dll also matches the
+    // NSS row above, and HPKE extracts no keys, so it must not claim the module's TLS coverage.
+    { platform: plattform_name5, pattern: NSS3_MODULE_NAME, hookFn: nss_hpke_execute_windows, library: "NSS HPKE (OHTTP)", protocol: "tls", libraryType: "nss_hpke", supplementary: true },
     // QUIC libraries — gated under the TLS family for `--protocol tls`
     { platform: plattform_name5, pattern: /.*quiche\.dll/i, hookFn: quiche_execute4, library: "Cloudflare QUICHE", libraryType: "quiche", protocol: "tls" },
     { platform: plattform_name5, pattern: /chrome\.dll/i, hookFn: google_quiche_execute4, library: "Google QUICHE (Chrome)", libraryType: "google_quiche", protocol: "tls", supplementary: true },
@@ -49083,6 +56098,14 @@ function attachLibreSslHkdfHook(address) {
   log(`[Wine/LibreSSL] hkdf hook @ ${address}`);
 }
 
+// agent/platforms/wine_row_selection.ts
+init_node_globals();
+function wineRowsToHook(matches) {
+  if (matches.length === 0)
+    return [];
+  return [matches[0], ...matches.slice(1).filter((m2) => m2.supplementary === true)];
+}
+
 // agent/platforms/wine.ts
 var platform_name = PLATFORM_WINE;
 var libssl_dispatch_wine = () => libresslAwareDispatch(use_modern ? libressl_execute_modern4 : libressl_execute4, use_modern ? boring_execute_modern5 : boring_execute5);
@@ -49162,14 +56185,13 @@ function hook_Wine_LdrLoadDll(is_base_hook) {
           const dllName = this.dllName;
           const dllBaseName = dllName.split(/[/\\]/).pop() || dllName;
           const matches = hookRegistry.findAllMatches(platform_name, dllBaseName, void 0, selected_protocols);
-          for (const match of matches) {
+          for (const match of wineRowsToHook(matches)) {
             log(`[Wine] ${dllBaseName} loaded & will be hooked (${match.library})!`);
             try {
               hookWineDllOnce(match, dllBaseName, is_base_hook);
             } catch (error) {
               devlog(`[Wine] DLL hook error for ${dllBaseName}: ${error}`);
             }
-            break;
           }
           runKeylogSweep(dllBaseName);
         }
@@ -49399,8 +56421,7 @@ function hook_Wine_Existing_DLLs(is_base_hook) {
       continue;
     }
     const matches = hookRegistry.findAllMatches(platform_name, mod.name, mod.path, selected_protocols);
-    if (matches.length > 0) {
-      const match = matches[0];
+    for (const match of wineRowsToHook(matches)) {
       log(`[Wine] Found pre-loaded DLL ${mod.name} (${match.library}), hooking...`);
       try {
         hookWineDllOnce(match, mod.name, is_base_hook);
@@ -49464,7 +56485,11 @@ function load_wine_hooking_agent(lean = false) {
     { platform: platform_name, pattern: /^(libtls|LIBTLS)-[0-9]+(_[0-9]+)?\.dll$/i, hookFn: libssl_dispatch_wine(), library: "LibreSSL (libtls)", libraryType: "libressl" },
     { platform: platform_name, pattern: /^.*(wolfssl|WOLFSSL).*\.dll$/i, hookFn: use_modern ? wolfssl_execute_modern3 : wolfssl_execute3, library: "WolfSSL", libraryType: "wolfssl" },
     { platform: platform_name, pattern: /^.*(libgnutls|LIBGNUTLS)-[0-9]+\.dll$/i, hookFn: use_modern ? gnutls_execute_modern4 : gnutls_execute4, library: "GnuTLS", libraryType: "gnutls" },
-    { platform: platform_name, pattern: /^(nspr|NSPR)[0-9]*\.dll/i, hookFn: use_modern ? nss_execute_modern4 : nss_execute4, library: "NSS", libraryType: "nss" },
+    // (lib)nspr4.dll, or a folded nss3.dll (see agent/platforms/windows.ts).
+    { platform: platform_name, pattern: NSS_WINDOWS_MODULE_PATTERN, contentFilter: exportsNsprIo, hookFn: use_modern ? nss_execute_modern4 : nss_execute4, library: "NSS", libraryType: "nss" },
+    // OHTTP (NSS HPKE) in a PE (lib)nss3.dll — same row as agent/platforms/windows.ts.
+    // Supplementary: it extracts no keys, so it must not displace (or be displaced by) the NSS row.
+    { platform: platform_name, pattern: NSS3_MODULE_NAME, hookFn: nss_hpke_execute_windows, library: "NSS HPKE (OHTTP)", protocol: "tls", libraryType: "nss_hpke", supplementary: true },
     { platform: platform_name, pattern: /mbedTLS\.dll/i, hookFn: use_modern ? mbedTLS_execute_modern3 : mbedTLS_execute3, library: "mbedTLS", libraryType: "mbedtls" },
     { platform: platform_name, pattern: /^.*(cronet|CRONET).*\.dll/i, hookFn: cronet_execute_wine, library: "Cronet", libraryType: "boringssl" },
     // BoringSSL statically linked into Chromium-family PE modules (CEF,
@@ -49675,7 +56700,7 @@ function emitRc4Key(keyBytes, source, direction) {
   });
   devlog(`[rc4] key recovered (${keyBytes.length}B) via ${source} [dir=${direction || "unknown"}]`);
 }
-function makeRc4Executor(label, install) {
+function makeRc4Executor(label, install2) {
   return function(moduleName, is_base_hook) {
     if (!keylog_enabled) {
       devlog(`[rc4] keylog disabled (-k not set); skipping ${label} RC4 key hooks on ${moduleName}.`);
@@ -49683,7 +56708,7 @@ function makeRc4Executor(label, install) {
     }
     ensureRc4SelfTest();
     try {
-      return install(moduleName);
+      return install2(moduleName);
     } catch (e) {
       devlog(`[rc4] ${label} executor error on ${moduleName} (is_base_hook=${is_base_hook}): ${e && e.stack ? e.stack : e}`);
       return false;
@@ -50433,26 +57458,26 @@ async function analyze(ct) {
     let total = 0, gi = 0, rangesUsed = 0, yc = 0;
     const budget = state2.opts.maxTotalBytes, groupCap = state2.opts.readGroupBytes;
     while (gi < ordered.length && total < budget && !ctx.stop) {
-      const group = [];
+      const group2 = [];
       let gBytes = 0;
       while (gi < ordered.length && total < budget && gBytes < groupCap) {
         const rr = readOneRange(ordered[gi], total);
         gi++;
         if (rr !== null) {
-          group.push(rr);
+          group2.push(rr);
           total += rr.size;
           gBytes += rr.size;
           rangesUsed++;
         }
       }
-      for (let gj = 0; gj < group.length; gj++) {
+      for (let gj = 0; gj < group2.length; gj++) {
         if (!ctx.stop) {
           try {
-            scanChunk(ctx, group[gj].u8, group[gj].base);
+            scanChunk(ctx, group2[gj].u8, group2[gj].base);
           } catch (e) {
           }
         }
-        group[gj].u8 = null;
+        group2[gj].u8 = null;
         if (yc++ % every === 0)
           await yieldTick();
         if (ctx.stop)
@@ -50762,8 +57787,8 @@ function ensureRc4WindowsMemscanArmed() {
 }
 
 // agent/rc4/platforms/windows/rc4_windows.ts
-function installProviderPlusMemscan(install, moduleName) {
-  const hooked = install(moduleName);
+function installProviderPlusMemscan(install2, moduleName) {
+  const hooked = install2(moduleName);
   ensureRc4WindowsMemscanArmed();
   if (!hooked)
     devlog(`[rc4] ${moduleName}: no RC4 API hook attached; managed-RC4 memory recovery armed only`);
@@ -51387,6 +58412,126 @@ function socket_trace_execute() {
   }
 }
 
+// agent/shared/java_array_class_init_guard.ts
+init_node_globals();
+var CLASS_INIT_PROBE_FIELD = "x";
+var CLASS_INIT_PROBE_SIGNATURE = "Z";
+var GUARD_MARKER = Symbol.for("fritap.arrayClassInitGuard");
+function isClassInitProbe(name, signature2) {
+  return name === CLASS_INIT_PROBE_FIELD && signature2 === CLASS_INIT_PROBE_SIGNATURE;
+}
+function isArrayClassName(className) {
+  return typeof className === "string" && className.startsWith("[");
+}
+function shouldSkipClassInitProbe(name, signature2, resolveClassName) {
+  if (!isClassInitProbe(name, signature2))
+    return false;
+  let className = null;
+  try {
+    className = resolveClassName();
+  } catch (_e) {
+    return false;
+  }
+  return isArrayClassName(className);
+}
+function guardEnvPrototype(envPrototype, nullPointer) {
+  if (!envPrototype || typeof envPrototype.getFieldId !== "function")
+    return "unavailable";
+  if (envPrototype[GUARD_MARKER] === true)
+    return "already-installed";
+  if (typeof envPrototype.getClassName !== "function")
+    return "unavailable";
+  const originalGetFieldId = envPrototype.getFieldId;
+  envPrototype.getFieldId = function(klass, name, signature2) {
+    if (shouldSkipClassInitProbe(name, signature2, () => this.getClassName(klass))) {
+      return nullPointer;
+    }
+    return originalGetFieldId.call(this, klass, name, signature2);
+  };
+  envPrototype[GUARD_MARKER] = true;
+  return "installed";
+}
+function installArrayClassInitGuard(java, nullPointer) {
+  try {
+    const vm3 = java?.vm;
+    if (!vm3 || typeof vm3.perform !== "function")
+      return "unavailable";
+    const envPrototype = vm3.perform((env) => env ? Object.getPrototypeOf(env) : null);
+    return guardEnvPrototype(envPrototype, nullPointer);
+  } catch (_e) {
+    return "unavailable";
+  }
+}
+
+// agent/shared/java_jvmti_guard.ts
+init_node_globals();
+var ENSURE_PLUGIN_LOADED_SYMBOL = "_ZN3art7Runtime18EnsurePluginLoadedEPKcPNSt3__112basic_stringIcNS3_11char_traitsIcEENS3_9allocatorIcEEEE";
+var GUARD_MARKER2 = Symbol.for("fritap.jvmtiPluginGuard");
+function guardApiFind(api3, loadPlugin, report) {
+  if (!api3 || typeof api3.find !== "function")
+    return "unavailable";
+  if (api3[GUARD_MARKER2] === true)
+    return "already-installed";
+  const originalFind = api3.find;
+  let attempted = false;
+  api3.find = function(name) {
+    const address = originalFind.call(this, name);
+    if (name === ENSURE_PLUGIN_LOADED_SYMBOL && address !== null && !attempted) {
+      attempted = true;
+      report(preloadOutcome(() => loadPlugin(address, api3.artRuntime)));
+    }
+    return address;
+  };
+  api3[GUARD_MARKER2] = true;
+  return "installed";
+}
+function preloadOutcome(load) {
+  try {
+    return load() ? "JVMTI plugin preloaded" : "JVMTI plugin preload returned false";
+  } catch (e) {
+    return `JVMTI plugin preload failed: ${e}`;
+  }
+}
+function installJvmtiPluginGuard(java, report, loadPlugin = loadJvmtiPluginWithFaultsPropagated) {
+  try {
+    return guardApiFind(java?.api, loadPlugin, report);
+  } catch (_e) {
+    return "unavailable";
+  }
+}
+var FINISH_SETUP_SYMBOL = "_ZN12openjdkjvmti12DeoptManager11FinishSetupEv";
+function loadJvmtiPluginWithFaultsPropagated(address, artRuntime) {
+  const ensurePluginLoaded = new NativeFunction(address, "bool", ["pointer", "pointer", "pointer"], { exceptions: "propagate" });
+  const errorMessage = Memory.alloc(32);
+  errorMessage.writeByteArray(new Array(32).fill(0));
+  return withFinishSetupSkipped(() => Boolean(ensurePluginLoaded(artRuntime, Memory.allocUtf8String("libopenjdkjvmti.so"), errorMessage)));
+}
+function withFinishSetupSkipped(loadPlugin) {
+  let finishSetup = null;
+  const skipFinishSetup = new NativeCallback(() => {
+  }, "void", ["pointer"]);
+  const dlsymListener = Interceptor.attach(Process.getModuleByName("libdl.so").getExportByName("dlsym"), {
+    onEnter(args) {
+      this.isPluginInitializer = args[1].readCString() === "ArtPlugin_Initialize";
+    },
+    onLeave() {
+      if (!this.isPluginInitializer)
+        return;
+      finishSetup = Process.getModuleByName("libopenjdkjvmti.so").findExportByName(FINISH_SETUP_SYMBOL);
+      if (finishSetup !== null)
+        Interceptor.replace(finishSetup, skipFinishSetup);
+    }
+  });
+  try {
+    return loadPlugin();
+  } finally {
+    dlsymListener.detach();
+    if (finishSetup !== null)
+      Interceptor.revert(finishSetup);
+    Interceptor.flush();
+  }
+}
+
 // agent/fritap_agent.ts
 init_shared_structures();
 
@@ -51854,27 +58999,27 @@ function scoreCandidate(buf, off, label) {
   if (entropy < ENTROPY_GATE) {
     return { score: 0, signals, length: WINDOW_LEN };
   }
-  let score = entropy;
+  let score2 = entropy;
   signals.push("entropy");
   let length = WINDOW_LEN;
   for (const keyBytes of [32, 24, 16]) {
     if (aesScheduleMatchesAt(buf, off, keyBytes)) {
       signals.push(`aes${keyBytes * 8}_schedule`);
-      score += 100;
+      score2 += 100;
       length = keyBytes;
       break;
     }
   }
   if (isClampedX25519Scalar(buf, off)) {
     signals.push("x25519_clamp");
-    score += 8;
+    score2 += 8;
     length = 32;
   }
   if (isPlausibleSecretWidth(length, label)) {
     signals.push("secret_width");
-    score += 4;
+    score2 += 4;
   }
-  return { score, signals, length };
+  return { score: score2, signals, length };
 }
 
 // agent/shared/scan/scan_engine.ts
@@ -52097,6 +59242,67 @@ function emitCandidate(c, extensions, providers) {
   }
 }
 
+// agent/tls/shared/learned_plaintext_cache.ts
+init_node_globals();
+init_shared_structures();
+function pickBoth(source, isValid) {
+  if (!isPlainObject2(source))
+    return null;
+  const { SSL_read, SSL_write } = source;
+  return isValid(SSL_read) && isValid(SSL_write) ? { SSL_read, SSL_write } : null;
+}
+function toLearnedEntry(entry, size) {
+  if (!isPlainObject2(entry))
+    return null;
+  const rvas = pickBoth(entry.rvas, (v) => isRva(v, size));
+  const prologueSha256 = pickBoth(entry.prologue_sha256, isSha256Hex);
+  return rvas !== null && prologueSha256 !== null ? { rvas, prologueSha256 } : null;
+}
+function createLearnedPlaintextSource() {
+  return {
+    lookup(mod) {
+      return toLearnedEntry(learnedHostEntry(mod), mod.size);
+    },
+    onAccepted(mod) {
+      reportCacheHit(mod);
+    }
+  };
+}
+function learnedMessage(mod, api3, identity2, hashPrologue = sha256Prologue) {
+  const readRva = rvaOf(mod, api3.sslRead, identity2.size);
+  const writeRva = rvaOf(mod, api3.sslWrite, identity2.size);
+  if (readRva === null || writeRva === null)
+    return null;
+  const readHash = hashPrologue(api3.sslRead);
+  const writeHash = hashPrologue(api3.sslWrite);
+  if (readHash === null || writeHash === null)
+    return null;
+  return {
+    module: moduleBasename(mod.name),
+    build_id: identity2.buildId,
+    size: identity2.size,
+    arch: identity2.arch,
+    rvas: { SSL_read: readRva, SSL_write: writeRva },
+    prologue_sha256: { SSL_read: readHash.toLowerCase(), SSL_write: writeHash.toLowerCase() }
+  };
+}
+function createLocatorReporter(identify = identifyModule, emit3 = sendPlaintextApiLearned, hashPrologue = sha256Prologue) {
+  return (mod, api3, elapsedMs) => {
+    const identity2 = identify(mod);
+    const message = identity2 === null ? null : learnedMessage(mod, api3, identity2, hashPrologue);
+    if (message === null) {
+      devlog_debug(`[BoringSSL plaintext] ${mod.name}: locator hit not cacheable (no build id or partial API)`);
+      return;
+    }
+    devlog_debug(`[BoringSSL plaintext] ${mod.name}: reporting locator hit (${elapsedMs} ms) for the learned cache`);
+    emit3(message);
+  };
+}
+function installLearnedPlaintextCache() {
+  setLearnedPlaintextSource(createLearnedPlaintextSource());
+  setLocatorResolvedListener(createLocatorReporter());
+}
+
 // agent/fritap_agent.ts
 globalThis.init_addresses = {};
 function initStage(stage, fn, fatal = true) {
@@ -52112,32 +59318,39 @@ function initStage(stage, fn, fatal = true) {
     return void 0;
   }
 }
+var agentHooksReleased = false;
 function releaseAgentHooks() {
+  if (agentHooksReleased)
+    return repeatDetachReport();
+  agentHooksReleased = true;
+  const report = new DetachReportBuilder();
+  report.step("pre-shutdown-flush", () => runPreShutdownFlushes());
   setIsShuttingDown(true);
+  try {
+    withTeardownCapture(report, () => releaseHooksAfterShutdownFlag(report));
+  } catch (_e) {
+  }
+  return report.finish();
+}
+function releaseHooksAfterShutdownFlag(report) {
   try {
     stopBlink();
   } catch (_e) {
   }
-  try {
-    runDetachTeardowns();
-  } catch (_e) {
-  }
-  try {
-    restoreTrackedKeylogCallbacks();
-  } catch (_e) {
-  }
-  try {
-    Interceptor.detachAll();
-  } catch (e) {
+  runDetachTeardowns(report);
+  report.step("keylog-callbacks-restore", () => restoreTrackedKeylogCallbacks());
+  report.step("interceptor-detach-all", () => {
     try {
-      log(`[gracefulDetach] Interceptor.detachAll threw: ${e}`);
-    } catch (_e2) {
+      Interceptor.detachAll();
+    } catch (e) {
+      try {
+        log(`[gracefulDetach] Interceptor.detachAll threw: ${e}`);
+      } catch (_e2) {
+      }
+      throw e;
     }
-  }
-  try {
-    restoreAnchorLocatorKeylogFields();
-  } catch (_e) {
-  }
+  });
+  report.step("anchor-keylog-fields-restore", () => ({ restored: restoreAnchorLocatorKeylogFields() }));
 }
 rpc.exports = {
   //@ts-ignore
@@ -52146,7 +59359,7 @@ rpc.exports = {
   },
   //@ts-ignore
   gracefulDetach() {
-    releaseAgentHooks();
+    return releaseAgentHooks();
   },
   //@ts-ignore
   dispose() {
@@ -52179,6 +59392,7 @@ var pairip_safe = false;
 var probe = false;
 var force_anchor_locator = false;
 var attribute_sdk = false;
+var full_capture = false;
 function recvHandshake(sendChannel, defaultValue, recvChannel) {
   let result = defaultValue;
   send(sendChannel);
@@ -52231,7 +59445,10 @@ debug_output = config_batch.debug_output ?? debug_output;
 probe = config_batch.probe ?? probe;
 force_anchor_locator = config_batch.force_anchor_locator ?? force_anchor_locator;
 attribute_sdk = config_batch.attribute_sdk ?? attribute_sdk;
+full_capture = config_batch.full_capture ?? full_capture;
 setConfigExtensions(config_batch.extensions ?? {});
+initStage("learned-module-cache", () => installLearnedModuleCache(config_batch.learned_plaintext), false);
+initStage("learned-plaintext-cache", () => installLearnedPlaintextCache(), false);
 anti_root = initStage("anti-handshake", () => recvHandshake("anti", anti_root, "antiroot"));
 initStage("pipeline-init", () => initializePipeline(parsedPatterns ?? void 0, experimental));
 initStage("ssl-layout-autolocate", () => installSslLayoutAutoLocate(), false);
@@ -52350,6 +59567,10 @@ function planForTarget(target) {
 }
 function load_os_specific_agent() {
   const target = initStage("platform-detect", () => detectTarget());
+  if (target === "android") {
+    initStage("java-array-class-init-guard", () => devlog(`[java] array class-init guard: ${installArrayClassInitGuard(Java, NULL)}`), false);
+    initStage("java-jvmti-plugin-guard", () => devlog(`[java] JVMTI plugin guard: ${installJvmtiPluginGuard(Java, (msg) => devlog(`[java] ${msg}`))}`), false);
+  }
   const plan = planForTarget(target);
   log(`Running Script on ${plan.label}`);
   send({ contentType: "platform_report", platform: plan.label, target, probe, abi: AGENT_ABI_VERSION });
@@ -52395,6 +59616,7 @@ export {
   enable_socket_tracing,
   experimental,
   force_anchor_locator,
+  full_capture,
   getOffsets,
   getParsedPatterns,
   install_lsass_hook,

@@ -15,10 +15,14 @@ import { pcap_enabled, getParsedPatterns, offsets, quic_capture_mode, quic_egres
 import { MANGLED_SYMBOLS, LABEL_TO_KEY, KEY_TO_LABEL } from "../shared/google_quiche_offsets.js";
 import { quicConnectionTracker, ObservedPeer } from "../shared/quic_connection_tracker.js";
 import { QuicheHookObject } from "../shared/quiche_layout.js";
-import { resolveQuicheRecord, resolveQuicheSessionRecord, sendQuicheBody } from "../shared/quiche_records.js";
-import { bodyHookReports, installQuicheFrameHooks } from "../shared/quiche_frame_capture.js";
-import { findNonExportedSymbols, getBaseAddress, decodeSockaddr, readSockaddrFamily } from "../../shared/shared_functions.js";
+import { resolveQuicheRecord, resolveQuicheSessionRecord } from "../shared/quiche_records.js";
+import { awaitQuicheFrameHooks, installQuicheFrameHooks, reportQuicheBody } from "../shared/quiche_frame_capture.js";
+import { FrameHookGate } from "../shared/quiche_frame_hook_gate.js";
+import { findNonExportedSymbols, decodeSockaddr, readSockaddrFamily } from "../../shared/shared_functions.js";
+import type { ScanStatus } from "../../shared/arm64_xref.js";
 import { PatternStrategy } from "../../shared/strategies/pattern_strategy.js";
+import { QuicheScanResult, QuicheSymbolSources, resolveQuicheSymbolsWith } from "../shared/quiche_symbol_resolution.js";
+import { missFingerprint } from "../../shared/learned_module_cache.js";
 import { isReadable, safeReadPointer, safeReadU8, safeReadULong, safeReadUtf8, resetReadableCache } from "../../util/safe_memory.js";
 import { currentPlatformKey, normalizeArchKey } from "../../util/process_infos.js";
 import { nativeSocketObserver, NativeSocketObserver } from "../../shared/native_socket_observer.js";
@@ -786,17 +790,103 @@ function dumpHits<T>(linePrefix: string, hits: T[], maxShown: number, render: (h
     }
 }
 
+type QuicheKey = keyof typeof MANGLED_SYMBOLS;
+
+// Export table (works in unstripped builds; rare for release Chrome/Cronet).
+function exportedQuicheSymbol(mod: Module | null, moduleName: string, key: QuicheKey): NativePointer | null {
+    if (!mod) return null;
+    try {
+        const addr = mod.findExportByName(getMangledSymbol(key));
+        if (addr && !addr.isNull()) {
+            devlog("[Google QUICHE] found " + key + " via symbol export in " + moduleName);
+            return addr;
+        }
+    } catch (_e) { /* fall through */ }
+    return null;
+}
+
+// Single batch symbol table enumeration. Underscore-tolerant matching is
+// handled inside findNonExportedSymbols.
+function symtabQuicheSymbols(moduleName: string, keys: QuicheKey[]): QuicheScanResult<QuicheKey> {
+    const found = new Map<QuicheKey, NativePointer>();
+    const status: ScanStatus = { complete: true };
+    const symResults = findNonExportedSymbols(moduleName, keys.map(getMangledSymbol), status);
+    for (const key of keys) {
+        const addr = symResults.get(getMangledSymbol(key));
+        if (addr && !addr.isNull()) {
+            devlog("[Google QUICHE] found " + key + " via symbol table in " + moduleName);
+            found.set(key, addr);
+        }
+    }
+    return { found, complete: status.complete };
+}
+
+// Byte-pattern scan (stripped libs, e.g. libmonochrome/libcronet). Reuses the
+// PatternStrategy libtype lookup + async Memory.scan (tryHookAsync) + `?`
+// wildcards verbatim. Throws when no patterns are loaded: that is no scan, so
+// its misses must not be cached.
+async function patternQuicheSymbols(strategy: PatternStrategy | null, moduleName: string,
+                                    keys: QuicheKey[]): Promise<QuicheScanResult<QuicheKey>> {
+    const found = new Map<QuicheKey, NativePointer>();
+    if (!strategy) throw new Error("no patterns loaded");
+    const labels = keys.map(k => KEY_TO_LABEL[k]).filter(Boolean);
+    const status: ScanStatus = { complete: true };
+    const res = await strategy.tryHookAsync(moduleName, "google_quiche", labels, status);
+    res.resolvedAddresses.forEach((addr, label) => {
+        const key = LABEL_TO_KEY[label];
+        if (key && keys.includes(key) && !found.has(key)) {
+            found.set(key, addr);
+            devlog(`[Google QUICHE] found ${key} via pattern in ${moduleName}`);
+        }
+    });
+    return { found, complete: status.complete };
+}
+
+// Static --offsets (manual override / fallback). Mirrors resolveOffsets()
+// inline (our `resolved` is a Map, not the object-of-objects resolveOffsets expects).
+function userQuicheOffsetEntry(key: QuicheKey): { address: string; absolute?: boolean } | null {
+    if ((offsets as any) === "{OFFSETS}" || !(offsets as any).google_quiche) return null;
+    return (offsets as any).google_quiche[KEY_TO_LABEL[key]] || null;
+}
+
+function userQuicheOffset(mod: Module | null, key: QuicheKey): NativePointer | null {
+    const entry = userQuicheOffsetEntry(key);
+    if (!entry) return null;
+    const a = ptr(entry.address);
+    return (entry.absolute || mod === null) ? a : mod.base.add(a);
+}
+
+// A cached miss only holds for the symbol names and patterns that were tried
+// (user patterns file, upgraded built-ins), so they key its marker value.
+function quicheMissFingerprinter(strategy: PatternStrategy | null, moduleName: string): (key: QuicheKey) => number {
+    return (key) => {
+        const patterns = strategy ? strategy.patternsFor(moduleName, "google_quiche", KEY_TO_LABEL[key]) : [];
+        return missFingerprint(["symbols", ...Object.values(MANGLED_SYMBOLS[key]), "patterns", ...patterns]);
+    };
+}
+
+function quicheSymbolSources(mod: Module | null, moduleName: string): QuicheSymbolSources<QuicheKey> {
+    // One PatternStrategy per resolve, shared by the scan and the miss fingerprints.
+    const parsed = getParsedPatterns();
+    const strategy = parsed ? new PatternStrategy(parsed) : null;
+    return {
+        exported: (key) => exportedQuicheSymbol(mod, moduleName, key),
+        symtab: (keys) => symtabQuicheSymbols(moduleName, keys),
+        patterns: (keys) => patternQuicheSymbols(strategy, moduleName, keys),
+        userOffset: (key) => userQuicheOffset(mod, key),
+        hasUserOffset: (key) => userQuicheOffsetEntry(key) !== null,
+        missFingerprint: quicheMissFingerprinter(strategy, moduleName),
+    };
+}
+
 /**
  * Batch-resolve all QUICHE mangled symbols in a single pass using the same
- * multi-strategy approach as Neqo. Returns a map of key → NativePointer.
+ * multi-source approach as Neqo (order and cache rules: resolveQuicheSymbolsWith).
+ * Returns a map of key → NativePointer.
  *
- * Strategies tried in order:
- * 1. Export table (works in unstripped builds; rare for release Chrome/Cronet)
- * 2. Symbol table via single enumerateSymbols() pass (works on Mainline Cronet
- *    APEX builds where the QUICHE C++ symbols are imported into the dynsym
- *    table but not exported — confirmed via runtime inspection of
- *    libmainlinecronet.<ver>.so on Pixel 5 / Cronet 141)
- * 3. Byte-pattern scan (stripped libs, e.g. libmonochrome / libcronet)
+ * The symbol table step works on Mainline Cronet APEX builds where the QUICHE
+ * C++ symbols are imported into the dynsym table but not exported (confirmed via
+ * runtime inspection of libmainlinecronet.<ver>.so on Pixel 5 / Cronet 141).
  *
  * NOTE: a DebugSymbol.findFunctionsNamed() strategy was intentionally removed —
  * on Android/Cronet it triggers cross-module debug-info parsing that SIGSEGVs the
@@ -804,95 +894,24 @@ function dumpHits<T>(linePrefix: string, hits: T[], maxShown: number, render: (h
  * via research/quiche_repro/). Symbol-table + byte-pattern cover resolution without it.
  */
 async function resolveQuicheSymbols(moduleName: string): Promise<Map<keyof typeof MANGLED_SYMBOLS, NativePointer>> {
-    const resolved = new Map<keyof typeof MANGLED_SYMBOLS, NativePointer>();
-    const keys = Object.keys(MANGLED_SYMBOLS) as Array<keyof typeof MANGLED_SYMBOLS>;
-    const remaining: Array<keyof typeof MANGLED_SYMBOLS> = [];
-
-    // Strategy 1: export table
+    const startedAt = Date.now();
     let mod: Module | null = null;
     try {
         mod = Process.findModuleByName(moduleName);
     } catch (_e) { /* ignore */ }
 
-    for (const key of keys) {
-        const mangledName = getMangledSymbol(key);
-        if (mod) {
-            try {
-                const addr = mod.findExportByName(mangledName);
-                if (addr && !addr.isNull()) {
-                    devlog("[Google QUICHE] found " + key + " via symbol export in " + moduleName);
-                    resolved.set(key, addr);
-                    continue;
-                }
-            } catch (_e) { /* fall through */ }
-        }
-        remaining.push(key);
-    }
-    if (remaining.length === 0) return resolved;
-
-    // Strategy 2: single batch symbol table enumeration. Underscore-tolerant
-    // matching is handled inside findNonExportedSymbols.
-    const symResults = findNonExportedSymbols(moduleName, remaining.map(getMangledSymbol));
-    for (const key of remaining) {
-        const addr = symResults.get(getMangledSymbol(key));
-        if (addr && !addr.isNull()) {
-            devlog("[Google QUICHE] found " + key + " via symbol table in " + moduleName);
-            resolved.set(key, addr);
-        }
-    }
-
-    // (Former Strategy 3 — DebugSymbol.findFunctionsNamed — removed: it SIGSEGVs the
-    // Cronet target on Android. Resolution now relies on the symbol table above and
-    // the byte-pattern scan below.)
-
-    // --- Strategy 3: byte-pattern scan (stripped libs, e.g. libmonochrome/libcronet) ---
-    // Symbols (1-2) always win; patterns only fill still-missing keys. Reuses the
-    // PatternStrategy libtype lookup + async Memory.scan (tryHookAsync) + `?`
-    // wildcards verbatim.
-    let missing = (Object.keys(MANGLED_SYMBOLS) as (keyof typeof MANGLED_SYMBOLS)[])
-        .filter(k => !resolved.has(k));
-    if (missing.length > 0) {
-        const parsed = getParsedPatterns();
-        if (parsed) {
-            const labels = missing.map(k => KEY_TO_LABEL[k]).filter(Boolean);
-            try {
-                const ps = new PatternStrategy(parsed);
-                const res = await ps.tryHookAsync(moduleName, "google_quiche", labels);
-                res.resolvedAddresses.forEach((addr, label) => {
-                    const key = LABEL_TO_KEY[label];
-                    if (key && !resolved.has(key)) {
-                        resolved.set(key, addr);
-                        devlog(`[Google QUICHE] found ${key} via pattern in ${moduleName}`);
-                    }
-                });
-            } catch (e) {
-                devlog_debug(`[Google QUICHE] pattern strategy failed: ${e}`);
-            }
-        }
-    }
-
-    // --- Strategy 4: static offsets (manual override / fallback) ---
-    // Mirrors resolveOffsets() inline (our `resolved` is a Map, not the
-    // object-of-objects resolveOffsets expects). Fills only still-missing keys.
-    missing = (Object.keys(MANGLED_SYMBOLS) as (keyof typeof MANGLED_SYMBOLS)[])
-        .filter(k => !resolved.has(k));
-    if (missing.length > 0 && (offsets as any) !== "{OFFSETS}" && (offsets as any).google_quiche) {
-        const base = getBaseAddress(moduleName);
-        const gq = (offsets as any).google_quiche;
-        for (const k of missing) {
-            const entry = gq[KEY_TO_LABEL[k]];
-            if (!entry) continue;
-            const a = ptr(entry.address);
-            resolved.set(k, (entry.absolute || base == null) ? a : base.add(a));
-            devlog(`[Google QUICHE] applied offset for ${k} in ${moduleName}`);
-        }
-    }
+    const keys = Object.keys(MANGLED_SYMBOLS) as QuicheKey[];
+    const { resolved, fromCache } = await resolveQuicheSymbolsWith(mod, keys, quicheSymbolSources(mod, moduleName));
+    devlog_debug(`[Google QUICHE] ${moduleName}: symbols resolved in ${Date.now() - startedAt} ms ` +
+                 `(${fromCache} from learned cache)`);
 
     // Debug-only: dump every candidate considered for the three chain labels
     // (exports + symtab hits + pattern hits) plus which one we picked. No-op
     // when `-do` / debug_output is off, so the expensive dynsym walk only
-    // runs when the user actually wants the diagnostic.
-    await dumpChainCandidatesDebug(moduleName, resolved);
+    // runs when the user actually wants the diagnostic. Not awaited: its full
+    // r-x sweep must not delay the hooks.
+    dumpChainCandidatesDebug(moduleName, resolved)
+        .catch((e) => devlog_debug(`[chain-debug] enumeration failed in ${moduleName}: ${e}`));
 
     return resolved;
 }
@@ -915,7 +934,7 @@ export async function installGoogleQuicheHooks(moduleName: string): Promise<bool
     installQuicSocketObserver();
 
     // Batched resolution: single enumerateSymbols() pass for all QUICHE symbols.
-    // Awaited because the pattern-scan fallback (Strategy 3) now uses the async
+    // Awaited because the pattern-scan fallback now uses the async
     // Memory.scan so the JS thread can service a gracefulDetach RPC mid-scan.
     // Default "stream" mode: prefer the STREAM-frame boundary (raw HTTP/3 incl.
     // HEADERS). Installed FIRST — before the slower symbol/pattern resolution —
@@ -925,11 +944,14 @@ export async function installGoogleQuicheHooks(moduleName: string): Promise<bool
     // connections that started before the hooks (see quiche_connection_capture.ts).
     // The symbol/pattern resolution runs concurrently (its pattern scan is a
     // native async Memory.scan); the frame hooks still attach as soon as they
-    // are located, and the body hooks below need both results anyway.
-    const [frameHooked, resolved] = await Promise.all([
-        quic_capture_mode !== "app-api" ? installQuicheFrameHooks(moduleName) : Promise.resolve(false),
-        resolveQuicheSymbols(moduleName),
-    ]);
+    // are located. Not awaited together: the body hooks attach as soon as the
+    // symbols resolve, so preconnected connections are captured while the frame
+    // locator still scans; they read the frame outcome per call. Only the Readv
+    // decision below waits for it.
+    const frameGate = new FrameHookGate(
+        quic_capture_mode !== "app-api" ? installQuicheFrameHooks(moduleName) : Promise.resolve(false));
+    awaitQuicheFrameHooks(moduleName, frameGate.settled());
+    const resolved = await resolveQuicheSymbols(moduleName);
     const readvAddr = resolved.get("readv") || null;
     const quicStreamReadvAddr = resolved.get("quicStreamReadv") || null;
     const sequencerReadvAddr = resolved.get("sequencerReadv") || null;
@@ -939,7 +961,7 @@ export async function installGoogleQuicheHooks(moduleName: string): Promise<bool
     const onHeadersDecodedAddr = resolved.get("onHeadersDecoded") || null;
     const writeHeadersAddr = resolved.get("writeHeaders") || null;
     // PHASE-2 CHAIN-FALLBACK addresses. Resolved through the same pattern path
-    // as writeHeadersAddr (Strategy 3 in resolveQuicheSymbols); attached
+    // as writeHeadersAddr (byte patterns in resolveQuicheSymbols); attached
     // selectively below as a winner-takes-all chain. Patterns live in
     // quic_patterns.json; mangled names in MANGLED_SYMBOLS are best-effort and
     // only matter on unstripped builds (every Cronet release strips them).
@@ -998,7 +1020,7 @@ export async function installGoogleQuicheHooks(moduleName: string): Promise<bool
         || onHeadersDecodedAddr || writeHeadersAddr
         || chromiumWriteHeadersAddr || sessionWriteHeadersOnHeadersStreamAddr
     );
-    if (!hasAnyResolvedAddress && frameHooked) return true;
+    if (!hasAnyResolvedAddress && await frameGate.settled()) return true;
     if (!hasAnyResolvedAddress) {
         devlog("[Google QUICHE] could not resolve any stream functions in " + moduleName);
         devlog("[Google QUICHE] note: stripped release builds require byte patterns in default_patterns.json");
@@ -1011,30 +1033,7 @@ export async function installGoogleQuicheHooks(moduleName: string): Promise<bool
         return false;
     }
 
-    // Attach to every Readv variant that resolves. Cronet's release ARM64 builds
-    // inline QuicSpdyStream::Readv — QuicStreamSequencer::Readv is the non-virtual
-    // post-decrypt entry that survives devirtualisation, so it's the reliable one.
-    // The raw lower-boundary Readv hooks belong to the "stream" capture mode.
-    // In "app-api" mode we capture at the application-API boundary
-    // (OnDataFramePayload / WriteOrBufferBody) instead, so skip the raw-readv
-    // install loop entirely. The app-API hooks below run in both modes.
     log(`[*] Google QUICHE: quic_capture_mode = "${quic_capture_mode}"`);
-    if (quic_capture_mode !== "app-api" && !frameHooked) {
-        const readvTargets: Array<[NativePointer | null, string, string, QuicheHookObject]> = [
-            [readvAddr, "QuicSpdyStream_Readv", "QuicSpdyStream::Readv", "stream"],
-            [quicStreamReadvAddr, "QuicStream_Readv", "QuicStream::Readv", "stream"],
-            [sequencerReadvAddr, "QuicStreamSequencer_Readv", "QuicStreamSequencer::Readv", "sequencer"],
-        ];
-        for (const [addr, label, prettyName, kind] of readvTargets) {
-            if (!addr || addr.isNull()) continue;
-            try {
-                installReadvHook(addr, label, moduleName, kind);
-                log(`[*] Hooked ${prettyName} for plaintext capture`);
-            } catch (e) {
-                devlog_error(`[Google QUICHE] failed to hook ${prettyName}: ${e}`);
-            }
-        }
-    }
 
     // PRIMARY INCOMING PATH: QuicSpdyStream::HttpDecoderVisitor::OnDataFramePayload.
     // Chrome's OnDataAvailable() drains the sequencer via GetReadableRegion()+
@@ -1076,8 +1075,7 @@ export async function installGoogleQuicheHooks(moduleName: string): Promise<bool
                         // stream so the body shares the request's key and 4-tuple.
                         const record = resolveQuicheRecord(
                             moduleName, args[0], "decoder-visitor", "QuicSpdyStream_OnDataFramePayload");
-                        if (frameHooked && !bodyHookReports(record)) return;
-                        sendQuicheBody(record, data);
+                        reportQuicheBody(record, data, frameGate.hooked);
                     } catch (e) {
                         devlog_error("[QuicSpdyStream_OnDataFramePayload] onEnter threw: " + e);
                     }
@@ -1415,13 +1413,32 @@ export async function installGoogleQuicheHooks(moduleName: string): Promise<bool
                     if (!this.data || this.dataLen === 0) return;
                     const record = resolveQuicheRecord(
                         moduleName, this.streamObj, "stream", "QuicSpdyStream_WriteOrBufferBody", "write");
-                    if (frameHooked && !bodyHookReports(record)) return;
-                    sendQuicheBody(record, this.data);
+                    reportQuicheBody(record, this.data, frameGate.hooked);
                 },
             });
             log("[*] Hooked QuicSpdyStream::WriteOrBufferBody for plaintext capture");
         } catch (e) {
             devlog_error("[Google QUICHE] failed to hook WriteOrBufferBody: " + e);
+        }
+    }
+
+    // Readv hooks: QuicStreamSequencer::Readv survives Cronet's inlining of QuicSpdyStream::Readv.
+    // Skipped in "app-api" mode, and awaited last: unneeded once the frame hooks carry these bytes.
+    const frameHooked = await frameGate.settled();
+    if (quic_capture_mode !== "app-api" && !frameHooked) {
+        const readvTargets: Array<[NativePointer | null, string, string, QuicheHookObject]> = [
+            [readvAddr, "QuicSpdyStream_Readv", "QuicSpdyStream::Readv", "stream"],
+            [quicStreamReadvAddr, "QuicStream_Readv", "QuicStream::Readv", "stream"],
+            [sequencerReadvAddr, "QuicStreamSequencer_Readv", "QuicStreamSequencer::Readv", "sequencer"],
+        ];
+        for (const [addr, label, prettyName, kind] of readvTargets) {
+            if (!addr || addr.isNull()) continue;
+            try {
+                installReadvHook(addr, label, moduleName, kind);
+                log(`[*] Hooked ${prettyName} for plaintext capture`);
+            } catch (e) {
+                devlog_error(`[Google QUICHE] failed to hook ${prettyName}: ${e}`);
+            }
         }
     }
 

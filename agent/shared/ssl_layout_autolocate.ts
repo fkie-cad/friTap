@@ -33,7 +33,7 @@ import { pairip_safe } from "../fritap_agent.js";
 /** Libraries that are never BoringSSL: their ssl_st differs, so a lookup is pointless. */
 export const NON_BORINGSSL_MODULE_PATTERNS: readonly RegExp[] = [
     /^libssl[.-]/i, /^libcrypto[.-]/i, /gnutls/i, /nss3/i, /wolfssl/i, /mbedtls/i,
-    /^libs2n/i, /matrixssl/i, /rustls/i, /schannel/i,
+    /^libs2n/i, /matrixssl/i, /rustls/i, /schannel/i, /nspr4/i,
 ];
 
 export interface SslLayoutAutoLocateDeps {

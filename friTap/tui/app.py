@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
 try:
     from textual.app import App, ComposeResult  # noqa: F401
-    from textual.binding import Binding  # noqa: F401
+    from textual.binding import Binding
     from textual.widgets import Footer, Header  # noqa: F401
     TEXTUAL_AVAILABLE = True
 except ImportError:
@@ -53,12 +53,10 @@ class AppState:
     live_mode: str = ""  # "", "wireshark", "live_pcapng"
     full_capture: bool = False
     owner_capture: bool = False  # Android/Linux: per-app (UID) kernel-scoped keys + PCAP
-    protocol: str = "tls"  # "tls", "ipsec", "ssh", "auto" (primary; back-compat)
-    # The full protocol SET this capture writes keys for. Kept in sync with
-    # `protocol` (today the wizard is single-select, so this is [protocol]); a
-    # future multi-select populates it directly. The post-capture keylog resolver
-    # reads this so the READ side matches the multi-protocol WRITE side (which
-    # splits by config.protocols) — see capture_controller._resolve_keylog_files.
+    protocol: str = "tls"  # "tls", "ipsec", "ssh", "auto" (primary)
+    # Full protocol set this capture writes keys for; kept in sync with `protocol`.
+    # The post-capture keylog resolver reads it to match the write side, which
+    # splits by config.protocols (see capture_controller._resolve_keylog_files).
     protocols: List[str] = field(default_factory=lambda: ["tls"])
     view_mode: str = "legacy"  # "legacy", "flow"
     library_scan: bool = False
@@ -77,7 +75,7 @@ class AppState:
 if TEXTUAL_AVAILABLE:
     from .modals.quit_modal import QuitConfirmModal
     from .screens.main_screen import MainScreen
-    from .themes import FRITAP_DARK, FRITAP_LIGHT, c, set_theme
+    from .themes import FRITAP_DARK, FRITAP_LIGHT, c, register_fritap_themes, set_theme
 
     class FriTapApp(App):
         """The friTap interactive TUI application."""
@@ -125,8 +123,7 @@ if TEXTUAL_AVAILABLE:
             self._replay_file = replay_file
             self._pcap_to_tap_file = pcap_to_tap_file
             # Register themes before CSS is parsed so $fritap-* variables resolve
-            self.register_theme(FRITAP_DARK)
-            self.register_theme(FRITAP_LIGHT)
+            register_fritap_themes(self)
             saved = self._load_theme_pref()
             if saved == "fritap-light":
                 self.theme = "fritap-light"
@@ -335,7 +332,7 @@ if TEXTUAL_AVAILABLE:
         if not TEXTUAL_AVAILABLE:
             import sys
             print("Error: The TUI requires the 'textual' package.")
-            print("Install it with: pip install fritap[tui]  or  pip install textual>=0.80.0")
+            print("Install it with: pip install fritap[tui]  or  pip install textual>=0.86.0")
             sys.exit(1)
         from friTap.fritap_utility import mute_console_handlers
         app = FriTapApp(
@@ -355,5 +352,5 @@ else:
     ) -> None:
         import sys
         print("Error: The TUI requires the 'textual' package.")
-        print("Install it with: pip install fritap[tui]  or  pip install textual>=0.80.0")
+        print("Install it with: pip install fritap[tui]  or  pip install textual>=0.86.0")
         sys.exit(1)

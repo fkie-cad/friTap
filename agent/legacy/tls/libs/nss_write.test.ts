@@ -1,5 +1,5 @@
-// Unit tests for the NSS PR_Write plaintext hook of both NSS hooker copies
-// (agent/legacy/tls/libs/nss.ts: Android; agent/tls/libs/nss.ts: Linux/Windows/macOS legacy).
+// Unit tests for the NSS PR_Write plaintext hook (agent/tls/libs/nss.ts, shared by both
+// agent trees since the legacy copy agent/legacy/tls/libs/nss.ts was consolidated into it).
 //
 // Run: npm run test:agent
 //
@@ -13,7 +13,6 @@ import assert from "node:assert/strict";
 import "../../../shared/frida-test-stubs.js";
 import { installFakes, call, take, addr, mem, int } from "../../../shared/write_hook_fakes.js";
 
-import { NSS as LegacyNSS } from "./nss.js";
 import { NSS } from "../../../tls/libs/nss.js";
 
 installFakes();
@@ -25,7 +24,7 @@ function prNetAddr(sa: any): number {
     return 0;
 }
 
-for (const [label, Hooker] of [["legacy (Android)", LegacyNSS], ["tls/libs", NSS]] as const) {
+for (const [label, Hooker] of [["tls/libs", NSS]] as const) {
     const MOD = `libnss3-${label}.so`;
     const H: any = Hooker;
     H.getsockname = (_fd: any, sa: any) => prNetAddr(sa);

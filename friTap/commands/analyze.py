@@ -60,7 +60,7 @@ def _filter_min_severity(findings: list["Finding"], min_severity: str) -> list["
 
     Thin wrapper over :class:`~friTap.analysis.filtering.FindingFilter` (the
     single filtering primitive). An unknown *min_severity* falls back to
-    ``"info"`` (keep all), preserving the historical behaviour byte-for-byte.
+    ``"info"`` (keep all).
     """
     from friTap.analysis.filtering import FindingFilter, apply
 
@@ -120,6 +120,9 @@ def analyze_tap_report(
     category: str | None = None,
     show_pii: bool = False,
     masvs: bool = False,
+    applovin_sdk_keys: "list[str] | None" = None,
+    applovin_salts: "list[str] | None" = None,
+    app_bundles: "list[str] | None" = None,
 ) -> AnalyzeReport:
     """Run analyzers over *tap_file* and return findings + a rendered report.
 
@@ -142,6 +145,9 @@ def analyze_tap_report(
       (forwarded to analyzers as ``reveal_pii``; default redacts).
     * ``masvs`` — add the OWASP MASVS v2.1 controls each finding maps to
       (a column/field in the report); default off leaves the report unchanged.
+    * ``applovin_sdk_keys`` / ``applovin_salts`` (hex) / ``app_bundles``
+      (APK/IPA paths) — key material for the ``applovin_mediate`` analyzer,
+      merged with the ``FRITAP_APPLOVIN_*`` environment variables.
 
     Raises ``ValueError`` for an unknown *report_format* or an unresolvable
     analyzer spec, ``ImportError`` for a bad ``analyzer_path``; any .tap
@@ -161,6 +167,9 @@ def analyze_tap_report(
         include_private_ips=include_private_ips,
         protobuf_schema=protobuf_schema,
         reveal_pii=show_pii,
+        applovin_sdk_keys=applovin_sdk_keys,
+        applovin_salts=applovin_salts,
+        app_bundles=app_bundles,
     )
     findings = analyze_tap_multi(analyzers, tap_file)
     normalized_severity = min_severity if min_severity in _SEVERITY_ORDER else "info"
@@ -374,7 +383,36 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Path to a protobuf schema for the protobuf analyzer.",
     )
+    _add_applovin_arguments(parser)
     return parser
+
+
+def _add_applovin_arguments(parser: argparse.ArgumentParser) -> None:
+    """Key-material flags for the applovin_mediate analyzer (all repeatable)."""
+    parser.add_argument(
+        "--applovin-sdk-key",
+        dest="applovin_sdk_keys",
+        action="append",
+        default=None,
+        help="AppLovin SDK key (86 chars) for decrypting /1.0/mediate payloads. "
+             "Repeatable; also read from FRITAP_APPLOVIN_SDK_KEY.",
+    )
+    parser.add_argument(
+        "--applovin-salt",
+        dest="applovin_salts",
+        action="append",
+        default=None,
+        help="AppLovin SDK salt as hex (32 bytes). Repeatable; also read from "
+             "FRITAP_APPLOVIN_SALT.",
+    )
+    parser.add_argument(
+        "--app-bundle",
+        dest="app_bundles",
+        action="append",
+        default=None,
+        help="APK/IPA to mine for the AppLovin SDK key and salt. Repeatable; "
+             "also read from FRITAP_APPLOVIN_BUNDLE.",
+    )
 
 
 def run_analyze_cli(argv: list[str]) -> int:
@@ -431,6 +469,9 @@ def run_analyze_cli(argv: list[str]) -> int:
             category=args.category,
             show_pii=args.show_pii,
             masvs=args.masvs,
+            applovin_sdk_keys=args.applovin_sdk_keys,
+            applovin_salts=args.applovin_salts,
+            app_bundles=args.app_bundles,
         )
     except Exception as exc:  # noqa: BLE001 — surface any read/analyze failure cleanly
         logger.error("Analysis failed: %s", exc)

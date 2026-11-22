@@ -3,9 +3,8 @@
 Decrypted MTProto (cloud) and Secret-Chat (E2E) plaintexts are TL-serialized
 binary objects, not a byte-sniffable wire protocol: blind detection mislabels
 them (a ``decryptedMessageLayer`` starts ``89 17`` = WebSocket FIN|PING). These
-parsers therefore never claim data via :meth:`can_parse`; the registry selects
-them only by the flow's transport: the registry pins each to its transport
-(``friTap.parsers.registry._BUILTIN_LAZY_PINS``).
+parsers therefore never claim data via :meth:`can_parse`; the registry pins
+each to its flow transport (``friTap.parsers.registry._BUILTIN_LAZY_PINS``).
 
 Each ``feed`` call is exactly one decrypted packet: no buffering, no trailing
 data. Decoding is delegated to the tolerant helpers in

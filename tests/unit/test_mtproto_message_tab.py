@@ -32,6 +32,7 @@ from friTap.flow.models import Flow, FlowSummary
 # chat-bubble Table/Panel) to visible text so substring assertions work.
 # ---------------------------------------------------------------------------
 from tests.unit._render_helpers import RenderingFakeLog as _FakeLog
+from tests.unit._tui_flow_helpers import make_flow_detail_widget
 
 
 def _mtproto_flow(messages, **layer_kwargs) -> Flow:
@@ -44,10 +45,7 @@ def _mtproto_flow(messages, **layer_kwargs) -> Flow:
 
 def _make_widget():
     """A FlowDetailWidget instance with a fake message log, no Textual app."""
-    from friTap.tui.widgets.flow_detail import FlowDetailWidget
-    w = FlowDetailWidget.__new__(FlowDetailWidget)
-    w._message_log = _FakeLog()
-    return w
+    return make_flow_detail_widget()
 
 
 # ---------------------------------------------------------------------------
@@ -252,8 +250,7 @@ def test_transport_summary_uses_portable_glyph():
 def test_raw_layer_view_shows_method_for_transport():
     """The raw layer view names WHICH rpc/service/ack each transport record is
     (the TL ``method``) and prints a one-line category legend."""
-    from friTap.tui.widgets.flow_detail import FlowDetailWidget
-    w = FlowDetailWidget.__new__(FlowDetailWidget)
+    w = make_flow_detail_widget()
     layer = MtprotoLayer(transport="abridged")
     layer.messages = [
         {"direction": "read", "kind": "rpc", "body": "", "method": "users.getUsers"},
@@ -276,9 +273,8 @@ def test_l_key_opens_raw_layer_view_from_message_tab():
     from friTap.tui.widgets.flow_detail import (
         _TAB_LAYERS,
         _TAB_MESSAGE,
-        FlowDetailWidget,
     )
-    w = FlowDetailWidget.__new__(FlowDetailWidget)
+    w = make_flow_detail_widget()
     flow = _mtproto_flow([{"direction": "read", "kind": "text", "body": "hi"}])
     w._current_flow = flow
     w._current_layer_idx = 0
@@ -453,8 +449,7 @@ def test_fixture_mtproto_message_tab_renders_bodies():
 
 def test_raw_layer_view_shows_escaped_message_note():
     """A per-message parser ``note`` (only present when set) is rendered, escaped."""
-    from friTap.tui.widgets.flow_detail import FlowDetailWidget
-    w = FlowDetailWidget.__new__(FlowDetailWidget)
+    w = make_flow_detail_widget()
     layer = MtprotoLayer(transport="abridged")
     layer.messages = [
         {"direction": "read", "kind": "rpc", "body": "", "method": "users.getUsers",

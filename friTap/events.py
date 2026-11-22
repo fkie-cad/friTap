@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 
 """
-Event bus system for friTap.
+Typed events and the thread-safe publish-subscribe EventBus.
 
-Replaces the monolithic on_fritap_message() if/elif chain with a
-publish-subscribe event system. Output handlers, the TUI, and
-external integrations subscribe to typed events.
+Output handlers, the TUI and external integrations subscribe to event classes.
 """
 
 from __future__ import annotations
@@ -16,9 +14,6 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple, Type
 
-# ---------------------------------------------------------------------------
-# Base event
-# ---------------------------------------------------------------------------
 
 @dataclass
 class FriTapEvent:
@@ -28,37 +23,24 @@ class FriTapEvent:
     _cancelled: bool = field(default=False, init=False, repr=False, compare=False)
 
     def cancel(self) -> None:
-        """Mark this event as cancelled.
-
-        Cancelled events are still delivered to all subscribers, but
-        handlers that check ``event.cancelled`` (e.g. ConsoleOutputHandler)
-        can choose to skip processing.  This follows the DOM
-        ``preventDefault()`` pattern — advisory, not enforced.
-        """
+        """Mark this event cancelled. Advisory: still delivered, handlers may skip it (like ``preventDefault()``)."""
         self._cancelled = True
 
     @property
     def cancelled(self) -> bool:
-        """Return whether this event has been cancelled."""
+        """Whether :meth:`cancel` was called."""
         return self._cancelled
 
 
-# ---------------------------------------------------------------------------
-# Concrete events
-# ---------------------------------------------------------------------------
-
 @dataclass
 class KeylogEvent(FriTapEvent):
-    """Emitted when key material is extracted for any supported protocol.
+    """Key material extracted for any protocol.
 
-    Carries either a pre-formatted keylog line (``key_data``) or a structured
-    payload (``payload``) — protocol-specific :class:`KeylogFormatter`
-    instances translate it to Wireshark-loadable lines.
+    Carries a keylog line (``key_data``) or a structured ``payload`` that a
+    :class:`KeylogFormatter` turns into Wireshark lines.
 
-    Examples:
-      - TLS (NSS): ``key_data = "CLIENT_RANDOM <hex> <hex>"``
-      - SSH per-direction (informational): ``key_data = "SSH_ENC_KEY_C2S <hex>"``
-      - SSH KEX shared secret: ``payload = {"cookie": ..., "shared_secret": ...}``
+    Examples: TLS ``key_data = "CLIENT_RANDOM <hex> <hex>"``; SSH KEX
+    ``payload = {"cookie": ..., "shared_secret": ...}``.
     """
     key_data: str = ""
     payload: Optional[Dict[str, Any]] = None
@@ -74,26 +56,30 @@ class DatalogEvent(FriTapEvent):
     src_port: int = 0
     dst_addr: str = ""
     dst_port: int = 0
-    src_addr_raw: Any = 0       # Raw (int for IPv4, hex str for IPv6, for PCAP)
-    dst_addr_raw: Any = 0       # Raw (int for IPv4, hex str for IPv6, for PCAP)
+    src_addr_raw: Any = 0       # int for IPv4, hex str for IPv6 (for PCAP)
+    dst_addr_raw: Any = 0
     ss_family: str = "AF_INET"
     ssl_session_id: str = ""
     client_random: str = ""
     transport: str = "tcp"  # "tcp" or "udp" — controls pcap framing (QUIC=udp)
-    # HTTP/3 / QUIC fields (optional, additive, backward compatible)
-    http3_headers: Optional[list] = None  # decoded [[name, value], ...] (Boundary-4)
+    http3_headers: Optional[list] = None  # decoded [[name, value], ...]
     stream_id: Optional[int] = None
     quic_scid: str = ""
     quic_dcid: str = ""
     quic_stream_type: str = ""
-    # QUIC payload kind stamped by the agent: "stream" (raw HTTP/3 stream
-    # bytes) | "body" (de-framed DATA payload) | "" (untagged / not QUIC).
+    # "stream" (raw HTTP/3 stream bytes) | "body" (de-framed DATA payload) | "" (not QUIC).
     quic_payload: str = ""
+    # Connection predates the capture: control and QPACK streams were never seen.
+    quic_midstream: bool = False
+    # STREAM chunk offset and FIN, so a writer can rebuild the STREAM frame.
+    stream_offset: Optional[int] = None
+    fin: bool = False
     library: str = ""  # module that produced the record (e.g. libssl.so)
-    # Option 5 (additive): the endpoints above are a synthetic 198.18.0.0/15
-    # pin for an fd-less connection (see friTap.endpoint_pinner), never a real
-    # address. observed_* carry the real tuple when this record had one but the
-    # connection stays pinned to its synthetic tuple (one TCP stream).
+    # Arrival time when ``timestamp`` is back-dated (held record); packet writers use it.
+    received_at: Optional[float] = None
+    # The endpoints above are a synthetic 198.18.0.0/15 pin for an fd-less
+    # connection (see friTap.endpoint_pinner). observed_* hold the real tuple
+    # when this record had one but the connection stays pinned.
     endpoints_synthetic: bool = False
     observed_src_addr: str = ""
     observed_src_port: int = 0
@@ -112,25 +98,18 @@ class LibraryDetectedEvent(FriTapEvent):
 
 @dataclass
 class AntiTamperDetectedEvent(FriTapEvent):
-    """Emitted when a known anti-tamper / integrity-protection runtime (e.g.
-    Google PairIP, libpairipcore.so) is detected in the target process.
+    """An anti-tamper runtime (e.g. Google PairIP) was detected in the target.
 
-    ``skipped_loader_hook`` is True when friTap responded by skipping the inline
-    android_dlopen_ext loader hook to avoid a SIGSEGV (fkie-cad/friTap#64).
+    ``skipped_loader_hook`` is True when the inline android_dlopen_ext hook was skipped to avoid a SIGSEGV.
     """
     library: str = ""
     name: str = ""
     skipped_loader_hook: bool = False
 
 
-# Heap memory-scan (--memory-scan / -ms) findings do NOT use a dedicated event:
-# they flow through KeylogEvent tagged ``protocol="memscan"`` (with the parsed
-# label/client_random/secret/tier/source in ``payload``), mirroring the
-# ``--scan-keys-region`` scan-candidate path, so they reuse the shared keylog
-# output handler and the existing keylog subscribers.
+# Heap memory-scan findings have no dedicated event: they are KeylogEvents tagged
+# ``protocol="memscan"`` (label/client_random/secret/tier/source in ``payload``).
 
-
-# Session lifecycle event type constants
 SESSION_STARTED = "started"
 SESSION_RESUMED = "resumed"
 SESSION_ENDED = "ended"
@@ -146,7 +125,7 @@ class SessionEvent(FriTapEvent):
     protocol_version: str = ""  # TLS version, e.g. "TLS 1.3"
     server_name: str = ""
     alpn: str = ""  # negotiated ALPN protocol ("h2", "http/1.1", ...)
-    quic_version: str = ""  # QUIC transport version ("1", "2", ...) — QUIC only
+    quic_version: str = ""  # QUIC only ("1", "2", ...)
     client_random: str = ""
     connection_id: str = ""
     src_addr: str = ""
@@ -156,33 +135,24 @@ class SessionEvent(FriTapEvent):
 
     @property
     def cipher(self) -> str:
-        """Public alias for the negotiated cipher — single source of truth.
-
-        Historically ``cipher`` was a separate (and never-populated) dataclass
-        field, which let it drift from ``cipher_suite``. It is now a read-only
-        view onto ``cipher_suite`` so consumers that read ``.cipher`` always see
-        the one authoritative value. No producer ever set ``cipher`` directly.
-        """
+        """Read-only alias for ``cipher_suite``."""
         return self.cipher_suite
 
 
 @dataclass
 class CallerStackEvent(FriTapEvent):
-    """A connection's calling-thread backtrace, with its SDK when one matched.
+    """A connection's calling-thread backtrace, with its SDK when one matched (``--attribute-sdk``).
 
-    Emitted by :class:`~friTap.message_router.MessageRouter` for EVERY opt-in
-    ``caller_stack`` agent message (``--attribute-sdk``). The
-    :class:`~friTap.flow.collector.FlowCollector` joins it onto the flow by the
-    connection's ``client_random`` first, then the 4-tuple, then a real
-    ``ssl_session_id``; it stores the compact stack as ``flow.caller_stack`` and
-    stamps ``flow.sdk`` only when ``sdk`` is set. ``sdk`` is the trusted
-    ``{"sdk", "vendor", "category"}`` dict from the bundled signature table (see
-    :mod:`friTap.analysis.attribution.sdk`) on a classifier match, else
-    ``None``. Frame strings come from the target: they travel only under
+    The :class:`~friTap.flow.collector.FlowCollector` joins it onto the flow by
+    ``client_random``, then the 4-tuple, then a real ``ssl_session_id``, and
+    sets ``flow.sdk`` only when ``sdk`` is set. ``sdk`` is the trusted
+    ``{"sdk", "vendor", "category"}`` dict from the bundled signature table
+    (:mod:`friTap.analysis.attribution.sdk`), else ``None``.
+
+    Frame strings come from the target (untrusted): they travel only under
     ``untrusted`` (``native_frames[:16]`` as ``{module, symbol}``,
-    ``java_frames[:16]``) and as the top-level ``thread_name`` /
-    ``transport_module``, escaped and capped at 120 characters each. The event carries no key material or
-    plaintext.
+    ``java_frames[:16]``) and as ``thread_name`` / ``transport_module``, escaped
+    and capped at 120 characters. No key material or plaintext.
     """
     ssl_session_id: str = ""
     src_addr: str = ""
@@ -190,8 +160,7 @@ class CallerStackEvent(FriTapEvent):
     dst_addr: str = ""
     dst_port: int = 0
     sdk: Optional[Dict[str, Any]] = None
-    # Optional connection/thread identity (additive; empty/0 when the agent
-    # could not read it). client_random is the per-connection join key.
+    # Empty/0 when the agent could not read it. client_random is the join key.
     client_random: str = ""
     tid: int = 0
     thread_name: str = ""
@@ -227,11 +196,10 @@ class RequestContextEvent(FriTapEvent):
 
 @dataclass
 class ConsoleEvent(FriTapEvent):
-    """Emitted for console log messages from the agent.
+    """Console log message from the agent.
 
-    ``origin`` is :data:`AGENT_DEV_ORIGIN` for the agent's developer
-    diagnostics (``console_dev`` and the ``devlog_*`` levels), which only
-    belong in debug output; empty for ordinary console lines.
+    ``origin`` is :data:`AGENT_DEV_ORIGIN` for developer diagnostics
+    (``console_dev``, ``devlog_*``), which belong in debug output only.
     """
     message: str = ""
     level: str = "info"
@@ -249,10 +217,8 @@ def is_agent_dev_console(event: FriTapEvent) -> bool:
 
 @dataclass
 class HookBreadcrumbEvent(FriTapEvent):
-    """Emitted by the agent on entry of a crash-prone hook walk.
+    """Entry of a crash-prone hook walk; kept in memory so ``on_detach`` can name the last hook if the target dies.
 
-    Stored in memory only (never printed) so that, if the target process dies
-    inside a hook, ``on_detach`` can name the last hook that was executing.
     Best-effort: an in-flight breadcrumb may be lost on a hard crash.
     """
     marker: str = ""
@@ -260,15 +226,11 @@ class HookBreadcrumbEvent(FriTapEvent):
 
 @dataclass
 class PlatformReportEvent(FriTapEvent):
-    """Emitted once by the agent after it picked its platform branch.
+    """Emitted once after the agent picked its platform branch (shows how far it got if the target dies).
 
-    Answers "how far did friTap get, and on which code path?" — the question a
-    user has no way to answer today when a target dies during instrumentation
-    (fkie-cad/friTap#65). ``platform`` is the human label the agent prints
-    ("MacOS", "iOS", …), ``target`` the internal kind ("macos", "ios", …),
-    ``probe`` echoes the ``--probe`` flag back so the host can tell a
-    probe-aware bundle from an old one, and ``abi`` is the bundle's
-    ``AGENT_ABI_VERSION``.
+    ``platform`` is the human label ("MacOS", "iOS"), ``target`` the internal
+    kind ("macos", "ios"), ``probe`` echoes ``--probe`` (tells probe-aware
+    bundles from old ones), ``abi`` is ``AGENT_ABI_VERSION``.
     """
     platform: str = ""
     target: str = ""
@@ -276,7 +238,7 @@ class PlatformReportEvent(FriTapEvent):
     abi: int = 0
 
 
-# ErrorEvent severity values — controls TUI modal vs activity-log routing.
+# ErrorEvent severities: control TUI modal vs activity-log routing.
 ERROR_SEVERITY_INFO = "info"
 ERROR_SEVERITY_WARNING = "warning"
 ERROR_SEVERITY_ERROR = "error"
@@ -291,12 +253,11 @@ ERROR_SEVERITIES = (
 
 @dataclass
 class ErrorEvent(FriTapEvent):
-    """Emitted when an error occurs in the agent or hooking pipeline.
+    """Error in the agent or hooking pipeline.
 
-    ``severity`` is consumed by the TUI to decide whether to show a blocking
-    AlertModal (``"error"``/``"fatal"``) or merely append to the activity log
-    (``"info"``/``"warning"``). Recovered parser failures emit ``"warning"``;
-    session-level uncaught exceptions emit ``"fatal"``.
+    The TUI shows a blocking AlertModal for ``"error"``/``"fatal"`` and only logs
+    ``"info"``/``"warning"``. Recovered parser failures are ``"warning"``,
+    uncaught session exceptions ``"fatal"``.
     """
     error: str = ""
     description: str = ""
@@ -320,6 +281,17 @@ class SocketTraceEvent(FriTapEvent):
 class DetachEvent(FriTapEvent):
     """Emitted when the target process detaches."""
     reason: str = ""
+
+
+@dataclass
+class DetachReportEvent(FriTapEvent):
+    """The agent's graceful-detach report, emitted once just before outputs close.
+
+    *report* is the DetachReport dict, or None (old bundle, dead target, failed
+    RPC); *status* then says why (``timeout`` / ``failed`` / ``skipped``).
+    """
+    report: Optional[dict] = None
+    status: Optional[str] = None
 
 
 @dataclass
@@ -359,13 +331,9 @@ class LiveConnectionFailedEvent(FriTapEvent):
 
 @dataclass
 class FlowEvent(FriTapEvent):
-    """Emitted when a flow is created, updated, or completed.
-
-    ``flow_event_type`` should be a :class:`~friTap.flow.models.FlowEventType`
-    value (``"created"``, ``"updated"``, or ``"completed"``).
-    """
-    flow: Any = None  # Flow object from friTap.flow.models
-    flow_event_type: str = ""  # FlowEventType value: "created", "updated", "completed"
+    """A flow was created, updated or completed (``flow_event_type`` is a :class:`~friTap.flow.models.FlowEventType` value)."""
+    flow: Any = None  # friTap.flow.models.Flow
+    flow_event_type: str = ""
 
 
 @dataclass
@@ -378,19 +346,12 @@ class OhttpEvent(FriTapEvent):
 
 @dataclass
 class MessageEvent(FriTapEvent):
-    """A single decrypted, structured chat message (Signal/Telegram), live.
+    """One fully decrypted and parsed chat message, live.
 
-    Higher-level than :class:`DatalogEvent` (raw decrypted bytes) and
-    :class:`FlowEvent` (flow-lifecycle granular): one instance is emitted per
-    fully-decrypted-and-parsed chat message so third-party consumers can render
-    conversations without re-deriving them from bytes.
-
-    The field set is deliberately a union of the offline
-    ``friTap.offline.signal.records.DecryptedMessage``, the ``SignalLayer``
-    per-message dict shape, and ``friTap.offline.signal.content.ParsedContent`` —
-    it does not invent a parallel schema. ``protocol`` (inherited from
-    :class:`FriTapEvent`) is ``"signal"`` for the live path; Telegram/MTProto is
-    offline-only (see ``friTap.offline.pcap_to_tap.convert_pcap_to_tap``).
+    The fields are a union of ``friTap.offline.signal.records.DecryptedMessage``,
+    the ``SignalLayer`` per-message dict and ``...content.ParsedContent``.
+    ``protocol`` is ``"signal"`` live; Telegram/MTProto is offline-only
+    (``friTap.offline.pcap_to_tap.convert_pcap_to_tap``).
     """
     direction: str = ""          # "read" (server->client) | "write" (client->server)
     src_addr: str = ""
@@ -410,22 +371,11 @@ class MessageEvent(FriTapEvent):
     raw: bytes = b""             # inner Content protobuf bytes (padding stripped)
 
 
-# ---------------------------------------------------------------------------
-# Event Bus
-# ---------------------------------------------------------------------------
-
 class EventBus:
-    """
-    Simple thread-safe publish-subscribe event bus.
+    """Thread-safe publish-subscribe event bus.
 
-    Usage:
-        bus = EventBus()
-        bus.subscribe(KeylogEvent, my_handler)
-        bus.emit(KeylogEvent(key_data="CLIENT_RANDOM ..."))
-
-    Subscribers can specify a *priority* (higher runs first).  Plugins
-    should use ``EventBus.PLUGIN_PRIORITY`` so they execute before the
-    built-in output handlers.
+    ``bus.subscribe(KeylogEvent, handler)`` / ``bus.emit(KeylogEvent(...))``.
+    Higher *priority* runs first; plugins use ``PLUGIN_PRIORITY`` to run before built-in outputs.
     """
 
     MAX_HANDLER_FAILURES = 10
@@ -439,11 +389,7 @@ class EventBus:
         self._on_handler_error = on_handler_error
 
     def subscribe(self, event_type: Type[FriTapEvent], callback: Callable, *, priority: int = 0) -> None:
-        """Register *callback* to be called whenever *event_type* is emitted.
-
-        Higher *priority* values run first.  The default is 0; plugins
-        should use ``EventBus.PLUGIN_PRIORITY`` (100).
-        """
+        """Call *callback* whenever *event_type* is emitted; higher *priority* (default 0) runs first."""
         with self._lock:
             subs = self._subscribers.setdefault(event_type, [])
             subs.append((priority, callback))
@@ -459,19 +405,13 @@ class EventBus:
                     break
 
     def emit(self, event: FriTapEvent) -> None:
-        """
-        Dispatch *event* to all subscribers registered for its type.
-
-        Also dispatches to subscribers of the base ``FriTapEvent`` type,
-        allowing catch-all handlers.  The merged list is sorted by
-        descending priority so higher-priority subscribers run first.
-        """
+        """Dispatch *event* to its type's subscribers and to ``FriTapEvent`` catch-alls, by descending priority."""
         with self._lock:
             specific = self._subscribers.get(type(event), [])
             if type(event) is not FriTapEvent:
                 catch_all = self._subscribers.get(FriTapEvent, [])
                 if not catch_all:
-                    # Fast path: no catch-all subscribers
+                    # fast path
                     handlers = list(specific)
                 else:
                     # Merge two pre-sorted (descending priority) lists
@@ -500,18 +440,16 @@ class EventBus:
                     type(event).__name__,
                 )
 
-                # Track failure count
                 count = self._failure_counts.get(handler_name, 0) + 1
                 self._failure_counts[handler_name] = count
 
-                # Invoke optional error callback
                 if self._on_handler_error is not None:
                     try:
                         self._on_handler_error(cb, event, exc)
                     except Exception:
                         pass
 
-                # Emit ErrorEvent for handler failures (guard against recursion)
+                # Guard against recursion on ErrorEvent handlers.
                 if not isinstance(event, ErrorEvent):
                     try:
                         self.emit(ErrorEvent(
@@ -522,7 +460,6 @@ class EventBus:
                     except Exception:
                         pass
 
-                # Auto-unsubscribe after too many failures
                 if count >= self.MAX_HANDLER_FAILURES:
                     self._logger.warning(
                         "Auto-unsubscribing handler %s after %d failures",
@@ -531,7 +468,7 @@ class EventBus:
                     self._remove_handler(cb)
 
     def _remove_handler(self, cb: Callable) -> None:
-        """Remove *cb* from all event-type subscriber lists."""
+        """Remove *cb* from every subscriber list."""
         with self._lock:
             for subs in self._subscribers.values():
                 for i, (_p, c) in enumerate(subs):
@@ -541,7 +478,7 @@ class EventBus:
 
     @property
     def handler_failures(self) -> Dict[str, int]:
-        """Return a copy of the handler failure counts."""
+        """Copy of the handler failure counts."""
         return dict(self._failure_counts)
 
     def clear(self) -> None:

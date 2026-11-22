@@ -9,7 +9,6 @@ cap, lifecycle (flush / garbage collection) and the default-off path.
 from __future__ import annotations
 
 import gc
-import logging
 import struct
 import zlib
 
@@ -38,6 +37,7 @@ from friTap.parsers.qpack_context import (  # noqa: E402
     MAX_HEADER_LIST_BYTES,
     MAX_HEADER_LIST_COUNT,
     QpackDecoderContext,
+    recover_pseudo_headers,
 )
 from tests.unit._h3_helpers import (  # noqa: E402
     FRAME_HEADERS,
@@ -100,18 +100,8 @@ def own_isolated():
 
 
 @pytest.fixture
-def error_log():
-    records: list[logging.LogRecord] = []
-
-    class _Collect(logging.Handler):
-        def emit(self, record):
-            records.append(record)
-
-    logger = logging.getLogger("friTap.decoder_isolation")
-    handler = _Collect(level=logging.DEBUG)
-    logger.addHandler(handler)
-    yield records
-    logger.removeHandler(handler)
+def error_log(fritap_log_records):
+    return fritap_log_records("friTap.decoder_isolation")
 
 
 def _with_isolation(enabled: bool, fn, *args):
@@ -353,6 +343,21 @@ def test_qpack_header_list_cap_records_same_error(isolated, monkeypatch):
     monkeypatch.setattr(qc, "MAX_HEADER_LIST_COUNT", 3)
     expected = _with_isolation(False, run)
     assert run() == expected == (FALLBACK, ERROR_HEADER_LIST_TOO_LARGE)
+
+
+def test_qpack_bomb_list_cap_matches_in_process(isolated):
+    # Same rejection whether the cap is hit by our check or by pylsqpack >= 1.0
+    from tests.unit.test_http3_hardening import _bomb
+    encoder_bytes, block = _bomb(capacity=4096, value_size=4000, refs=300)
+
+    def run():
+        ctx = QpackDecoderContext(fallback=lambda _b: FALLBACK)
+        ctx.configure(4096, 16)
+        ctx.feed_encoder(encoder_bytes)
+        return ctx.decode(4, block), ctx.take_error(4), ctx.poisoned
+
+    expected = _with_isolation(False, run)
+    assert run() == expected == (FALLBACK, ERROR_HEADER_LIST_TOO_LARGE, False)
 
 
 # --- hostile context replies ------------------------------------------------------
@@ -678,3 +683,37 @@ def test_worker_loads_qpack_kind_by_path(isolated):
     modules = set(reply.data.decode().split("\n"))
     assert {"_fritap_decoder_qpack", "pylsqpack"} <= modules
     assert not {m for m in modules if m == "friTap" or m.startswith("friTap.")}
+
+
+# --- mid-stream pseudo-header recovery --------------------------------------------
+
+# Required Insert Count > 0: GET, a dynamic ref (skipped), :path "/r"
+_RECOVERY_BLOCK = b"\x02\x00\xd1\x80\x51\x02/r"
+
+
+def test_recovery_reuses_one_worker_context(isolated, monkeypatch):
+    from friTap.parsers import qpack_context as qc
+
+    monkeypatch.setattr(qc, "_RECOVERY_DECODER", qc._RecoveryDecoder())
+    created = []
+    original = qc.new_qpack_decoder
+    monkeypatch.setattr(qc, "new_qpack_decoder",
+                        lambda *a: created.append(original(*a)) or created[-1])
+    for _ in range(3):
+        assert recover_pseudo_headers(_RECOVERY_BLOCK) == [(":method", "GET"), (":path", "/r")]
+    assert len(created) == 1 and created[0].isolated
+
+
+def test_recovery_survives_worker_restart(own_isolated):
+    own_isolated()
+    assert recover_pseudo_headers(_RECOVERY_BLOCK) == [(":method", "GET"), (":path", "/r")]
+    own_isolated()  # new supervisor: the shared decoder's context is gone
+    assert recover_pseudo_headers(_RECOVERY_BLOCK) == [(":method", "GET"), (":path", "/r")]
+
+
+def test_recovery_follows_isolation_toggle(isolated):
+    assert recover_pseudo_headers(_RECOVERY_BLOCK) == [(":method", "GET"), (":path", "/r")]
+    di.enable_decoder_isolation(False)
+    assert recover_pseudo_headers(_RECOVERY_BLOCK) == [(":method", "GET"), (":path", "/r")]
+    from friTap.parsers import qpack_context as qc
+    assert isinstance(qc._RECOVERY_DECODER._decoder, pylsqpack.Decoder)

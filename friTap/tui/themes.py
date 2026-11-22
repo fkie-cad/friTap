@@ -10,6 +10,8 @@ current theme at runtime.
 
 from __future__ import annotations
 
+from typing import Any
+
 try:
     from textual.theme import Theme
     TEXTUAL_AVAILABLE = True
@@ -114,6 +116,18 @@ else:
     FRITAP_DARK = None  # type: ignore[assignment]
     FRITAP_LIGHT = None  # type: ignore[assignment]
 
+def theme_variable_defaults(dark: bool) -> dict[str, str]:
+    """Return every ``fritap-*`` CSS variable for a dark or light host.
+
+    The values are the ones the friTap themes register (``FRITAP_DARK`` /
+    ``FRITAP_LIGHT`` share these dicts), returned as a fresh copy so a
+    caller can merge into it without mutating the theme definitions.
+    Used by :func:`friTap.tui.theme_install.install_theme` to make friTap
+    widgets resolve their ``$fritap-*`` variables inside a foreign app.
+    """
+    return dict(_DARK_VARIABLES if dark else _LIGHT_VARIABLES)
+
+
 # ── Runtime color accessor for Rich markup ───────────────────────
 
 _current: dict[str, str] = {}
@@ -158,3 +172,9 @@ def set_theme(theme: "Theme") -> None:
             new[key[7:]] = value
 
     _current = new
+
+
+def register_fritap_themes(app: Any) -> None:
+    """Register ``FRITAP_DARK`` then ``FRITAP_LIGHT`` on *app*."""
+    app.register_theme(FRITAP_DARK)
+    app.register_theme(FRITAP_LIGHT)

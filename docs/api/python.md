@@ -92,6 +92,7 @@ under autodoc).
 | `spawn(enable=True)` | Spawn the target instead of attaching. |
 | `spawn_gating(enable=True, all_processes=False)` | Enable spawn gating for multi-process apps. `all_processes=True` catches every spawn. |
 | `child_gating(enable=True)` | Enable child-process gating. |
+| `follow_exec(enable=True)` | Force exec-following on/off. Unset = auto: off everywhere (Frida fork-child crash); pass `True` to opt in. |
 | `timeout(seconds)` | Set a timeout before resuming the suspended target. |
 
 ### Output
@@ -139,7 +140,10 @@ under autodoc).
 | `custom_script(path)` | Load a custom Frida script before friTap's hooks. |
 | `add_script_plugin(plugin)` | Register a `ScriptPlugin` to load when the session starts. |
 | `environment(path)` | Provide an environment-variables JSON for spawn. |
+| `signal_handler(enable=True)` | Opt in to friTap handling SIGINT/SIGTERM for the session (default off: the embedding program owns its signals and calls `FriTapSession.stop()`). When on and `start()` runs on the main thread, Ctrl+C/SIGTERM stop the session like `stop()` (outputs finalized, the host process keeps running) and the previous handlers are restored afterwards. |
 | `proxy(address)` | Redirect connections to a `host:port` proxy and bypass cert pinning (requires `fritap-proxy`). |
+
+Embedded/API mode never calls `os._exit`: if the target dies, friTap finalizes the outputs and ends the session, leaving the host interpreter running. Only the CLI exits the process.
 
 ### Callbacks
 
@@ -229,7 +233,7 @@ Emitted when decrypted application data is captured (`on_data`).
 | `client_random` | `str` | TLS client random. |
 | `transport` | `str` | `"tcp"` or `"udp"` (QUIC is `udp`). |
 | `http3_headers` | `list \| None` | Decoded HTTP/3 headers `[[name, value], ...]` (app-api QUIC mode). |
-| `stream_id` | `int \| None` | QUIC stream id. |
+| `stream_id` | `int \| None` | QUIC stream id; stored on the resulting `FlowChunk.stream_id`. |
 | `quic_scid` / `quic_dcid` | `str` | QUIC source / destination connection IDs. |
 | `quic_stream_type` | `str` | QUIC stream type. |
 
@@ -345,6 +349,22 @@ Flows are produced live (via `on_flow`) and read back from `.tap` files (see
         - request_body
         - response_body
         - reconstruct_body
+        - stream_id
+
+### Stream ids
+
+Each `FlowChunk` has a `stream_id` (`int | None`): the real transport stream id
+the chunk travelled on (HTTP/2 stream id, QUIC stream id), or `None` when it is
+unknown. `Flow.stream_id` is the one id shared by all id-carrying chunks of the
+flow, and `None` when there is none or more than one. `Flow.to_dict()` and
+`FlowSummary.to_dict()` include `stream_id` only when it is set. The
+`stream_id` of an HTTP/3 `flow.request` / `flow.response` is a collector-internal
+remapped id, not the QUIC stream id.
+
+```python
+flow.stream_id                          # e.g. 4, or None
+[ch.stream_id for ch in flow.chunks]    # per chunk
+```
 
 ### Serializing a flow
 

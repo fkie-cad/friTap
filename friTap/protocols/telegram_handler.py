@@ -2,29 +2,23 @@
 
 """Telegram protocol handler (combined MTProto cloud + Secret-Chat E2E).
 
-Unlike the bare :class:`~friTap.protocols.mtproto_handler.MTProtoHandler` (which
-emits only cloud-chat ``MTPROTO_AUTH_KEY`` lines), the ``telegram`` protocol
-writes BOTH key kinds into ONE combined keylog file:
+Unlike :class:`~friTap.protocols.mtproto_handler.MTProtoHandler` (cloud-chat
+``MTPROTO_AUTH_KEY`` only), this writes both kinds into one keylog:
 
-  * ``MTPROTO_AUTH_KEY`` — cloud-chat transport auth keys (the offline MTProto
-    decryptor matches a record's ``auth_key_id`` to its ``auth_key``).
-  * ``MTPROTO_E2E_KEY``  — Secret-Chat (end-to-end) per-chat shared keys (the
-    offline secret-chat decryptor matches a blob's ``key_fingerprint`` to its
-    ``shared_key``).
+  * ``MTPROTO_AUTH_KEY``: cloud-chat transport auth keys.
+  * ``MTPROTO_E2E_KEY``: Secret-Chat per-chat shared keys.
 
-Both labels coexist in the same file because the offline readers each ignore the
-other's lines (``load_mtproto_keylog`` reads only auth-key lines,
-``load_secret_chat_keylog`` reads only E2E lines). The line layouts are the
-single source of truth in :mod:`friTap.protocols.mtproto_keylog_spec`.
+The offline readers (``load_mtproto_keylog``, ``load_secret_chat_keylog``) each
+ignore the other label. Line layouts: :mod:`friTap.protocols.mtproto_keylog_spec`.
 """
 
 from __future__ import annotations
 
 import logging
 import re
-import threading
 from typing import TYPE_CHECKING, List, Optional
 
+from .._warn_once import warn_once
 from ..backends.base import BackendName
 from ..output.keylog_format import KeylogFormatter
 from . import mtproto_keylog_spec as spec
@@ -37,8 +31,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# The MTProto networking-library hints plus the Telegram application package /
-# native-library name fragments, so library auto-detection matches Telegram.
 TELEGRAM_LIBRARY_PATTERNS = MTPROTO_LIBRARY_PATTERNS + [
     "libtmessages",
     "tmessages",
@@ -53,25 +45,15 @@ HEADER_COMMENT = (
     f"{spec.E2E_LABEL} <key_fingerprint_hex16> <shared_key_hex512> <chat_id>"
 )
 
-# Secret-Chat chat ids are signed 64-bit integers. The agent runs inside a
-# possibly hostile target, so its ``chat_id`` is validated, never trusted.
+# Secret-Chat ids are signed 64-bit; the agent is untrusted, so chat_id is validated.
 _INT64_MIN = -(2 ** 63)
 _INT64_MAX = 2 ** 63 - 1
-# Optional ``-`` plus at most 19 ASCII digits (the int64 maximum has 19); the
-# length cap also keeps int() away from huge digit strings.
+# Optional ``-`` plus at most 19 digits (int64 max); the cap keeps int() away from huge strings.
 _DECIMAL_CHAT_ID_RE = re.compile(r"-?[0-9]{1,19}")
 _UNKNOWN_CHAT_ID = 0
 
-_invalid_chat_id_lock = threading.Lock()
-_invalid_chat_id_logged = False
-
-
 def _parse_chat_id(value) -> Optional[int]:
-    """*value* as an int64 chat id (an ``int`` or a decimal ``str``), else ``None``.
-
-    Total: never raises. ``bool``, ``float`` and anything outside the signed
-    64-bit range are rejected.
-    """
+    """*value* (``int`` or decimal ``str``) as an int64 chat id, else ``None``. Never raises."""
     if isinstance(value, bool):
         return None
     if isinstance(value, str):
@@ -85,12 +67,8 @@ def _parse_chat_id(value) -> Optional[int]:
 
 def _warn_invalid_chat_id_once(value) -> None:
     """Log the first invalid agent ``chat_id``; later ones are not logged."""
-    global _invalid_chat_id_logged
-    with _invalid_chat_id_lock:
-        if _invalid_chat_id_logged:
-            return
-        _invalid_chat_id_logged = True
-    logger.warning(
+    warn_once(
+        logger, "telegram:invalid_chat_id",
         "Ignoring invalid Secret-Chat chat_id from the agent (%s); the key is "
         "recorded with chat_id %d. Further invalid chat_ids are not logged",
         type(value).__name__, _UNKNOWN_CHAT_ID)
@@ -109,12 +87,10 @@ def _chat_id_from(payload: dict) -> int:
 
 
 class TelegramKeylogFormatter(KeylogFormatter):
-    """Formats Telegram key material into the combined MTProto/E2E keylog.
+    """Formats Telegram keys into the combined MTProto/E2E keylog.
 
-    Inspects each :class:`KeylogEvent` payload shape: a non-empty
-    ``shared_key``/``key_fingerprint`` renders a Secret-Chat ``MTPROTO_E2E_KEY``
-    line; otherwise the cloud-chat ``MTPROTO_AUTH_KEY`` line is rendered. Both
-    line kinds are defined in :mod:`friTap.protocols.mtproto_keylog_spec`.
+    A payload with ``shared_key``/``key_fingerprint`` renders ``MTPROTO_E2E_KEY``;
+    otherwise ``MTPROTO_AUTH_KEY`` (see :mod:`friTap.protocols.mtproto_keylog_spec`).
     """
 
     @property
@@ -168,8 +144,7 @@ class TelegramHandler(ProtocolHandler):
         return f"friTap Telegram Key Log Format v{spec.VERSION}"
 
     def get_wireshark_protocol_preference(self) -> str:
-        # No Wireshark-native MTProto/Telegram keylog preference exists; the
-        # combined keylog is consumed by friTap's own offline decryptors.
+        # No Wireshark preference; friTap's offline decryptors read the keylog.
         return ""
 
     def get_display_filter_template(self) -> str:
@@ -184,32 +159,18 @@ class TelegramHandler(ProtocolHandler):
         return {BackendName.FRIDA: BackendSupport.FULL}
 
     def validate_cli_intent(self, parsed, parser, logger) -> None:
-        """Telegram needs an explicit capture intent.
-
-        Attach mode misses the obfuscated-transport init bytes
-        so we nudge toward spawn; a bare invocation that would produce no
-        output is rejected; and we warn early if the offline-decrypt backend
-        is missing.
-        """
-        # Same byte-0 caveat as mtproto (cloud transport is the obfuscated MTProto):
-        # attaching to a running Telegram misses the init block on already-open
-        # connections, so those streams can't be decrypted offline. Nudge to spawn.
+        """Hint toward spawn, require -k/-p/-f, and warn if the offline backend is missing."""
+        # Same byte-0 caveat as mtproto: attach misses the init block of open connections.
         if not getattr(parsed, "spawn", False):
             memory_scan = bool(getattr(parsed, "memory_scan", False))
             logger.info(f"[telegram] {attach_mode_hint(memory_scan)}")
-        # Offline decryption needs the transport auth key for every stream: friTap
-        # captures it via the spawn getAuthKey hook (-k) or an -ms memory scan.
-        # Without it the transport envelope can't be opened, so a secret-chat (E2E)
-        # key alone decrypts nothing. Emit only — never touch the user's flags.
+        # Without a transport auth key an E2E key alone decrypts nothing.
         logger.info(
             "[telegram] transport auth keys are captured by the spawn getAuthKey hook "
             "(-k) or -ms memory scan; without a transport auth key the obfuscated "
             "envelope can't be decrypted (an E2E-only keylog yields 0 flows)."
         )
-        # Require an explicit capture intent: -k extracts the combined Telegram
-        # keys for offline decrypt, -p captures live plaintext, -f captures a raw
-        # pcap for offline decrypt. Bare `--protocol telegram` would install hooks
-        # that produce no output, so reject it with an actionable message.
+        # Bare `--protocol telegram` would install hooks that produce no output.
         if not (parsed.keylog or parsed.pcap or parsed.full_capture):
             parser.error(
                 "--protocol telegram requires a capture intent: -k (extract the "
@@ -217,9 +178,7 @@ class TelegramHandler(ProtocolHandler):
                 "decryption) and/or -p (capture live plaintext); -f -p -k captures "
                 "a raw pcap plus keys for offline decryption."
             )
-        # Live capture only extracts keys/plaintext (no Python-side crypto), but
-        # offline decryption of the resulting pcap does. Nudge the user early so
-        # a later `--telegram-keylog` run does not surprise them.
+        # Live capture needs no Python-side crypto; offline decryption does.
         from .mtproto_backend import MTPROTO_DEPENDENCY_HINT, mtproto_backend_available
         if not mtproto_backend_available():
             logger.warning(

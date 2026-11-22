@@ -54,10 +54,6 @@ SCHEMA_EXPORT = "fritap.export/1"
 PHASES_SIDECAR = "phases.jsonl"
 
 
-# ---------------------------------------------------------------------------
-# Schema helpers
-# ---------------------------------------------------------------------------
-
 def _tap_schema(properties: dict[str, dict], required: tuple[str, ...] = ()) -> dict:
     """Object schema with exactly one of ``tap`` / ``session_id``."""
     return object_schema({**TAP_SOURCE_PARAMS, **properties}, required=required,
@@ -77,10 +73,6 @@ _SOURCE = {"type": "object", "properties": {"file": _STR, "flows_total": _INT,
                                             "flows_selected": _INT}}
 _NOTICE = {"notice": _STR}
 
-
-# ---------------------------------------------------------------------------
-# list_supported_protocols
-# ---------------------------------------------------------------------------
 
 def _list_supported_protocols(params: dict, ctx: ToolContext) -> dict:
     del params, ctx
@@ -110,10 +102,6 @@ _SUPPORTED_SPEC = ToolSpec(
 )
 
 
-# ---------------------------------------------------------------------------
-# list_protocols
-# ---------------------------------------------------------------------------
-
 def _list_protocols(params: dict, ctx: ToolContext) -> dict:
     tap = resolve_tap_source(params, ctx)
     seen = protocol_service.protocols_in_tap(tap)
@@ -137,10 +125,6 @@ _PROTOCOLS_SPEC = ToolSpec(
     }),
 )
 
-
-# ---------------------------------------------------------------------------
-# get_digest
-# ---------------------------------------------------------------------------
 
 def _get_digest(params: dict, ctx: ToolContext) -> dict:
     doc = reading.digest(resolve_tap_source(params, ctx), params)
@@ -205,10 +189,6 @@ _DIGEST_SPEC = ToolSpec(
 )
 
 
-# ---------------------------------------------------------------------------
-# list_endpoints
-# ---------------------------------------------------------------------------
-
 def _page(rows: list, params: dict) -> dict[str, Any]:
     page, next_cursor = envelope.paginate(rows, params["limit"], params.get("cursor"))
     return {"total": len(rows), "rows": page, "next_cursor": next_cursor}
@@ -233,10 +213,6 @@ _ENDPOINTS_SPEC = ToolSpec(
     }),
 )
 
-
-# ---------------------------------------------------------------------------
-# get_flow
-# ---------------------------------------------------------------------------
 
 def _get_flow(params: dict, ctx: ToolContext) -> dict:
     return reading.flow_detail(resolve_tap_source(params, ctx), params)
@@ -263,10 +239,6 @@ _FLOW_SPEC = ToolSpec(
         "messages": _ROWS, "messages_total": _INT}},
 )
 
-
-# ---------------------------------------------------------------------------
-# list_findings
-# ---------------------------------------------------------------------------
 
 def _list_findings(params: dict, ctx: ToolContext) -> dict:
     source, summary, rows = reading.findings(resolve_tap_source(params, ctx), params)
@@ -304,10 +276,6 @@ _FINDINGS_SPEC = ToolSpec(
     }),
 )
 
-
-# ---------------------------------------------------------------------------
-# find_values (canary known-value search)
-# ---------------------------------------------------------------------------
 
 def _find_values(params: dict, ctx: ToolContext) -> dict:
     tap = resolve_tap_source(params, ctx)
@@ -368,10 +336,6 @@ _FIND_VALUES_SPEC = ToolSpec(
     }),
 )
 
-
-# ---------------------------------------------------------------------------
-# diff (semantic capture / phase diff)
-# ---------------------------------------------------------------------------
 
 _DIFF_SIDE_SOURCES = {"a": ("tap_a", "session_a"), "b": ("tap_b", "session_b")}
 _DIFF_TAP_KEYS = _DIFF_SIDE_SOURCES["a"] + _DIFF_SIDE_SOURCES["b"]
@@ -473,11 +437,9 @@ def _diff_phases_path(tap, phases_path: str | None, ctx: ToolContext):
 def _diff_classifier(first_party, host_counts_fn):
     """Host -> attribution classifier for a diff.
 
-    *first_party* is a list of domains, a comma-separated domain string, the
-    ``"auto"`` sentinel (infer the set from the union of both sides' hosts via
-    *host_counts_fn*, so party labels are comparable across A/B) or falsy
-    (none). *host_counts_fn* is a zero-arg callable returning the union
-    ``{host: count}``; it runs only for ``"auto"``.
+    *first_party*: a domain list, a comma-separated string, ``"auto"`` or falsy (none). For ``"auto"``
+    the set is inferred from the union of both sides' hosts (zero-arg *host_counts_fn*, run only then),
+    so party labels are comparable across A/B.
     """
     from friTap.analysis.attribution import (
         AUTO_FIRST_PARTY,
@@ -577,10 +539,6 @@ _DIFF_SPEC = ToolSpec(
         "truncated": {}, "markdown": _STR, **_NOTICE}},
 )
 
-
-# ---------------------------------------------------------------------------
-# export
-# ---------------------------------------------------------------------------
 
 def _export(params: dict, ctx: ToolContext) -> dict:
     tap = resolve_tap_source(params, ctx)

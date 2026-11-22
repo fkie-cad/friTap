@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fritap-ui-extension-demo"
+version = "0.1.0"
+description = "Demo friTap viewer extension: detail tab, column, body decoder, filter field and analyzer"
+requires-python = ">=3.9"
+dependencies = ["friTap"]
+
+[project.entry-points."fritap.ui_extensions"]
+demo = "fritap_ui_extension_demo:register"
+
+[tool.setuptools]
+packages = ["fritap_ui_extension_demo"]

@@ -1,11 +1,6 @@
 #!/usr/bin/env python3
 
-"""
-Factory for platform-specific frida-server managers.
-
-Auto-detects the target platform from a Frida device object and returns
-the appropriate server manager instance.
-"""
+"""Factory for platform-specific frida-server managers, detected from a Frida device."""
 
 from __future__ import annotations
 
@@ -20,17 +15,9 @@ _ANDROID_MANAGERS: Dict[Optional[str], BaseFridaServerManager] = {}
 
 
 def get_server_manager(device: Any = None) -> BaseFridaServerManager:
-    """Return the appropriate server manager for the given device.
+    """The server manager for *device* (``None`` gives the local platform's).
 
-    Args:
-        device: A Frida device object. If ``None``, returns a manager
-                for the local platform.
-
-    Returns:
-        A platform-specific ``BaseFridaServerManager`` subclass instance.
-
-    Raises:
-        ValueError: If the platform cannot be determined or is unsupported.
+    Raises ``ValueError`` if the platform cannot be determined or is unsupported.
     """
     if device is None:
         return _local_manager()

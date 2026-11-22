@@ -94,6 +94,7 @@ class JsonOutputHandler(OutputHandler):
             KeylogEvent,
             LibraryDetectedEvent,
             SessionEvent,
+            DetachReportEvent,
         )
         self._join_shared_document()
         event_bus.subscribe(KeylogEvent, self.on_keylog)
@@ -101,6 +102,7 @@ class JsonOutputHandler(OutputHandler):
         event_bus.subscribe(SessionEvent, self.on_session)
         event_bus.subscribe(ErrorEvent, self.on_error)
         event_bus.subscribe(LibraryDetectedEvent, self._on_library)
+        event_bus.subscribe(DetachReportEvent, self._on_detach_report)
 
     def _join_shared_document(self) -> None:
         """Open (first session) or join (later session) the document for this path."""
@@ -214,6 +216,19 @@ class JsonOutputHandler(OutputHandler):
         with self._lock:
             if lib_info not in self._data["libraries_detected"]:
                 self._data["libraries_detected"].append(lib_info)
+
+    def _on_detach_report(self, event: "DetachReportEvent") -> None:
+        """Record the agent's detach report (or null + why) as top-level keys.
+
+        The target session's document only: an auxiliary (LSASS) session shares
+        the file but its teardown report is not the document's.
+        """
+        if self._writer is None or self._auxiliary:
+            return
+        with self._lock:
+            self._writer.add_value_key("detach_report", event.report)
+            if event.report is None and event.status:
+                self._writer.add_value_key("detach_report_status", event.status)
 
     def close(self) -> None:
         """Finalize and release the shared document. Idempotent.

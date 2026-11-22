@@ -115,7 +115,7 @@ accepts (e.g. `offsets`, `patterns`, `force_scan`, `library_scan`,
   `full` (+ keylog + pcap).
 - **`duration_s`** (default 60, 1..3600): the capture stops cleanly after it.
 - **`spawn`** (default `true`) or attach to a running process; `args` only with
-  spawn; `follow_exec` (default `true`) follows the target across `exec()`.
+  spawn; `follow_exec` (default `false`) follows the target across `exec()`.
 - **`anti_root`** (default `false`, Android only): enables friTap's
   anti-root-detection hooks (`-ar` / `--anti_root`). It changes the app's
   behaviour; use it only on authorized targets.
@@ -224,6 +224,8 @@ fritap q diff --tap run.tap --phase-a consent-declined --phase-b consent-granted
   before the flow started) to the flow when a `phases.jsonl` sidecar exists
   next to the tap; there is no need to compare `started` with the markers'
   `t`/`at` by hand.
+- `get_flow` adds a `stream_id` to the flow when all of its chunks share one
+  real transport stream id (HTTP/2 or QUIC); it is omitted otherwise.
 - `get_digest` with `attribute: true` (optionally `first_party`) annotates each
   host row with trusted `owner`/`category`/`party`; omit it and the digest is
   unchanged.
@@ -288,7 +290,7 @@ Sources and their confidence:
 
 | `source` | Set when | `confidence` |
 |---|---|---|
-| `java-request` | a Java request context matched this flow's own request (Android, `--attribute-sdk` with `-p`) | `high`; `medium` when requests from different SDKs had the same key and the oldest unused one was picked |
+| `java-request` | a Java request context matched this flow's own request (Android, `--attribute-sdk` with `-p` or `-f -k`) | `high`; `medium` when requests from different SDKs had the same key and the oldest unused one was picked |
 | `context` | a WebView request other than the `loadUrl`/`postUrl` navigation itself (subresources, page-initiated navigations), attributed through the WebView load that owns it | `medium` at most |
 | `native-stack` | a caller stack joined directly to the flow | `high` only on `libsignal`; otherwise `medium` |
 | `connection-fallback` | the flow inherits its connection's originator | always `low` |
@@ -322,8 +324,8 @@ A flow keeps its current claim unless a new one ranks strictly higher
   `libwebviewchromium`, ...) are never reported as the originator: a native
   stack that shows only `libcronet` or `libflutter.so` no longer resolves to
   "Cronet" or "Flutter". Java/ObjC package matching is unchanged.
-- Java request context (Android, `--attribute-sdk` with plaintext `-p`; not
-  with `-f`, `--pairip-safe` or `--quic-only`): the agent hooks Cronet, GMS
+- Java request context (Android, `--attribute-sdk` with plaintext `-p` or with
+  `-f -k`; not with `-f` alone, `--pairip-safe` or `--quic-only`): the agent hooks Cronet, GMS
   Cronet, HttpEngine and WebView where a request is built and sends one
   `request_context` message per lifecycle point (`event`: `start`, `redirect`,
   `response`, `end`, `webview_load`, `webview_request`) of the request

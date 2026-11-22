@@ -1,10 +1,8 @@
 """Priority-ordered registry of layer decryptors.
 
-The default registry is intentionally empty — it is a live-but-empty seam.
-Decryptors register themselves with a priority; :meth:`DecryptorRegistry.resolve`
-returns the highest-priority decryptor whose ``can_handle`` accepts the given
-parent layer. There is deliberately NO fallback decryptor: an unhandled layer
-resolves to ``None``.
+The default registry is empty (a live extension seam). :meth:`DecryptorRegistry.resolve` returns
+the highest-priority decryptor whose ``can_handle`` accepts the parent layer; there is no fallback
+(an unhandled layer resolves to ``None``).
 """
 
 from __future__ import annotations
@@ -20,7 +18,7 @@ class DecryptorRegistry:
     """Holds decryptor classes ordered by descending priority."""
 
     def __init__(self) -> None:
-        # Each entry is (priority, decryptor_cls); kept sorted by priority desc.
+        # (priority, decryptor_cls), sorted by priority descending.
         self._entries: list[tuple[int, type]] = []
 
     def register(self, cls: type, priority: int = 50) -> None:
@@ -29,12 +27,7 @@ class DecryptorRegistry:
         self._entries.sort(key=lambda entry: entry[0], reverse=True)
 
     def resolve(self, parent_layer, flow):
-        """Return the first decryptor whose ``can_handle`` accepts the layer.
-
-        Each candidate is instantiated and probed inside a try/except so a
-        misbehaving decryptor only logs a warning and is skipped. Returns
-        ``None`` when no decryptor handles the layer (no fallback).
-        """
+        """First decryptor whose ``can_handle`` accepts the layer, else ``None``; each candidate is probed in try/except so a misbehaving one only logs a warning."""
         for _priority, cls in self._entries:
             try:
                 decryptor = cls()

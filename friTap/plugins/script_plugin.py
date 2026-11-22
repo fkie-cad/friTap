@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 
-"""
-ScriptPlugin — abstract base for plugins that inject Frida scripts.
+"""ScriptPlugin: base for plugins that inject Frida scripts.
 
-Extends FriTapPlugin with a two-phase lifecycle:
-  Phase 1 (on_load): subscribe to EventBus — no backend access yet.
-  Phase 2 (on_instrument): receive ScriptContext, inject scripts.
+Two-phase lifecycle: on_load subscribes to the EventBus (no backend access
+yet); on_instrument receives a ScriptContext and injects scripts.
 """
 
 from __future__ import annotations
@@ -26,7 +24,7 @@ logger = logging.getLogger("friTap.plugins.script")
 
 
 class ScriptLoadOrder(Enum):
-    """When the plugin's script should be loaded relative to friTap's main script."""
+    """Load position relative to friTap's main script."""
     BEFORE_MAIN = "before"
     AFTER_MAIN = "after"
 
@@ -34,15 +32,9 @@ class ScriptLoadOrder(Enum):
 class ScriptPlugin(FriTapPlugin):
     """Abstract base for plugins that inject instrumentation scripts.
 
-    Subclasses **must** implement:
-        - ``name`` (property)
-        - ``version`` (property)
-        - ``get_script_source(context)``
-
-    Subclasses **may** override:
-        - ``load_order`` — default ``AFTER_MAIN``
-        - ``supported_backends`` — default ``[]`` (all backends)
-        - ``on_script_message(message, data)``
+    Must implement ``name``, ``version`` and ``get_script_source(context)``.
+    May override ``load_order`` (default ``AFTER_MAIN``), ``supported_backends``
+    (default ``[]`` = all) and ``on_script_message(message, data)``.
     """
 
     def __init__(self) -> None:
@@ -51,54 +43,35 @@ class ScriptPlugin(FriTapPlugin):
 
     @property
     def session(self) -> "Optional[Session]":
-        """Return the Session if available."""
+        """The Session, if instrumented."""
         if self._context is not None:
             return self._context.session
         return None
 
-    # ------------------------------------------------------------------
-    # Configuration hooks (override in subclasses)
-    # ------------------------------------------------------------------
-
     @property
     def load_order(self) -> ScriptLoadOrder:
-        """When this plugin's script loads relative to the main friTap script."""
+        """Load position of this plugin's script."""
         return ScriptLoadOrder.AFTER_MAIN
 
     @property
     def supported_backends(self) -> List[str]:
-        """Backend names this plugin supports. Empty list means all."""
+        """Supported backend names; empty means all."""
         return []
 
     def is_compatible_with(self, backend_name: str) -> bool:
-        """Check if this plugin is compatible with the given backend."""
+        """True if ``backend_name`` is supported."""
         return not self.supported_backends or backend_name in self.supported_backends
-
-    # ------------------------------------------------------------------
-    # Abstract: subclass must provide script source
-    # ------------------------------------------------------------------
 
     @abstractmethod
     def get_script_source(self, context: "ScriptContext") -> str:
-        """Return the JavaScript source to inject.
-
-        Return an empty string to skip injection for this invocation.
-        """
+        """Return the JavaScript to inject; an empty string skips injection."""
         ...
 
-    # ------------------------------------------------------------------
-    # Lifecycle: called by PluginLoader / SSL_Logger
-    # ------------------------------------------------------------------
-
     def on_instrument(self, context: "ScriptContext") -> None:
-        """Create, register, and load the plugin's script.
+        """Create, wire up and load the plugin's script (called by ``PluginLoader.instrument_all()``).
 
-        Called by ``PluginLoader.instrument_all()``.  The default
-        implementation checks backend compatibility, obtains the script
-        source, creates the script via the backend, wires up
-        ``_route_message``, and loads it.
+        Skips with a warning when the backend is unsupported.
         """
-        # Check backend compatibility
         if not self.is_compatible_with(context.backend_name):
             logger.warning(
                 "Plugin %s skipped: backend %s not in %s",
@@ -120,46 +93,25 @@ class ScriptPlugin(FriTapPlugin):
         logger.info("Plugin %s: script loaded (order=%s)", self.name, self.load_order.value)
 
     def on_script_message(self, message: dict, data: Any) -> None:
-        """Handle messages from the injected script.
-
-        Override in subclasses for custom message handling.
-        The default logs errors at ERROR level and payloads at DEBUG.
-        """
+        """Handle a message from the injected script (default: log errors, debug payloads)."""
         if message.get("type") == "error":
             logger.error("Plugin %s script error: %s", self.name, message)
         elif logger.isEnabledFor(logging.DEBUG):
             logger.debug("Plugin %s message: %s", self.name, message)
 
     def on_detach_process(self, context: "ScriptContext") -> None:
-        """Called when the target process detaches.
-
-        Default: unloads all scripts created by this plugin.
-        """
+        """Called when the target process detaches; default unloads this plugin's scripts."""
         self._unload_scripts(context)
 
     def on_unload(self, session: "Session") -> None:
-        """Final cleanup — unloads all remaining scripts."""
+        """Unload all remaining scripts."""
         if self._context is not None:
             self._unload_scripts(self._context)
         self._scripts.clear()
         self._context = None
 
-    # ------------------------------------------------------------------
-    # Bidirectional messaging
-    # ------------------------------------------------------------------
-
     def post_to_script(self, msg_type: str, payload: Any, script_index: int = 0) -> None:
-        """Send a message to the injected script.
-
-        Parameters
-        ----------
-        msg_type : str
-            Message type identifier.
-        payload : Any
-            Message payload (will be JSON-serialized by the backend).
-        script_index : int
-            Index into ``self._scripts`` (default 0 = first script).
-        """
+        """Post a JSON-serialized message to ``self._scripts[script_index]``."""
         if self._context is None or not self._scripts:
             return
         if script_index < 0 or script_index >= len(self._scripts):
@@ -167,23 +119,13 @@ class ScriptPlugin(FriTapPlugin):
             return
         self._context.backend.post_message(self._scripts[script_index], msg_type, payload)
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
     def _load_script_bounded(self, context: "ScriptContext", script: Any) -> None:
-        """Load *script* under the bound carried by *context*.
+        """Load *script* under ``context.script_load_timeout``.
 
-        A plugin's script is user-supplied JavaScript, so its top-level code can
-        wedge exactly like the main agent's can — and Frida's ``script.load()``
-        is not cancellable. Without a bound a single bad plugin script hangs
-        friTap forever with no diagnostic; with one it becomes a
-        ``BackendScriptLoadTimeout`` that ``PluginLoader.instrument_all()`` logs
-        before carrying on without the plugin.
-
-        The plugin has no progress trail of its own, so the plugin name is
-        attached as the breadcrumb — it is the one thing that tells the user
-        *which* script wedged.
+        Plugin JavaScript is user-supplied and Frida's ``script.load()`` is not
+        cancellable, so an unbounded wedge would hang friTap silently. On
+        timeout the plugin name is attached as the breadcrumb and
+        ``PluginLoader.instrument_all()`` logs it and carries on.
         """
         try:
             context.backend.load_script(script, timeout=context.script_load_timeout)
@@ -193,7 +135,7 @@ class ScriptPlugin(FriTapPlugin):
             raise
 
     def _route_message(self, message: dict, data: Any) -> None:
-        """Trampoline: routes backend messages to on_script_message with error guard."""
+        """Route backend messages to on_script_message, logging exceptions."""
         try:
             self.on_script_message(message, data)
         except Exception:

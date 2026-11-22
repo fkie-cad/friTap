@@ -21,6 +21,8 @@ export interface QuicConnectionInfo {
     ssFamily: string;
     scid: string;
     dcid: string;
+    /** Tuple guessed by synthesizeInfo (the connection's own peer was not readable). */
+    synthetic?: boolean;
 }
 
 /** Which way a QUIC record travels: "read" = server -> device, "write" = device -> server. */
@@ -46,6 +48,7 @@ export function buildQuicMessage(
     functionLabel: string,
     direction: QuicDirection = "read",
     library?: string,
+    clientRandom?: string,
 ): { [key: string]: any } {
     const isWrite = direction === "write";
     const message: { [key: string]: any } = {
@@ -59,6 +62,12 @@ export function buildQuicMessage(
         direction,
     };
     if (library) message.library = library;
+    // Same join key as the TCP records: the host keys QUIC flows by it. Not
+    // stampRecordClientRandom: record_message.ts pulls Frida-only modules into this pure file.
+    if (clientRandom) message.client_random = clientRandom;
+    // Lets the host treat the tuple as provisional and swap in the connection's
+    // real one once a later record carries it.
+    if (info.synthetic) message.endpoints_synthetic = true;
     return message;
 }
 
@@ -73,22 +82,49 @@ export interface ObservedPeer {
 export interface LinkedQuicConnection {
     connKey: string;
     info: QuicConnectionInfo;
+    /** TLS client_random of this generation, once its handshake was observed. */
+    clientRandom?: string;
+    /**
+     * No addresses were readable, so a freed pointer reused by a new
+     * connection cannot be told apart: a later handshake may rebind it.
+     */
+    reuseUndetectable?: boolean;
+    /**
+     * Same peer, new self address: connection migration (Chrome port
+     * migration) keeps the key and client_random; a reused pointer is told
+     * apart by its new handshake, which starts a new generation on bind.
+     */
+    selfChanged?: boolean;
 }
 
 interface LinkedEntry extends LinkedQuicConnection {
     generation: number;
     /** Local side synthesized because the library has no self address yet (0-RTT). */
     provisionalLocal: boolean;
+    /** A record was built for this generation (the host already has flows under its key). */
+    carriedTraffic?: boolean;
+    /** This generation's client handshake started (CryptoConnect seen). */
+    handshakeStarted?: boolean;
 }
 
 /** Bound on remembered native connections (least recently used evicted first). */
 const MAX_LINKED_CONNECTIONS = 4096;
+
+/** `self` when it can be the local side of a connection to `peer` (same family), else null. */
+function usableSelf(self: QuicSocketAddress | null, peer: QuicSocketAddress): QuicSocketAddress | null {
+    return self && self.family === peer.family ? self : null;
+}
 
 /** True iff `info`'s local or peer side is the endpoint `e`. */
 function infoHasEndpoint(info: QuicConnectionInfo, side: "local" | "peer", e: QuicSocketAddress): boolean {
     return info.ssFamily === e.family &&
         (side === "local" ? info.localAddr === e.addr && info.localPort === e.port
                           : info.peerAddr === e.addr && info.peerPort === e.port);
+}
+
+/** Local side of a tuple taken from a real self address. */
+function localOf(self: QuicSocketAddress): { localAddr: string | number; localPort: number } {
+    return { localAddr: self.addr, localPort: self.port };
 }
 
 /** FNV-1a hash of a pointer string → stable unsigned 32-bit value. */
@@ -176,6 +212,9 @@ export class QuicConnectionTracker {
 
     // Native connection pointer -> its resolved key/4-tuple (see resolveLinked).
     private _linked = new LruMap<string, LinkedEntry>(MAX_LINKED_CONNECTIONS);
+    // client_random of connections without a linked entry (layout unknown or
+    // addresses unreadable), keyed by pointer; their connKey is the pointer.
+    private _unlinkedClientRandom = new LruMap<string, string>(MAX_LINKED_CONNECTIONS);
 
     /**
      * Register a new QUIC connection.
@@ -280,6 +319,7 @@ export class QuicConnectionTracker {
                 ssFamily: "AF_INET6",
                 peerAddr: peer.addr, peerPort: peer.port,
                 ...syntheticLocal(h, "AF_INET6"),
+                synthetic: true,
             };
         }
 
@@ -292,6 +332,7 @@ export class QuicConnectionTracker {
             ssFamily: "AF_INET",
             peerAddr, peerPort,
             ...syntheticLocal(h, "AF_INET"),
+            synthetic: true,
         };
     }
 
@@ -307,37 +348,129 @@ export class QuicConnectionTracker {
      *     a synthetic client, upgraded in place once the self address appears
      *     (same connKey, so the host keeps it one connection);
      *   - neither -> the deterministic synthetic tuple of the pointer.
-     * A different peer (or a different known self) behind the same pointer is a
-     * new connection reusing freed memory: it gets a new generation and key so
-     * it never folds into the previous connection's streams.
+     * A different peer behind the same pointer is a new connection reusing
+     * freed memory: it gets a new generation and key so it never folds into the
+     * previous connection's streams. A different self with the same peer is
+     * migration (see selfChanged) until a new handshake proves reuse
+     * (resolveNewHandshake, or a different client_random in bindClientRandom).
      */
     resolveLinked(connPtr: string, self: QuicSocketAddress | null, peer: QuicSocketAddress | null): LinkedQuicConnection {
         const prev = this._linked.get(connPtr);
-        const selfUsable = !!(self && peer && self.family === peer.family);
-        if (!peer) return prev ?? { connKey: connPtr, info: this.synthesizeInfo(connPtr) };
+        if (!peer) return prev ?? this.unlinkedConnection(connPtr);
+        const local = usableSelf(self, peer);
         if (prev && infoHasEndpoint(prev.info, "peer", peer)) {
-            if (!selfUsable) return prev;
+            if (!local) return prev;
             if (prev.provisionalLocal) {
-                prev.info = { ...prev.info, localAddr: self!.addr, localPort: self!.port };
+                prev.info = { ...prev.info, ...localOf(local), synthetic: false };
                 prev.provisionalLocal = false;
                 return prev;
             }
-            if (infoHasEndpoint(prev.info, "local", self!)) return prev;
+            if (infoHasEndpoint(prev.info, "local", local)) return prev;
+            // Only one Initial on the wire for such a change: same connection, new local port.
+            // Records after the migration must carry the port actually on the wire.
+            prev.info = { ...prev.info, ...localOf(local) };
+            prev.selfChanged = true;
+            return prev;
         }
+        const entry = this.startGeneration(connPtr, prev, local, peer);
+        // Generation 0 keeps the unlinked key (the pointer), so it is the same
+        // connection whose handshake was bound before its addresses were readable.
+        const unlinkedClientRandom = prev ? undefined : this._unlinkedClientRandom.get(connPtr);
+        if (unlinkedClientRandom) entry.clientRandom = unlinkedClientRandom;
+        this._unlinkedClientRandom.delete(connPtr);
+        return entry;
+    }
+
+    /**
+     * resolveLinked for a client handshake start (TlsClientHandshaker::CryptoConnect):
+     * it runs once per new connection and never on migration, so a pointer whose
+     * generation already started a handshake or carried records is a reused one
+     * even with the same peer and no client_random to compare.
+     */
+    resolveNewHandshake(connPtr: string, self: QuicSocketAddress | null, peer: QuicSocketAddress | null): LinkedQuicConnection {
+        const prev = this._linked.get(connPtr);
+        if (prev && peer && (prev.carriedTraffic || prev.handshakeStarted) && infoHasEndpoint(prev.info, "peer", peer)) {
+            this.startGeneration(connPtr, prev, usableSelf(self, peer), peer);
+        }
+        const linked = this.resolveLinked(connPtr, self, peer);
+        const entry = this._linked.get(connPtr);
+        if (entry && entry.connKey === linked.connKey) entry.handshakeStarted = true;
+        return linked;
+    }
+
+    /** Note that a record was built for a connection resolveLinked just returned. */
+    noteLinkedTraffic(linked: LinkedQuicConnection): void {
+        const entry = linked as Partial<LinkedEntry>;
+        // An unlinked identity has no generation and is never tracked.
+        if (entry.carriedTraffic || entry.generation === undefined) return;
+        entry.carriedTraffic = true;
+    }
+
+    /** A new connection behind `connPtr`: next generation, own key and 4-tuple. */
+    private startGeneration(connPtr: string, prev: LinkedEntry | undefined,
+                            self: QuicSocketAddress | null, peer: QuicSocketAddress): LinkedEntry {
         const generation = prev ? prev.generation + 1 : 0;
         const connKey = generation === 0 ? connPtr : connPtr + "#" + generation;
-        const local = selfUsable
-            ? { localAddr: self!.addr, localPort: self!.port }
-            : syntheticLocal(hashPtr(connKey), peer.family);
+        const local = self ? localOf(self) : syntheticLocal(hashPtr(connKey), peer.family);
         const entry: LinkedEntry = {
-            connKey, generation, provisionalLocal: !selfUsable,
+            connKey, generation, provisionalLocal: !self,
             info: {
                 serverName: "", scid: "", dcid: "", ssFamily: peer.family,
                 peerAddr: peer.addr, peerPort: peer.port, ...local,
+                // A guessed local makes the tuple provisional for the host.
+                synthetic: !self,
             },
         };
         this._linked.set(connPtr, entry);
         return entry;
+    }
+
+    /** Self of a linked entry: after a self change, the migrated address its info carries. */
+    private static selfOf(entry: LinkedEntry): QuicSocketAddress {
+        return { family: entry.info.ssFamily, addr: entry.info.localAddr, port: entry.info.localPort } as QuicSocketAddress;
+    }
+
+    /** Peer of a linked entry, as the endpoint resolveLinked compares against. */
+    private static peerOf(entry: LinkedEntry): QuicSocketAddress {
+        return { family: entry.info.ssFamily, addr: entry.info.peerAddr, port: entry.info.peerPort } as QuicSocketAddress;
+    }
+
+    /** Identity of a connection without readable addresses: the pointer key and a synthetic tuple. */
+    private unlinkedConnection(connPtr: string): LinkedQuicConnection {
+        const unlinked: LinkedQuicConnection = {
+            connKey: connPtr, info: this.synthesizeInfo(connPtr), reuseUndetectable: true,
+        };
+        const clientRandom = this._unlinkedClientRandom.get(connPtr);
+        if (clientRandom) unlinked.clientRandom = clientRandom;
+        return unlinked;
+    }
+
+    /**
+     * Attach `clientRandom` to the connection behind `connPtr` only while it is
+     * still generation `connKey`, so a reused pointer never inherits it. A
+     * different client_random after a self change starts the next generation.
+     * Without the CryptoConnect hook (resolveNewHandshake) a reused pointer to
+     * the same peer whose old generation never got a client_random cannot be
+     * told from migration and keeps the old key.
+     */
+    bindClientRandom(connPtr: string, connKey: string, clientRandom: string): boolean {
+        if (!clientRandom) return false;
+        const entry = this._linked.get(connPtr);
+        if (entry) {
+            if (entry.connKey !== connKey) return false;
+            if (entry.selfChanged && entry.clientRandom && entry.clientRandom !== clientRandom) {
+                // A second handshake after the self change: a new connection reusing the pointer.
+                const next = this.startGeneration(connPtr, entry, QuicConnectionTracker.selfOf(entry),
+                                                  QuicConnectionTracker.peerOf(entry));
+                next.clientRandom = clientRandom;
+                return true;
+            }
+            entry.clientRandom = clientRandom;
+            return true;
+        }
+        if (connKey !== connPtr) return false;  // a generation whose entry is gone (evicted)
+        this._unlinkedClientRandom.set(connPtr, clientRandom);
+        return true;
     }
 
     /**

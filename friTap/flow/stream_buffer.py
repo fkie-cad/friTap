@@ -2,7 +2,7 @@
 
 
 class StreamBuffer:
-    """Per-connection bidirectional byte buffer for stream reassembly."""
+    """Per-direction byte buffers (write = SSL_write/request, read = SSL_read/response)."""
 
     def __init__(self):
         self._write_buf = bytearray()  # request data (SSL_write = outgoing)

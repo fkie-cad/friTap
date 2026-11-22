@@ -1,13 +1,9 @@
 """The shared read loop behind the line-oriented offline keylog loaders.
 
-Protocol-neutral: each loader supplies its own ``parse_line`` (which returns
-``None`` for comments, blanks and malformed or foreign lines) and, optionally,
-the join key its entries are looked up by.
-
-Every line-oriented keylog / secret-file reader goes through
-:func:`iter_bounded_lines`: a file with no newlines (binary junk, or a hostile
-file named by an untrusted capture manifest) must never become one giant
-in-memory line.
+Protocol-neutral: each loader supplies ``parse_line`` (``None`` for comments,
+blanks, malformed or foreign lines) and optionally a join key. Every reader goes
+through :func:`iter_bounded_lines`, so a file with no newlines (binary junk or a
+hostile manifest-named file) never becomes one giant in-memory line.
 """
 
 from __future__ import annotations
@@ -50,15 +46,11 @@ def _source_name(fh, source: Optional[str]) -> str:
 def iter_bounded_lines(
     fh, max_chars: int = _MAX_LINE_CHARS, source: Optional[str] = None,
 ) -> Iterator[AnyStr]:
-    """Yield the lines of *fh* (text or binary), skipping over-long ones.
+    """Yield the lines of *fh* (text or binary) like ``for line in fh``, skipping over-long ones.
 
-    Each line is read with ``readline(max_chars + 1)`` and keeps its trailing
-    newline, exactly like ``for line in fh``. A line whose content exceeds
-    *max_chars* is skipped: the rest of it is drained in bounded chunks up to
-    the next newline, so memory stays bounded however long it is. The skipped
-    lines are counted and reported in ONE warning per file (naming *source*, or
-    ``fh.name``) once iteration ends or the generator is closed.
-    """
+    A line over *max_chars* is drained in bounded chunks so memory stays bounded.
+    Skipped lines are reported in ONE warning per file (naming *source* or ``fh.name``).
+"""
     skipped = 0
     try:
         while True:
@@ -85,13 +77,9 @@ def load_keylog_lines(
 ) -> Union[List[T], Dict[Hashable, T]]:
     """Parse each line of the keylog at *path* with *parse_line*, skipping ``None``.
 
-    The file is read as UTF-8 with undecodable bytes replaced, line by line
-    (each line keeps its trailing newline; over-long lines are skipped, see
-    :func:`iter_bounded_lines`); a missing or unreadable file raises
-    :class:`OSError`. Without *key* the entries are returned as a list in file
-    order; with *key* they are returned as ``{key(entry): entry}``, where the
-    last entry for a duplicate key wins.
-    """
+    Read as UTF-8 with replacement; a missing or unreadable file raises :class:`OSError`.
+    Without *key* returns a list in file order; with *key* ``{key(entry): entry}``, last duplicate wins.
+"""
     entries: List[T] = []
     with open(path, "r", encoding="utf-8", errors="replace") as fh:
         for line in iter_bounded_lines(fh):

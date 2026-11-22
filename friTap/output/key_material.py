@@ -2,13 +2,10 @@
 
 """Key-material policy shared by every JSON output.
 
-``-j file.json``, ``-j file.jsonl`` and the ``-j -`` stdout stream are routinely
-handed to scripts, ticket systems and AI agents, so raw secrets must never land
-there by accident. A keylog record carries its secret (``key_data`` /
-``payload``) only when the user opted in: with ``-k`` (keylog output was
-requested anyway) or with ``--json-keys``. Otherwise the record is kept, so
-consumers still learn that a key was seen, but it is reduced to its label (and
-the public client_random of NSS lines) and marked ``"redacted": true``.
+JSON outputs go to scripts, ticket systems and AI agents, so raw secrets must not
+land there by accident. A keylog record keeps its secret (``key_data``/``payload``)
+only with ``-k`` or ``--json-keys``; otherwise it is reduced to its label (plus the
+public client_random of NSS lines) and marked ``"redacted": true``.
 """
 
 from __future__ import annotations
@@ -16,36 +13,26 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Optional
 
+from ..tls_keylog_labels import TLS_KEYLOG_LABELS
 from .keylog_format import is_nss_keylog_line
 
 if TYPE_CHECKING:
     from ..config import OutputConfig
 
-# Record fields that can hold a secret: the pre-formatted keylog line and the
-# structured payload (e.g. an SSH KEX shared secret).
+# Record fields that can hold a secret (the keylog line, the structured payload e.g. an SSH KEX secret).
 KEY_MATERIAL_FIELDS = ("key_data", "payload")
 
-# Label kept for a record whose key_data carries no recognisable label (a bare
-# secret, or the label-less Signal keylog format).
+# Label for a record whose key_data has no recognisable label (bare secret, label-less Signal format).
 UNKNOWN_LABEL = "unknown"
 
-# Exact keylog labels friTap emits. Kept in sync (see the unit tests) with
-# pipeline.TLS_KEYLOG_LABELS, the RC4/MTProto keylog specs and the SSH handler.
-KNOWN_KEYLOG_LABELS = frozenset({
-    # NSS / TLS (SSLKEYLOGFILE)
-    "CLIENT_RANDOM", "CLIENT_HANDSHAKE_TRAFFIC_SECRET",
-    "SERVER_HANDSHAKE_TRAFFIC_SECRET", "CLIENT_TRAFFIC_SECRET_0",
-    "SERVER_TRAFFIC_SECRET_0", "EXPORTER_SECRET", "EARLY_EXPORTER_SECRET",
-    "RESUMPTION_MASTER_SECRET", "CLIENT_EARLY_TRAFFIC_SECRET",
-    # SSH (Wireshark ``<cookie> SHARED_SECRET <K>``), RC4, MTProto
+# Exact keylog labels friTap emits: the shared TLS set plus SSH (Wireshark ``<cookie> SHARED_SECRET <K>``), RC4, MTProto.
+KNOWN_KEYLOG_LABELS = TLS_KEYLOG_LABELS | frozenset({
     "SHARED_SECRET", "RC4_KEY",
     "MTPROTO_AUTH_KEY", "MTPROTO_E2E_KEY", "MTPROTO_OBF_KEY",
 })
 
-# Label families: SSH per-direction keys (SSH_ENC_KEY_C2S, SSH_IV_S2C...),
-# IPsec/strongSwan key names (SK_ai, SK_er, encr_i, integ_r...) and the
-# upper-case custom-plugin labels (AES_KEY, WG_SENDING_KEY, SRTP_MASTER_KEY...).
-# A custom label needs an underscore, so a bare hex/base64 token never matches.
+# Label families: SSH per-direction keys, IPsec/strongSwan names (SK_ai, encr_i...) and upper-case
+# custom-plugin labels (AES_KEY, WG_SENDING_KEY...). A custom label needs an underscore, so a bare hex/base64 token never matches.
 _KNOWN_KEYLOG_LABEL_PATTERNS = (
     re.compile(r"SSH_[A-Z0-9_]{1,60}"),
     re.compile(r"SK_(?:ai|ar|ei|er|pi|pr|d)|(?:encr|integ)_[ir]"),
@@ -62,11 +49,7 @@ def is_known_keylog_label(token: str) -> bool:
 
 
 def keylog_label_of(key_data: str) -> Optional[str]:
-    """The label of a keylog line, or ``None`` when it carries none.
-
-    A single token is always a bare secret, never a label; the SSH
-    ``<cookie> SHARED_SECRET <K>`` line carries its label second.
-    """
+    """The label of a keylog line, or ``None``; a single token is a bare secret, and the SSH ``<cookie> SHARED_SECRET <K>`` label is second."""
     tokens = key_data.split()
     if len(tokens) < 2:
         return None
@@ -76,25 +59,20 @@ def keylog_label_of(key_data: str) -> Optional[str]:
 
 
 def json_key_material_enabled(output_config: "OutputConfig") -> bool:
-    """True when raw key material is wanted for the JSON outputs.
+    """True when raw key material is wanted in the JSON outputs: ``-k``, or ``--json-keys`` with ``-j``.
 
-    ``-k`` (keys are recorded anyway) or ``--json-keys`` together with a ``-j``
-    output. The one predicate behind both the JSON handlers' redaction policy
-    and the agent's ``keylog_enabled`` switch, so the two cannot drift.
+    One predicate for the redaction policy and the agent's ``keylog_enabled`` switch, so they cannot drift.
     """
     return bool(output_config.keylog
                 or (output_config.json_keys and output_config.wants_json))
 
 
 def redact_key_record(record: dict) -> dict:
-    """Strip secret fields from a keylog record, keeping only non-secret hints.
+    """Strip secret fields from a keylog record, keeping non-secret hints.
 
-    The public client_random is kept only for a genuine NSS keylog line
-    (``<LABEL> <client_random> <secret>``), never for an arbitrary 3-token line.
-
-    The label is kept only when it is a known keylog label
-    (:func:`keylog_label_of`); otherwise it becomes ``"unknown"`` — the first
-    token of a bare secret must never be copied out as its "label".
+    The public client_random is kept only for a genuine NSS line (``<LABEL> <client_random> <secret>``).
+    The label is kept only if known (:func:`keylog_label_of`), else ``"unknown"``: a bare
+    secret's first token must never be copied out as a label.
     """
     key_data = str(record.get("key_data") or "")
     tokens = key_data.split()

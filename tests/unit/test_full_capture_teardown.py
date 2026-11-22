@@ -102,12 +102,16 @@ def test_teardown_of_a_capture_that_never_started_is_a_quiet_no_op():
     assert "not started" in pcap.logger.info.call_args[0][0]
 
 
-def test_teardown_never_raises_and_still_removes_the_device_file():
+def test_teardown_never_raises_and_keeps_the_device_file_after_a_failed_pull():
+    # Was: "...and still removes the device file" -- that deleted the only copy
+    # of the capture after a failed pull (D6). The file is now kept.
     pcap = _pcap()
     pcap.android_Instance.pull_pcap_from_device.side_effect = subprocess.TimeoutExpired("adb", 30)
 
     assert pcap.stop_device_capture() is None
-    pcap.android_Instance.remove_device_capture.assert_called_once()
+    pcap.android_Instance.remove_device_capture.assert_not_called()
+    pcap.android_Instance.keep_device_capture_for_recovery.assert_called_once_with(
+        "/tmp/out/_cap.pcap")
 
 
 def test_tcpdump_is_not_started_once_the_teardown_ran():
@@ -259,8 +263,8 @@ def test_pull_returns_the_local_path_and_logs_adbs_stderr_summary():
     android.pcap_name = "_cap.pcap"
     android.__dict__["is_Android"] = True
     android.__dict__["adb"] = MagicMock()
-    android.adb.run.return_value = MagicMock(
-        returncode=0, stdout="", stderr="/data/local/tmp/_cap.pcap: 1 file pulled\n")
+    from tests.unit._adb_pull_helpers import reply_to_pull
+    reply_to_pull(android, stderr="/data/local/tmp/_cap.pcap: 1 file pulled\n")
 
     assert android.pull_pcap_from_device("/tmp/out") == "/tmp/out/_cap.pcap"
     assert "1 file pulled" in android.logger.info.call_args[0][0]
@@ -416,12 +420,13 @@ def test_a_failing_capture_stop_does_not_skip_cleanup(exits):
     ssl_log.cleanup.assert_called_once()
 
 
-def test_second_signal_forces_the_exit_immediately(exits):
+def test_second_signal_lets_the_teardown_continue(exits, monkeypatch):
+    # The 2nd signal only warns (the 3rd forces): see test_repeated_termination_signal.py.
+    monkeypatch.setattr(SessionManager, "_start_force_exit_timer", lambda self, status: None)
     manager, ssl_log = _session(MagicMock())
     manager._exit_signal_received = True
 
-    with pytest.raises(_Exited):
-        manager._on_termination_signal(signal.SIGINT, None)
+    manager._on_termination_signal(signal.SIGINT, None)
 
-    assert exits == [0]
+    assert exits == []
     ssl_log.cleanup.assert_not_called()

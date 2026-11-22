@@ -3,15 +3,14 @@
 The generic reassembler lives in :mod:`friTap.offline.net.tcp_reassembly`.
 This module adds the one MTProto-specific rule: a conversation is ``degraded``
 when its client direction lacks the 64-byte obfuscation init block, because
-MTProto's obfuscated transport is AES-CTR keyed from that block. The old
-private names are re-exported so existing imports keep working.
+MTProto's obfuscated transport is AES-CTR keyed from that block.
 """
 
 from __future__ import annotations
 
 from typing import Dict, Tuple
 
-# Re-exported for old imports (decrypt.py, tests).
+# Re-exported: tests import these names from this module.
 from ..net.tcp_reassembly import (  # noqa: F401
     ConvBuilder,
     TcpStreamPair,
@@ -22,7 +21,7 @@ from ..net.tcp_reassembly import (
 )
 from .transport import _INIT_LEN
 
-# 64-byte obfuscation init block — a stream missing this cannot be de-obfuscated.
+# A stream missing the 64-byte obfuscation init block cannot be de-obfuscated.
 INIT_BLOCK_LEN = _INIT_LEN
 
 

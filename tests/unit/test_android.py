@@ -8,7 +8,7 @@ device detection, and Android SSL library handling.
 import subprocess
 from unittest.mock import MagicMock, patch
 
-from friTap.android import ADB, Android
+from friTap.android import ADB, Android, adb_child_kwargs
 
 
 # Helper to set up an Android object to an expected state
@@ -65,7 +65,8 @@ class TestADBOperations:
             ['adb', 'version'], 
             capture_output=True, 
             text=True, 
-            timeout=5
+            timeout=5,
+            **adb_child_kwargs(),  # own session: a terminal Ctrl+C must not kill adb
         )
         assert is_available
         
@@ -106,7 +107,8 @@ emulator-5554	device
             ['adb', 'devices'], 
             capture_output=True, 
             text=True, 
-            timeout=10
+            timeout=10,
+            **adb_child_kwargs(),  # own session: a terminal Ctrl+C must not kill adb
         )
         
         assert len(devices) == 2
@@ -141,7 +143,8 @@ emulator-5554	device
             ['adb', 'shell', 'id -u'], 
             capture_output=True, 
             text=True, 
-            timeout=ADB.ROOT_PROBE_TIMEOUT
+            timeout=ADB.ROOT_PROBE_TIMEOUT,
+            **adb_child_kwargs(),  # own session: a terminal Ctrl+C must not kill adb
         )
         
     @patch('subprocess.run')
@@ -170,7 +173,8 @@ emulator-5554	device
             ['adb', '-s', 'emulator-5554', 'shell', 'id -u'], 
             capture_output=True, 
             text=True, 
-            timeout=ADB.ROOT_PROBE_TIMEOUT
+            timeout=ADB.ROOT_PROBE_TIMEOUT,
+            **adb_child_kwargs(),  # own session: a terminal Ctrl+C must not kill adb
         )
 
 
@@ -197,7 +201,8 @@ package:com.google.android.gm"""
             ['adb', 'shell', 'pm list packages'], 
             capture_output=True, 
             text=True, 
-            timeout=15
+            timeout=15,
+            **adb_child_kwargs(),  # own session: a terminal Ctrl+C must not kill adb
         )
         
         assert len(packages) == 3
@@ -222,6 +227,7 @@ package:com.google.android.gm"""
             capture_output=True, 
             text=True, 
             timeout=10,
+            **adb_child_kwargs(),  # own session: a terminal Ctrl+C must not kill adb
             # shell=True
         )
         
@@ -328,7 +334,8 @@ SSL_get_version"""
             ['adb', 'shell', 'nm', '-D', '/system/lib64/libssl.so'], 
             capture_output=True, 
             text=True, 
-            timeout=15
+            timeout=15,
+            **adb_child_kwargs(),  # own session: a terminal Ctrl+C must not kill adb
         )
         
         assert "SSL_read" in exports
@@ -352,27 +359,31 @@ class TestFileOperations:
             ['adb', 'push', 'local_file.txt', '/sdcard/remote_file.txt'], 
             capture_output=True, 
             text=True, 
-            timeout=30
+            timeout=30,
+            **adb_child_kwargs(),  # own session: a terminal Ctrl+C must not kill adb
         )
         
         assert success
         
-    @patch('subprocess.run')
-    def test_pull_file(self, mock_subprocess):
+    @patch('subprocess.Popen')
+    def test_pull_file(self, mock_popen):
         """Test pulling file from Android device."""
         android = configured_android()
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        mock_subprocess.return_value = mock_result
-        
+        mock_popen.return_value.returncode = 0
+        mock_popen.return_value.communicate.return_value = ("", "1 file pulled")
+
         success = android.pull_file("/sdcard/remote_file.txt", "local_file.txt").returncode == 0
-        
-        mock_subprocess.assert_called_with(
-            ['adb', 'pull', '/sdcard/remote_file.txt', 'local_file.txt'], 
-            capture_output=True, 
-            text=True, 
-            timeout=30
+
+        # A tracked process since D7 (a forced exit can kill it).
+        mock_popen.assert_called_with(
+            ['adb', 'pull', '/sdcard/remote_file.txt', 'local_file.txt'],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            **adb_child_kwargs(),  # own session: a terminal Ctrl+C must not kill adb
         )
+        mock_popen.return_value.communicate.assert_called_with(timeout=30)
+        assert success
         
         assert success
         
@@ -391,7 +402,8 @@ class TestFileOperations:
             ['adb', 'shell', 'stat "/sdcard/file.txt"'], 
             capture_output=True, 
             text=True, 
-            timeout=5
+            timeout=5,
+            **adb_child_kwargs(),  # own session: a terminal Ctrl+C must not kill adb
         )
         
         assert exists

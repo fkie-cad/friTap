@@ -51,6 +51,7 @@ docker build -f dev/Dockerfile .
 | `derive_boringssl_keylog_offset.py` | Derive the Apple BoringSSL `SSL_CTX.keylog_callback` offset from iOS Simulator runtimes |
 | `run_tests.py` | Unified test runner (unit, integration, agent, coverage) |
 | `macos_verify/verify.sh` | End-to-end capture verification on macOS against a local TLS rig (see below) |
+| `fizz/` (local only, gitignored) | Maintainer-local tooling (`genfix.py`) that regenerates `agent/shared/__fixtures__/fizz_meta_arm64.ts` from pulled Facebook/Instagram libraries; not shipped with the repository |
 | `setup_dev.py` | Automated dev environment setup |
 | `entrypoint.sh` | Docker container entrypoint |
 | `Dockerfile` | Docker image for agent compilation |

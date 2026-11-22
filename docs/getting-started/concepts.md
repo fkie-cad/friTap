@@ -202,7 +202,9 @@ Every captured connection is represented as a `Flow`. A flow is an ordered,
 the innermost application/decrypted protocol — for example `[tls, http2]` or
 `[quic, http3]`. Because HTTP/2 and HTTP/3 streams are demultiplexed into
 separate flows, the stack never branches; it always stays a single straight
-line.
+line. Such a per-stream flow exposes its real transport stream id as
+`flow.stream_id` (each `FlowChunk` also carries its own `stream_id`); it is
+`None` when the chunks carry no id or more than one.
 
 ```mermaid
 graph LR
@@ -279,6 +281,10 @@ if http2 is not None:
 
 # Positional view (outermost transport first):
 [ly.name for ly in flow.layers]   # e.g. ["tls", "http2"]
+
+# Real HTTP/2 / QUIC stream id of a single-stream flow, else None:
+flow.stream_id                    # e.g. 4
+[ch.stream_id for ch in flow.chunks]
 ```
 
 !!! warning "Attribute access vs. `layer()`"

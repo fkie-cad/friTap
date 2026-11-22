@@ -20,6 +20,7 @@ from friTap.parsers.protobuf import ProtobufView, decode_protobuf_view
 from friTap.tui.modals.body_processing_modal import BodyProcessingResult, ProtobufConfig
 from friTap.tui.widgets.protobuf_render import protobuf_view_lines
 from tests.unit._render_helpers import RenderingFakeLog
+from tests.unit._tui_flow_helpers import make_flow_detail_widget
 
 PACKED = b"\x0a\x03\x81\x01\x02"            # 1: [packed] [129, 2]
 CLOSING_TAG = b"\x12\x04[/x]"               # 2: "[/x]"
@@ -97,11 +98,9 @@ from friTap.tui.widgets.flow_detail import FlowDetailWidget  # noqa: E402
 
 
 def _widget(protobuf_config=None) -> FlowDetailWidget:
-    widget = FlowDetailWidget.__new__(FlowDetailWidget)
-    widget._active_processing = BodyProcessingResult(
+    return make_flow_detail_widget(processing=BodyProcessingResult(
         decoder="protobuf", protobuf_config=protobuf_config,
-    )
-    return widget
+    ))
 
 
 @pytest.fixture

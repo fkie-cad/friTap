@@ -4,7 +4,7 @@
 // Hooks stream-level plaintext and injects keylog via pipe fd.
 
 import { HookDefinition, ExtraHookDef, ResolvedFunctions } from "../../core/hook_definition.js";
-import { sendQuicDatalog, sendQuicKeylog, sendConnectionLifecycle } from "../../shared/shared_structures.js";
+import { sendQuicDatalog, sendQuicKeylog, sendQuicConnectionLifecycle } from "../../shared/shared_structures.js";
 import { log, devlog, devlog_error } from "../../util/log.js";
 import { pcap_enabled, keylog_enabled } from "../../fritap_agent.js";
 import { quicConnectionTracker, buildQuicMessage, QuicConnectionInfo } from "../shared/quic_connection_tracker.js";
@@ -128,7 +128,7 @@ function createConnectTracker(ref: ResolvedRef,
                         catch (e) { devlog("[quiche] failed to set keylog fd: " + e); }
                     }
 
-                    sendConnectionLifecycle("created", buildQuicMessage(info, connKey, "quiche_connect"));
+                    sendQuicConnectionLifecycle("created", buildQuicMessage(info, connKey, "quiche_connect"));
                 },
             });
         },
@@ -193,7 +193,7 @@ function createAcceptTracker(ref: ResolvedRef,
                         catch (e) { devlog("[quiche] failed to set keylog fd: " + e); }
                     }
 
-                    sendConnectionLifecycle("created", buildQuicMessage(info, connKey, "quiche_accept"));
+                    sendQuicConnectionLifecycle("created", buildQuicMessage(info, connKey, "quiche_accept"));
                 },
             });
         },
@@ -234,7 +234,7 @@ function createStreamRecvHook(): ExtraHookDef {
                     if (this.finPtr && !this.finPtr.isNull()) {
                         try {
                             if (this.finPtr.readU8() !== 0) {
-                                sendConnectionLifecycle("stream_fin", {
+                                sendQuicConnectionLifecycle("stream_fin", {
                                     ...message,
                                     stream_id: this.streamId,
                                 });
@@ -283,7 +283,7 @@ function createStreamSendHook(): ExtraHookDef {
                     }
                     if (this.fin) {
                         const message = buildQuicMessage(connInfo, connKey, "quiche_stream_send", "write");
-                        sendConnectionLifecycle("stream_fin", {
+                        sendQuicConnectionLifecycle("stream_fin", {
                             ...message,
                             stream_id: this.streamId,
                         });
@@ -311,7 +311,7 @@ function createConnFreeHook(): ExtraHookDef {
                     const connKey = args[0].toString();
                     const info = quicConnectionTracker.remove(connKey);
                     if (info) {
-                        sendConnectionLifecycle("destroyed", buildQuicMessage(info, connKey, "quiche_conn_free"));
+                        sendQuicConnectionLifecycle("destroyed", buildQuicMessage(info, connKey, "quiche_conn_free"));
                     }
                 },
             });

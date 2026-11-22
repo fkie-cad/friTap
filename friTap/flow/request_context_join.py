@@ -6,6 +6,7 @@ and host receive time; host + time alone never yields a claim.
 
 from __future__ import annotations
 
+import logging
 import re
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -24,6 +25,8 @@ from .attribution import (
     sdk_name,
 )
 from .replay import _LRUCache
+
+logger = logging.getLogger(__name__)
 
 #: Live contexts kept at most; past it the least recently seen is finalized.
 MAX_LIVE_CONTEXTS = 4096
@@ -215,6 +218,7 @@ class RequestContextStore:
                  max_contexts: int = MAX_LIVE_CONTEXTS) -> None:
         self._classify = classify
         self._max_contexts = max_contexts
+        self._evicted = 0
         self._contexts: OrderedDict[str, RequestContext] = OrderedDict()
         # key -> req_ids in insertion order (a dict used as an ordered set).
         self._index: dict[RequestKey, dict[str, None]] = {}
@@ -222,6 +226,19 @@ class RequestContextStore:
 
     def __len__(self) -> int:
         return len(self._contexts)
+
+    @property
+    def evicted(self) -> int:
+        """Contexts pushed out by the size bound (not by TTL expiry)."""
+        return self._evicted
+
+    def reserve(self, count: int) -> None:
+        """Raise the size bound to hold at least *count* contexts.
+
+        Offline replay ingests the whole (already size-capped) sidecar before
+        any traffic, so the live bound would evict contexts before their flows.
+        """
+        self._max_contexts = max(self._max_contexts, count)
 
     # -- ingest -----------------------------------------------------------
 
@@ -250,6 +267,7 @@ class RequestContextStore:
         finished = []
         while len(self._contexts) >= self._max_contexts:
             finished.append(self._remove(next(iter(self._contexts))))
+            self._evicted += 1
         context = RequestContext(req_id=req_id, t_start=received)
         self._contexts[req_id] = context
         return context, finished

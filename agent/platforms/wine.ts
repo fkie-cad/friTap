@@ -26,6 +26,9 @@ import { boring_execute_modern as boring_execute_modern_windows } from "../tls/p
 import { gnutls_execute_modern as gnutls_execute_modern_windows } from "../tls/platforms/windows/gnutls_windows.js";
 import { mbedTLS_execute_modern as mbedTLS_execute_modern_windows } from "../tls/platforms/windows/mbedTLS_windows.js";
 import { nss_execute_modern as nss_execute_modern_windows } from "../tls/platforms/windows/nss_windows.js";
+import { NSS3_MODULE_NAME, NSS_WINDOWS_MODULE_PATTERN, exportsNsprIo } from "../tls/libs/nss_windows_libraries.js";
+import { nss_hpke_execute_windows } from "../ohttp/platforms/windows/nss_hpke_windows.js";
+import { wineRowsToHook } from "./wine_row_selection.js";
 import { wolfssl_execute_modern as wolfssl_execute_modern_windows } from "../tls/platforms/windows/wolfssl_windows.js";
 import { libressl_execute as libressl_execute_windows } from "../legacy/tls/platforms/windows/libressl_windows.js";
 import { libressl_execute_modern as libressl_execute_modern_windows } from "../tls/platforms/windows/libressl_windows.js";
@@ -174,14 +177,15 @@ function hook_Wine_LdrLoadDll(is_base_hook: boolean): boolean {
                     const dllBaseName = dllName.split(/[/\\]/).pop() || dllName;
 
                     const matches = hookRegistry.findAllMatches(platform_name, dllBaseName, undefined, selected_protocols);
-                    for (const match of matches) {
+                    // Only the first matching registration per DLL, plus supplementary
+                    // add-ons (e.g. NSS HPKE on a folded nss3.dll) — see wineRowsToHook.
+                    for (const match of wineRowsToHook(matches)) {
                         log(`[Wine] ${dllBaseName} loaded & will be hooked (${match.library})!`);
                         try {
                             hookWineDllOnce(match, dllBaseName, is_base_hook);
                         } catch (error) {
                             devlog(`[Wine] DLL hook error for ${dllBaseName}: ${error}`);
                         }
-                        break; // Only hook first matching registration per DLL
                     }
 
                     // Also scan the freshly-loaded DLL for the dual-ABI keylog
@@ -499,8 +503,7 @@ function hook_Wine_Existing_DLLs(is_base_hook: boolean): void {
         }
 
         const matches = hookRegistry.findAllMatches(platform_name, mod.name, mod.path, selected_protocols);
-        if (matches.length > 0) {
-            const match = matches[0];
+        for (const match of wineRowsToHook(matches)) {
             log(`[Wine] Found pre-loaded DLL ${mod.name} (${match.library}), hooking...`);
             try {
                 hookWineDllOnce(match, mod.name, is_base_hook);
@@ -617,7 +620,11 @@ export function load_wine_hooking_agent(lean: boolean = false): void {
         { platform: platform_name, pattern: /^(libtls|LIBTLS)-[0-9]+(_[0-9]+)?\.dll$/i, hookFn: libssl_dispatch_wine(), library: "LibreSSL (libtls)", libraryType: "libressl" },
         { platform: platform_name, pattern: /^.*(wolfssl|WOLFSSL).*\.dll$/i, hookFn: (use_modern ? wolfssl_execute_modern_windows : wolfssl_execute_windows), library: "WolfSSL", libraryType: "wolfssl" },
         { platform: platform_name, pattern: /^.*(libgnutls|LIBGNUTLS)-[0-9]+\.dll$/i, hookFn: (use_modern ? gnutls_execute_modern_windows : gnutls_execute_windows), library: "GnuTLS", libraryType: "gnutls" },
-        { platform: platform_name, pattern: /^(nspr|NSPR)[0-9]*\.dll/i, hookFn: (use_modern ? nss_execute_modern_windows : nss_execute_windows), library: "NSS", libraryType: "nss" },
+        // (lib)nspr4.dll, or a folded nss3.dll (see agent/platforms/windows.ts).
+        { platform: platform_name, pattern: NSS_WINDOWS_MODULE_PATTERN, contentFilter: exportsNsprIo, hookFn: (use_modern ? nss_execute_modern_windows : nss_execute_windows), library: "NSS", libraryType: "nss" },
+        // OHTTP (NSS HPKE) in a PE (lib)nss3.dll — same row as agent/platforms/windows.ts.
+        // Supplementary: it extracts no keys, so it must not displace (or be displaced by) the NSS row.
+        { platform: platform_name, pattern: NSS3_MODULE_NAME, hookFn: nss_hpke_execute_windows, library: "NSS HPKE (OHTTP)", protocol: "tls", libraryType: "nss_hpke", supplementary: true },
         { platform: platform_name, pattern: /mbedTLS\.dll/i, hookFn: (use_modern ? mbedTLS_execute_modern_windows : mbedTLS_execute_windows), library: "mbedTLS", libraryType: "mbedtls" },
         { platform: platform_name, pattern: /^.*(cronet|CRONET).*\.dll/i, hookFn: cronet_execute_wine, library: "Cronet", libraryType: "boringssl" },
         // BoringSSL statically linked into Chromium-family PE modules (CEF,

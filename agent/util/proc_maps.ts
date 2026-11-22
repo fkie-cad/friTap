@@ -6,6 +6,7 @@
 // that wants to scan or hook e.g. libcef.dll must find the image here instead.
 
 import { devlog } from "./log.js";
+import { isPeImage } from "../shared/pe_header.js";
 
 /** A PE image located via /proc/self/maps, shaped like the subset of Frida's
  *  `Module` the BoringSSL locators use (name/base/size/path/enumerateRanges). */
@@ -99,7 +100,7 @@ export function parseMapsPeImages(maps: string): MapsPeEntry[] {
 /** SizeOfImage from the in-memory PE headers at `base`, or null if not a PE. */
 export function peSizeOfImage(base: NativePointer): number | null {
     try {
-        if (base.readU16() !== 0x5a4d) return null; // "MZ"
+        if (!isPeImage(base)) return null;
         const nt = base.add(base.add(0x3c).readU32());
         if (nt.readU32() !== 0x00004550) return null; // "PE\0\0"
         // OptionalHeader.SizeOfImage sits at +56 in both PE32 and PE32+.

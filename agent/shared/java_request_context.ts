@@ -17,13 +17,19 @@ import type { RequestContextMessage } from "../schemas/messages.js";
 export interface RequestContextGateConfig {
     attribute_sdk: boolean;
     pcap_enabled: boolean;
+    full_capture: boolean;
+    keylog_enabled: boolean;
     pairip_safe: boolean;
     quic_only: boolean;
 }
 
-/** Needs decrypted flows (-p); --pairip-safe forbids ART hooks; QUIC-only installs no Java hooks. */
+/**
+ * Needs flows to join against: decrypted ones (-p), or a full capture plus keylog (-f -k)
+ * that is decrypted offline. --pairip-safe forbids ART hooks; QUIC-only installs no Java hooks.
+ */
 export function requestContextHooksWanted(cfg: RequestContextGateConfig): boolean {
-    return cfg.attribute_sdk && cfg.pcap_enabled && !cfg.pairip_safe && !cfg.quic_only;
+    const flowsAvailable = cfg.pcap_enabled || (cfg.full_capture && cfg.keylog_enabled);
+    return cfg.attribute_sdk && flowsAvailable && !cfg.pairip_safe && !cfg.quic_only;
 }
 
 export const MAX_REQUEST_FRAMES = 32;

@@ -1,33 +1,19 @@
 #!/usr/bin/env python3
 
-"""Pattern loader for friTap's "memory scan for secrets" feature.
+"""Pattern loader for friTap's memory-scan feature.
 
-This module owns the pattern *database* that drives the memory-scanning agent.
-The agent carries no layout knowledge of its own: every offset, stride, byte
-pattern and NSS label it uses arrives through its ``configure(profile)`` rpc
-call as a single profile object taken from this database. This module therefore
-loads the shipped default database, optionally merges a user-supplied database
-on top of it, validates a profile *strictly*, and hands back the single profile
-dict ready for ``configure()``.
+The agent carries no layout knowledge: every offset, stride, byte pattern and
+NSS label arrives through ``configure(profile)`` from a profile in the JSON
+database. This module loads the shipped database, merges a user database on
+top and validates a profile strictly.
 
-Strictness is the whole point. A typo in a byte pattern, a mislabelled secret
-or a struct offset that points at nothing does not raise anything at scan time -
-it simply matches nothing or reads the neighbouring heap, which on screen is
-indistinguishable from "the target made no TLS connections". Catching those
-cross-section mistakes here, before a single byte of memory is scanned, is what
-makes retargeting a build fail loudly instead of silently.
+Strictness matters: a bad pattern or offset raises nothing at scan time, it
+matches nothing or reads neighbouring heap, which looks like "no TLS traffic".
+Validation mirrors ``research/memory_scan/bssl_secret_scan.py``.
 
-The structural validation ported here mirrors the prototype host driver at
-``research/memory_scan/bssl_secret_scan.py`` (its ``select_profile`` and its
-``_validate_*`` family). The public API is:
-
-    * :class:`MemoryScanPatternError` - the one error type raised on any bad
-      database, profile selection or structural reference.
-    * :func:`load_database` - load the shipped default and merge a user file.
-    * :func:`select_profile` - pick a profile by id, or the first one.
-    * :func:`validate_profile` - strict structural validation of one profile.
-    * :func:`load_memory_scan_profile` - the convenience one-shot: load, merge,
-      validate and select, returning the profile ready for ``configure()``.
+Entry points: :func:`load_database`, :func:`select_profile`,
+:func:`validate_profile`, :func:`load_memory_scan_profile`. Every bad database
+or profile raises :class:`MemoryScanPatternError`.
 """
 
 from __future__ import annotations
@@ -39,83 +25,52 @@ from typing import Any, Iterator, Optional, Sequence
 
 logger = logging.getLogger("friTap.memory_scanning.loader")
 
-# The shipped default database, located relative to THIS module's directory (as
-# friTap/patterns/loader.py locates default_patterns.json) so it is found no
-# matter what the current working directory is.
 _DEFAULT_DATABASE_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
     "patterns.json",
 )
 
-# The database schema version this loader understands. Bumped only when the
-# top-level shape changes in a way this code cannot read.
+# Bumped only when the top-level shape changes in a way this code cannot read.
 _SUPPORTED_SCHEMA = 1
 
-# --------------------------------------------------------------------------- #
-# What the agent dereferences. These lists are the contract between the JSON
-# database and agent/scanner.js; a profile missing any of them cannot be scanned
-# with. Kept in sync with research/memory_scan/bssl_secret_scan.py.
-# --------------------------------------------------------------------------- #
-
-# Top-level profile keys agent/scanner.js dereferences.
+# What the agent dereferences: the contract between the JSON database and
+# agent/scanner.js. Keep in sync with research/memory_scan/bssl_secret_scan.py.
 _REQUIRED_PROFILE_KEYS = (
     "id", "scan_regions", "constants", "struct_offsets", "tiers",
     "validators", "keylog_labels",
 )
-# Constants the agent reads directly; their absence breaks a tier outright.
 _REQUIRED_CONSTANTS = (
     "ssl_max_md_size", "ssl3_random_size", "valid_hash_lens", "ssl_version_tls12",
 )
-# Constants the agent never reads but this validator does: they let the
-# hand-written offset tables be re-derived and checked (see
-# :func:`_validate_derived_offsets`) rather than merely trusted.
+# Read only by this validator, to re-derive the offset tables
+# (see :func:`_validate_derived_offsets`).
 _SELF_CHECK_CONSTANTS = ("inplace_vector_stride", "ssl_version_tls13")
 _REQUIRED_STRUCTS = ("SSL", "SSL3_STATE", "SSL_HANDSHAKE", "SSL_SESSION")
-# Every struct_offsets.SSL_SESSION key the agent dereferences. None is named
-# anywhere else in the JSON, so nothing else would notice them missing; checked
-# unconditionally as one block that gets retargeted as a unit.
+# Every struct_offsets.SSL_SESSION key the agent dereferences; nothing else in
+# the JSON names them, so they are checked unconditionally as one block.
 _REQUIRED_SESSION_FIELDS = (
     "ssl_version", "secret", "secret_len", "session_id", "session_id_len",
 )
 
-# The two tiers whose JSON sections cross-reference other sections of the file.
 _TIER_A = "A_ssl_handshake"
 _TIER_B = "B_ssl_method_ptr"
 
-# --------------------------------------------------------------------------- #
-# Engine discriminator. Each profile declares which secret-extraction engine it
-# targets. The key is absent in the shipped BoringSSL profile, so its absence
-# MUST mean "boringssl" for that profile to keep validating unchanged. Only the
-# boringssl checks above (structs, session fields, derived offsets) are
-# engine-specific; the dispatch in validate_profile() is what keeps them scoped
-# to boringssl rather than enforced on every engine.
-# --------------------------------------------------------------------------- #
+# A profile without an engine key is "boringssl" (the shipped profile omits it).
+# validate_profile() dispatches on engine so the boringssl checks above stay
+# scoped to it.
 _DEFAULT_ENGINE = "boringssl"
 _KNOWN_ENGINES = ("boringssl", "schannel", "rc4", "mtproto")
 
-# --------------------------------------------------------------------------- #
-# Applicability metadata (F3). Alongside its engine, each profile declares which
-# selected --protocol it belongs to, which platform(s) it applies to, and which
-# process the scan must run in. These drive select_profiles(); their absence
-# reproduces the shipped BoringSSL profile's behaviour exactly (a TLS, all-
-# platform, in-process scan), so a pre-F3 profile keeps resolving unchanged.
-# --------------------------------------------------------------------------- #
 _DEFAULT_PROTOCOL = "tls"
 
-# Some protocols are umbrellas over a single memory-scan engine: selecting one
-# (via --protocol or a bare -ms) should also pick that engine's profile, and
-# naming it directly to -ms should target that engine. "telegram" is MTProto +
-# E2E and the mtproto engine already scans both cloud and Secret-Chat keys, so
-# telegram resolves to the mtproto engine/profile.
+# Umbrella protocols that resolve to a single engine ("telegram" is MTProto + E2E,
+# both scanned by the mtproto engine).
 _PROTOCOL_ENGINE_ALIASES = {"telegram": "mtproto"}
 _DEFAULT_PLATFORMS = ("all",)
 _DEFAULT_SCAN_TARGET = "self"
-# scan_target names the process the scan runs in: "self" is the injected target
-# process (the default, Linux/Android/macOS/iOS and Windows user-space TLS);
-# "lsass" is a separate Frida session attached to lsass.exe (Windows Schannel).
+# "self" is the injected target process; "lsass" is a separate Frida session on
+# lsass.exe (Windows Schannel).
 _KNOWN_SCAN_TARGETS = ("self", "lsass")
-# friTap's canonical platform strings, and the aliases the frida device / host
-# report that map onto them (os.query_system_parameters -> os.id, sys.platform).
 _KNOWN_OS_NAMES = ("windows", "linux", "android", "macos", "ios")
 _OS_ALIASES = {
     "win": "windows",
@@ -130,26 +85,12 @@ _OS_ALIASES = {
     "ios": "ios",
     "iphoneos": "ios",
 }
-# The minimal shape every profile must have regardless of engine. The per-engine
-# validators tighten this; the schannel/rc4 validators are scaffolding today and
-# grow their own required-section checks in a later job (F3).
 _MINIMAL_PROFILE_KEYS = ("id", "scan_regions")
 
 
 class MemoryScanPatternError(Exception):
-    """A memory-scan pattern database or profile that cannot be trusted.
+    """A pattern database or profile that cannot be trusted (unloadable, unknown id, dangling structural reference)."""
 
-    Raised on a database that will not load, a profile id that does not exist,
-    and - most importantly - any structural reference inside a profile that
-    points at nothing (an undeclared label, a struct offset a tier uses but the
-    profile never defines, a session/s3 path field, or an offset relation that
-    has drifted from the constants it is derived from).
-    """
-
-
-# --------------------------------------------------------------------------- #
-# Loading and merging
-# --------------------------------------------------------------------------- #
 
 def _load_json(path: str) -> dict[str, Any]:
     """Read one JSON file into a dict, or raise :class:`MemoryScanPatternError`."""
@@ -181,11 +122,9 @@ def _merge_profiles(
 ) -> list[dict[str, Any]]:
     """Merge user profiles into the base list by ``id``.
 
-    A user profile whose id matches a base profile replaces it in place, keeping
-    the original ordering; a user profile with a new id is appended. Merging by
-    id (rather than deep-merging fields) keeps a profile a single, internally
-    consistent unit - a half-overridden profile with one build's offsets and
-    another's constants is exactly the silent drift this feature exists to catch.
+    A matching id replaces the base profile in place; a new id is appended. Whole
+    profiles are replaced, never deep-merged, so one build's offsets are never
+    mixed with another's constants.
     """
     merged = list(base)
     index_by_id = {
@@ -210,23 +149,10 @@ def _merge_profiles(
 
 
 def load_database(user_path: Optional[str] = None) -> dict[str, Any]:
-    """Load the shipped default database and merge a user database on top.
+    """Load the shipped database and merge ``user_path`` (if given) on top by profile id.
 
-    The shipped default is always loaded from beside this module. When
-    ``user_path`` is given, its ``profiles`` are merged into the database by id:
-    a user profile replaces the shipped profile of the same id, otherwise it is
-    appended. The user file may add or override profiles; it never removes the
-    shipped ones.
-
-    Args:
-        user_path: Path to a user-supplied database JSON file, or ``None``.
-
-    Returns:
-        The merged database dict (the shipped structure with merged profiles).
-
-    Raises:
-        MemoryScanPatternError: if either file is missing, is not valid JSON,
-            or does not carry the supported schema.
+    A user file may add or override profiles, never remove shipped ones.
+    Raises MemoryScanPatternError on a missing file, bad JSON or unsupported schema.
     """
     database = _load_json(_DEFAULT_DATABASE_PATH)
     if database.get("schema") != _SUPPORTED_SCHEMA:
@@ -248,28 +174,9 @@ def select_profile(
 ) -> dict[str, Any]:
     """Return the profile with ``profile_id``, or the first when it is ``None``.
 
-    Mirrors the prototype's selection: no id means "the first profile in the
-    file", the documented default.
-
-    ``engine`` is an optional pre-filter that narrows the candidate profiles to
-    those declaring that engine (an absent ``engine`` key counts as boringssl)
-    before the id/first selection runs. It defaults to ``None`` - no filtering -
-    so every existing caller behaves exactly as before. The full
-    protocol/platform/arch resolver is deliberately NOT built here; this is only
-    the hook that makes engine selection possible (F3 fills in the resolver).
-
-    Args:
-        database: A database dict as returned by :func:`load_database`.
-        profile_id: The id to select, or ``None`` for the first profile.
-        engine: An engine to filter candidates by, or ``None`` for no filter.
-
-    Returns:
-        The selected profile dict.
-
-    Raises:
-        MemoryScanPatternError: if the database has no profiles, if no profile
-            declares ``engine``, or if no profile matches ``profile_id`` (the
-            message lists the known ids).
+    ``engine`` pre-filters candidates by their engine (absent key = boringssl);
+    protocol/platform resolution lives in :func:`select_profiles`.
+    Raises MemoryScanPatternError on no profiles, no engine match or unknown id.
     """
     profiles = _profiles_of(database, "database")
     if not profiles:
@@ -291,13 +198,6 @@ def select_profile(
         f"no profile with id '{profile_id}'; the database has: {known}")
 
 
-# --------------------------------------------------------------------------- #
-# Strict structural validation
-#
-# Ported from research/memory_scan/bssl_secret_scan.py's _validate_* family.
-# Every check guards against a cross-section reference that would fail silently
-# at scan time rather than loudly here.
-# --------------------------------------------------------------------------- #
 
 def _require_keys(mapping: Any, keys: Sequence[str], where: str) -> None:
     """Fail with one message listing everything missing under ``where``."""
@@ -320,10 +220,9 @@ def _objects(container: Any, key_path: str) -> list[dict[str, Any]]:
 
 
 def _tier(profile: dict[str, Any], name: str) -> dict[str, Any]:
-    """The named tier, or an empty object when the profile omits it.
+    """The named tier, or {} when the profile omits it.
 
-    A profile may leave a tier out; what it may not do is define one that refers
-    to a label, a struct or an offset that does not exist.
+    A tier may be absent; it may not reference a label, struct or offset that does not exist.
     """
     tier = profile["tiers"].get(name)
     return tier if isinstance(tier, dict) else {}
@@ -359,11 +258,7 @@ def _iter_emitted_labels(profile: dict[str, Any]) -> Iterator[tuple[str, Any]]:
 
 
 def _validate_label_references(profile: dict[str, Any]) -> None:
-    """Every label a tier can emit must be declared in keylog_labels.
-
-    Without this check a mistyped label travels all the way into the keylog
-    file, where every consumer ignores the line in silence.
-    """
+    """Every label a tier can emit must be declared in keylog_labels (a typo would otherwise be ignored silently by every consumer)."""
     declared = set(profile["keylog_labels"])
     for key_path, label in _iter_emitted_labels(profile):
         if label not in declared:
@@ -375,9 +270,8 @@ def _validate_label_references(profile: dict[str, Any]) -> None:
 def _validate_s3_secret_fields(profile: dict[str, Any]) -> None:
     """Each Tier B s3_secrets field must name a real SSL3_STATE offset pair.
 
-    The agent reads SSL3_STATE[field] and SSL3_STATE[field + '_len']. A
-    misspelled field leaves both undefined, which surfaces at scan time as one
-    exception per candidate instead of as a bad profile.
+    The agent reads SSL3_STATE[field] and [field + '_len']; a misspelling would
+    throw once per candidate at scan time.
     """
     ssl3_state = profile["struct_offsets"]["SSL3_STATE"]
     for index, secret in enumerate(_tier_b_s3_secrets(profile)):
@@ -390,12 +284,7 @@ def _validate_s3_secret_fields(profile: dict[str, Any]) -> None:
 
 
 def _validate_session_paths(profile: dict[str, Any]) -> None:
-    """Each tls12_session path must name a struct the profile describes.
-
-    The agent walks 'from' as a struct name and 'field' as an offset inside it,
-    so a path naming either wrongly dereferences an undefined offset rather than
-    failing here.
-    """
+    """Each tls12_session path must name a struct and a field the profile describes."""
     structs = profile["struct_offsets"]
     session = _tier_b_session(profile)
     if not session:
@@ -414,12 +303,10 @@ def _validate_session_paths(profile: dict[str, Any]) -> None:
 
 
 def _validate_session_struct_fields(profile: dict[str, Any]) -> None:
-    """Every SSL_SESSION offset the agent dereferences must exist and be a number.
+    """Every SSL_SESSION offset the agent dereferences must exist and be an int.
 
-    These are named in agent/scanner.js rather than in the profile, so the
-    reference checks above cannot reach them. A profile that spells 'secret' as
-    'master_key' would otherwise pass startup validation and then throw once per
-    candidate for the rest of the run.
+    These are named in agent/scanner.js, not in the profile, so the other
+    reference checks cannot reach them.
     """
     session = profile["struct_offsets"]["SSL_SESSION"]
     _require_keys(session, _REQUIRED_SESSION_FIELDS, "profile.struct_offsets.SSL_SESSION")
@@ -443,11 +330,9 @@ def _require_offset(mapping: dict[str, Any], key: str, expected: int, where: str
 def _validate_derived_offsets(profile: dict[str, Any]) -> None:
     """Re-derive the hand-expanded offset tables from the constants.
 
-    The Tier A slots and the SSL3_STATE '<field>_len' keys are nothing but
-    secret_run_base + i * stride and data + capacity. On a build with a
-    different SSL_MAX_MD_SIZE every one of them is wrong - and a wrong offset
-    does not crash, it reads the neighbouring heap and emits plausible garbage.
-    Checking the relation is what makes retargeting fail loudly.
+    Tier A slots and SSL3_STATE '<field>_len' keys are secret_run_base + i * stride
+    and data + capacity. A wrong offset does not crash, it emits plausible garbage,
+    so retargeting must fail loudly here.
     """
     constants = profile["constants"]
     capacity = constants["ssl_max_md_size"]
@@ -481,12 +366,10 @@ def _validate_derived_offsets(profile: dict[str, Any]) -> None:
 
 
 def _validate_tier_cross_references(profile: dict[str, Any]) -> None:
-    """Check the numbers a tier restates from another section still agree.
+    """Check numbers a tier restates from another section still agree.
 
-    Each of these is written twice in the JSON, once where it is defined and
-    once where a tier uses it, and an edit that changes one copy and not the
-    other is silent: the scan runs, the patterns match, every candidate fails to
-    validate, and the silence report blames the patterns.
+    An edit to one copy only is silent: every candidate fails to validate and the
+    silence report blames the patterns.
     """
     constants = profile["constants"]
     tier_a = _tier(profile, _TIER_A)
@@ -526,12 +409,9 @@ def _validate_tier_cross_references(profile: dict[str, Any]) -> None:
 
 
 def _validate_rescan_every(profile: dict[str, Any]) -> None:
-    """Check Tier A's throttle is a scan count the loop can count to.
+    """Check Tier A's optional ``rescan_every`` is a positive int (absent means 1).
 
-    The key is optional and its absence means 1 (run the tier every scan), so
-    only a value that is actually present is checked. A bool, a zero/negative or
-    a non-integer would each silently change how often the tier runs rather than
-    fail.
+    A bool, zero, negative or non-int would silently change how often the tier runs.
     """
     tier_a = _tier(profile, _TIER_A)
     if "rescan_every" not in tier_a:
@@ -545,14 +425,9 @@ def _validate_rescan_every(profile: dict[str, Any]) -> None:
 
 
 def _profile_engine(profile: dict[str, Any]) -> str:
-    """Return the profile's engine discriminator, defaulting to boringssl.
+    """Return the profile's engine, defaulting to boringssl.
 
-    An absent ``engine`` key means ``"boringssl"``, so the shipped profile - and
-    any pre-existing user profile written before engines existed - keeps
-    validating exactly as before. An ``engine`` that is present but not one this
-    loader knows how to validate is a fail-loud error, the same as any other
-    unusable profile: better a startup exception than a scan against rules that
-    silently do not exist yet.
+    An unknown engine raises: a startup error beats scanning against rules that do not exist.
     """
     engine = profile.get("engine", _DEFAULT_ENGINE)
     if not isinstance(engine, str) or engine not in _KNOWN_ENGINES:
@@ -562,13 +437,7 @@ def _profile_engine(profile: dict[str, Any]) -> str:
 
 
 def _validate_boringssl_profile(profile: dict[str, Any]) -> None:
-    """Strict structural validation of a BoringSSL profile.
-
-    This is the original :func:`validate_profile` body, moved verbatim under the
-    engine dispatch. The BoringSSL-required structs, session fields and derived
-    offsets are enforced here and ONLY here, which is what scopes them to the
-    boringssl engine without changing how a boringssl profile is validated.
-    """
+    """Strict validation of a BoringSSL profile; its structs, session fields and derived offsets are enforced only here."""
     _require_keys(profile, _REQUIRED_PROFILE_KEYS, "profile")
     _require_keys(profile["constants"], _REQUIRED_CONSTANTS, "profile.constants")
     _require_keys(profile["constants"], _SELF_CHECK_CONSTANTS, "profile.constants")
@@ -586,17 +455,7 @@ def _validate_boringssl_profile(profile: dict[str, Any]) -> None:
     _validate_rescan_every(profile)
 
 
-# --------------------------------------------------------------------------- #
-# Schannel (WS4). A schannel profile carries per-arch offset sets under
-# ``arch`` — the agent is data-driven, so the host resolves the arch-appropriate
-# block (see :func:`resolve_schannel_arch`) into ``profile["resolved"]`` before
-# ``configure()``. Validation checks the shape of every arch block so a typo in a
-# build-specific offset fails loudly at startup, not as a silent miss in lsass.
-# --------------------------------------------------------------------------- #
 
-# Every arch block the agent's tls12_master / session_cache / tls13_secret tiers
-# dereference. Numeric offsets are int-checked; the needle candidates are the one
-# build-specific value that may legitimately be empty (uncalibrated arch).
 _SCHANNEL_TLS12_OFFSETS = ("needle_at", "master_at", "master_len")
 _SCHANNEL_SESSION_OFFSETS = (
     "vftable_at", "bddd_ptr_at", "ssl5_ptr_at", "ssl5_needle_at", "master_at",
@@ -655,17 +514,9 @@ def _validate_schannel_arch_block(block: Any, where: str) -> None:
 
 
 def _validate_schannel_profile(profile: dict[str, Any]) -> None:
-    """Strict structural validation of a Schannel profile.
+    """Validate a Schannel profile: minimal shape always, ``arch`` offset sets strictly when present.
 
-    Enforces the minimal shared shape unconditionally, and — following the
-    additive convention the rest of this loader uses — validates the
-    schannel-specific ``arch`` offset sets strictly whenever they are PRESENT: a
-    profile that carries an ``arch`` block must have every arch describe a needle
-    (module + a possibly-empty candidate list of hex rvas) and tier offsets that
-    are real integers. A malformed offset set fails here rather than as a silent
-    miss in lsass. A skeletal profile that carries no ``arch`` (e.g. a resolver
-    test fixture that only exercises engine/protocol/platform selection) is left
-    to fail at configure time, exactly as the pre-existing scaffolding did.
+    A skeletal profile without ``arch`` is left to fail at configure time.
     """
     _require_keys(profile, _MINIMAL_PROFILE_KEYS, "schannel profile")
     arch = profile.get("arch")
@@ -680,15 +531,11 @@ def _validate_schannel_profile(profile: dict[str, Any]) -> None:
 
 
 def select_schannel_offsets(profile: dict[str, Any], arch: Optional[str]) -> dict[str, Any]:
-    """Return the arch-appropriate offset set (needle + tiers) from a profile.
+    """Return the offset set (needle + tiers) for ``arch`` from a profile.
 
-    Arch selection is done HERE, in Python, at configure time (not in the agent
-    from ``Process.arch``) so the agent stays purely data-driven: it reads
-    ``profile["resolved"]`` and never branches on architecture. ``arch`` is the
-    frida-reported architecture (``"arm64"``, ``"x64"``, ...). When it names an
-    arch the profile describes, that block is returned; when it does not (or is
-    ``None``) and the profile describes exactly one arch, that single block is
-    returned; otherwise this fails loudly, naming the available arches.
+    Selected in Python so the agent only reads ``profile["resolved"]``. ``arch`` is
+    frida's name ("arm64", "x64"). An unknown or None arch falls back to the single
+    described arch; otherwise raises, naming the available arches.
     """
     arch_sets = profile.get("arch")
     if not isinstance(arch_sets, dict) or not arch_sets:
@@ -704,24 +551,12 @@ def select_schannel_offsets(profile: dict[str, Any], arch: Optional[str]) -> dic
 
 
 def resolve_schannel_arch(profile: dict[str, Any], arch: Optional[str]) -> dict[str, Any]:
-    """Return a copy of ``profile`` with the arch-resolved offsets under ``resolved``.
-
-    The plugin calls this for every schannel profile before ``configure()`` so
-    the agent finds its needle rvas and tier offsets under ``profile["resolved"]``
-    without knowing which architecture it is running on. The original profile is
-    left untouched (a shallow copy is returned).
-    """
+    """Return a shallow copy of ``profile`` with the arch-resolved offsets under ``resolved``."""
     resolved = dict(profile)
     resolved["resolved"] = select_schannel_offsets(profile, arch)
     return resolved
 
 
-# --------------------------------------------------------------------------- #
-# RC4 (WS3). An RC4 profile is fully generic — no build-specific layout — so
-# validation checks the tunable parameter shape, the KAT bytes, and that the KAT
-# actually holds (RC4(key, plaintext) == ciphertext), so a bad core is caught
-# here rather than emitting nothing in the target.
-# --------------------------------------------------------------------------- #
 
 _RC4_REQUIRED_PARAMS = (
     "min_key_len", "max_key_len", "trial_prefix", "accept_printable_fraction",
@@ -741,17 +576,9 @@ def _valid_hex_bytes(value: Any) -> bool:
 
 
 def _validate_rc4_profile(profile: dict[str, Any]) -> None:
-    """Strict structural validation of an RC4 profile.
+    """Validate an RC4 profile: minimal shape always, ``params`` and ``kat`` strictly when present.
 
-    Enforces the minimal shared shape unconditionally, and — following the
-    additive convention the rest of this loader uses — validates the RC4
-    ``params`` and ``kat`` sections strictly whenever they are PRESENT: the
-    tunable parameters must be correctly typed and in bounds, and the KAT bytes
-    must be valid hex AND actually hold (RC4(key, plaintext) == ciphertext), so a
-    mistyped test vector fails loudly at startup rather than validating the
-    agent's core against a false vector. A skeletal profile carrying neither (a
-    resolver test fixture) passes here and fails at configure time, exactly as
-    the pre-existing scaffolding did.
+    The KAT must hold (RC4(key, plaintext) == ciphertext) so a mistyped vector fails at startup.
     """
     _require_keys(profile, _MINIMAL_PROFILE_KEYS, "rc4 profile")
 
@@ -792,10 +619,6 @@ def _validate_rc4_params(params: Any) -> None:
     _validate_rc4_optional_params(params)
 
 
-# Params the improved scanner reads but that stay OPTIONAL for back-compat: an
-# older/skeletal profile that omits them must still validate (their code-fallback
-# defaults reproduce the pre-existing behaviour). They are only type-checked when
-# PRESENT, following the additive convention the rest of this loader uses.
 _RC4_OPTIONAL_HEX_PARAMS = ("ciphertext_sample", "known_plaintext")
 _RC4_OPTIONAL_BOOL_PARAMS = (
     "sbox_first", "sbox_exact_validate", "prioritize_anonymous",
@@ -806,13 +629,7 @@ _RC4_OPTIONAL_POS_INT_PARAMS = ("cmodule_batch", "read_group_bytes")
 
 
 def _validate_rc4_optional_params(params: dict[str, Any]) -> None:
-    """Type-check the improved scanner's optional params whenever they are present.
-
-    None of these are required (:data:`_RC4_REQUIRED_PARAMS` is unchanged), so a
-    profile that omits them is left untouched; a profile that sets one to the
-    wrong type fails loudly here rather than being silently misinterpreted by the
-    agent. A ``None`` value is always allowed (it means "unset").
-    """
+    """Type-check the optional scanner params when present (None means unset); the required set is unchanged."""
     for name in _RC4_OPTIONAL_HEX_PARAMS:
         value = params.get(name)
         if value is not None and not _valid_hex_bytes(value):
@@ -841,9 +658,7 @@ def _validate_rc4_kat(kat: Any) -> None:
             raise MemoryScanPatternError(
                 f"rc4 profile.kat.{field}: expected a non-empty even-length hex "
                 f"string, the profile says {kat[field]!r}")
-    # Lazy import so the loader's module load does not pull in the offline RC4
-    # subsystem's import side-effects (its __init__ self-registers an offline
-    # decryptor) and to keep the loader free of any import cycle.
+    # Lazy: importing the offline RC4 package self-registers a decryptor and risks a cycle.
     from friTap.offline.rc4.crypto import rc4
     got = rc4(bytes.fromhex(kat["key"]), bytes.fromhex(kat["plaintext"]))
     want = bytes.fromhex(kat["ciphertext"])
@@ -855,13 +670,7 @@ def _validate_rc4_kat(kat: Any) -> None:
 
 
 def _coerce_to_hex(value: str) -> str:
-    """Normalise a CLI/config string to the lowercase hex the agent expects.
-
-    A value that is already valid hex is passed through unchanged; anything else
-    is treated as plain text and utf-8-encoded to hex. This keeps
-    ``--ms-rc4-known-plaintext "GET /"`` and ``--ms-rc4-known-plaintext 474554``
-    both usable without the caller having to know which form the agent wants.
-    """
+    """Return a CLI/config string as lowercase hex: valid hex passes through, anything else is utf-8 encoded."""
     if _valid_hex_bytes(value):
         return value.lower()
     return value.encode("utf-8").hex()
@@ -873,22 +682,9 @@ def apply_rc4_param_overrides(
     known_plaintext: Optional[str] = None,
     ciphertext_sample: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Merge CLI/config RC4 param overrides into a profile, then re-validate.
+    """Merge non-None CLI/config RC4 overrides into ``profile["params"]`` (in place), re-validate and return it.
 
-    Only non-``None`` overrides are applied, so a call that passes nothing leaves
-    the profile untouched (behaviour-preserving default). Each string override is
-    normalised to lowercase hex via :func:`_coerce_to_hex` (already-hex is used
-    as-is; plain text is utf-8-encoded to hex) so the agent always receives the
-    hex form it reads. The merged ``params`` block is re-run through the RC4 param
-    validation, so a malformed override still fails loudly here.
-
-    Args:
-        profile: The selected RC4 profile dict (mutated in place and returned).
-        known_plaintext: An optional known-plaintext oracle (hex or plain text).
-        ciphertext_sample: An optional ciphertext sample (hex or plain text).
-
-    Returns:
-        The same ``profile`` dict, with any overrides merged into ``params``.
+    String overrides are normalised to hex via :func:`_coerce_to_hex`.
     """
     overrides = {
         "known_plaintext": known_plaintext,
@@ -906,20 +702,11 @@ def apply_rc4_param_overrides(
     return profile
 
 
-# The engine dispatch table. Adding an engine's real rules later is a change to
-# its one validator (registered here) - the dispatch structure itself does not
-# move, which is the whole point of scaffolding it now.
 def _validate_mtproto_profile(profile: dict[str, Any]) -> None:
-    """Strict-where-present structural validation of an MTProto profile.
+    """Validate an MTProto profile: minimal shape always, ``tiers`` strictly when present.
 
-    Enforces the minimal shared shape unconditionally, then - following the
-    additive convention used by the other engine validators - checks the
-    sections the agent dereferences whenever they are PRESENT: ``tiers`` must be
-    an object, and the two emitting tiers (``B_authkeyid_roundtrip`` for cloud
-    auth keys, ``C_art_secretchat_key`` for E2E keys) must carry the fields the
-    agent reads to build a keylog line. A skeletal profile (a resolver test
-    fixture) passes here and fails later at configure time, exactly as the other
-    engines' scaffolding does.
+    The emitting tiers (B_authkeyid_roundtrip, C_art_secretchat_key) must carry the
+    fields the agent reads to build a keylog line.
     """
     _require_keys(profile, _MINIMAL_PROFILE_KEYS, "mtproto profile")
     tiers = profile.get("tiers")
@@ -955,24 +742,8 @@ _ENGINE_VALIDATORS = {
 def validate_profile(profile: dict[str, Any]) -> None:
     """Validate one profile's structure and cross-section references, strictly.
 
-    Dispatches on the profile's ``engine`` (see :func:`_profile_engine`): a
-    boringssl profile (the default when the key is absent) is validated exactly
-    as before, by :func:`_validate_boringssl_profile`; schannel and rc4 profiles
-    go to their own validators. An unknown engine name is rejected outright.
-
-    For the boringssl engine this checks every section the agent dereferences,
-    and that the values a section restates from another section still agree. A
-    missing section fails on the first line that touches it; a label or a field
-    that merely points at the wrong place fails once per candidate at scan time,
-    or never - which is the silent failure this validator exists to prevent.
-
-    Args:
-        profile: A single profile dict, e.g. from :func:`select_profile`.
-
-    Raises:
-        MemoryScanPatternError: on an unknown engine, or on the first bad or
-            missing reference, with a message naming the exact JSON path at
-            fault.
+    Dispatches on ``engine`` (see :func:`_profile_engine`); an unknown engine is
+    rejected. Raises MemoryScanPatternError naming the JSON path at fault.
     """
     if not isinstance(profile, dict):
         raise MemoryScanPatternError("profile: expected an object")
@@ -985,25 +756,9 @@ def load_memory_scan_profile(
     profile_id: Optional[str] = None,
     engine: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Load, merge, validate and select one memory-scan profile.
+    """Load, merge, validate and select one profile, ready for the agent's ``configure()``.
 
-    The one-shot convenience the Frida plugin uses: it returns the single
-    profile dict ready to hand straight to the agent's ``configure()`` rpc call.
-
-    Args:
-        user_path: Path to a user-supplied database to merge on top of the
-            shipped default, or ``None`` to use the shipped default alone.
-        profile_id: The profile id to select, or ``None`` for the first profile.
-        engine: An engine to pre-filter candidate profiles by, or ``None`` for
-            no filter (the default, so existing callers are unaffected). See
-            :func:`select_profile`.
-
-    Returns:
-        The selected, validated profile dict.
-
-    Raises:
-        MemoryScanPatternError: on any load, merge, selection or validation
-            failure.
+    ``engine`` pre-filters as in :func:`select_profile`. Raises MemoryScanPatternError on any failure.
     """
     database = load_database(user_path)
     profile = select_profile(database, profile_id, engine)
@@ -1011,11 +766,8 @@ def load_memory_scan_profile(
     logger.info(
         "Selected memory-scan profile '%s' (%d tier(s))",
         profile.get("id"), len(profile.get("tiers", {})))
-    # A profile may be calibrated for a specific target-library build (e.g. the
-    # mtproto profile for a given libtmessages, where the SHA-1 auth-key
-    # round-trip fails safe — recovering nothing rather than garbage — on other
-    # builds). That otherwise looks like a silent zero-result run, so surface the
-    # calibration whenever the profile records one, for any engine.
+    # A profile calibrated for one library build recovers nothing on others,
+    # which looks like a silent zero-result run, so surface the calibration.
     calibrated = profile.get("calibrated_lib_version")
     if calibrated:
         logger.info(
@@ -1024,14 +776,6 @@ def load_memory_scan_profile(
     return profile
 
 
-# --------------------------------------------------------------------------- #
-# Engine/profile resolution (F3)
-#
-# select_profiles() turns "the user's --protocol set + the target platform + an
-# optional -ms override" into the ordered list of profiles to run. It is the
-# single place that decides WHICH engines apply; the per-scan_target session
-# plumbing in the plugin decides WHERE each resolved profile runs.
-# --------------------------------------------------------------------------- #
 
 def _profile_protocol(profile: dict[str, Any]) -> str:
     """The protocol a profile belongs to, defaulting to ``"tls"``."""
@@ -1056,14 +800,9 @@ def _profile_scan_target(profile: dict[str, Any]) -> str:
 
 
 def normalize_os_name(os_name: Optional[str]) -> Optional[str]:
-    """Map a device/host OS string onto friTap's canonical platform strings.
+    """Map a frida/``sys.platform`` OS string onto windows | linux | android | macos | ios.
 
-    Accepts the values a frida ``query_system_parameters()['os']['id']`` or a
-    host ``sys.platform`` reports (``"darwin"`` -> ``"macos"``, ``"win32"`` ->
-    ``"windows"``, and so on) and returns one of ``windows | linux | android |
-    macos | ios``. An already-canonical name is returned unchanged; an
-    unrecognised or ``None`` name returns ``None`` (a profile pinned to a named
-    platform then never matches it, while an ``["all"]`` profile still does).
+    Unrecognised or None returns None (an ``["all"]`` profile still matches).
     """
     if not os_name:
         return None
@@ -1082,13 +821,7 @@ def _platform_matches(profile: dict[str, Any], os_name: Optional[str]) -> bool:
 
 
 def _merge_user_db_into(db: dict[str, Any], user_path: str) -> dict[str, Any]:
-    """Merge a custom database file's profiles into ``db`` by id, in place.
-
-    Reuses the same merge-by-id semantics as :func:`load_database` so a ``-ms
-    <file>`` override behaves identically whether it arrives through the loader
-    or through the resolver: a user profile replaces the shipped profile of the
-    same id, otherwise it is appended.
-    """
+    """Merge a custom database file into ``db`` by id, in place (same semantics as :func:`load_database`)."""
     if not os.path.exists(user_path):
         raise MemoryScanPatternError(f"user pattern file '{user_path}' does not exist")
     user_database = _load_json(user_path)
@@ -1128,7 +861,7 @@ def select_profiles(
 ) -> list[dict[str, Any]]:
     """Resolve the ordered list of memory-scan profiles to run.
 
-    This is the F3 engine resolver. It maps the user's selected ``--protocol``
+    Maps the user's selected ``--protocol``
     set, the target platform and an optional ``-ms`` override onto the profiles
     in ``db`` (as returned by :func:`load_database`). Resolution order:
 

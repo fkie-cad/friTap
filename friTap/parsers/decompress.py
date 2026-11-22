@@ -16,20 +16,15 @@ except ImportError:
     _zstd = False
 
 
-# Alternative spellings of an encoding (the body-processing modal's option ids
-# and legacy Content-Encoding tokens) mapped to the canonical name below.
 _ENCODING_ALIASES = {"brotli": "br", "x-gzip": "gzip"}
 
-# Encodings decompress_body() understands (after alias normalisation).
 _KNOWN_ENCODINGS = frozenset({"gzip", "deflate", "permessage-deflate", "br", "zstd"})
 
 # gzip member magic: ID1 ID2 + CM=8 (deflate), RFC 1952 section 2.3.1.
 _GZIP_MAGIC = b"\x1f\x8b\x08"
 
-# Default cap on the inflated size of an embedded gzip member (zip-bomb guard).
 _EMBEDDED_GZIP_MAX_OUT = 16 * 1024 * 1024
 
-# Default cap on how many magic candidates find_embedded_gzip() tries.
 _EMBEDDED_GZIP_MAX_CANDIDATES = 64
 
 # Default cap on decompress_body() output (decompression-bomb guard). Generous
@@ -42,7 +37,6 @@ MAX_DECOMPRESSED_BODY = 256 * 1024 * 1024
 # keep using :data:`MAX_DECOMPRESSED_BODY`.
 MAX_AUTO_DECOMPRESS = 16 * 1024 * 1024
 
-# Error text decompress_body() reports when *max_out* would be exceeded.
 DECOMPRESS_LIMIT_ERROR = "decompressed size exceeds limit"
 
 # Input slice fed per call by the chunked (output-unbounded API) decoders. A
@@ -73,12 +67,9 @@ _BROTLI_OUTPUT_LIMIT = _brotli_supports_output_limit()
 _BROTLI_FIRST_VULNERABLE = (1, 0, 3)
 _BROTLI_MIN_SAFE = (1, 2, 1)
 
-# Set to a truthy value to decode br bodies with an unpatched-looking brotli
-# (only for distro builds that backported the fix without a version bump).
 ALLOW_UNPATCHED_BROTLI_ENV = "FRITAP_ALLOW_UNPATCHED_BROTLI"
 _TRUTHY = frozenset({"1", "true", "yes"})
 
-# Error decompress_body() reports when it skips a br body on a vulnerable brotli.
 BROTLI_VULNERABLE_ERROR_FMT = (
     "brotli {version} is vulnerable to CVE-2026-111497; "
     "upgrade to brotli>=1.2.1 (decoding skipped)"
@@ -105,9 +96,7 @@ _BROTLI_VERSION = _installed_brotli_version()
 def _parse_version(s: str) -> tuple[int, ...]:
     """Leading numeric dotted components of *s* (``"1.2.0.post1"`` -> (1, 2, 0)).
 
-    Parsing stops at the first component that is not purely numeric; a
-    component such as ``"0-2"`` contributes its leading digits and then stops.
-    Returns ``()`` when *s* does not start with a number.
+    Stops at the first non-numeric component (``"0-2"`` contributes ``0``); ``()`` if *s* does not start with a number.
     """
     parts: list[int] = []
     for component in str(s or "").strip().split("."):
@@ -129,11 +118,7 @@ def _leading_digits(text: str) -> str:
 
 
 def _is_vulnerable_brotli(version_str: str | None) -> bool:
-    """True when *version_str* lies in the CVE-2026-111497 range.
-
-    Conservative: a version that cannot be parsed is not known to be safe and
-    is therefore treated as vulnerable.
-    """
+    """True when *version_str* is in the CVE-2026-111497 range; an unparseable version counts as vulnerable."""
     version = _parse_version(version_str or "")
     if not version:
         return True
@@ -147,10 +132,7 @@ def _unpatched_brotli_allowed() -> bool:
 
 
 def brotli_status() -> tuple[str | None, bool, bool]:
-    """``(version, vulnerable, overridden)`` for the installed brotli.
-
-    *version* is None when brotli is not installed (then neither flag is set).
-    """
+    """``(version, vulnerable, overridden)`` for the installed brotli; *version* None when absent (flags unset)."""
     if _BROTLI_VERSION is None:
         return None, False, False
     return (_BROTLI_VERSION, _is_vulnerable_brotli(_BROTLI_VERSION),
@@ -195,11 +177,7 @@ def _isolated_decoders():
 
 
 def _decoder_unavailable_error(enc: str) -> str:
-    """Why *enc* cannot be decoded here (missing module, brotli CVE), else ``""``.
-
-    Same texts and order as :func:`decompress_body`; checked in the parent
-    before anything is sent to the worker (which repeats the checks).
-    """
+    """Why *enc* cannot be decoded here (missing module, brotli CVE), else ``""``; same texts and order as :func:`decompress_body`."""
     if enc == "br":
         return "brotli not installed" if not _brotli else _brotli_blocked_error()
     if enc == "zstd" and not _zstd:
@@ -221,10 +199,7 @@ def _decompress_body_isolated(isolated, body: bytes, encoding: str,
 
 
 def _inflate_checked_isolated(isolated, packed: bytes, limit: int) -> tuple[bytes, bool]:
-    """:func:`inflate_bounded_checked` via the decoder worker (same exceptions).
-
-    A worker crash, timeout or invalid reply surfaces as ``zlib.error``.
-    """
+    """:func:`inflate_bounded_checked` via the decoder worker; a worker crash, timeout or bad reply surfaces as ``zlib.error``."""
     if limit < 0:
         raise ValueError("max_length must be non-negative")
     outcome = isolated.isolated_inflate_checked(packed, limit)
@@ -238,15 +213,11 @@ def _inflate_checked_isolated(isolated, packed: bytes, limit: int) -> tuple[byte
 def decompress_body(
     body: bytes, encoding: str, max_out: int = MAX_DECOMPRESSED_BODY,
 ) -> tuple[bytes, str]:
-    """Decompress HTTP body based on Content-Encoding.
+    """Decompress an HTTP body per Content-Encoding; returns ``(body, error)``.
 
-    Output is bounded by *max_out* bytes for every encoding (streaming
-    decoders, never a one-shot inflate of an untrusted body); a larger result
-    is rejected, not truncated, with an error starting with
-    :data:`DECOMPRESS_LIMIT_ERROR`.
-
-    Returns (decompressed_body, error_message). Error is empty on success;
-    on error the unchanged *body* is returned.
+    Output is bounded by *max_out* for every encoding (streaming decoders, never a
+    one-shot inflate of untrusted input); oversize is rejected, not truncated, with
+    an error starting :data:`DECOMPRESS_LIMIT_ERROR`. On error the input is returned unchanged.
     """
     if not body or not encoding:
         return body, ""
@@ -288,9 +259,7 @@ def _check_output_limit(produced: int, max_out: int) -> None:
 
 
 def _inflate_to_end(body: bytes, wbits: int, max_out: int) -> bytes:
-    """Bounded one-stream zlib inflate; like ``zlib.decompress`` it rejects a
-    stream that does not finish (trailing bytes after the end are ignored).
-    """
+    """Bounded one-stream zlib inflate; rejects an unfinished stream like ``zlib.decompress`` (trailing bytes ignored)."""
     inflater = zlib.decompressobj(wbits)
     out = inflater.decompress(body, max_out + 1)
     _check_output_limit(len(out), max_out)
@@ -322,9 +291,8 @@ def _inflate_deflate(body: bytes, max_out: int) -> bytes:
 def _feed_in_chunks(process, body: bytes, max_out: int, finished) -> bytes:
     """Feed *body* to ``process(chunk) -> bytes`` slice by slice, bounded.
 
-    For decoders whose API cannot cap output per call: the cap is checked
-    after every :data:`_STREAM_INPUT_CHUNK`-byte slice. Stops early once
-    ``finished()`` reports the stream end.
+    For decoders that cannot cap output per call: the cap is checked after every
+    :data:`_STREAM_INPUT_CHUNK` bytes; stops once ``finished()``.
     """
     parts: list[bytes] = []
     produced = 0
@@ -352,11 +320,7 @@ def _brotli_bounded(body: bytes, max_out: int) -> bytes:
 
 
 def _zstd_bounded(body: bytes, max_out: int) -> bytes:
-    """Bounded decode of the first zstd frame (trailing bytes ignored).
-
-    Unlike ``ZstdDecompressor().decompress`` this also accepts frames that
-    do not declare their content size; an unfinished frame is an error.
-    """
+    """Bounded decode of the first zstd frame (trailing bytes ignored); also accepts frames without a content size; unfinished is an error."""
     decoder = zstandard.ZstdDecompressor().decompressobj()
     out = _feed_in_chunks(decoder.decompress, body, max_out, lambda: decoder.eof)
     if not decoder.eof:
@@ -367,9 +331,7 @@ def _zstd_bounded(body: bytes, max_out: int) -> bytes:
 def _inflate_gzip_member(data: bytes, max_out: int) -> tuple[bytes, int] | None:
     """Inflate the gzip member at the start of *data*: ``(output, member_len)``.
 
-    Trailing bytes after the member are ignored. Returns None when the data
-    is not one finished member or the output exceeds *max_out* (rejected
-    rather than truncated).
+    None when it is not one finished member or exceeds *max_out* (rejected, not truncated).
     """
     return _inflate_gzip_candidate(data, max_out)[0]
 
@@ -384,10 +346,8 @@ def _find_gzip_member(
 ) -> tuple[int, bytes, int] | None:
     """``(offset, inflated, member_len)`` of the first inflatable gzip member.
 
-    All candidates share one output budget of
-    ``_EMBEDDED_GZIP_WORK_FACTOR * max_out`` bytes, and candidates are sliced
-    through a memoryview (no per-candidate copy of the tail of *data*).
-    Runs in the decoder worker when isolation is on.
+    Candidates share one budget of ``_EMBEDDED_GZIP_WORK_FACTOR * max_out`` bytes and
+    are sliced through a memoryview (no per-candidate copy). Runs in the decoder worker when isolation is on.
     """
     isolated = _isolated_decoders()
     if isolated is not None:
@@ -425,13 +385,11 @@ def find_embedded_gzip(
     max_out: int = _EMBEDDED_GZIP_MAX_OUT,
     max_candidates: int = _EMBEDDED_GZIP_MAX_CANDIDATES,
 ) -> tuple[int, bytes] | None:
-    """Locate the first complete gzip member inside *body*.
+    """Locate the first complete gzip member in *body*: ``(offset, inflated)`` or None.
 
-    Scans for the ``1f 8b 08`` magic and returns ``(offset, inflated)`` for
-    the first candidate that inflates to a finished member of at most
-    *max_out* bytes. At most *max_candidates* magic hits are tried. Returns
-    None when no member is found. Useful for payloads that wrap a gzip
-    member in a framing header (e.g. MTProto ``rpc_result`` → ``gzip_packed``).
+    Scans for ``1f 8b 08``, trying at most *max_candidates* hits; each must inflate to
+    a finished member of at most *max_out* bytes. For payloads wrapping gzip in a
+    framing header (e.g. MTProto ``rpc_result`` -> ``gzip_packed``).
     """
     if not body:
         return None
@@ -453,15 +411,12 @@ def _embedded_gzip_fallback(body: bytes) -> tuple[bytes, list[str], str | None]:
 def decompress_lenient(
     body: bytes, encoding: str, max_out: int = MAX_DECOMPRESSED_BODY,
 ) -> tuple[bytes, list[str], str | None]:
-    """User-requested decompression that tolerates a framing prefix.
+    """User-requested decompression tolerating a framing prefix: ``(data, notes, error)``.
 
-    Returns ``(data, notes, error)``. Strict :func:`decompress_body` runs
-    first; for gzip a failure falls back to :func:`find_embedded_gzip` and
-    adds a note such as ``"gzip member at offset 0x1C (N→M bytes)"``. An
-    unknown encoding yields an explicit error instead of a silent no-op, and
-    output over *max_out* is rejected like in :func:`decompress_body`.
-    On error *data* is the unchanged *body*. HTTP ``Content-Encoding``
-    handling should keep using the strict :func:`decompress_body`.
+    Runs strict :func:`decompress_body` first; a gzip failure falls back to
+    :func:`find_embedded_gzip` and adds a note (``"gzip member at offset 0x1C (N→M bytes)"``).
+    Unknown encodings give an explicit error; over *max_out* is rejected. HTTP
+    Content-Encoding handling should keep the strict function.
     """
     if not body or not encoding:
         return body, [], None
@@ -476,7 +431,6 @@ def decompress_lenient(
     return body, [], err
 
 
-# Default cap on the inflated size for inflate_bounded() (decompression-bomb guard).
 MAX_INFLATE = 16 * 1024 * 1024
 
 
@@ -485,16 +439,11 @@ def inflate_bounded(
 ) -> bytes:
     """Inflate a gzip- or zlib-framed body to at most *limit* bytes.
 
-    ``MAX_WBITS | 32`` auto-detects the header (e.g. Telegram's ``gzip_packed``
-    carries real gzip members, which a plain zlib ``decompressobj()`` rejects).
-    Raises ``zlib.error`` on a corrupt stream and :class:`InflateLimitError`
-    when the output would exceed *limit* (input left unconsumed) instead of
-    inflating it unbounded.
-
-    By default a truncated stream yields the output inflated so far; with
-    *require_eof* it raises ``zlib.error`` instead. Use
-    :func:`inflate_bounded_checked` to keep the partial output AND learn that
-    it is incomplete.
+    ``MAX_WBITS | 32`` auto-detects the header (Telegram ``gzip_packed`` is real
+    gzip, which a plain ``decompressobj()`` rejects). Raises ``zlib.error`` on a
+    corrupt stream and :class:`InflateLimitError` past *limit*. A truncated stream
+    yields the output so far, or raises with *require_eof*; use
+    :func:`inflate_bounded_checked` to learn about truncation.
     """
     inflated, complete = inflate_bounded_checked(packed, limit)
     if require_eof and not complete:
@@ -507,11 +456,8 @@ def inflate_bounded_checked(
 ) -> tuple[bytes, bool]:
     """:func:`inflate_bounded` that also reports completeness: ``(data, complete)``.
 
-    *complete* is False when the gzip/zlib stream ended before its end marker
-    (a truncated capture); *data* is then the output inflated so far, which is
-    still worth showing as long as it is flagged as partial. Raises exactly
-    like :func:`inflate_bounded`: ``zlib.error`` on a corrupt stream and
-    :class:`InflateLimitError` when the output would exceed *limit*.
+    *complete* is False for a truncated stream; *data* is then the partial output.
+    Raises like :func:`inflate_bounded`.
     """
     isolated = _isolated_decoders()
     if isolated is not None:
@@ -524,12 +470,9 @@ def inflate_bounded_checked(
 
 
 def inflate_stream_bounded(dec, data: bytes, max_out: int) -> bytes:
-    """Feed *data* to a stateful zlib ``decompressobj`` *dec*, bounded.
+    """Feed *data* to a stateful zlib ``decompressobj`` *dec*, bounded (e.g. permessage-deflate context takeover).
 
-    For streams whose inflater persists across messages (e.g. WebSocket
-    permessage-deflate context takeover). Raises :class:`InflateLimitError`
-    when *data* would inflate beyond *max_out* bytes; *dec* is then mid-stream
-    and must be discarded by the caller. ``zlib.error`` propagates.
+    Raises :class:`InflateLimitError` past *max_out*; *dec* is then mid-stream and must be discarded. ``zlib.error`` propagates.
     """
     out = dec.decompress(data, max_out + 1)
     if len(out) > max_out or dec.unconsumed_tail:

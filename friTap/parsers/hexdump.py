@@ -16,13 +16,10 @@ _QUIC_VERSIONS = frozenset({
 
 
 def _detect_quic_pattern(data: bytes) -> bool:
-    """Check if data looks like a QUIC packet.
+    """True for a QUIC long header with a known version.
 
-    Only checks for QUIC long header with known version field.
-    HTTP/3 frame detection is handled by Http3Parser (priority 80) which
-    runs before this fallback — no need to duplicate that heuristic here.
-    The previous varint-based HTTP/3 check caused false positives on small
-    HTTP/2 payloads (e.g., PING frame data matching as HTTP/3 DATA frame).
+    HTTP/3 frames are left to Http3Parser (priority 80); a varint-based check here
+    mis-matched small HTTP/2 payloads (PING data as HTTP/3 DATA).
     """
     if not data or len(data) < 5:
         return False
@@ -39,11 +36,7 @@ def _detect_quic_pattern(data: bytes) -> bool:
 
 
 class HexdumpParser(BaseParser):
-    """Fallback parser for unrecognized protocols.
-
-    Always accepts data and wraps raw bytes into a ParseResult.
-    Detects QUIC/HTTP/3 traffic patterns to avoid mislabeling as "unknown".
-    """
+    """Fallback for unrecognized protocols: accepts everything, wraps raw bytes, labels QUIC patterns instead of "unknown"."""
 
     # Inherits PROTOCOL = "unknown" from BaseParser
 

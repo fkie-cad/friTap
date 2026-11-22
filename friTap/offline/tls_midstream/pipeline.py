@@ -1,34 +1,14 @@
-"""Bind mid-stream TLS 1.3 secret bundles to a pcap's raw TLS streams and emit
-the recovered plaintext into the offline conversion pipeline.
+"""Bind mid-stream TLS 1.3 secret bundles to a pcap's raw TLS streams and emit the recovered plaintext.
 
-Phase 2.3 (binding) + the emit side of 2.4 (classification): the BoringSSL
-memscan engine writes a leak-safe JSONL sidecar of TLS 1.3 secret bundles for
-flows whose ClientHello was never captured (see
-:meth:`friTap.memory_scanning.engine.MemoryScanEngine.tls_midstream_manifest_entry`).
-This module loads that sidecar, enumerates the pcap's raw TLS streams
-(:func:`~friTap.offline.tls_midstream.transport.midstream_tls_streams`), and
-trial-binds each bundle against each stream using the AEAD tag as a
-zero-false-accept oracle (:func:`~friTap.offline.tls.stream.pick_binding`):
-``CLIENT_TRAFFIC_SECRET_0`` on the client->server (``"write"``) direction,
-``SERVER_TRAFFIC_SECRET_0`` on the server->client (``"read"``) direction. A
-bundle that decrypts a direction binds to the stream AND fixes that direction's
-cipher suite and starting record sequence number in one step.
-
-Each bound direction's application_data is decrypted
-(:func:`~friTap.offline.tls.stream.decrypt_stream_from`), turned into a
-:class:`~friTap.events.DatalogEvent` identical in shape to the tshark single-pass
-path (:func:`friTap.offline.pcap_to_tap._tls_packet_to_events`), and emitted
-through the same ``EventBus`` while its plaintext is recorded as a
-:class:`~friTap.offline.tls_spans.TlsPlaintextSpan`
-(:func:`~friTap.offline.tls_spans.record_tls_span`). Every downstream consumer
-(the collector, the ``.tap`` writer, a TLS-riding decoder) therefore sees it
-exactly as if tshark had decrypted a handshake-anchored flow. Ahead of a bound
-stream's DatalogEvents, one SessionEvent
-(:func:`~friTap.offline.pipeline_api.emit_tls_session_event`) records the facts
-the binding proves -- TLS 1.3 and the bound cipher suite; SNI/ALPN stay empty.
-
-All cryptographic / transport primitives are IMPORTED READ-ONLY; this module
-only wires them into the offline conversion.
+The memscan engine writes a JSONL sidecar of secret bundles for flows whose
+ClientHello was never captured (:meth:`friTap.memory_scanning.engine.MemoryScanEngine.tls_midstream_manifest_entry`).
+Each bundle is trial-bound to each stream with the AEAD tag as a zero-false-accept
+oracle (:func:`~friTap.offline.tls.stream.pick_binding`): ``CLIENT_TRAFFIC_SECRET_0``
+on ``"write"``, ``SERVER_TRAFFIC_SECRET_0`` on ``"read"``; a bound direction fixes
+suite and starting seq. Bound directions are decrypted into DatalogEvents shaped
+like the tshark single-pass path, emitted on the ``EventBus`` and recorded as
+:class:`~friTap.offline.tls_spans.TlsPlaintextSpan`. A SessionEvent first records
+TLS 1.3 and the bound suite (SNI/ALPN stay empty).
 """
 
 from __future__ import annotations
@@ -59,47 +39,30 @@ from .transport import READ, WRITE, MidstreamTlsStream, midstream_tls_streams
 
 logger = logging.getLogger(__name__)
 
-# The display protocol stamped onto a flow that bound only via a mid-stream
-# secret (no captured handshake). Surfaces through Flow.display_protocol when no
-# richer inner protocol (e.g. Signal) was parsed on top of the plaintext.
+# Display protocol of a flow bound only via a mid-stream secret (see Flow.display_protocol); a richer inner protocol wins.
 MIDSTREAM_PROTOCOL_LABEL = "TLS(midstream)"
 
-# TLS 1.3 handshake outer content-type. A reassembled stream that BEGINS with a
-# handshake record carries its own ClientHello/ServerHello, so tshark can follow
-# and decrypt it from the NSS keylog — it is not a mid-stream flow and we leave
-# it to the normal single-pass path (avoids a duplicate flow).
+# Handshake outer content-type. A stream starting with one has its own hellos, so tshark decrypts it from the keylog; skipped here to avoid a duplicate flow.
 _HANDSHAKE_CONTENT_TYPE = 0x16
 
-# ``ConvertResult.per_protocol`` prefix for this stage's honest-diagnostics
-# counters (recorded only when something was skipped or a stream was partial).
+# ``ConvertResult.per_protocol`` prefix for this stage's counters (recorded only when something was skipped or partial).
 STATS_PREFIX = "tls_midstream"
 
-# Binding passes, by how many leading application_data records each may try. The
-# cheap first-record pass places every bundle whose session starts cleanly; only
-# bundles still unplaced pay for the deeper retry (each extra record is another
-# full seq sweep per wrong stream).
+# Binding passes by leading app-data records tried: the cheap first-record pass places clean sessions; only unplaced bundles pay for the deeper retry (another full seq sweep per wrong stream).
 _BIND_PASSES = (1, DEFAULT_BIND_RECORDS)
 
 # The bundle secret tried on each direction, in binding order (write, then read).
 _DIRECTION_SECRETS = ((WRITE, "client_traffic_secret_0"),
                       (READ, "server_traffic_secret_0"))
 
-# The secret-bundle sidecar may be named by an untrusted capture manifest, and
-# every bundle is trial-decrypted against every stream, so the work is bounded:
-# at most this many distinct bundles are loaded (the rest are ignored, warned)...
+# The sidecar may be named by an untrusted manifest and every bundle is trial-decrypted against every stream, so work is bounded: at most this many distinct bundles load (rest ignored, warned)...
 MAX_SECRET_BUNDLES = 4096
-# ...and one run of the stage makes at most this many AEAD trial decryptions in
-# its seq searches (a wrong (bundle, stream) pair costs up to ~1.6M at the
-# default max_seq). When it runs out, the search stops with one warning.
+# ...and one run makes at most this many AEAD trials (a wrong pair costs up to ~1.6M at the default max_seq); then the search stops with one warning.
 MIDSTREAM_TRIAL_BUDGET = 5_000_000
 
 
 def _bind_windows():
-    """Yield ``(first_record, max_records)`` per pass in :data:`_BIND_PASSES`.
-
-    A pass only reaches bundle/stream pairs whose earlier passes failed on BOTH
-    directions, so it starts after the records those passes already tried.
-    """
+    """Yield ``(first_record, max_records)`` per pass in :data:`_BIND_PASSES`; a pass starts after the records earlier passes tried."""
     first_record = 0
     for max_records in _BIND_PASSES:
         yield first_record, max_records
@@ -108,11 +71,7 @@ def _bind_windows():
 
 @dataclass(frozen=True)
 class _DirectionBinding:
-    """One direction's recovered decryption parameters.
-
-    ``start_seq`` is the seq of the application_data record at ``record_index``
-    (the binding point); earlier app-data records were not decryptable.
-    """
+    """One direction's recovered parameters; ``start_seq`` is the seq of the app-data record at ``record_index`` (earlier ones were undecryptable)."""
 
     secret_hex: str
     suite: str
@@ -189,15 +148,10 @@ def _distinct_bundles(lines: Iterable[str]) -> Iterator[dict]:
 def load_secret_bundles(path: str, max_bundles: int = MAX_SECRET_BUNDLES) -> List[dict]:
     """Load the JSONL secret-bundle sidecar at *path* (``[]`` on any error).
 
-    Each non-empty line is one bundle object (see the engine sidecar schema).
-    Malformed lines, over-long lines (see
-    :func:`~friTap.offline.keylog_io.iter_bounded_lines`) and bundles missing
-    both traffic secrets are skipped; a bad or absent file yields an empty list
-    so the stage is simply a no-op. Bundles are de-duplicated by their secret
-    material (first wins; a duplicate brings no new secret to try) and at most
-    *max_bundles* distinct ones are loaded; the rest are ignored with one
-    warning.
-    """
+    Malformed or over-long lines (:func:`~friTap.offline.keylog_io.iter_bounded_lines`)
+    and bundles without a traffic secret are skipped. Bundles are de-duplicated by
+    secret material and at most *max_bundles* distinct ones load, the rest warned once.
+"""
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as handle:
             distinct = _distinct_bundles(iter_bounded_lines(handle, source=path))
@@ -252,13 +206,10 @@ def _bind_direction(
 ) -> Optional[_DirectionBinding]:
     """Trial-bind *secret_hex* to one direction's *records*, or ``None``.
 
-    The AEAD tag is a zero-false-accept oracle: a wrong secret never recovers a
-    suite/seq, so a returned binding is a genuine match. ``min_seq..max_seq``
-    bounds the starting-sequence search for a mid-stream (no-handshake) capture;
-    the application_data records from ``first_record`` up to ``max_records`` are
-    tried, with *suites* (default: every suite matching the secret's length).
-    The trials are spent from *budget*; an exhausted budget tries nothing.
-    """
+    A returned binding is a genuine match (zero-false-accept oracle). Tries
+    app-data records ``first_record`` to ``max_records`` over ``min_seq..max_seq``
+    with *suites* (default: those matching the secret length), spending *budget*.
+"""
     if not secret_hex or not records or _out_of_budget(budget):
         return None
     picked = pick_binding(secret_hex, records, suites=suites, max_seq=max_seq,
@@ -276,25 +227,17 @@ def _bind_bundle_to_stream(
     first_record: int = 0,
     budget: Optional[TrialBudget] = None,
 ) -> Optional[StreamBinding]:
-    """Try to bind one secret *bundle* to one *stream* (both directions), or ``None``.
+    """Bind one secret *bundle* to one *stream* (both directions), or ``None``.
 
-    ``client_traffic_secret_0`` is tried on the ``"write"`` (client->server)
-    direction and ``server_traffic_secret_0`` on the ``"read"`` (server->client)
-    direction. A stream that begins with a captured handshake is skipped (the
-    normal tshark single pass already decrypts it). The AEAD tag is a
-    zero-false-accept oracle, so a returned binding is a genuine match.
+    The client secret is tried on ``"write"``, the server secret on ``"read"``. A
+    stream beginning with a captured handshake is skipped (tshark decrypts it).
 
-    Each direction is tried on its first ``max_records`` application_data
-    records. Once one direction binds, the stream is known to be the bundle's
-    session, so the other direction always gets the full
-    :data:`DEFAULT_BIND_RECORDS` retry (its first record may simply have failed).
-
-    ``first_record`` > 0 means the caller already tried the earlier records of
-    both directions and they failed, so they are skipped. The deep retry skips
-    every record already tried and uses only the bound direction's suite (both
-    TLS 1.3 directions share the negotiated suite), so it yields exactly what a
-    full retry would. Every trial is spent from *budget* (when given).
-    """
+    Each direction tries its first ``max_records`` app-data records. Once one binds,
+    the other gets the full :data:`DEFAULT_BIND_RECORDS` retry (its first record may
+    have failed). ``first_record`` > 0 skips records the caller already tried; the
+    deep retry uses only the bound direction's suite (both directions share it), so
+    it yields what a full retry would. Every trial is spent from *budget*.
+"""
     if _starts_with_handshake(stream):
         return None
     directions = _directions(bundle, stream)
@@ -308,15 +251,11 @@ def _finish(stream: MidstreamTlsStream, directions: list, binds: Sequence,
             max_seq: int, max_records: int,
             retry_from: int = 0,
             budget: Optional[TrialBudget] = None) -> Optional[StreamBinding]:
-    """Turn a stream's first-stage direction *binds* into a StreamBinding, or ``None``.
+    """A StreamBinding from a stream's first-stage direction *binds*, or ``None`` when none bound.
 
-    ``None`` when no direction bound. Otherwise the stream is known to be the
-    bundle's session, so each unbound direction gets the partner deep retry: the
-    records after the first ``max_records`` up to :data:`DEFAULT_BIND_RECORDS`,
-    with the bound direction's suite, at seqs ``retry_from..max_seq``
-    (``retry_from`` > 0 only when the lower seqs were already retried), its
-    trials spent from *budget*.
-    """
+    Each unbound direction then gets the partner deep retry: later records up to
+    :data:`DEFAULT_BIND_RECORDS`, the bound suite, seqs ``retry_from..max_seq``.
+"""
     bound = next((bind for bind in binds if bind), None)
     if bound is None:
         return None
@@ -330,11 +269,7 @@ def _finish(stream: MidstreamTlsStream, directions: list, binds: Sequence,
 
 def _open_directions(bundle: dict, stream: MidstreamTlsStream,
                      binding: Optional[StreamBinding] = None) -> list:
-    """``[(index, secret_hex, records)]`` of the directions still worth searching.
-
-    A direction qualifies when *bundle* carries its secret and *binding* (when
-    given) has not bound it; *stream* supplies the records.
-    """
+    """``[(index, secret_hex, records)]`` of directions *bundle* has a secret for and *binding* has not bound."""
     open_dirs = []
     for index, (direction, key) in enumerate(_DIRECTION_SECRETS):
         secret = bundle.get(key)
@@ -367,52 +302,34 @@ def _any_shared_ciphertext(streams: Iterable[MidstreamTlsStream]) -> bool:
 class _BundleSearch:
     """Place one secret bundle by an exact iterative-deepening seq search.
 
-    The original search (:func:`_bind_bundle_to_stream` with the full
-    ``max_seq``, applied to the unclaimed streams in order, first binding stream
-    wins) sweeps ``0..max_seq`` for every wrong stream. This search visits the
-    seq windows of :func:`~friTap.offline.tls.stream.seq_windows` in increasing
-    order instead, every candidate stream per window, and returns the SAME
-    stream and the SAME :class:`StreamBinding` under the one-stream assumption
-    below. Why it is exact:
+    The original search (:func:`_bind_bundle_to_stream` with full ``max_seq`` over
+    unclaimed streams in order) sweeps ``0..max_seq`` for every wrong stream. This
+    one visits the :func:`~friTap.offline.tls.stream.seq_windows` windows in
+    increasing order, every candidate stream per window, and returns the SAME
+    stream and :class:`StreamBinding` under the one-stream assumption. Why:
 
-    * The AEAD tag never false-accepts, so a record authenticates at most at one
-      ``(suite, seq)``, and only the session's suite authenticates at all: the
-      suite loop order cannot change a direction's result.
-    * Within one direction, the records under one secret consume consecutive
-      sequence numbers, so their seq never decreases with the record index. The
-      lowest binding record (what the original returns) therefore binds at the
-      lowest seq, i.e. in the earliest window holding any binding seq, where the
-      in-order record loop meets it first. Searching each direction window by
-      window yields the original direction result.
-    * ASSUMPTION (one stream per session): a secret belongs to exactly one
-      session, and that session is carried by one stream or by copies of it
-      that share at least one identical ciphertext record (a copy stream,
-      :func:`_shares_ciphertext`). So a stream can only bind through a secret
-      that bound another stream when the two share a ciphertext record.
+    * The AEAD tag never false-accepts, so a record authenticates at one
+      ``(suite, seq)`` and suite loop order cannot change a result.
+    * A direction's records use consecutive seqs, so the lowest binding record binds
+      at the lowest seq, in the earliest window holding any binding seq.
+    * ASSUMPTION (one stream per session): a secret belongs to one session, carried
+      by one stream or by copies sharing an identical ciphertext record
+      (:func:`_shares_ciphertext`).
 
-    So when the first hit is stream ``p`` in window ``L``: every stream after
-    ``p`` is irrelevant (the original stops at the first binding stream), and
-    the streams before ``p`` failed windows ``0..L`` in both directions. Their
-    only way to bind is in a later window, through a secret the winner did not
-    bind (a mis-paired bundle), or through any secret when they share
-    ciphertext with the winner. :meth:`settle` finishes the winner over the
-    later windows, re-checks the earlier streams in order with exactly those
-    directions, and lets the first earlier hit win (completed in full).
+    When the first hit is stream ``p`` in window ``L``, later streams are irrelevant
+    and earlier ones failed windows ``0..L``. They can only bind later, through a
+    secret the winner did not bind (a mis-paired bundle) or via shared ciphertext.
+    :meth:`settle` finishes the winner over later windows, re-checks earlier streams
+    with those directions and lets the first earlier hit win. The first window runs
+    through :func:`_bind_bundle_to_stream` clipped to the window, so a later finish
+    only retries seqs above it.
 
-    The first window runs through :func:`_bind_bundle_to_stream` with ``max_seq``
-    clipped to that window, so its partner deep retry already covered the
-    window's seqs; a later finish only retries the seqs above it.
-
-    Where the assumption fails: ONE session seen under two 4-tuples whose
-    records do not overlap (e.g. a NAT'd connection captured on both sides at
-    different times and merged into one pcap). An earlier stream holding the
-    other part of the winner's session at a later window is not re-checked
-    through the winner's secrets, so the later-ordered stream wins where the
-    full-range search would pick the earlier one. There is no cheap exact test
-    for this: telling such a stream apart costs the full-range AEAD sweep the
-    ladder exists to avoid. Both streams are still the bundle's session, and
-    the AEAD oracle still never binds a wrong stream.
-    """
+    Fails when ONE session appears under two 4-tuples with non-overlapping records
+    (e.g. a NAT'd connection captured on both sides at different times): the
+    later-ordered stream wins where a full-range search would pick the earlier. No
+    cheap exact test exists (it costs the full sweep the ladder avoids); both
+    streams are still the bundle's session and the oracle never binds a wrong stream.
+"""
 
     def __init__(self, bundle: dict, max_seq: int, max_records: int,
                  first_record: int, budget: Optional[TrialBudget] = None):
@@ -424,10 +341,7 @@ class _BundleSearch:
         self.windows = list(seq_windows(max_seq))
 
     def find(self, unclaimed: list) -> Optional[Tuple[int, StreamBinding]]:
-        """``(index into unclaimed, binding)`` for the stream the bundle binds.
-
-        Stops early (``None``) once the trial budget is exhausted.
-        """
+        """``(index into unclaimed, binding)`` for the stream the bundle binds; ``None`` early once the trial budget is exhausted."""
         for level, window in enumerate(self.windows):
             for position, stream in enumerate(unclaimed):
                 if _out_of_budget(self.budget):
@@ -508,10 +422,8 @@ def _find_binding(bundle: dict, unclaimed: list, max_records: int,
                   ) -> Optional[Tuple[int, StreamBinding]]:
     """``(index, binding)`` of the first unclaimed stream *bundle* binds, or ``None``.
 
-    Exactly what walking *unclaimed* in order with :func:`_bind_bundle_to_stream`
-    returns, found by the iterative-deepening seq search of :class:`_BundleSearch`
-    (while *budget* lasts).
-    """
+    Equals walking *unclaimed* with :func:`_bind_bundle_to_stream`, via :class:`_BundleSearch` while *budget* lasts.
+"""
     search = _BundleSearch(bundle, max_seq, max_records, first_record, budget)
     return search.find(unclaimed)
 
@@ -520,18 +432,12 @@ def _find_binding(bundle: dict, unclaimed: list, max_records: int,
 class _Placements:
     """Secrets proven by earlier placements, to skip duplicate bundles.
 
-    A secret that bound a claimed stream belongs to that stream's session, so,
-    under the one-stream-per-session assumption of :class:`_BundleSearch`, it
-    cannot bind an unclaimed stream unless two streams carry identical
-    ciphertext. A bundle whose every secret is proven (a duplicate of a fully
-    bound bundle) therefore binds nothing; it is skipped without a single AEAD
-    trial unless the capture holds copy streams.
-
-    Only a placement that bound BOTH directions proves its secrets: a stream
-    with one direction bound may hold just part of its session (a one-sided
-    bundle, or a session whose other part sits under another 4-tuple), so a
-    duplicate of it is still searched like any other bundle.
-    """
+    A secret that bound a claimed stream cannot bind an unclaimed one unless two
+    streams carry identical ciphertext (:class:`_BundleSearch` assumption), so a
+    bundle whose every secret is proven is skipped without an AEAD trial unless the
+    capture holds copy streams. Only a placement binding BOTH directions proves its
+    secrets: a one-direction stream may hold just part of its session.
+"""
 
     streams: list
     proven: Set[str] = field(default_factory=set)
@@ -561,12 +467,9 @@ def bind_stream(
 ) -> Optional[StreamBinding]:
     """Bind the first *bundle* that decrypts a direction of *stream*, or ``None``.
 
-    Thin wrapper over :func:`_bind_bundle_to_stream` preserving the stream-centric
-    API (first matching bundle wins). ``run_midstream_tls_stage`` itself drives a
-    key-centric loop for efficiency; this remains for direct/stream-at-a-time use.
-    Like the stage, a first-record pass over every bundle runs before the
-    deeper :data:`DEFAULT_BIND_RECORDS` retry.
-    """
+    Stream-centric wrapper of :func:`_bind_bundle_to_stream` (the stage runs key-centric); a
+    first-record pass precedes the deeper :data:`DEFAULT_BIND_RECORDS` retry.
+"""
     for first_record, max_records in _bind_windows():
         for bundle in bundles:
             binding = _bind_bundle_to_stream(bundle, stream, max_seq, max_records,
@@ -579,11 +482,7 @@ def bind_stream(
 def _decrypt_direction(
     binding: _DirectionBinding, records: List[Tuple[int, bytes, bytes]]
 ) -> Tuple[bytes, int, int]:
-    """Decrypt one direction: ``(joined app content, decrypted, undecryptable)``.
-
-    ``undecryptable`` counts every application_data record that yielded no
-    plaintext, including those skipped before the binding point.
-    """
+    """Decrypt one direction: ``(joined app content, decrypted, undecryptable)``; ``undecryptable`` includes records before the binding point."""
     app_records = app_data_records(records)
     plaintexts = decrypt_stream_from(
         binding.secret_hex, binding.suite, app_records, binding.start_seq,
@@ -646,11 +545,7 @@ def _note_stream_quality(stream: MidstreamTlsStream, direction: str) -> bool:
 
 def _decrypt_binding(binding: StreamBinding,
                      stats: _StageStats) -> List[Tuple[str, bytes]]:
-    """Decrypt each bound direction: ``[(direction, plaintext)]``, non-empty only.
-
-    Decrypted / undecryptable records, partial (later-gap) streams and resyncs
-    are tallied in *stats* whether or not any plaintext came out.
-    """
+    """Decrypt each bound direction: ``[(direction, plaintext)]``, non-empty only; tallies go to *stats* regardless."""
     plaintexts: List[Tuple[str, bytes]] = []
     partial = False
     for direction, dbind in ((WRITE, binding.write), (READ, binding.read)):
@@ -676,11 +571,10 @@ def _bound_suite(binding: StreamBinding) -> str:
 def _emit_session_metadata(binding: StreamBinding, bus) -> None:
     """Emit the TLS session metadata the AEAD binding proves for *binding*.
 
-    Only the protocol version and the bound cipher suite are known; SNI and
-    ALPN live in the uncaptured handshake, so they stay empty. Must precede the
-    stream's DatalogEvents so the collector backfills the TLS layer as the
-    flow's outermost layer (``[tls, http2]``, not ``[http2, tls]``).
-    """
+    Only version and bound suite are known (SNI/ALPN live in the uncaptured
+    handshake). Must precede the stream's DatalogEvents so the TLS layer is
+    outermost (``[tls, http2]``).
+"""
     stream = binding.stream
     endpoints = (stream.client_addr[0], stream.client_addr[1],
                  stream.server_addr[0], stream.server_addr[1])
@@ -692,10 +586,9 @@ def _emit_binding(binding: StreamBinding, *, bus, state, result, base_ts: float,
                   stats: Optional[_StageStats] = None) -> bool:
     """Emit a bound stream: one session event, then a span + DatalogEvent per direction.
 
-    Both directions are decrypted first; when any plaintext came out, the TLS
-    session metadata is emitted once, before the data. Returns True when at
-    least one non-empty direction was emitted.
-    """
+    Both directions are decrypted first; metadata is emitted once, before the data,
+    only if plaintext came out. Returns True when a non-empty direction was emitted.
+"""
     stats = stats if stats is not None else _StageStats()
     plaintexts = _decrypt_binding(binding, stats)
     if not plaintexts:
@@ -723,16 +616,12 @@ def run_midstream_tls_stage(
 ) -> Set[str]:
     """Bind the sidecar's secret bundles to *pcap_path*'s mid-stream TLS streams.
 
-    Loads the secret bundles, enumerates the raw TLS streams, and for each stream
-    that a bundle binds, emits the recovered plaintext through *bus* (recording a
-    span in ``state.tls_spans``). Returns the set of :func:`canonical_4tuple`
-    keys of the bound flows so the caller can relabel them ``TLS(midstream)``.
-    A missing/empty sidecar (or an enumeration failure) is a no-op returning an
-    empty set — the stage never aborts the surrounding conversion. ``max_seq``
-    bounds the starting-sequence search (see :data:`DEFAULT_MAX_SEQ`) and
-    *trial_budget* (default :data:`MIDSTREAM_TRIAL_BUDGET`) the run's total AEAD
-    trial decryptions; when it runs out the search stops with one warning.
-    """
+    Emits recovered plaintext through *bus* (spans in ``state.tls_spans``) and returns
+    the :func:`canonical_4tuple` keys of bound flows for the ``TLS(midstream)``
+    relabel. A missing/empty sidecar or enumeration failure returns an empty set; never
+    aborts the conversion. ``max_seq`` bounds the start-seq search; *trial_budget*
+    (default :data:`MIDSTREAM_TRIAL_BUDGET`) the total AEAD trials, then one warning.
+"""
     bundles = load_secret_bundles(sidecar_path)
     if not bundles:
         return set()
@@ -744,18 +633,7 @@ def run_midstream_tls_stage(
         )
         return set()
 
-    # Key-centric binding: each secret bundle maps to exactly ONE TLS session, so
-    # we place each bundle in turn -- scanning the not-yet-claimed streams until it
-    # binds, then claiming that stream and moving on to the next bundle. A matched
-    # bundle is never retried, a claimed stream is never re-tested, and the loop
-    # ends as soon as the last bundle is placed, so unrelated no-handshake streams
-    # are never trial-decrypted once every secret has found its home. (The AEAD tag
-    # is a zero-false-accept oracle, and one secret binds one session, so this
-    # yields the same set of bindings the stream-centric scan did.)
-    # Binding runs in two passes (see _BIND_PASSES): first-record-only, then a
-    # deeper retry for the bundles the first pass could not place. Within a pass
-    # each bundle's seq search deepens window by window (see _BundleSearch), so a
-    # wrong stream costs a few dozen AEAD trials instead of a full max_seq sweep.
+    # Key-centric: each bundle maps to one TLS session, placed in turn against unclaimed streams; a placed bundle is never retried, a claimed stream never re-tested, and the loop ends after the last bundle. Two passes (_BIND_PASSES); within a pass the seq search deepens window by window (_BundleSearch).
     bound_keys: Set[str] = set()
     stats = _StageStats()
     unclaimed = list(streams)
@@ -795,12 +673,10 @@ def _place_bundle(bundle: dict, unclaimed: list, max_records: int,
                   max_seq: int = DEFAULT_MAX_SEQ,
                   placements: Optional[_Placements] = None,
                   budget: Optional[TrialBudget] = None) -> bool:
-    """Bind *bundle* to the first unclaimed stream it decrypts; emit and claim it.
+    """Bind *bundle* to the first unclaimed stream it decrypts, emit and claim it; True when placed.
 
-    Returns True when the bundle was placed (the stream is removed from
-    *unclaimed*). A duplicate of an already fully bound bundle is skipped (see
-    :class:`_Placements`), and nothing is tried once *budget* is exhausted.
-    """
+    A duplicate of a fully bound bundle (:class:`_Placements`) is skipped; nothing is tried once *budget* is exhausted.
+"""
     if _out_of_budget(budget):
         return False
     if placements is not None and placements.is_duplicate(bundle):

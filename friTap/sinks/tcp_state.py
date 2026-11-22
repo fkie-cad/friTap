@@ -18,6 +18,8 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from .._warn_once import reset_warn_once, warn_once
+
 if TYPE_CHECKING:
     from ..schemas.canonical import AddressFamily, DataCanonical
 
@@ -77,25 +79,22 @@ class InvalidEndpointError(ValueError):
 
 
 _logger = logging.getLogger("friTap")
-_warned_drop_reasons: set[str] = set()
-_warned_lock = threading.Lock()
+
+
+_DROP_WARN_FAMILY = "tcp_state:drop"
 
 
 def warn_dropped_record(reason: str, logger: logging.Logger | None = None) -> None:
     """Log a dropped-record warning once per distinct *reason* (rate limit)."""
-    with _warned_lock:
-        if reason in _warned_drop_reasons:
-            return
-        _warned_drop_reasons.add(reason)
-    (logger or _logger).warning(
+    warn_once(
+        logger or _logger, (_DROP_WARN_FAMILY, reason),
         "pcap: dropping plaintext record with %s (further drops of this kind "
         "are not logged)", reason)
 
 
 def reset_drop_warnings() -> None:
-    """Forget which drop reasons were logged (tests, new sessions)."""
-    with _warned_lock:
-        _warned_drop_reasons.clear()
+    """Forget which drop reasons were logged; other warn-once keys are untouched."""
+    reset_warn_once(_DROP_WARN_FAMILY)
 
 
 def validate_port(port: object) -> int:

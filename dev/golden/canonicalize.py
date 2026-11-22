@@ -103,12 +103,22 @@ def canonical_keylog_records(reader) -> dict:
 # ---------------------------------------------------------------------------
 
 def canonical_chunks(chunks) -> dict:
-    """Count plus one digest per chunk over (direction, timestamp, function, data)."""
+    """Count plus one digest per chunk over (direction, timestamp, function, data).
+
+    Stream ids go in a separate index -> id map, omitted when no chunk has
+    one, so captures without ids canonicalize the same as before ids existed.
+    """
     digests = []
-    for chunk in chunks:
+    stream_ids = {}
+    for index, chunk in enumerate(chunks):
         head = json.dumps([chunk.direction, chunk.timestamp, chunk.function])
         digests.append(sha256_hex(head.encode() + b"\0" + bytes(chunk.data)))
-    return {"count": len(chunks), "sha256": digests}
+        if chunk.stream_id is not None:
+            stream_ids[str(index)] = chunk.stream_id
+    out = {"count": len(chunks), "sha256": digests}
+    if stream_ids:
+        out["stream_id"] = stream_ids
+    return out
 
 
 def canonical_parse_result(result) -> dict | None:

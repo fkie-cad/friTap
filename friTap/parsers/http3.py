@@ -18,7 +18,7 @@ from collections import OrderedDict
 from typing import NamedTuple, Optional
 
 from friTap.constants import PROTOCOL_HTTP3
-from friTap.decoder_isolation import HeaderListTooLarge, close_isolated_decoder
+from friTap.decoder_isolation import close_isolated_decoder
 
 from .base import BaseParser, ParseResult, apply_http2_headers
 from .h3_streams import (
@@ -40,10 +40,12 @@ from .h3_streams import (
 from .http2 import H2_URL_CONNECTION_CONTROL
 from .qpack_context import (
     ERROR_HEADER_LIST_TOO_LARGE,
+    HEADER_LIST_OVER_CAP,
     QpackDecoderContext,
     check_block,
     header_list_too_large,
     new_qpack_decoder,
+    recover_pseudo_headers,
 )
 from .varint import decode_quic_varint
 
@@ -324,6 +326,13 @@ class _H3StreamState:
         self.error: str = ""
 
 
+def _message_key(result: ParseResult):
+    """(stream, role) identity of a message result; None for control frames."""
+    if result.is_control_frame:
+        return None
+    return (result.stream_id, result.is_request)
+
+
 class Http3Parser(BaseParser):
     """HTTP/3 frame parser.
 
@@ -356,16 +365,18 @@ class Http3Parser(BaseParser):
         self._client_direction: str | None = None
         self._client_direction_certain: bool = False
         self._peer_settings: dict[str, dict[int, int]] = {}
-        # Kept for compatibility; encoder bytes are no longer copied here.
+        # Unused placeholder; the QPACK context consumes encoder bytes.
         self._encoder_bytes: dict[str, bytearray] = {}
         self._finished_streams = _FinishedStreams()
-        # Results of streams evicted by a state cap, returned by the next
+        # Results produced outside a feed() call (streams evicted by a state
+        # cap, blocks resumed by mark_midstream), returned by the next
         # feed()/flush()
-        self._evicted_results: list[ParseResult] = []
+        self._deferred_results: list[ParseResult] = []
         # Muxed mode QPACK: one decoding context per ENCODER side, and the
         # direction of every header block waiting in a context.
         self._qpack_ctx = self._new_qpack_contexts()
         self._waiting_blocks: dict[tuple[str, int], str] = {}
+        self._midstream = False
         # Non-muxed mode never sees encoder streams: static table only, so
         # dynamic references fail fast instead of blocking forever.
         self._qpack_decoder = self._new_static_decoder()
@@ -425,7 +436,7 @@ class Http3Parser(BaseParser):
             results = self._feed_muxed(data, direction, stream_id)
         else:
             results = self._feed_plain(data, direction)
-        return self._take_evicted_results() + results
+        return self._take_deferred_results(results) + results
 
     def _feed_plain(self, data: bytes, direction: str) -> list[ParseResult]:
         """Non-muxed mode: one frame sequence per direction."""
@@ -451,19 +462,37 @@ class Http3Parser(BaseParser):
         stream.error = error
         return [self._build_result(stream, is_complete=False)]
 
-    def _take_evicted_results(self) -> list[ParseResult]:
-        """Hand out (and forget) results of streams evicted by a cap."""
-        results, self._evicted_results = self._evicted_results, []
-        return results
+    def _take_deferred_results(self, newer: list[ParseResult] = ()) -> list[ParseResult]:
+        """Hand out (and forget) results produced outside a feed() call.
+
+        A queued snapshot superseded by a later one or by *newer* (same
+        stream and role) is dropped: a stream resumed by mark_midstream()
+        stays active and may be reported again in the same batch.
+        """
+        deferred, self._deferred_results = self._deferred_results, []
+        seen = {_message_key(r) for r in newer}
+        kept: list[ParseResult] = []
+        for result in reversed(deferred):
+            key = _message_key(result)
+            if key is not None and key in seen:
+                continue
+            seen.add(key)
+            kept.append(result)
+        kept.reverse()
+        return kept
 
     def flush(self) -> list[ParseResult]:
         """Return partial streams as incomplete results."""
         self._apply_blocked_fallbacks()
-        results: list[ParseResult] = self._take_evicted_results()
+        results: list[ParseResult] = self._take_deferred_results()
+        # A queued snapshot is the stream's newest state: no second report
+        emitted = {_message_key(r) for r in results}
         for streams in self._active_streams.values():
             for stream in streams.values():
                 if stream.headers_received or stream.body_size:
                     result = self._build_result(stream, is_complete=False)
+                    if _message_key(result) in emitted:
+                        continue
                     results.append(result)
         self._active_streams.clear()
         self._current_stream.clear()
@@ -503,6 +532,19 @@ class Http3Parser(BaseParser):
         if is_uni(stream_id):
             return self._feed_uni(stream_id, data, direction)
         return self._feed_bidi(stream_id, data, direction)
+
+    def mark_midstream(self) -> None:
+        """The connection's control and QPACK streams predate the capture.
+
+        Header blocks are decoded at once (no SETTINGS wait) and blocks that
+        need the unseen dynamic table get the fallback immediately. Results
+        of blocks already waiting are returned by the next feed(). Idempotent.
+        """
+        if self._midstream:
+            return
+        self._midstream = True
+        for side, ctx in (self._qpack_ctx or {}).items():
+            self._deferred_results.extend(self._resume_blocks(side, ctx.start_midstream()))
 
     def _learn_client_direction(self, stream_id: int, direction: str) -> None:
         """Infer which direction label is the client's from stream ownership.
@@ -625,7 +667,6 @@ class Http3Parser(BaseParser):
 
         Returns results of request/response streams the inserts unblocked.
         """
-        # The bytes are no longer copied: the QPACK context consumes them.
         self._encoder_bytes.setdefault(side, bytearray())
         if self._qpack_ctx is None:
             return []
@@ -739,7 +780,7 @@ class Http3Parser(BaseParser):
     def _evict_stream(self, stream_id: int) -> None:
         """Retire a stream pushed out by a state cap; queue its partial results."""
         logger.debug("HTTP/3 stream %s evicted (state cap)", stream_id)
-        self._evicted_results.extend(self._incomplete_results(stream_id))
+        self._deferred_results.extend(self._incomplete_results(stream_id))
         self._finish_stream(stream_id)
 
     def _drop_stream(self, stream_id: int, error: str) -> list[ParseResult]:
@@ -1009,8 +1050,8 @@ class Http3Parser(BaseParser):
         except pylsqpack.StreamBlocked:
             # Needs dynamic-table inserts we have not seen: raw-scan for now
             return self._scan_raw_headers(payload)
-        except HeaderListTooLarge:
-            # Isolated decoder withheld an over-cap list (same as the check below)
+        except HEADER_LIST_OVER_CAP:
+            # Over-cap list withheld by the isolated decoder or pylsqpack >= 1.0
             stream.error = ERROR_HEADER_LIST_TOO_LARGE
             return self._scan_raw_headers(payload)
         except Exception:
@@ -1038,10 +1079,14 @@ class Http3Parser(BaseParser):
 
     @staticmethod
     def _scan_raw_headers(payload: bytes) -> list[tuple[str, str]]:
-        """Scan raw bytes for HTTP pseudo-header patterns."""
-        headers = []
+        """Recover pseudo-headers without a dynamic table: decoded static and
+        literal field lines first, then a raw scan for literal names."""
+        headers = recover_pseudo_headers(payload)
+        recovered = {name for name, _value in headers}
         pseudo_headers = [b":method", b":path", b":status", b":authority", b":scheme"]
         for pseudo in pseudo_headers:
+            if pseudo.decode("ascii") in recovered:
+                continue
             idx = payload.find(pseudo)
             if idx == -1:
                 continue

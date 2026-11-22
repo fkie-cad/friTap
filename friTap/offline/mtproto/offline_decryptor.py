@@ -2,19 +2,14 @@
 
 """MTProto/Telegram offline decryptor: emitters + registry entries.
 
-Holds the Telegram-specific EMIT side of the offline conversion that was
-historically inlined in ``friTap.offline.pcap_to_tap``: the parsed-message
-side-channel accumulators, the keylog loading, the per-conversion
-:class:`~friTap.offline.mtproto.packet_meta.RecordLedger` / cross-reference
-bookkeeping, the cloud + Secret-Chat record emitters and the two
-:class:`~friTap.offline.registry.OfflineDecryptorEntry` factories
-(``mtproto`` and ``telegram``).
+Holds the Telegram EMIT side of the offline conversion: parsed-message
+side-channel accumulators, keylog loading, the per-conversion
+:class:`~friTap.offline.mtproto.packet_meta.RecordLedger` and cross-reference
+bookkeeping, the cloud + Secret-Chat record emitters and the ``mtproto`` /
+``telegram`` :class:`~friTap.offline.registry.OfflineDecryptorEntry` factories.
 
-The package self-registers both entries at import (see
-``friTap/offline/mtproto/__init__.py``), exactly like the Signal package. The
-crypto backend and the TL parsers are imported lazily inside the emitters, so
-importing this module stays cheap. The code keeps its original behavior
-verbatim; only its enclosing module moved.
+The package self-registers both entries at import. The crypto backend and the
+TL parsers are imported lazily inside the emitters, so importing stays cheap.
 """
 
 from __future__ import annotations
@@ -38,7 +33,6 @@ from .state import TELEGRAM_STATE
 from .transport import DEFAULT_OBF_MAX_BLOCKS
 
 if TYPE_CHECKING:
-    # Type-only import: the factories import it lazily inside their bodies.
     from friTap.offline.registry import OfflineDecryptorEntry
 
 logger = logging.getLogger(__name__)
@@ -112,11 +106,9 @@ def _tag_chunk_key(dicts: list, chunk_key: str) -> list:
 def _append_mtproto_dicts_deduped(entry: dict, dicts: list) -> list:
     """Append parsed dicts to *entry* while collapsing duplicate user identities.
 
-    The same user often appears in multiple RPC results within one flow (e.g.
-    "db Forscher" returned by several queries). Each distinct ``kind="user"``
-    identity is emitted only ONCE per flow, keyed by :func:`_user_dedup_key`.
-    Text/chat/service items are NEVER deduped — they pass through untouched.
-    Returns the dicts actually appended (the record's messages for the ledger).
+    Each distinct ``kind="user"`` identity is emitted once per flow, keyed by
+    :func:`_user_dedup_key`; other kinds are never deduped. Returns the dicts
+    actually appended (the record's messages for the ledger).
     """
     seen = entry.setdefault("_user_keys", set())
     appended: list = []
@@ -495,32 +487,18 @@ def _emit_telegram_like_streams(
 ) -> None:
     """Decrypt Telegram traffic (cloud + Secret-Chat) from ONE combined keylog.
 
-    A friTap Telegram/MTProto keylog holds BOTH ``MTPROTO_AUTH_KEY`` (cloud
-    transport) and ``MTPROTO_E2E_KEY`` (Secret-Chat) lines; the two loaders each
-    read only their own label, so the same file feeds both decryptors. Unlike
-    TLS/QUIC this does NOT use tshark — friTap's own decryptor reassembles the TCP
-    streams and AES-IGE decrypts each record. For every decrypted cloud message we
-    (a) emit it as a ``DatalogEvent(protocol="mtproto")`` flow, and (b) scan it for
-    embedded Secret-Chat E2E blobs, emitting each decrypted one as a
-    ``DatalogEvent(protocol="telegram_e2e")`` flow.
+    The keylog holds ``MTPROTO_AUTH_KEY`` (cloud) and ``MTPROTO_E2E_KEY``
+    (Secret-Chat) lines; each loader reads only its own label. friTap's own
+    decryptor (not tshark) reassembles TCP and AES-IGE decrypts each record.
+    Every cloud message is emitted as a ``protocol="mtproto"`` event, and each
+    embedded Secret-Chat blob as a ``protocol="telegram_e2e"`` event.
 
-    *counter_name* selects the ``ConvertResult`` protocol bucket (so the same body
-    serves both the ``--mtproto-keylog`` and ``--telegram-keylog`` flags), while
-    *cloud_function* labels the emitted cloud events per caller (E2E events are
-    always labelled ``telegram_e2e_offline``).
-
-    *keylogs* optionally names further keylog files whose keys are merged with
-    *keylog*'s, so one pass decrypts with the union (used when two registry
-    entries of the same decoder family were given different files). Records
-    already emitted during this conversion (see :func:`_telegram_emitted_set`)
-    are skipped, so a repeated pass never duplicates flows or messages.
-
-    Every emitted record is also queued in the state's :class:`RecordLedger`
-    (see :func:`_ledger_record`) with its own messages, forensic envelope and a
-    monotonic ``record_seq``, which :func:`_attach_telegram_meta` pops per flow.
-
-    The optional crypto backend is imported lazily; a missing dependency logs a
-    warning and skips decryption (the rest of the conversion is unaffected).
+    *counter_name* selects the ``ConvertResult`` bucket; *cloud_function* labels
+    cloud events (E2E events are always ``telegram_e2e_offline``). *keylogs*
+    are merged with *keylog*. Records already emitted this conversion are
+    skipped, and every emitted record is queued in the state's
+    :class:`RecordLedger` with a monotonic ``record_seq``. A missing crypto
+    dependency logs a warning and skips decryption.
     """
     from friTap.offline.mtproto import MtprotoDependencyError
     from friTap.offline.mtproto.decrypt import MtprotoStats, iter_decrypted_messages
@@ -563,10 +541,8 @@ def _emit_telegram_like_streams(
         logger.warning("Telegram decryption skipped: %s", exc)
         return
 
-    # Honest E2E diagnostic: an E2E (secret-chat) key was loaded but NO transport
-    # auth key, so every transport record missed the keymap, the transport envelope
-    # never decrypted, and the E2E blobs inside it were never reached. Report this
-    # exactly rather than as a generic mid-connection/undecryptable failure.
+    # E2E keys without any cloud auth key can never reach the E2E blobs, since
+    # the carrying cloud records stay encrypted. Report that case explicitly.
     e2e_only = bool(secret_keymap) and not auth_keymap
     _record_telegram_stats(result, counter_name, tstats, sstats, e2e_only=e2e_only)
     _record_refs_drops(result, counter_name, drops_before, _refs_drop_counts(state))
@@ -720,10 +696,8 @@ def _emit_telegram_streams(
 ) -> None:
     """Decrypt Telegram traffic (cloud + Secret-Chat) from ONE combined keylog.
 
-    Thin wrapper over :func:`_emit_telegram_like_streams`; cloud + E2E messages
-    are counted under the ``telegram`` protocol bucket. Behaviourally identical to
-    ``--mtproto-keylog`` (both flags now decrypt cloud + E2E from the same combined
-    keylog); the two entry points differ only in their summary counter name.
+    Thin wrapper over :func:`_emit_telegram_like_streams`; identical to
+    ``--mtproto-keylog`` except messages are counted under ``telegram``.
     """
     _emit_telegram_like_streams(
         pcap_path, telegram_keylog,
@@ -735,14 +709,7 @@ def _emit_telegram_streams(
     )
 
 
-# --------------------------------------------------------------------------- #
-# Offline-decryptor registry wiring
-# --------------------------------------------------------------------------- #
-#
-# The MTProto/Telegram decryptors are exposed through the offline registry so
-# ``convert_pcap_to_tap`` iterates the registry instead of hardcoding
-# per-protocol if-blocks. The emitters above keep their original, expressive
-# signatures; thin adapters below present the normalized
+# Registry adapters: present the emitters in the normalized
 # :data:`~friTap.offline.registry.OfflineEmitter` shape.
 
 def _mtproto_offline_emitter(
@@ -781,12 +748,7 @@ def _telegram_attach_hook():
 
 
 def build_mtproto_offline_decryptor_entry() -> "OfflineDecryptorEntry":
-    """Build the MTProto :class:`OfflineDecryptorEntry`.
-
-    Named factory mirroring ``build_signal_offline_decryptor_entry`` (see
-    :mod:`friTap.offline.signal.offline_decryptor`): the layer class and registry
-    type are imported lazily so this is cheap to call at registration time.
-    """
+    """Build the MTProto :class:`OfflineDecryptorEntry` (lazy imports, cheap)."""
     from friTap.flow.layers import MtprotoLayer
     from friTap.offline.registry import OfflineDecryptorEntry
 
@@ -815,11 +777,7 @@ def build_mtproto_offline_decryptor_entry() -> "OfflineDecryptorEntry":
 
 
 def build_telegram_offline_decryptor_entry() -> "OfflineDecryptorEntry":
-    """Build the Telegram (cloud + Secret-Chat E2E) :class:`OfflineDecryptorEntry`.
-
-    Named factory mirroring ``build_signal_offline_decryptor_entry``; lazy imports
-    as above.
-    """
+    """Build the Telegram (cloud + Secret-Chat E2E) :class:`OfflineDecryptorEntry`."""
     from friTap.flow.layers import TelegramE2ELayer
     from friTap.offline.registry import OfflineDecryptorEntry
 

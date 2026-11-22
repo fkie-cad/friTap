@@ -175,8 +175,8 @@ class ContentType:
     # IKE_SA, from derive_ike_keys) and IPSEC_ESP the per-direction CHILD_SA
     # (ESP) keys (from kernel add_sa). They become the Wireshark UAT decryption
     # tables ikev2_decryption_table / esp_sa (see friTap.protocols.ipsec_handler).
-    # IPSEC_CHILD_SA is the historical (pre-contract) ESP content type, kept for
-    # back-compat with older agent bundles that still emit it.
+    # IPSEC_CHILD_SA is the pre-contract ESP content type, still emitted by older
+    # agent bundles.
     IPSEC_CHILD_SA = "ipsec_child_sa_keys"
     IPSEC_IKE = "ipsec_ike_keys"
     IPSEC_ESP = "ipsec_esp_keys"
@@ -200,6 +200,10 @@ class ContentType:
     CALLER_STACK = "caller_stack"
     # Opt-in Java request context (--attribute-sdk); attribution-only, no keys or bodies.
     REQUEST_CONTEXT = "request_context"
+    # Locator-found SSL_read/SSL_write RVAs for the learned-offsets cache (friTap.learned_offsets).
+    PLAINTEXT_API_LEARNED = "plaintext_api_learned"
+    # Named function RVAs and layout ints of a module, for the same cache.
+    MODULE_OFFSETS_LEARNED = "module_offsets_learned"
     ERROR = "error"
 
 

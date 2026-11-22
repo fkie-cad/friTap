@@ -1,21 +1,11 @@
 #!/usr/bin/env python3
 
-"""
-Pydantic v2 models for agent -> host messages in friTap.
+"""Pydantic v2 models for agent -> host messages, one per ``contentType``.
 
-Each model corresponds to a ``contentType`` value sent by the Frida agent
-(TypeScript side) to the Python host via ``send()``.  The discriminated
-union ``AgentMessage`` at the bottom can be used to validate and parse
-any incoming agent payload.
-
-Field names and defaults are derived from the actual agent code in:
-  - agent/util/log.ts              (console, console_dev, leveled logging)
-  - agent/shared/shared_structures.ts  (sendKeylog, sendDatalog, sendWithProtocol)
-  - agent/shared/shared_functions.ts   (getPortsAndAddresses -> netlog / datalog)
-  - agent/ssh/libs/ssh_openssh.ts      (ssh_newkeys)
-  - agent/ssh/platforms/linux/ssh_linux.ts  (ssh_key)
-  - agent/ipsec/platforms/linux/ipsec_linux.ts  (ipsec_child_sa_keys, ipsec_ike_keys)
-  - agent/misc/socket_tracer.ts    (netlog)
+The discriminated union ``AgentMessage`` validates any incoming payload. Field
+names and defaults mirror the agent senders in agent/util/log.ts,
+agent/shared/shared_structures.ts, agent/shared/shared_functions.ts,
+agent/ssh/, agent/ipsec/ and agent/misc/socket_tracer.ts.
 """
 
 from __future__ import annotations
@@ -24,42 +14,29 @@ from typing import Annotated, Dict, Literal, Optional, Union
 
 from pydantic import BaseModel, Field
 
-# ---------------------------------------------------------------------------
-# Base
-# ---------------------------------------------------------------------------
 
 class BaseAgentMessage(BaseModel):
     """Fields common to every agent message.
 
-    ``contentType`` is the discriminator used by ``AgentMessage``.
-    ``protocol`` is stamped by ``sendWithProtocol()`` and defaults
-    to ``"tls"`` for messages sent via the plain ``send()`` helper.
+    ``contentType`` is the ``AgentMessage`` discriminator; ``protocol`` is
+    stamped by ``sendWithProtocol()`` and defaults to ``"tls"``.
     """
 
     contentType: str
     protocol: str = "tls"
 
 
-# ---------------------------------------------------------------------------
-# TLS / generic key & data messages
-# ---------------------------------------------------------------------------
-
 class KeylogMessage(BaseAgentMessage):
-    """TLS/SSL key material (SSLKEYLOGFILE format lines).
-
-    Emitted by ``sendKeylog()`` in ``shared_structures.ts``.
-    """
+    """TLS key material (SSLKEYLOGFILE lines) from ``sendKeylog()``."""
 
     contentType: Literal["keylog"] = "keylog"
     keylog: str = ""
 
 
 class DatalogMessage(BaseAgentMessage):
-    """Decrypted application data captured from SSL_read / SSL_write.
+    """Decrypted SSL_read / SSL_write data from ``sendDatalog()``.
 
-    Emitted by ``sendDatalog()`` in ``shared_structures.ts``.
-    Binary payload is delivered separately via Frida's second argument
-    and is not part of the JSON payload itself.
+    The binary payload arrives as Frida's second argument, not in the JSON.
     """
 
     contentType: Literal["datalog"] = "datalog"
@@ -71,7 +48,7 @@ class DatalogMessage(BaseAgentMessage):
     ss_family: str = "AF_INET"
     ssl_session_id: str = ""
     client_random: str = ""
-    # QUIC-specific fields (optional, backward compatible)
+    # QUIC-specific fields (optional)
     stream_id: Optional[int] = None
     quic_scid: str = ""
     quic_dcid: str = ""
@@ -82,23 +59,24 @@ class DatalogMessage(BaseAgentMessage):
     direction: Optional[str] = None
     # QUIC payload kind: "stream" (raw HTTP/3 stream bytes) | "body" (de-framed DATA)
     quic_payload: Optional[str] = None
+    # QUIC connection predates the capture (control/QPACK streams never seen)
+    quic_midstream: Optional[bool] = None
+    # Frame-path STREAM chunk: byte offset within the stream, and FIN when it ends the stream
+    stream_offset: Optional[int] = None
+    fin: Optional[bool] = None
     # Module that produced the record (e.g. "libmonochrome_64.so")
     library: Optional[str] = None
+    # Ms the agent held the record before sending (QUIC bodies awaiting their stream id)
+    held_ms: Optional[int] = None
 
 
 class ConnectionLifecycleMessage(BaseAgentMessage):
-    """Connection lifecycle event (created/destroyed).
+    """Connection lifecycle event from the SSL_new / SSL_free hooks.
 
-    Emitted by SSL_free / SSL_new hooks to track connection boundaries.
-
-    METADATA IS OFFLINE-ONLY: this message intentionally carries connection
-    IDENTITY + lifecycle only — no TLS handshake metadata (cipher suite, TLS
-    version, SNI, ALPN). That metadata is produced exclusively by the offline
-    pcap+keys -> .tap pipeline (friTap/offline/tshark.py), which has the full
-    handshake. Do NOT add cipher_suite/protocol_version/server_name/alpn fields
-    here, and do NOT have the agent emit them: the live MessageRouter
-    (_emit_lifecycle) deliberately drops any such fields so the live and offline
-    metadata sources can never drift.
+    Carries connection identity and lifecycle only, never handshake metadata
+    (cipher suite, version, SNI, ALPN). That comes solely from the offline
+    pcap+keys pipeline (friTap/offline/tshark.py); the live MessageRouter
+    (_emit_lifecycle) drops such fields so the two sources cannot drift.
     """
 
     contentType: Literal["connection_lifecycle"] = "connection_lifecycle"
@@ -110,22 +88,14 @@ class ConnectionLifecycleMessage(BaseAgentMessage):
     src_port: int = 0
     dst_port: int = 0
     ss_family: str = "AF_INET"
-    # QUIC-specific fields (optional, backward compatible)
+    # QUIC-specific fields (optional)
     stream_id: Optional[int] = None
     quic_scid: str = ""
     quic_dcid: str = ""
 
 
-# ---------------------------------------------------------------------------
-# Library detection
-# ---------------------------------------------------------------------------
-
 class LibraryDetectedMessage(BaseAgentMessage):
-    """Notification that a TLS/SSH/IPSec library was found.
-
-    Sent when a supported library module is located in the target
-    process address space.
-    """
+    """A supported TLS/SSH/IPSec library module was located in the target."""
 
     contentType: Literal["library_detected"] = "library_detected"
     library: str = ""
@@ -133,36 +103,22 @@ class LibraryDetectedMessage(BaseAgentMessage):
     path: str = ""
 
 
-# ---------------------------------------------------------------------------
-# Console messages
-# ---------------------------------------------------------------------------
-
 class ConsoleMessage(BaseAgentMessage):
-    """General console output from the agent (``log()`` helper).
-
-    The ``console`` field carries the human-readable text.
-    """
+    """Console text from the agent's ``log()`` helper."""
 
     contentType: Literal["console"] = "console"
     console: str = ""
 
 
 class ConsoleDevMessage(BaseAgentMessage):
-    """Developer-level console output (``devlog()`` helper).
-
-    Only surfaced when debug mode is enabled on the host side.
-    """
+    """Developer console output (``devlog()``), shown only in host debug mode."""
 
     contentType: Literal["console_dev"] = "console_dev"
     console_dev: str = ""
 
 
 class _LeveledConsoleBase(BaseAgentMessage):
-    """Shared fields for structured leveled log messages.
-
-    Uses the leveled logging path in ``agent/util/log.ts`` which
-    includes optional callsite information.
-    """
+    """Leveled log fields from agent/util/log.ts, with optional callsite."""
 
     message: str = ""
     time: str = ""
@@ -200,16 +156,8 @@ class ConsoleErrorMessage(_LeveledConsoleBase):
     level: Literal["error"] = "error"
 
 
-# ---------------------------------------------------------------------------
-# Network tracing (full capture / socket trace)
-# ---------------------------------------------------------------------------
-
 class NetlogMessage(BaseAgentMessage):
-    """Raw network socket event from ``socket_tracer.ts``.
-
-    Emitted during full-capture or socket-trace mode.  Address and port
-    fields come from ``getPortsAndAddresses()``.
-    """
+    """Socket event from ``socket_tracer.ts`` in full-capture or socket-trace mode."""
 
     contentType: Literal["netlog"] = "netlog"
     function: str = ""
@@ -220,16 +168,8 @@ class NetlogMessage(BaseAgentMessage):
     ss_family: str = "AF_INET"
 
 
-# ---------------------------------------------------------------------------
-# SSH messages
-# ---------------------------------------------------------------------------
-
 class SSHNewKeysMessage(BaseAgentMessage):
-    """SSH new-keys activation event.
-
-    Emitted when ``ssh_newkeys_function`` fires in the OpenSSH hooks,
-    indicating that new session keys have been put into use.
-    """
+    """New SSH session keys were put into use (OpenSSH ``ssh_newkeys_function``)."""
 
     contentType: Literal["ssh_newkeys"] = "ssh_newkeys"
     direction: str = ""  # "client" or "server"
@@ -238,11 +178,7 @@ class SSHNewKeysMessage(BaseAgentMessage):
 
 
 class SSHKeyMessage(BaseAgentMessage):
-    """Individual SSH key material extracted from OpenSSH.
-
-    Emitted per key component (encryption key, IV, MAC key) for
-    each direction (client / server).
-    """
+    """One SSH key component (encryption key, IV or MAC key) per direction."""
 
     contentType: Literal["ssh_key"] = "ssh_key"
     direction: str = ""  # "client" or "server"
@@ -258,14 +194,11 @@ class SSHKeyMessage(BaseAgentMessage):
 class SSHKeylogMessage(BaseAgentMessage):
     """Wireshark-compatible SSH keylog entry.
 
-    Encodes the inputs to the Wireshark SSH dissector's keylog format:
-    ``<32-hex-cookie> SHARED_SECRET <K-hex>``.  Wireshark performs the
-    RFC 4253 §7.2 key-derivation internally — friTap must not pre-derive
-    per-direction keys here.
+    Format: ``<32-hex-cookie> SHARED_SECRET <K-hex>``. Wireshark does the
+    RFC 4253 section 7.2 derivation itself, so friTap must not pre-derive keys.
 
-    Emitted once per (re)keying when ``kex_derive_keys`` returns and
-    both cookies (local + peer) are known.  The Python side correlates
-    the pair by ``session_tag`` (the ``struct ssh*`` pointer hex).
+    Emitted once per (re)keying when ``kex_derive_keys`` returns and both
+    cookies are known; the host pairs them by ``session_tag``.
     """
 
     contentType: Literal["ssh_keylog"] = "ssh_keylog"
@@ -277,16 +210,8 @@ class SSHKeylogMessage(BaseAgentMessage):
     protocol: str = "ssh"
 
 
-# ---------------------------------------------------------------------------
-# IPSec messages
-# ---------------------------------------------------------------------------
-
 class IPSecChildSAKeysMessage(BaseAgentMessage):
-    """ESP Child SA key material from strongSwan.
-
-    Keys dictionary maps labels like ``encr_i``, ``encr_r``,
-    ``integ_i``, ``integ_r`` to hex-encoded key bytes.
-    """
+    """ESP Child SA keys from strongSwan; ``keys`` maps ``encr_i``/``encr_r``/``integ_i``/``integ_r`` to hex."""
 
     contentType: Literal["ipsec_child_sa_keys"] = "ipsec_child_sa_keys"
     keys: Dict[str, str] = Field(default_factory=dict)
@@ -339,10 +264,6 @@ class IPSecESPKeysMessage(BaseAgentMessage):
     protocol: str = "ipsec"
 
 
-# ---------------------------------------------------------------------------
-# SDK / caller attribution (opt-in, --attribute-sdk)
-# ---------------------------------------------------------------------------
-
 class CallerFrame(BaseModel):
     """One native stack frame in a :class:`CallerStackMessage`.
 
@@ -356,19 +277,14 @@ class CallerFrame(BaseModel):
 
 
 class CallerStackMessage(BaseAgentMessage):
-    """Calling-thread backtrace captured once per connection at the first TLS
-    plaintext hook (OPT-IN via ``--attribute-sdk``; OFF by default).
+    """Calling-thread backtrace, once per SSL object at the first TLS plaintext hook.
 
-    Additive, attribution-only message: it carries the SAME connection-identity
-    join fields as :class:`ConnectionLifecycleMessage` plus the captured native
-    and Java frames. The host joins it onto a connection by the 4-tuple first
-    and falls back to ``ssl_session_id``. The agent emits it exactly once per
-    SSL object; it never carries key material or plaintext.
-
-    Optional identity fields (additive, empty/0 when the agent cannot read
-    them): ``client_random`` (hex ClientHello random of the SSL object, the
-    per-connection join key), ``tid`` / ``thread_name`` / ``pid`` of the
-    calling thread, and ``transport_module`` (the module whose TLS hook fired).
+    Opt-in via ``--attribute-sdk``; attribution only, never keys or plaintext.
+    Carries the same join fields as :class:`ConnectionLifecycleMessage` plus
+    native and Java frames; the host joins by 4-tuple, then ``ssl_session_id``.
+    Identity fields are empty/0 when unreadable: ``client_random`` (hex, the
+    per-connection join key), ``tid``/``thread_name``/``pid`` and
+    ``transport_module`` (module whose TLS hook fired).
     """
 
     contentType: Literal["caller_stack"] = "caller_stack"
@@ -418,9 +334,60 @@ class RequestContextMessage(BaseAgentMessage):
     main_frame: Optional[bool] = None
 
 
-# ---------------------------------------------------------------------------
-# OHTTP messages
-# ---------------------------------------------------------------------------
+class PlaintextRvas(BaseModel):
+    """Module-relative addresses of a stripped BoringSSL's record API."""
+
+    SSL_read: int
+    SSL_write: int
+
+
+class PlaintextPrologueHashes(BaseModel):
+    """Hex SHA-256 of the first 32 bytes of each function, re-checked before reuse."""
+
+    SSL_read: str
+    SSL_write: str
+
+
+class _LearnedModuleKey(BaseAgentMessage):
+    """Cache key fields shared by the learned-offsets reports (``build_id|size|arch``)."""
+
+    module: str
+    build_id: str
+    size: int
+    arch: str
+    # True when the agent accepted cached values (prologue-verified); the host refreshes last_seen.
+    cache_hit: Optional[bool] = None
+
+
+class PlaintextApiLearnedMessage(_LearnedModuleKey):
+    """SSL_read/SSL_write found by the agent's slow locator in a module with a GNU
+    build id. The host caches it under ``build_id|size|arch`` and hands it back on
+    the next run; never carries key material or plaintext.
+    """
+
+    contentType: Literal["plaintext_api_learned"] = "plaintext_api_learned"
+    rvas: PlaintextRvas
+    prologue_sha256: PlaintextPrologueHashes
+
+
+class LearnedFunction(BaseModel):
+    """One named function: module-relative address plus prologue hash for re-validation."""
+
+    rva: int
+    prologue_sha256: str
+
+
+class ModuleOffsetsLearnedMessage(_LearnedModuleKey):
+    """Named function RVAs (``functions``, e.g. ``boringssl.ssl_log_secret``) and small
+    layout ints (``layout``, e.g. struct offsets; names ending in ``Rva`` hold an RVA)
+    learned for a module with a GNU build id. Cached under ``build_id|size|arch``
+    beside the plaintext pair; the host keeps each valid item and drops bad ones.
+    """
+
+    contentType: Literal["module_offsets_learned"] = "module_offsets_learned"
+    functions: Optional[dict[str, LearnedFunction]] = None
+    layout: Optional[dict[str, int]] = None
+
 
 class OhttpPlaintextMessage(BaseAgentMessage):
     """Decrypted OHTTP inner payload from HPKE hooks.
@@ -431,10 +398,6 @@ class OhttpPlaintextMessage(BaseAgentMessage):
     source: str = ""
     protocol: str = "ohttp"
 
-
-# ---------------------------------------------------------------------------
-# Discriminated union
-# ---------------------------------------------------------------------------
 
 AgentMessage = Annotated[
     Union[
@@ -458,6 +421,8 @@ AgentMessage = Annotated[
         OhttpPlaintextMessage,
         CallerStackMessage,
         RequestContextMessage,
+        PlaintextApiLearnedMessage,
+        ModuleOffsetsLearnedMessage,
     ],
     Field(discriminator="contentType"),
 ]

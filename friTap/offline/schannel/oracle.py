@@ -1,32 +1,24 @@
 """In-Python trial-decryption oracle for the Schannel correlator (PUBLIC).
 
-The Schannel correlator joins each memory-recovered TLS secret to a captured
-connection by trial decryption. Historically every trial was one tshark pass
-(:mod:`.correlate`); this oracle answers the *easy, unambiguous* cases in pure
-Python so tshark runs only on the rest.
-
-It is a HYBRID helper, never a replacement: tshark still enumerates the streams
-and client randoms (those passes are mocked by the unit tests), and anything the
-oracle is not sure about it answers ``None`` — "ask tshark". It only ever answers
-True/False for a **clean** stream whose framing it fully understands:
+The correlator joins secrets to connections by trial decryption, one tshark pass
+per trial (:mod:`.correlate`). This oracle answers the easy cases in pure Python
+so tshark runs only on the rest; anything it is unsure about is ``None`` ("ask
+tshark"). It answers True/False only for a clean stream it fully understands:
 
   * exactly one captured conversation carries that client random,
-  * its ClientHello is record 0 of one direction and a real (non-HRR)
-    ServerHello is in the other,
+  * its ClientHello is record 0 of one direction and a real (non-HRR) ServerHello
+    is in the other,
   * neither direction is degraded (no start/mid gap),
-  * the negotiated cipher suite is one it can decrypt, and
-  * (TLS 1.3) its anchor search is conclusive: the secret decrypts a record at
-    sequence 0 within the first 32 encrypted records, or the search covered
-    every record where that label's anchor can sit (see :meth:`_anchor_window`).
+  * the negotiated suite is one it can decrypt, and
+  * (TLS 1.3) its anchor search is conclusive: the secret decrypts a record at seq
+    0 within the first 32 encrypted records, or the search covered every place the
+    label's anchor can sit (:meth:`_anchor_window`).
 
-Any internal error (malformed record, a crypto backend that cannot build the
-AEAD, e.g. ChaCha20 on an OpenSSL without it) also answers ``None``: the oracle
-is never confidently wrong because of its own failure.
-
-Version is read from the ServerHello (``supported_versions`` selected_version,
-else legacy_version): a TLS 1.3 connection answers ``False`` for a TLS 1.2 master
-(tshark ignores ``CLIENT_RANDOM`` lines for 1.3), a TLS 1.2 connection answers
-``False`` for TLS 1.3 labels, and TLS 1.0/1.1 answer ``None``.
+Any internal error (malformed record, e.g. ChaCha20 on an OpenSSL without it)
+also gives ``None``, so a failure is never confidently wrong. Version comes from
+the ServerHello (``supported_versions``, else legacy_version): a TLS 1.3
+connection answers ``False`` for a TLS 1.2 master (tshark ignores ``CLIENT_RANDOM``
+lines for 1.3), a TLS 1.2 one ``False`` for TLS 1.3 labels, TLS 1.0/1.1 ``None``.
 
 ``FRITAP_SCHANNEL_ORACLE=0`` disables it (``from_pcap`` returns ``None``).
 """
@@ -53,22 +45,16 @@ logger = logging.getLogger(__name__)
 
 ORACLE_ENV = "FRITAP_SCHANNEL_ORACLE"
 
-# Inner handshake message types.
 _HS_ENCRYPTED_EXTENSIONS = 8     # SERVER_HANDSHAKE_TRAFFIC_SECRET anchor
 _HS_FINISHED = 20                # CLIENT_HANDSHAKE_TRAFFIC_SECRET anchor
 _HS_KEY_UPDATE = 24              # TLS 1.3 post-handshake KeyUpdate
 
-# Negotiated-version codes.
 _V_TLS10, _V_TLS11, _V_TLS12, _V_TLS13 = 0x0301, 0x0302, 0x0303, 0x0304
 
-# TLS 1.3 clean-stream bound: a correct secret's anchor is the very first
-# encrypted record (EncryptedExtensions) or the first app-data record right after
-# the handshake, so 32 is generous; a wrong secret never anchors at all. A miss
-# is only conclusive when the window covered every place the anchor can sit
-# (see TrialOracle._anchor_window); otherwise the oracle answers None.
+# TLS 1.3 clean-stream bound: a correct secret anchors at the first encrypted record or the first app-data record after the handshake, so 32 is generous. A miss is conclusive only if the window covered every place the anchor can sit (TrialOracle._anchor_window), else ``None``.
 _MAX_ANCHOR_RECORDS = 32
 
-# Labels this oracle can confirm by decryption, and the direction each lives on.
+# Subsets of the keylog labels on purpose: only those this oracle can confirm by decryption, and the direction each lives on.
 _SERVER_LABELS = ("SERVER_HANDSHAKE_TRAFFIC_SECRET", "SERVER_TRAFFIC_SECRET_0")
 _CLIENT_LABELS = ("CLIENT_HANDSHAKE_TRAFFIC_SECRET", "CLIENT_TRAFFIC_SECRET_0")
 _HANDSHAKE_LABELS = ("SERVER_HANDSHAKE_TRAFFIC_SECRET",
@@ -92,9 +78,8 @@ class _Stream:
         self.client_random = client_random
         self.server_hello = server_hello
         self.version = server_hello.version
-        # Whether the ClientHello offered 0-RTT early data (``None`` = unknown,
-        # e.g. a ClientHello split across records). Early-data records precede
-        # the client handshake secret's first record.
+        # ``None`` = unknown (ClientHello split across records). Early-data
+        # records precede the client handshake secret's first record.
         self.offered_early_data = offered_early_data
 
 
@@ -108,11 +93,7 @@ def _direction_records(reassembler) -> List[Record]:
 
 
 def _handshake_bytes_before_ccs(records: List[Record]) -> bytes:
-    """Concatenate the handshake-record fragments up to the first CCS record.
-
-    TLS 1.2 coalesces ServerHello/Certificate/ServerHelloDone and may split them
-    across records, so the hello is read from the joined handshake stream.
-    """
+    """Concatenate handshake-record fragments up to the first CCS (TLS 1.2 coalesces and may split hello messages across records)."""
     out = bytearray()
     for ctype, _hdr, frag in records:
         if ctype == CT_CHANGE_CIPHER_SPEC:
@@ -131,25 +112,19 @@ def _first_record_after_ccs(records: List[Record]) -> Optional[Record]:
 
 
 def _analyze_pair(pair) -> Optional[_Stream]:
-    """Build a :class:`_Stream` for a clean conversation, else ``None``.
-
-    Clean means: one direction's record 0 is a ClientHello, the other direction
-    carries a real (non-HRR) ServerHello, and neither direction is degraded.
-    """
+    """A :class:`_Stream` for a clean conversation (record 0 a ClientHello, a real non-HRR ServerHello in the other direction, neither degraded), else ``None``."""
     if pair.client.degraded or pair.server.degraded:
         return None
     client_records = _direction_records(pair.client)
     server_records = _direction_records(pair.server)
     if not client_records or not server_records:
         return None
-    # ClientHello must be record 0 of the client direction.
     c0_type, _c0_hdr, c0_frag = client_records[0]
     if c0_type != CT_HANDSHAKE:
         return None
     client_random = rec.client_random_from_clienthello(c0_frag)
     if client_random is None:
         return None
-    # A real ServerHello in the server direction.
     sh = rec.server_hello_info(_handshake_bytes_before_ccs(server_records))
     if sh is None or sh.is_hrr:
         return None
@@ -168,12 +143,7 @@ class TrialOracle:
 
     @classmethod
     def from_pcap(cls, pcap: str) -> Optional["TrialOracle"]:
-        """Build an oracle from *pcap*, or ``None`` when it cannot/should not.
-
-        Returns ``None`` when disabled by :data:`ORACLE_ENV`, when the optional
-        ``cryptography`` backend is missing, or on any parse error — the caller
-        then falls back to tshark for everything, exactly as before.
-        """
+        """Build an oracle from *pcap*, or ``None`` (tshark does everything) when :data:`ORACLE_ENV` disables it, ``cryptography`` is missing, or parsing fails."""
         if os.environ.get(ORACLE_ENV, "1") == "0":
             return None
         try:
@@ -203,19 +173,14 @@ class TrialOracle:
             return None
         return streams[0]
 
-    # ------------------------------------------------------------------ #
-    # TLS 1.2
-    # ------------------------------------------------------------------ #
-
     def tls12_match(self, cr: str, master: str) -> Optional[bool]:
         """Does *master* decrypt the connection with client random *cr*?
 
-        Mirrors tshark's ``tls.handshake.type==20`` success: the first record
-        after each side's ChangeCipherSpec (the encrypted Finished) is decrypted
-        at seq 0; a match in either direction means yes. The key block is
-        derived once for both directions. A direction the peel cannot judge
-        (crypto-backend error) makes a "no" inconclusive: ``None``.
-        """
+        Mirrors tshark's ``tls.handshake.type==20``: the first record after each side's
+        ChangeCipherSpec is decrypted at seq 0; a match in either direction means yes. The
+        key block is derived once for both. A direction the peel cannot judge (backend
+        error) makes a "no" inconclusive: ``None``.
+"""
         stream = self._clean_stream(cr)
         if stream is None:
             return None
@@ -260,17 +225,12 @@ class TrialOracle:
                 verdict = None
         return verdict
 
-    # ------------------------------------------------------------------ #
-    # TLS 1.3
-    # ------------------------------------------------------------------ #
-
     def tls13_probe(self, cr: str, label: str, secret: str) -> Optional[bool]:
         """Does *secret*, tried under *label*, decrypt the *cr* connection?
 
-        Returns True/False for a clean TLS 1.3 stream whose suite is known and
-        whose secret length matches that suite; ``None`` otherwise (ask tshark),
-        including when the anchor search is inconclusive or decryption raised.
-        """
+        True/False for a clean TLS 1.3 stream with a known suite and matching secret
+        length; ``None`` otherwise (including an inconclusive anchor search or an error).
+"""
         stream = self._clean_stream(cr)
         if stream is None:
             return None
@@ -307,12 +267,11 @@ class TrialOracle:
     def _anchor_window(stream: _Stream, label: str) -> int:
         """How many leading encrypted records can hold *label*'s anchor.
 
-        Nothing encrypted precedes EncryptedExtensions, so a server handshake
-        secret's anchor is record 0; likewise the client Finished flight unless
-        the ClientHello offered 0-RTT early data. Searching that one record is
-        then exhaustive. The traffic secrets follow a handshake flight of
-        unknown length, so they get the generous :data:`_MAX_ANCHOR_RECORDS`.
-        """
+        Nothing encrypted precedes EncryptedExtensions, so a server handshake secret's
+        anchor is record 0, likewise the client Finished flight unless the ClientHello
+        offered 0-RTT; searching that one record is exhaustive. Traffic secrets follow a
+        flight of unknown length, so they get :data:`_MAX_ANCHOR_RECORDS`.
+"""
         if label == "SERVER_HANDSHAKE_TRAFFIC_SECRET":
             return 1
         if (label == "CLIENT_HANDSHAKE_TRAFFIC_SECRET"
@@ -329,15 +288,13 @@ class TrialOracle:
     def _shows_label_evidence(cls, records: List[Record], secret: bytes,
                               suite: str, label: str,
                               window: int = _MAX_ANCHOR_RECORDS) -> Optional[bool]:
-        """Does decrypting *records* under (*secret*, *suite*) show *label*'s
-        evidence: EncryptedExtensions (8) for SHTS, client Finished (20) for
-        CHTS, an inner application_data record (23) for the traffic secrets?
+        """Does decrypting *records* under (*secret*, *suite*) show *label*'s evidence?
 
-        No anchor in the first *window* records is a definite ``False`` only
-        when that window covered every record (or every place the label's anchor
-        can sit, which is what a *window* below the default asserts); otherwise
-        the correct anchor might lie further on, so the answer is ``None``.
-        """
+        Evidence: EncryptedExtensions (8) for SHTS, client Finished (20) for CHTS, an
+        inner application_data record (23) for the traffic secrets. No anchor in the
+        first *window* records is a definite ``False`` only when the window covered every
+        place the anchor can sit; otherwise ``None``.
+"""
         encrypted = cls._encrypted_records(records)
         anchor = cls._find_anchor(encrypted[:window], secret, suite)
         if anchor is None:
@@ -360,12 +317,9 @@ class TrialOracle:
     def _scan_from_anchor(cls, encrypted: List[Tuple[bytes, bytes]], anchor: int,
                           secret: bytes, suite: str, want_handshake: bool,
                           label: str) -> bool:
-        """Decrypt sequentially from *anchor* (seq advances even on failure, as
-        :func:`decrypt_stream` does) and look for the label's signal.
+        """Decrypt sequentially from *anchor* (seq advances even on failure, as :func:`decrypt_stream`) and look for the label's signal.
 
-        Each complete handshake message is acted on exactly once: a
-        post-handshake KeyUpdate rolls the secret and resets the sequence a
-        single time, however many handshake records follow it."""
+        Each complete handshake message is acted on once: a KeyUpdate rolls the secret and resets the seq a single time."""
         target = (_HS_ENCRYPTED_EXTENSIONS
                   if label == "SERVER_HANDSHAKE_TRAFFIC_SECRET" else _HS_FINISHED)
         cur = secret

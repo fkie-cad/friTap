@@ -1,7 +1,7 @@
 
 import {NSS } from "../../../../tls/libs/nss.js";
 import { socket_library } from "../../../../platforms/linux.js";
-import { log, devlog } from "../../../../util/log.js";
+import { installLegacyNssKeyExtraction } from "../../libs/nss_key_extraction.js";
 import { executeSSLLibrary } from "../../../shared/shared_functions_legacy.js";
 
 export class NSS_Linux extends NSS {
@@ -24,98 +24,7 @@ export class NSS_Linux extends NSS {
     }
 
     install_tls_keys_callback_hook() {
-        // Version detection + experimental API resolution
-        NSS.detectVersionOffsets();
-        NSS.resolveExperimentalAPI();
-
-        NSS.getDescType = new NativeFunction(this.addresses[this.module_name]['PR_GetDescType'], "int", ["pointer"]);
-
-        // SSL Handshake Functions:
-        NSS.PR_GetNameForIdentity = new NativeFunction(this.addresses[this.module_name]['PR_GetNameForIdentity'], "pointer", ["pointer"]);
-        /*
-                SECStatus SSL_HandshakeCallback(PRFileDesc *fd, SSLHandshakeCallback cb, void *client_data);
-                more at https://developer.mozilla.org/en-US/docs/Mozilla/Projects/NSS/SSL_functions/sslfnc#1112702
-        */
-        NSS.get_SSL_Callback = new NativeFunction(this.addresses[this.module_name]["SSL_HandshakeCallback"], "int", ["pointer", "pointer", "pointer"]);
-
-
-        // SSL Key helper Functions
-        NSS.PK11_ExtractKeyValue = new NativeFunction(this.addresses[this.module_name]["PK11_ExtractKeyValue"], "int", ["pointer"]);
-        NSS.PK11_GetKeyData = new NativeFunction(this.addresses[this.module_name]["PK11_GetKeyData"], "pointer", ["pointer"]);
-
-        Interceptor.attach(this.addresses[this.module_name]["SSL_ImportFD"],
-            {
-                onEnter(args: any) {
-                    this.fd = args[1];
-                },
-                onLeave(retval: any) {
-
-                    if (retval.isNull()) {
-                        devlog("[-] SSL_ImportFD error: unknow null")
-                        return
-                    }
-
-
-                    var retValue = NSS.get_SSL_Callback(retval, NSS.keylog_callback, NULL);
-                    NSS.register_secret_callback(retval);
-
-
-
-
-                    // typedef enum { PR_FAILURE = -1, PR_SUCCESS = 0 } PRStatus;
-                    if (retValue < 0) {
-                        devlog("Callback Error")
-                        var getErrorText = new NativeFunction(Process.getModuleByName('libnspr4.so').getExportByName('PR_GetErrorText'), "int", ["pointer"])
-                        var outbuffer = Memory.alloc(200); // max out size
-                        devlog("typeof outbuffer: " + typeof outbuffer);
-                        devlog("outbuffer: " + outbuffer); // should be a pointer
-                        getErrorText(outbuffer.readPointer())
-                        devlog("Error msg: " + outbuffer)
-                    } else {
-                        devlog("[*] NSS keylog callback successfull installed")
-                    }
-
-                }
-
-            });
-
-
-
-
-
-        /*
-            SECStatus SSL_HandshakeCallback(
-                PRFileDesc *fd,
-                SSLHandshakeCallback cb,
-                void *client_data
-            );
-         */
-        Interceptor.attach(this.addresses[this.module_name]["SSL_HandshakeCallback"],
-            {
-                onEnter(args: any) {
-
-                    this.originalCallback = args[1];
-
-                    Interceptor.attach(ptr(this.originalCallback),
-                        {
-                            onEnter(args: any) {
-                                var sslSocketFD = args[0];
-                                devlog("[*] keylog callback successfull installed via applications callback function");
-                                NSS.ssl_RecordKeyLog(sslSocketFD);
-                            },
-                            onLeave(retval: any) {
-                            }
-                        });
-
-                },
-                onLeave(retval: any) {
-                }
-
-            });
-
-        // Install SSL_SecretCallback interceptor for Firefox override detection
-        NSS.installSecretCallbackInterceptor();
-
+        void installLegacyNssKeyExtraction(this.module_name, this.addresses[this.module_name]);
     }
 
 }

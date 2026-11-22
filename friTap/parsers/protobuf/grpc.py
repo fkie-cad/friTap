@@ -65,7 +65,7 @@ class GrpcFrame:
 
 
 def is_protobuf_content_type(content_type: str) -> bool:
-    """Check if content_type indicates protobuf (not gRPC)."""
+    """True if *content_type* indicates protobuf (not gRPC)."""
     if not content_type:
         return False
     ct = content_type.lower().split(";")[0].strip()
@@ -73,11 +73,7 @@ def is_protobuf_content_type(content_type: str) -> bool:
 
 
 def is_grpc_content_type(content_type: str) -> bool:
-    """Check if *content_type* indicates gRPC.
-
-    Matches ``application/grpc``, ``application/grpc+proto``,
-    ``application/grpc+json``, etc.
-    """
+    """True if *content_type* indicates gRPC (``application/grpc``, ``+proto``, ``+json``, ...)."""
     if not content_type:
         return False
     ct = content_type.lower().split(";")[0].strip()
@@ -85,27 +81,12 @@ def is_grpc_content_type(content_type: str) -> bool:
 
 
 def strip_grpc_frame(data: bytes) -> list[GrpcFrame]:
-    """Strip gRPC length-prefixed framing from *data*.
-
-    Handles multiple concatenated frames in a single body.
-
-    Args:
-        data: Raw gRPC body bytes.
-
-    Returns:
-        List of :class:`GrpcFrame` objects.
-
-    Raises:
-        ValueError: If the framing is malformed or truncated.
-    """
+    """Strip gRPC framing from *data* (possibly several concatenated frames); raises ValueError if malformed or truncated."""
     return [frame for frame, _ in strip_grpc_frame_with_end(data)]
 
 
 def _read_grpc_header(data: bytes, offset: int) -> tuple[int, int]:
-    """Validate the 5-byte gRPC header at *offset*: ``(compressed_flag, length)``.
-
-    Raises :class:`ValueError` on a short header or a flag other than 0/1.
-    """
+    """Validate the 5-byte header at *offset*: ``(compressed_flag, length)``; ValueError on a short header or a flag other than 0/1."""
     if offset + _GRPC_HEADER_SIZE > len(data):
         raise ValueError(
             f"truncated gRPC frame header at offset {offset}, "
@@ -120,13 +101,9 @@ def _read_grpc_header(data: bytes, offset: int) -> tuple[int, int]:
 
 
 def strip_grpc_frame_with_end(data: bytes) -> list[tuple[GrpcFrame, int]]:
-    """Like :func:`strip_grpc_frame`, pairing each frame with its end offset.
+    """Like :func:`strip_grpc_frame`, pairing each frame with its exclusive end offset in *data* (header included).
 
-    The end offset is the exclusive position in *data* just past the frame's
-    payload (header included), so callers can map a frame back to the bytes
-    that carried it. Raises :class:`ValueError` exactly like
-    :func:`strip_grpc_frame`. Reaching :data:`MAX_GRPC_FRAMES_PER_BODY` is not
-    an error: the frames split so far are returned.
+    Hitting :data:`MAX_GRPC_FRAMES_PER_BODY` is not an error: frames so far are returned.
     """
     frames, error = _walk_grpc_frames(data)
     if error and error != GRPC_FRAME_LIMIT_NOTE:
@@ -135,28 +112,20 @@ def strip_grpc_frame_with_end(data: bytes) -> list[tuple[GrpcFrame, int]]:
 
 
 def split_grpc_frames_lenient(data: bytes) -> tuple[list[GrpcFrame], str]:
-    """Split gRPC frames like :func:`strip_grpc_frame`, but never raise.
+    """Split frames like :func:`strip_grpc_frame` but never raise; returns ``(frames, error)``.
 
-    Frames are collected up to the first problem. A final frame whose payload
-    is cut short (e.g. by a preview cap) is kept with ``truncated=True``.
-
-    Returns:
-        ``(frames, error)``; *error* is empty when *data* split cleanly and
-        :data:`GRPC_FRAME_LIMIT_NOTE` when the frame cap stopped the split.
+    A final frame cut short (e.g. by a preview cap) is kept with ``truncated=True``.
+    *error* is empty on a clean split, :data:`GRPC_FRAME_LIMIT_NOTE` if the frame cap stopped it.
     """
     frames, error = _walk_grpc_frames(data)
     return [frame for frame, _ in frames], error
 
 
 def _walk_grpc_frames(data: bytes) -> tuple[list[tuple[GrpcFrame, int]], str]:
-    """The single gRPC frame walker: ``(frames_with_end, error)``.
+    """The single frame walker: ``(frames_with_end, error)``, collected up to the first problem.
 
-    Collects ``(frame, end_offset)`` up to the first problem, whose message
-    is returned as *error* (empty when *data* split cleanly). A final frame
-    whose payload is cut short is included with ``truncated=True``; strict
-    callers raise on *error* and so never expose it. At most
-    :data:`MAX_GRPC_FRAMES_PER_BODY` frames are collected; *error* is then
-    :data:`GRPC_FRAME_LIMIT_NOTE` if bytes remain.
+    A cut-short final frame is included with ``truncated=True`` (strict callers raise
+    on *error* first). At most :data:`MAX_GRPC_FRAMES_PER_BODY` frames.
     """
     frames: list[tuple[GrpcFrame, int]] = []
     offset = 0
@@ -189,7 +158,7 @@ class InflateBudget:
         self.remaining = limit
 
     def per_message_limit(self) -> int:
-        """Output cap for the next message: the per-message and body caps."""
+        """Output cap for the next message: the per-message and remaining body caps."""
         return max(0, min(MAX_INFLATE, self.remaining))
 
     def spend(self, produced: int) -> None:
@@ -199,11 +168,10 @@ class InflateBudget:
 def decompress_grpc_payload(
     payload: bytes, grpc_encoding: str, budget: Optional[InflateBudget] = None,
 ) -> tuple[Optional[bytes], str]:
-    """Decompress one compressed gRPC message per its ``grpc-encoding``.
+    """Decompress one compressed message per ``grpc-encoding``.
 
-    With a shared *budget* (one per body) the output is additionally bounded
-    by what is left of :data:`MAX_GRPC_INFLATE_PER_BODY`, and the produced
-    bytes are charged to it; an exhausted budget yields ``(None, reason)``.
+    A shared *budget* (one per body) also bounds the output by what is left of
+    :data:`MAX_GRPC_INFLATE_PER_BODY` and is charged; exhausted yields ``(None, reason)``.
     """
     if budget is None:
         return _decompress_grpc_bounded(payload, grpc_encoding, MAX_INFLATE)
@@ -221,9 +189,8 @@ def decompress_grpc_payload(
 def _inflate_cost(data: Optional[bytes], note: str, limit: int) -> int:
     """Bytes to charge for one attempt: the output, or *limit* if it failed.
 
-    A failed attempt may have inflated up to *limit* bytes before giving up
-    (e.g. a decompression bomb), so it is charged in full; only an
-    unsupported encoding, which does no work, is free.
+    A failed attempt may have inflated up to *limit* (decompression bomb), so it is
+    charged in full; only an unsupported encoding is free.
     """
     if data is not None:
         return len(data)
@@ -233,21 +200,12 @@ def _inflate_cost(data: Optional[bytes], note: str, limit: int) -> int:
 def _decompress_grpc_bounded(
     payload: bytes, grpc_encoding: str, max_out: int,
 ) -> tuple[Optional[bytes], str]:
-    """Decompress one compressed gRPC message to at most *max_out* bytes.
+    """Decompress one message to at most *max_out* bytes; returns ``(data, note)``.
 
-    Every encoding is bounded (at most
-    :data:`~friTap.parsers.decompress.MAX_INFLATE` output bytes by default):
-    ``gzip``/``deflate`` via
-    :func:`~friTap.parsers.decompress.inflate_bounded_checked`, ``zstd`` (and ``br``)
-    via :func:`~friTap.parsers.decompress.decompress_body`. Without an
-    encoding (or ``identity``, which contradicts the compressed flag) a
-    gzip/zlib inflate is tried as a best effort.
-
-    Returns:
-        ``(data, note)``: *data* is ``None`` when the message could not be
-        decompressed, and *note* then says why; on success *note* is empty
-        unless the encoding had to be guessed or a truncated gzip/zlib stream
-        yielded only partial data (both notes are joined with ``"; "``).
+    gzip/deflate use ``inflate_bounded_checked``, zstd/br use ``decompress_body``.
+    No encoding (or ``identity``, contradicting the flag) tries gzip/zlib as a guess.
+    *data* is None on failure with *note* saying why; on success *note* is non-empty
+    only for a guessed encoding or a truncated stream (notes joined with ``"; "``).
     """
     encoding = (grpc_encoding or "").lower().strip()
     if encoding in ("gzip", "deflate"):
@@ -268,11 +226,8 @@ def _inflate_grpc(
 ) -> tuple[Optional[bytes], str]:
     """Bounded gzip/zlib inflate: ``(data, note)`` or ``(None, reason)``.
 
-    Uses a ``decompressobj`` with ``max_length`` (via
-    :func:`~friTap.parsers.decompress.inflate_bounded_checked`), so at most
-    *max_out* bytes are ever produced. *note* is empty for a complete stream;
-    a truncated one keeps its partial output with
-    :data:`GRPC_INFLATE_TRUNCATED_NOTE_FMT` as the note.
+    Never produces more than *max_out* bytes; a truncated stream keeps its partial
+    output with :data:`GRPC_INFLATE_TRUNCATED_NOTE_FMT` as the note.
     """
     try:
         data, complete = inflate_bounded_checked(payload, limit=max_out)
@@ -289,20 +244,9 @@ def _join_notes(*notes: str) -> str:
 
 
 def extract_grpc_messages(body: bytes, content_type: str) -> list[bytes]:
-    """High-level extraction of protobuf payloads from a body.
-
-    If *content_type* is a gRPC type, strips framing and returns
-    the individual protobuf payloads. Otherwise returns ``[body]``
-    unchanged.
+    """Extract protobuf payloads from a body: strip framing for gRPC types, else return ``[body]``.
 
     Compressed frames are returned as-is with a warning logged.
-
-    Args:
-        body: Raw HTTP body bytes.
-        content_type: The ``Content-Type`` header value.
-
-    Returns:
-        List of raw protobuf payload bytes.
     """
     if not is_grpc_content_type(content_type):
         return [body] if body else []
@@ -325,11 +269,7 @@ def extract_grpc_messages(body: bytes, content_type: str) -> list[bytes]:
 
 
 def is_grpc_frame(data: bytes) -> bool:
-    """Heuristic check whether *data* looks like gRPC framed content.
-
-    Checks that the first byte is 0 or 1 (compressed flag) and that
-    the declared payload length is consistent with the data size.
-    """
+    """Heuristic: first byte is 0 or 1 and the declared length fits *data*."""
     if not data:
         return False
     try:

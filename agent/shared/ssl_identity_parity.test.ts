@@ -274,7 +274,6 @@ const PLAINTEXT_BUILDER_ALLOWLIST: ReadonlyMap<string, string> = new Map([
     ["shared/record_message.ts", "defines buildRecordMessage/stampRecordLibrary and stamps client_random itself"],
     ["legacy/tls/libs/gnutls.ts", "GnuTLS: own session struct, not a BoringSSL SSL*"],
     ["tls/libs/gnutls.ts", "GnuTLS: own session struct, not a BoringSSL SSL*"],
-    ["legacy/tls/libs/nss.ts", "NSS: PRFileDesc/sslSocket, not a BoringSSL SSL*"],
     ["tls/libs/nss.ts", "NSS: PRFileDesc/sslSocket, not a BoringSSL SSL*"],
     ["legacy/tls/libs/wolfssl.ts", "wolfSSL: own WOLFSSL struct"],
     ["tls/libs/wolfssl.ts", "wolfSSL: own WOLFSSL struct"],

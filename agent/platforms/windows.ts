@@ -18,6 +18,7 @@ import { mbedTLS_execute } from "../legacy/tls/platforms/windows/mbedTLS_windows
 import { mbedTLS_execute_modern } from "../tls/platforms/windows/mbedTLS_windows.js";
 import { nss_execute } from "../legacy/tls/platforms/windows/nss_windows.js";
 import { nss_execute_modern } from "../tls/platforms/windows/nss_windows.js";
+import { NSS3_MODULE_NAME, NSS_WINDOWS_MODULE_PATTERN, exportsNsprIo } from "../tls/libs/nss_windows_libraries.js";
 import { wolfssl_execute } from "../legacy/tls/platforms/windows/wolfssl_windows.js";
 import { wolfssl_execute_modern } from "../tls/platforms/windows/wolfssl_windows.js";
 import { matrixSSL_execute } from "../legacy/tls/platforms/windows/matrixssl_windows.js";
@@ -68,7 +69,10 @@ export function load_windows_hooking_agent() {
         { platform: plattform_name, pattern: /__libressl_scan_only__/, hookFn: (use_modern ? libressl_execute_modern : libressl_execute), library: "LibreSSL", libraryType: "libressl", protocol: "tls" },
         { platform: plattform_name, pattern: /^.*(wolfssl|WOLFSSL).*\.dll$/, hookFn: (use_modern ? wolfssl_execute_modern : wolfssl_execute), library: "WolfSSL", libraryType: "wolfssl", protocol: "tls" },
         { platform: plattform_name, pattern: /^.*(libgnutls|LIBGNUTLS)-[0-9]+\.dll$/, hookFn: (use_modern ? gnutls_execute_modern : gnutls_execute), library: "GnuTLS", libraryType: "gnutls", protocol: "tls" },
-        { platform: plattform_name, pattern: /^(nspr|NSPR)[0-9]*\.dll/, hookFn: (use_modern ? nss_execute_modern : nss_execute), library: "NSS", libraryType: "nss", protocol: "tls" },
+        // NSPR's PR_Read/PR_Write live in (lib)nspr4.dll, or in nss3.dll when Firefox/Thunderbird
+        // fold NSPR into it (MOZ_FOLD_LIBS). exportsNsprIo admits an nss3.dll only when it exports
+        // PR_Read, so an unfolded build is hooked once, via its nspr4.dll.
+        { platform: plattform_name, pattern: NSS_WINDOWS_MODULE_PATTERN, contentFilter: exportsNsprIo, hookFn: (use_modern ? nss_execute_modern : nss_execute), library: "NSS", libraryType: "nss", protocol: "tls" },
         { platform: plattform_name, pattern: /(sspicli|SSPICLI|SspiCli)\.dll$/, hookFn: (use_modern ? sspi_execute_modern : sspi_execute), library: "SSPI", libraryType: "sspi", protocol: "tls" },
         { platform: plattform_name, pattern: /mbedTLS\.dll/, hookFn: (use_modern ? mbedTLS_execute_modern : mbedTLS_execute), library: "mbedTLS", libraryType: "mbedtls", protocol: "tls" },
         { platform: plattform_name, pattern: /^.*(cronet|CRONET).*\.dll/, hookFn: (use_modern ? cronet_execute_modern : cronet_execute), library: "Cronet", libraryType: "boringssl", protocol: "tls" },
@@ -83,8 +87,11 @@ export function load_windows_hooking_agent() {
         // shared/go_binary_detection.ts), not by name; c-shared Go DLLs likewise.
         { platform: plattform_name, pattern: /.*/, contentFilter: isGoModule, hookFn: (use_modern ? gotls_execute_modern : gotls_execute), library: "Go TLS", libraryType: "gotls", protocol: "tls" },
         { platform: plattform_name, pattern: /matrixSSL\.dll/, hookFn: (use_modern ? matrixSSL_execute_modern : matrixSSL_execute), library: "MatrixSSL", libraryType: "matrixssl", protocol: "tls" },
-        // OHTTP (NSS HPKE) — gated under the TLS family for `--protocol tls`
-        { platform: plattform_name, pattern: /^(nspr|NSPR)[0-9]*\.dll/, hookFn: nss_hpke_execute_windows, library: "NSS HPKE (OHTTP)", protocol: "tls", libraryType: "nss_hpke" },
+        // OHTTP (NSS HPKE) — gated under the TLS family for `--protocol tls`. PK11_HPKE_* live in
+        // (lib)nss3.dll whether or not NSPR is folded into it (was /^(nspr|NSPR)[0-9]*\.dll/, whose
+        // *libnss* lookup never matched nss3.dll). Supplementary: a folded nss3.dll also matches the
+        // NSS row above, and HPKE extracts no keys, so it must not claim the module's TLS coverage.
+        { platform: plattform_name, pattern: NSS3_MODULE_NAME, hookFn: nss_hpke_execute_windows, library: "NSS HPKE (OHTTP)", protocol: "tls", libraryType: "nss_hpke", supplementary: true },
         // QUIC libraries — gated under the TLS family for `--protocol tls`
         { platform: plattform_name, pattern: /.*quiche\.dll/i, hookFn: quiche_execute, library: "Cloudflare QUICHE", libraryType: "quiche", protocol: "tls" },
         { platform: plattform_name, pattern: /chrome\.dll/i, hookFn: google_quiche_execute, library: "Google QUICHE (Chrome)", libraryType: "google_quiche", protocol: "tls", supplementary: true },

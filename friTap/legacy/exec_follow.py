@@ -18,11 +18,12 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import os
 import queue
 import threading
 import time
 from collections.abc import Callable, Iterable, Mapping
-from typing import Any
+from typing import Any, Optional
 
 logger = logging.getLogger("friTap.exec_follow")
 
@@ -37,6 +38,7 @@ class TrackedProcess:
     session: Any = None
     replaced: int = 0  # 'process-replaced' detaches seen
     images: int = 0  # exec'd images seen
+    script: Any = None  # the friTap agent loaded through *session*, if any
 
     @property
     def awaiting_image(self) -> bool:
@@ -63,7 +65,16 @@ class ProcessTracker:
             if entry is None:
                 self._processes[pid] = TrackedProcess(pid, is_main, gated, session)
                 return
+            if entry.session is not session:
+                entry.script = None  # belonged to the replaced image
             entry.is_main, entry.gated, entry.session = is_main, gated, session
+
+    def note_script(self, session: Any, script: Any) -> None:
+        """Record *script* as the agent loaded through *session*."""
+        with self._lock:
+            for entry in self._processes.values():
+                if entry.session is session:
+                    entry.script = script
 
     def forget(self, pid: int, session: Any = None) -> bool:
         """Stop tracking *pid*. With *session*, only while that session is still
@@ -110,6 +121,77 @@ class ProcessTracker:
             return set(self._processes)
 
 
+_CODE_SIGN_CLONE_MARKER = ".code_sign_clone/"
+
+
+def _outermost_bundle_tail(path: str) -> str | None:
+    """``X.app/...`` from the outermost ``.app`` component of *path*."""
+    parts = path.split("/")
+    for index, part in enumerate(parts):
+        if part.endswith(".app"):
+            return "/".join(parts[index:])
+    return None
+
+
+def _clone_bundle_tail(path: str) -> str | None:
+    marker = path.find(_CODE_SIGN_CLONE_MARKER)
+    if marker < 0:
+        return None
+    return _outermost_bundle_tail(path[marker + len(_CODE_SIGN_CLONE_MARKER):])
+
+
+def same_executable_image(old: str, new: str) -> bool:
+    """Whether two executable paths reported for one pid name the same image.
+
+    Chrome on macOS runs from a clonefile() copy of its bundle
+    (``.../X/com.google.Chrome.code_sign_clone/code_sign_clone.*/Google
+    Chrome.app/...``) and Frida reports either path for the same live image,
+    so a flip between them is not an exec().
+    """
+    if old == new:
+        return True
+    old_clone, new_clone = _clone_bundle_tail(old), _clone_bundle_tail(new)
+    if old_clone is not None or new_clone is not None:
+        old_tail = old_clone or _outermost_bundle_tail(old)
+        new_tail = new_clone or _outermost_bundle_tail(new)
+        if old_tail is not None and old_tail == new_tail:
+            return True
+    try:
+        return os.path.realpath(old) == os.path.realpath(new)  # /var -> /private/var
+    except (OSError, ValueError):
+        return False
+
+
+def agent_abi_reporter(script: Any) -> Optional[Callable[[], Any]]:
+    """*script*'s blocking ``agent_abi_version`` RPC, else None (async-only
+    proxy, or a bundle without the export)."""
+    exports_sync = getattr(script, "exports_sync", None)
+    reporter = getattr(exports_sync, "agent_abi_version", None)
+    return reporter if callable(reporter) else None
+
+
+def agent_answers(script: Any, timeout: float) -> bool:
+    """Whether *script*'s agent answers a trivial RPC within *timeout*.
+
+    The call runs on a daemon thread: an agent whose image was replaced may
+    never reply, and that thread is then abandoned rather than joined.
+    """
+    probe = agent_abi_reporter(script)
+    if probe is None:
+        return False
+    answered = threading.Event()
+
+    def call() -> None:
+        try:
+            probe()
+        except Exception:  # noqa: BLE001 - a failing agent is not answering
+            return
+        answered.set()
+
+    threading.Thread(target=call, name="fritap-agent-probe", daemon=True).start()
+    return answered.wait(timeout)
+
+
 @dataclasses.dataclass
 class _WatchState:
     path: str | None = None  # learnt on the first poll
@@ -131,6 +213,8 @@ class HeldExecWatchdog:
     for ``grace`` seconds is such a held image and is handed to ``on_held``.
     The path, not the name, is compared: a process may rename itself without
     exec() (``setproctitle``), but its executable only changes on exec().
+    Aliases of one image (see :func:`same_executable_image`) are no change, and
+    ``on_held`` must still corroborate the exec before acting on it.
 
     While nothing changes, the poll interval doubles up to ``max_interval`` to
     spare the backend; a pending change, a held image, ``watch()`` or
@@ -243,7 +327,7 @@ class HeldExecWatchdog:
                 path = paths.get(pid)
                 if not isinstance(path, str):
                     del self._watched[pid]  # the process is gone
-                elif state.path is None or path == state.path:
+                elif state.path is None or same_executable_image(state.path, path):
                     self._watched[pid] = _WatchState(path=path)
                 elif state.changed_at is None:
                     state.changed_at = now

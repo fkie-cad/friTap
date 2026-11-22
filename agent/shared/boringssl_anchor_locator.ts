@@ -45,29 +45,43 @@
 // (onAllKeylogTiersMissed), which does not run tier 4 when the pattern tier was
 // disabled for pairip.
 
-import { log, devlog, _isShuttingDownNow } from "../util/log.js";
+import { log, devlog, devlog_debug, _isShuttingDownNow } from "../util/log.js";
 import { sendKeylog } from "./shared_structures.js";
 import {
     isLDRimmU64, isCBZ64, isCBNZ64, decodeLDRU64Imm, regRd, regRn,
-    isADDimm64, decodeADDImm12, isBL, isBLR, isBLRAuth, movzW, writesReg,
-    movRegSource, movRegDest, directBranchOffset, endsFallThrough,
+    isADDimm64, decodeADDImm12, isAnyCall, isBL, movzW, writesReg,
+    movRegSource, movRegDest, directBranchOffset, endsFallThrough, isFunctionPrologueWord,
 } from "./arm64.js";
 import {
     findAnchorStringsAsync, findStringLoadSitesAsync, firstCallTargetForward,
+    blTarget, outlinedStubBody, REGISTER_SAVE_STUB, functionByteLength, readInstructionWords,
+    type FunctionBoundsSource, type ScanStatus,
 } from "./arm64_xref.js";
-import { isReadable, isWritable, safeReadPointer, resetReadableCache } from "../util/safe_memory.js";
-import { claimKeylogHook, keylogHookOwner, registerBoringSSLTier4 } from "./boringssl_keylog_outcome.js";
+import { DECODE_UNREADABLE, isDecoded, type Decoded, type DecodeVerdict } from "./keylog_guards.js";
+import {
+    findRange, isReadable, isWritable, readableByteCount, safeReadPointer, resetReadableCache,
+} from "../util/safe_memory.js";
+import {
+    attachSslLogSecretHook, attachSslLogSecretOnce, claimForLiveSslLogSecretHook, claimKeylogHook, isSslLogSecretHooked,
+    keylogHookOwner, registerBoringSSLTier4, tryAttach,
+} from "./boringssl_keylog_outcome.js";
 import type { DumpKeysCb } from "./boringssl_symbol_hook.js";
-import { argAt, callAbiForModule, readSslLogSecretCall, type CallAbi } from "./call_abi.js";
+import { argAt, callAbiForModule, type CallAbi } from "./call_abi.js";
 import { scanRangesChunked, yieldToEventLoop, XREF_SCAN_CHUNK_BYTES, type ScanRange } from "./arm64_xref.js";
 import {
-    CALL_SEARCH_WINDOW, decodeX64CtxKeylogOffsets, findRipLeaRefs, firstCallAfter, LEA_ARG1_PREFIX, X64_REG,
+    CALL_SEARCH_WINDOW, decodeX64CtxKeylogOffsets, findRipLeaRefs, firstCallAfter, LEA_ARG1_PREFIX,
 } from "./x64_xref.js";
+import { X64 } from "./x64_insn.js";
 import { findModuleOrPeImage, type ModuleLike } from "../util/proc_maps.js";
 import { toHexPattern } from "../util/hex.js";
 import { makeWin64ToSysvThunk } from "./win64_thunk.js";
 import { offsets } from "../fritap_agent.js";
 import { ehFrameTableFor } from "./eh_frame.js";
+import {
+    hasLearnedMiss, learnedFunction, learnedMissName, missFingerprint,
+    rejectLearnedFunction, reportLearned, reportLearnedMisses,
+} from "./learned_module_cache.js";
+import { type CacheModule, mappingAddressKey, mappingKey, memoizePerMapping } from "./module_mapping.js";
 
 /**
  * BoringSSL's NSS keylog label strings. ssl_log_secret is called once per label
@@ -180,13 +194,9 @@ const LAST_CALLER_SAVED_REG = 18;
 /** Decoded ssl->s3 / s3->client_random offsets (lengthArgSeen = `mov w2,#0x20` nearby). */
 export interface SslLogSecretLayout { s3Off: number; crOff: number; lengthArgSeen: boolean; }
 
-function isCallWord(w: number): boolean {
-    return isBL(w) || isBLR(w) || isBLRAuth(w);
-}
-
 /** True when `w` is a call and `reg` is caller-saved (its value does not survive). */
 function clobbersCallerSavedReg(w: number, reg: number): boolean {
-    return isCallWord(w) && reg <= LAST_CALLER_SAVED_REG;
+    return isAnyCall(w) && reg <= LAST_CALLER_SAVED_REG;
 }
 
 // The ssl aliases are a bitmask over x0..x30 (bit N = xN holds the ssl pointer).
@@ -195,6 +205,30 @@ const XZR = 31;
 
 function holdsSsl(aliasMask: number, reg: number): boolean {
     return reg < XZR && ((aliasMask >>> reg) & 1) === 1;
+}
+
+/**
+ * Words of the outlined stub each BL of the window calls (null = not a BL, or
+ * unknown). Lets the alias flow step through a stub instead of treating it as
+ * a real call that clobbers every caller-saved alias.
+ */
+export type OutlinedStubWordsAt = (wordIndex: number) => number[] | null;
+
+const LINK_REG = 30;
+
+/** Aliases after a BL into a register-save/move stub: run its body, then drop x30. */
+function sslAliasesAfterStubCall(aliasMask: number, stubBody: number[]): number {
+    const after = stubBody.reduce((mask, w) => sslAliasesAfter(mask, w), aliasMask);
+    return (after & ~(1 << LINK_REG)) >>> 0;
+}
+
+/** The validated body of each word's stub callee, or null where the word is no such call. */
+function stubBodiesOf(words: number[], stubWordsAt?: OutlinedStubWordsAt): (number[] | null)[] {
+    return words.map((w, i) => {
+        if (stubWordsAt === undefined || !isBL(w >>> 0)) return null;
+        const stub = stubWordsAt(i);
+        return stub === null ? null : outlinedStubBody(stub, REGISTER_SAVE_STUB);
+    });
 }
 
 /** Aliases after executing `w`: drop overwritten registers, add `mov xD, <alias>` targets. */
@@ -224,14 +258,17 @@ function successorIndices(words: number[], i: number): number[] {
  * not reached). Following branches matters because the s3 load is often laid
  * out after an error path that reuses the alias register (e.g. `mov w19, wzr`).
  */
-function sslAliasesAtEachWord(words: number[]): (number | null)[] {
+function sslAliasesAtEachWord(words: number[], stubBodies: (number[] | null)[] = []): (number | null)[] {
     const before: (number | null)[] = new Array(words.length).fill(null);
     if (words.length === 0) return before;
     before[0] = SSL_ARG_MASK;
     const worklist = [0];
     while (worklist.length > 0) {
         const i = worklist.pop()!;
-        const after = sslAliasesAfter(before[i]!, words[i] >>> 0);
+        const stub = stubBodies[i] ?? null;
+        const after = stub === null
+            ? sslAliasesAfter(before[i]!, words[i] >>> 0)
+            : sslAliasesAfterStubCall(before[i]!, stub);
         for (const s of successorIndices(words, i)) {
             const merged = before[s] === null ? after : (before[s]! & after) >>> 0;
             if (merged !== before[s]) { before[s] = merged; worklist.push(s); }
@@ -273,9 +310,11 @@ function lengthArgBetween(words: number[], from: number, to: number): boolean {
 }
 
 /** Every (s3 load, client_random add) pair reachable from the ssl argument. */
-function collectSslLayoutCandidates(words: number[], ctxOff: number): SslLogSecretLayout[] {
+function collectSslLayoutCandidates(
+    words: number[], ctxOff: number, stubWordsAt?: OutlinedStubWordsAt,
+): SslLogSecretLayout[] {
     const window = words.slice(0, SSL_LOG_SECRET_MAX_WORDS);
-    const aliasesAt = sslAliasesAtEachWord(window);
+    const aliasesAt = sslAliasesAtEachWord(window, stubBodiesOf(window, stubWordsAt));
     const found: SslLogSecretLayout[] = [];
     for (let i = 0; i < window.length; i++) {
         const w = window[i] >>> 0;
@@ -295,9 +334,13 @@ function collectSslLayoutCandidates(words: number[], ctxOff: number): SslLogSecr
  * it is unit-testable without Frida. `ctxOff` (from decodeCtxKeylogOffsets) is
  * excluded as an s3 candidate. Returns null when no pair is found or when two
  * DIFFERENT pairs are: a wrong layout would stamp the wrong client_random.
+ * `stubWordsAt` (optional) supplies the callee words of each BL so calls into
+ * outlined register-save stubs (`mov x19, x0; ...; ret`) keep the ssl alias.
  */
-export function decodeSslLogSecretLayout(words: number[], ctxOff: number): SslLogSecretLayout | null {
-    const candidates = collectSslLayoutCandidates(words, ctxOff);
+export function decodeSslLogSecretLayout(
+    words: number[], ctxOff: number, stubWordsAt?: OutlinedStubWordsAt,
+): SslLogSecretLayout | null {
+    const candidates = collectSslLayoutCandidates(words, ctxOff, stubWordsAt);
     if (candidates.length === 0) return null;
     const { s3Off, crOff } = candidates[0];
     if (candidates.some((c) => c.s3Off !== s3Off || c.crOff !== crOff)) return null;
@@ -372,23 +415,26 @@ export function restoreAnchorLocatorKeylogFields(): number {
 
 let loggedNonArm64 = false;
 
+export { DECODE_UNREADABLE };
+export type { Decoded, DecodeVerdict };
+
 /**
  * Read up to PROLOGUE_WORDS instruction words at `addr` and decode the ctx
  * offsets. Range-checked because enumerateSymbols/xref can hand back addresses
  * that are not fully mapped, and a fault here is fatal.
  */
-function deriveOffsetsAt(addr: NativePointer): { ctxOff: number; cbOff: number } | null {
+function deriveOffsetsAt(addr: NativePointer): Decoded<{ ctxOff: number; cbOff: number }> {
     try {
         const words: number[] = [];
         for (let i = 0; i < PROLOGUE_WORDS; i++) {
             const at = addr.add(i * 4);
-            if (!isReadable(at, 4)) return null;
+            if (!isReadable(at, 4)) return DECODE_UNREADABLE;
             words.push(at.readU32());
         }
         return decodeCtxKeylogOffsets(words);
     } catch (e) {
         devlog(`[anchor-locator] prologue decode failed: ${e}`);
-        return null;
+        return DECODE_UNREADABLE;
     }
 }
 
@@ -445,7 +491,7 @@ function installViaCtxWrite(
         const key = fn.toString();
         if (hookedExisting.has(key)) return;
         hookedExisting.add(key);
-        const range = Process.findRangeByAddress(fn);
+        const range = findRange(fn);
         if (range === null || !range.protection.includes("x")) {
             log(`[-] ${moduleName}: ctx+0x${cbOff.toString(16)} holds ${fn}, which is not code; leaving it alone.`);
             return;
@@ -465,8 +511,7 @@ function installViaCtxWrite(
             log(`[-] ${moduleName}: could not hook the app's keylog callback at ${fn}: ${e}`);
         }
     };
-    try {
-        Interceptor.attach(fnAddr, {
+    const attached = attachSslLogSecretOnce(fnAddr, "anchor", () => tryAttach(`[anchor-locator] ${moduleName}: (ctx-write)`, fnAddr, {
             onEnter(args: InvocationArguments) {
                 try {
                     const ssl = abi === null ? args[0] : argAt(this.context, abi, 0);
@@ -508,11 +553,8 @@ function installViaCtxWrite(
                     }
                 }
             },
-        });
-    } catch (e) {
-        devlog(`[anchor-locator] ${moduleName}: Interceptor.attach (ctx-write) failed: ${e}`);
-        return false;
-    }
+        }));
+    if (!attached) return false;
     log(`[*] ${moduleName}: keylog hooks installed via anchor-locator ` +
         `(derived ctx offsets 0x${ctxOff.toString(16)}/0x${cbOff.toString(16)})`);
     return true;
@@ -527,22 +569,23 @@ function installViaFieldDump(
     fnAddr: NativePointer,
     dumpKeys: DumpKeysCb,
     abi: CallAbi | null = null,
+    arm64Mod: Module | null = null,
 ): boolean {
-    try {
-        Interceptor.attach(fnAddr, {
-            onEnter(args: InvocationArguments) {
-                // bssl::ssl_log_secret(SSL const*, char const*, Span<u8 const>);
-                // the Span is passed by reference on Win64 (see call_abi.ts).
-                const c = readSslLogSecretCall(args, this.context, abi);
-                dumpKeys(c.label, c.ssl, c.data, c.len);
-            },
-        });
-    } catch (e) {
-        devlog(`[anchor-locator] ${moduleName}: Interceptor.attach (field dump) failed: ${e}`);
+    // A mid-function attach (mis-voted callee) can crash the target; only hook a real entry.
+    if (arm64Mod !== null && !isPlausibleFunctionEntry(fnAddr, ehFrameTableFor(arm64Mod))) {
+        devlog(`[anchor-locator] ${moduleName}: ${fnAddr} is not a function entry (eh_frame/prologue); field dump skipped`);
         return false;
     }
+    if (!attachSslLogSecretHook(fnAddr, "anchor", dumpKeys, moduleName, abi)) return false;
     log(`[*] ${moduleName}: keylog hooks installed via anchor-locator (field dump)`);
     return true;
+}
+
+/** arm64: `addr` starts a function per eh_frame bounds, or its first word is a prologue word. */
+export function isPlausibleFunctionEntry(addr: NativePointer, functions: FunctionBoundsSource | null): boolean {
+    const fn = functions?.bounds(addr) ?? null;
+    if (fn !== null && fn.start.equals(addr)) return true;
+    try { return isFunctionPrologueWord(addr.readU32()); } catch (_e) { return false; }
 }
 
 /** A (label, callee) vote per label: the first load site that reaches a direct call. */
@@ -576,116 +619,242 @@ function codeMegabytes(mod: Module): string {
  * chunked pass (yielding to the event loop between chunks), resolve each
  * label's callee and apply the >=2-labels agreement rule.
  */
-async function locateSslLogSecret(mod: Module, moduleName: string): Promise<NativePointer | null> {
+async function locateSslLogSecret(mod: Module, moduleName: string): Promise<SslLogSecretScan> {
+    const status: ScanStatus = { complete: true };
     const modStart = mod.base;
     const modEnd = mod.base.add(mod.size);
     const started = Date.now();
     devlog(`[anchor-locator] ${moduleName}: scanning ${codeMegabytes(mod)} MB of code for ` +
         `${BORINGSSL_KEYLOG_LABELS.length} keylog label xrefs (background, non-blocking)`);
 
-    const strAddrs = await findAnchorStringsAsync(mod, BORINGSSL_KEYLOG_LABELS.map((l) => l + "\u0000"));
+    const strAddrs = await findAnchorStringsAsync(mod, BORINGSSL_KEYLOG_LABELS.map((l) => l + "\u0000"),
+        XREF_SCAN_CHUNK_BYTES, yieldToEventLoop, status);
     const labels: string[] = [];
     const targets: NativePointer[] = [];
     strAddrs.forEach((a, i) => { if (a !== null) { labels.push(BORINGSSL_KEYLOG_LABELS[i]); targets.push(a); } });
 
-    const sites = targets.length > 0 ? await findStringLoadSitesAsync(mod, targets) : [];
+    const sites = targets.length > 0
+        ? await findStringLoadSitesAsync(mod, targets, XREF_SCAN_CHUNK_BYTES, yieldToEventLoop, undefined, status)
+        : [];
+    const functions = ehFrameTableFor(mod) ?? undefined;
     const pairs = collectLabelVotes(labels, sites,
-        (site) => firstCallTargetForward(site, modEnd, modStart, modEnd));
+        (site) => firstCallTargetForward(site, modEnd, modStart, modEnd, functions));
     devlog(`[anchor-locator] ${moduleName}: xref scan finished in ${Date.now() - started} ms ` +
         `(${targets.length} label string(s), ${pairs.length} resolved a call)`);
 
     devlog(`[anchor-locator] ${moduleName}: votes ` +
         (pairs.map((p) => `${p.label}->${p.callee}`).join(", ") || "(none)"));
 
+    // No label string at all may mean unreadable rodata, not "no BoringSSL".
+    const missIsReliable = targets.length > 0 && status.complete;
     const agreed = pickAgreedCallee(pairs);
     if (agreed === null) {
         devlog(`[anchor-locator] ${moduleName}: no ssl_log_secret candidate agreed across ` +
             `>=2 labels (${pairs.length} label(s) resolved a call)`);
-        return null;
+        return { found: null, missIsReliable };
     }
     devlog(`[anchor-locator] ${moduleName}: ssl_log_secret candidate @ ${agreed} ` +
         `(agreed by ${pairs.filter((p) => p.callee === agreed).length}/${pairs.length} label xref(s))`);
-    return ptr(agreed);
+    return { found: ptr(agreed), missIsReliable };
 }
 
 // One xref scan per loaded module, shared by tier 4 and locateSslLayout(), so
 // a concurrent caller awaits the scan already in flight instead of starting a
-// second one. Keyed by name + base (Module objects are not stable identities).
+// second one.
 const sslLogSecretByModule = new Map<string, Promise<NativePointer | null>>();
 
-/** Memoized locateSslLogSecret(): at most one scan per loaded module. */
-function locateSslLogSecretCached(mod: Module, moduleName: string): Promise<NativePointer | null> {
-    const key = `${mod.name}@${mod.base}`;
-    let pending = sslLogSecretByModule.get(key);
-    if (pending === undefined) {
-        pending = locateSslLogSecret(mod, moduleName);
-        sslLogSecretByModule.set(key, pending);
+export const LEARNED_SSL_LOG_SECRET = "boringssl.ssl_log_secret";
+export const LEARNED_SSL_LOG_SECRET_MISS = learnedMissName(LEARNED_SSL_LOG_SECRET);
+/** Bump whenever locateSslLogSecret's algorithm changes, so cached misses are rescanned. */
+export const LOCATOR_REVISION = 1;
+/** Miss-marker value: a cached miss only holds for the labels and algorithm that produced it. */
+export const SSL_LOG_SECRET_MISS_FINGERPRINT = missFingerprint(
+    ["labels", ...BORINGSSL_KEYLOG_LABELS, "revision", String(LOCATOR_REVISION)]);
+
+/** One label-xref scan: the agreed callee, and whether a null result proves a miss. */
+export interface SslLogSecretScan {
+    found: NativePointer | null;
+    missIsReliable: boolean;
+}
+
+/** What locateSslLogSecretCached() needs besides the learned cache (injectable for tests). */
+export interface SslLogSecretSources {
+    decodes: (fnAddr: NativePointer) => DecodeVerdict;
+    scan: (mod: Module, moduleName: string) => Promise<SslLogSecretScan>;
+}
+
+function defaultSslLogSecretSources(mod: CacheModule): SslLogSecretSources {
+    return {
+        decodes: (fnAddr) => sslLogSecretDecodes(mod, fnAddr),
+        scan: locateSslLogSecret,
+    };
+}
+
+/**
+ * True when `fnAddr` in `mod` decodes as ssl_log_secret. Either decode confirms
+ * it: the ctx-write install needs the ctx/keylog offsets, but the field-dump
+ * install only reads the call's arguments, so a body whose s3/client_random
+ * layout decodes is hookable (and cacheable) too.
+ */
+export function sslLogSecretDecodes(mod: CacheModule, fnAddr: NativePointer): DecodeVerdict {
+    const offs = memoizedCtxKeylogOffsets(mod, fnAddr, deriveOffsetsAt);
+    if (isDecoded(offs)) return true;
+    const module = loadedModuleFor(mod);
+    const layout = module === null ? null : sslLayoutAt(module, fnAddr);
+    if (isDecoded(layout)) return true;
+    // An unread decoder might have matched: no verdict either way.
+    return offs === DECODE_UNREADABLE || layout === DECODE_UNREADABLE ? null : false;
+}
+
+/** The learned ssl_log_secret while it still decodes; a stale entry is dropped. null means "scan". */
+export function validatedLearnedSslLogSecret(mod: CacheModule, decodes: (fnAddr: NativePointer) => DecodeVerdict,
+                                             logPrefix: string): NativePointer | null {
+    const fnAddr = learnedFunction(mod, LEARNED_SSL_LOG_SECRET);
+    if (fnAddr === null) return null;
+    const verdict = decodes(fnAddr);
+    if (verdict === true) return fnAddr;
+    if (verdict === null) {
+        // A transient unreadable/short read proves nothing: keep the entry.
+        devlog(`${logPrefix}: learned ssl_log_secret @ ${fnAddr} could not be read; scanning instead`);
+        return null;
     }
-    return pending;
+    rejectLearnedFunction(mod, LEARNED_SSL_LOG_SECRET);
+    devlog(`${logPrefix}: learned ssl_log_secret @ ${fnAddr} does not decode; scanning instead`);
+    return null;
+}
+
+/** Cache `fnAddr` as this build's ssl_log_secret iff it decodes (anything else would only be rejected later). */
+export function reportDecodedSslLogSecret(mod: CacheModule, fnAddr: NativePointer,
+                                          decodes: (fnAddr: NativePointer) => DecodeVerdict): boolean {
+    if (decodes(fnAddr) !== true) return false;
+    reportLearned(mod, { functions: { [LEARNED_SSL_LOG_SECRET]: fnAddr } });
+    return true;
+}
+
+/** The loaded Module behind a cache handle (eh_frame bounds and stub reads need the real one). */
+function loadedModuleFor(mod: CacheModule): Module | null {
+    try {
+        const module = Process.findModuleByAddress(mod.base);
+        return module !== null && module.base.equals(mod.base) ? module : null;
+    } catch (_e) {
+        return null;
+    }
+}
+
+// Body decodes (misses included) are kept per mapping + address: validation and
+// install both need them. An unreadable decode is never kept, so a transient fault does not stick.
+type CtxKeylogOffsets = { ctxOff: number; cbOff: number };
+const ctxKeylogOffsetsByAddress = new Map<string, CtxKeylogOffsets | null>();
+const sslLayoutByAddress = new Map<string, SslLogSecretBodyLayout | null>();
+
+function memoizedPerAddress<T>(memo: Map<string, T | null>, mod: CacheModule, fnAddr: NativePointer,
+                               decode: (fnAddr: NativePointer) => Decoded<T>): Decoded<T> {
+    const key = mappingAddressKey(fnAddr, mappingKey(mod));
+    const known = memo.get(key);
+    if (known !== undefined) return known;
+    const decoded = decode(fnAddr);
+    if (decoded !== DECODE_UNREADABLE) memo.set(key, decoded);
+    return decoded;
+}
+
+/** Memoized decode(fnAddr) of the ctx/keylog offsets, keyed by `mod`'s mapping and the address. */
+export function memoizedCtxKeylogOffsets(mod: CacheModule, fnAddr: NativePointer,
+                                         decode: (fnAddr: NativePointer) => Decoded<CtxKeylogOffsets>):
+        Decoded<CtxKeylogOffsets> {
+    return memoizedPerAddress(ctxKeylogOffsetsByAddress, mod, fnAddr, decode);
+}
+
+export function ctxKeylogOffsetsAt(mod: CacheModule, fnAddr: NativePointer): CtxKeylogOffsets | null {
+    const offs = memoizedCtxKeylogOffsets(mod, fnAddr, deriveOffsetsAt);
+    return isDecoded(offs) ? offs : null;
+}
+
+async function resolveSslLogSecret(mod: Module, moduleName: string,
+                                   sources: SslLogSecretSources): Promise<NativePointer | null> {
+    const learned = validatedLearnedSslLogSecret(mod, sources.decodes, `[anchor-locator] ${moduleName}`);
+    if (learned !== null) {
+        devlog(`[anchor-locator] ssl_log_secret for ${moduleName} from learned cache @ ${learned}; no scan needed`);
+        return learned;
+    }
+    if (hasLearnedMiss(mod, LEARNED_SSL_LOG_SECRET_MISS, SSL_LOG_SECRET_MISS_FINGERPRINT)) {
+        devlog_debug(`[anchor-locator] ${moduleName}: learned cache records no ssl_log_secret in this build; scan skipped`);
+        return null;
+    }
+    const { found, missIsReliable } = await sources.scan(mod, moduleName);
+    if (found === null) {
+        reportLearnedMisses(mod, { [LEARNED_SSL_LOG_SECRET_MISS]: SSL_LOG_SECRET_MISS_FINGERPRINT },
+            { complete: missIsReliable });
+        return null;
+    }
+    reportDecodedSslLogSecret(mod, found, sources.decodes);
+    return found;
+}
+
+/** Memoized ssl_log_secret lookup (learned cache, else locateSslLogSecret): at most one scan per loaded module. */
+export function locateSslLogSecretCached(mod: Module, moduleName: string,
+                                         sources: SslLogSecretSources = defaultSslLogSecretSources(mod)):
+        Promise<NativePointer | null> {
+    return memoizePerMapping(sslLogSecretByModule, mod, () => resolveSslLogSecret(mod, moduleName, sources));
 }
 
 /** Word count to decode at ssl_log_secret: the eh_frame function size, capped. */
 function sslLogSecretWordCount(mod: Module, fnAddr: NativePointer): number {
-    const bounds = ehFrameTableFor(mod)?.bounds(fnAddr) ?? null;
-    if (bounds === null || bounds.end === null || !bounds.start.equals(fnAddr)) return SSL_LOG_SECRET_MAX_WORDS;
-    const words = bounds.end.sub(fnAddr).toInt32() / 4;
-    return Math.max(1, Math.min(SSL_LOG_SECRET_MAX_WORDS, Math.floor(words)));
+    const bytes = functionByteLength(fnAddr, ehFrameTableFor(mod), SSL_LOG_SECRET_MAX_WORDS * 4);
+    return Math.max(1, Math.floor(bytes / 4));
 }
 
-/**
- * Bytes readable from `addr`, capped at `maxBytes`. Follows adjacent readable
- * mappings, so a body that spans two mappings is covered; stops at the first
- * unmapped or non-readable byte. Never throws.
- */
-export function readableByteCount(addr: NativePointer, maxBytes: number): number {
-    let covered = 0;
-    try {
-        while (covered < maxBytes) {
-            const cursor = addr.add(covered);
-            const range = Process.findRangeByAddress(cursor);
-            if (range === null || range.protection[0] !== "r") break;
-            const leftInRange = range.base.add(range.size).sub(cursor);
-            const wanted = maxBytes - covered;
-            if (leftInRange.compare(ptr(wanted)) >= 0) return maxBytes;
-            const left = leftInRange.toUInt32();
-            if (left === 0) break;
-            covered += left;
-        }
-    } catch (_e) { /* best-effort: report what was covered */ }
-    return covered;
+export { readableByteCount, readInstructionWords };
+
+/** Reads the in-module callee words of each BL in `words` (laid out from `fnAddr`). */
+function stubWordsReader(mod: Module, fnAddr: NativePointer, words: number[]): OutlinedStubWordsAt {
+    const modEnd = mod.base.add(mod.size);
+    const stubWords = REGISTER_SAVE_STUB.maxBodyWords + 1;
+    return (i) => {
+        const target = blTarget(fnAddr.add(i * 4), words[i] >>> 0);
+        if (target.compare(mod.base) < 0 || target.add(stubWords * 4).compare(modEnd) > 0) return null;
+        return readInstructionWords(target, stubWords);
+    };
 }
 
+/** Decoded ssl_log_secret layout; ctxOff is null when the ctx/keylog prologue did not decode. */
+export interface SslLogSecretBodyLayout extends SslLogSecretLayout { ctxOff: number | null; }
+
+// No ctx offset to exclude from the s3 candidates.
+const UNKNOWN_CTX_OFFSET = -1;
+
 /**
- * Up to `count` readable instruction words at `addr` (stops at the first unmapped
- * one): one readability walk, then ONE readByteArray. The Uint32Array view reads
- * the host's (= target's, in-process) little-endian words, exactly like readU32.
+ * Decode the s3/client_random layout from ssl_log_secret's body words. The ctx
+ * offset is only excluded as an s3 candidate, so a body whose ctx/keylog check
+ * sits past PROLOGUE_WORDS (e.g. libsignal_jni: stack-protector prologue) still decodes.
  */
-export function readInstructionWords(addr: NativePointer, count: number): number[] {
-    const wordCount = Math.floor(readableByteCount(addr, count * 4) / 4);
-    if (wordCount === 0) return [];
-    try {
-        const bytes = addr.readByteArray(wordCount * 4);
-        return bytes === null ? [] : Array.from(new Uint32Array(bytes));
-    } catch (_e) {
-        return [];
-    }
+export function decodeSslLayoutFromWords(words: number[], stubWordsAt?: OutlinedStubWordsAt): SslLogSecretBodyLayout | null {
+    const ctx = decodeCtxKeylogOffsets(words.slice(0, PROLOGUE_WORDS));
+    const layout = decodeSslLogSecretLayout(words, ctx?.ctxOff ?? UNKNOWN_CTX_OFFSET, stubWordsAt);
+    return layout === null ? null : { ...layout, ctxOff: ctx?.ctxOff ?? null };
+}
+
+/** Memoized s3/client_random layout decode of the ssl_log_secret body at `fnAddr`. */
+function sslLayoutAt(mod: Module, fnAddr: NativePointer): Decoded<SslLogSecretBodyLayout> {
+    return memoizedPerAddress(sslLayoutByAddress, mod, fnAddr, () => {
+        const wanted = sslLogSecretWordCount(mod, fnAddr);
+        const words = readInstructionWords(fnAddr, wanted);
+        const layout = decodeSslLayoutFromWords(words, stubWordsReader(mod, fnAddr, words));
+        // A miss on a short read may be the read's fault, not the body's.
+        return layout === null && words.length < wanted ? DECODE_UNREADABLE : layout;
+    });
 }
 
 /** Decode {s3Off, crOff, ctxOff} from the located ssl_log_secret body, or null. */
-function decodeSslLayoutAt(
-    mod: Module, moduleName: string, fnAddr: NativePointer,
-): { s3Off: number; crOff: number; ctxOff: number } | null {
-    const words = readInstructionWords(fnAddr, sslLogSecretWordCount(mod, fnAddr));
-    const ctx = decodeCtxKeylogOffsets(words.slice(0, PROLOGUE_WORDS));
-    const layout = ctx === null ? null : decodeSslLogSecretLayout(words, ctx.ctxOff);
-    if (ctx === null || layout === null) {
-        devlog(`[anchor-locator] ${moduleName}: ssl layout not decoded at ${fnAddr} (${words.length} words, ` +
-            `ctx ${ctx === null ? "missing" : "ok"})`);
+function decodeSslLayoutAt(mod: Module, moduleName: string, fnAddr: NativePointer): SslLogSecretBodyLayout | null {
+    const layout = sslLayoutAt(mod, fnAddr);
+    if (!isDecoded(layout)) {
+        devlog(`[anchor-locator] ${moduleName}: ssl layout not decoded at ${fnAddr}`);
         return null;
     }
+    const ctxText = layout.ctxOff === null ? "unknown" : `0x${layout.ctxOff.toString(16)}`;
     devlog(`[anchor-locator] ${moduleName}: ssl layout at ${fnAddr}: s3Off=0x${layout.s3Off.toString(16)} ` +
-        `crOff=0x${layout.crOff.toString(16)} ctxOff=0x${ctx.ctxOff.toString(16)} lengthArg=${layout.lengthArgSeen}`);
-    return { s3Off: layout.s3Off, crOff: layout.crOff, ctxOff: ctx.ctxOff };
+        `crOff=0x${layout.crOff.toString(16)} ctxOff=${ctxText} lengthArg=${layout.lengthArgSeen}`);
+    return layout;
 }
 
 /**
@@ -695,9 +864,7 @@ function decodeSslLayoutAt(
  * keylogging is disabled. arm64 only (x64 is left to overlap learning).
  * Never throws; resolves null on any miss.
  */
-export async function locateSslLayout(
-    moduleName: string,
-): Promise<{ s3Off: number; crOff: number; ctxOff: number } | null> {
+export async function locateSslLayout(moduleName: string): Promise<SslLogSecretBodyLayout | null> {
     if (Process.arch !== "arm64") return null;
     try {
         const mod = Process.findModuleByName(moduleName);
@@ -760,14 +927,85 @@ export async function runAnchorLocatorTier4(
         devlog(`[anchor-locator] ${moduleName}: shutdown during ssl_log_secret scan; not installing`);
         return false;
     }
+    if (isSslLogSecretHooked(sslLogSecret)) {
+        devlog(`[anchor-locator] ${moduleName}: ssl_log_secret @ ${sslLogSecret} is already hooked; not hooking it again`);
+        // The live hook is another tier's; hand it the module before this
+        // success makes the caller claim it for tier 4 and mute that hook.
+        claimForLiveSslLogSecretHook(moduleName, sslLogSecret, "anchor");
+        return true;
+    }
 
     resetReadableCache();
-    const offs = deriveOffsetsAt(sslLogSecret);
+    const offs = ctxKeylogOffsetsAt(mod, sslLogSecret);
     if (offs !== null) {
         return installViaCtxWrite(moduleName, sslLogSecret, offs);
     }
     devlog(`[anchor-locator] ${moduleName}: ctx-offset decode failed; using field-dump fallback`);
-    return installViaFieldDump(moduleName, sslLogSecret, dumpKeys);
+    return installViaFieldDump(moduleName, sslLogSecret, dumpKeys, null, mod);
+}
+
+// ---- observe-only (no keylog) ---------------------------------------------
+
+/** Told the SSL* of every ssl_log_secret call; never sees a secret. */
+export type SslLogSecretObserver = (ssl: NativePointer) => void;
+
+// One run (locate + hook) per module; a repeat caller gets the same promise.
+const observeOnlyRuns = new Map<string, Promise<boolean>>();
+
+/**
+ * Entry hook on ssl_log_secret that only hands `ssl` to `observe`. Unlike the
+ * ctx-write path it writes nothing into SSL_CTX and BoringSSL formats no line;
+ * unlike the field dump it never touches the secret. The entry runs on every
+ * handshake secret even when ctx->keylog_callback is NULL (that check is
+ * inside the function). Once per module via observeOnlyRuns.
+ */
+function installSslLogSecretObserver(
+    moduleName: string, fnAddr: NativePointer, observe: SslLogSecretObserver,
+): boolean {
+    try {
+        Interceptor.attach(fnAddr, {
+            onEnter(args: InvocationArguments) {
+                if (_isShuttingDownNow()) return;
+                try {
+                    observe(args[0]);
+                } catch (_e) { /* observation is best-effort */ }
+            },
+        });
+    } catch (e) {
+        devlog(`[anchor-locator] ${moduleName}: Interceptor.attach (observe-only) failed: ${e}`);
+        return false;
+    }
+    devlog(`[anchor-locator] ${moduleName}: observe-only ssl_log_secret hook @ ${fnAddr} (no keylog)`);
+    return true;
+}
+
+/**
+ * Locate ssl_log_secret (sharing the tier-4 scan) and install the observe-only
+ * entry hook, with or without -k. A module whose keylog hook is owned by a
+ * tier already reports SSL* through sendKeylog, so it is skipped. arm64 only;
+ * --pairip-safe gating is the caller's job. Once per module; never throws.
+ */
+export function runAnchorLocatorObserveOnly(moduleName: string, observe: SslLogSecretObserver): Promise<boolean> {
+    let run = observeOnlyRuns.get(moduleName);
+    if (run === undefined) {
+        run = locateAndObserve(moduleName, observe);
+        observeOnlyRuns.set(moduleName, run);
+    }
+    return run;
+}
+
+async function locateAndObserve(moduleName: string, observe: SslLogSecretObserver): Promise<boolean> {
+    if (Process.arch !== "arm64" || keylogHookOwner(moduleName) !== undefined) return false;
+    try {
+        const mod = Process.findModuleByName(moduleName);
+        if (mod === null) return false;
+        const fnAddr = await locateSslLogSecretCached(mod, moduleName);
+        if (fnAddr === null || _isShuttingDownNow() || keylogHookOwner(moduleName) !== undefined) return false;
+        return installSslLogSecretObserver(moduleName, fnAddr, observe);
+    } catch (e) {
+        devlog(`[anchor-locator] ${moduleName}: observe-only locate failed: ${e}`);
+        return false;
+    }
 }
 
 // ---- x86-64 (Windows PE / Wine PE / Linux ELF) ----------------------------
@@ -903,7 +1141,7 @@ export async function runAnchorLocatorX64(
     abi: CallAbi,
 ): Promise<boolean> {
     const moduleName = mod.name;
-    const sslReg = abi === "win64" ? X64_REG.rcx : X64_REG.rdi;
+    const sslReg = abi === "win64" ? X64.rcx : X64.rdi;
 
     // Host-resolved RVA (friTap/wine_chromium.py pre-resolves Chromium modules
     // from the PE file on disk and passes it as an --offsets entry): no scan.

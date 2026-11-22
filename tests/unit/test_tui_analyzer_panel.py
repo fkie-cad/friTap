@@ -24,22 +24,10 @@ import pytest
 pytest.importorskip("textual")
 
 from friTap.analysis import Finding, Severity
-from friTap.flow.models import Flow, FlowState
 from friTap.flow.replay import ReplayController
 from friTap.flow.tap_writer import TapWriter
 from friTap.tui.app import FriTapApp
-
-
-def _make_flow(flow_id: str, dst_port: int = 443) -> Flow:
-    return Flow(
-        flow_id=flow_id,
-        connection_id=flow_id,
-        src_addr="10.0.0.1",
-        src_port=12345,
-        dst_addr="93.184.216.34",
-        dst_port=dst_port,
-        state=FlowState.COMPLETE,
-    )
+from tests.unit._tui_flow_helpers import make_flow as _make_flow, write_tap
 
 
 def _write_tap_with_stored_finding(path: str) -> Finding:
@@ -53,11 +41,7 @@ def _write_tap_with_stored_finding(path: str) -> Finding:
         flow_id="flow-aaaa",
         metadata={"category": "secret"},
     )
-    writer = TapWriter()
-    writer.open(path, target="test")
-    writer.write_flow(flow)
-    writer.write_findings("flow-aaaa", [stored])
-    writer.close()
+    write_tap(path, [flow], findings={"flow-aaaa": [stored]})
     return stored
 
 

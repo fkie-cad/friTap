@@ -519,12 +519,14 @@ def test_no_follow_exec_in_attach_mode_gates_nothing():
     assert obj.exec_following_requested is False
 
 
-def test_follow_exec_config_defaults_on():
+def test_follow_exec_config_defaults_off():
     from friTap.api import FriTap
     from friTap.config import DeviceConfig, FriTapConfig
-    assert DeviceConfig().follow_exec is True
-    assert FriTapConfig.from_legacy_params(app="t").device.follow_exec is True
-    assert FriTap("t").build_config().device.follow_exec is True
+    from friTap.config import resolve_follow_exec
+    assert DeviceConfig().follow_exec is None  # auto
+    assert resolve_follow_exec(DeviceConfig()) is False
+    assert resolve_follow_exec(FriTapConfig.from_legacy_params(app="t").device) is False
+    assert resolve_follow_exec(FriTap("t").build_config().device) is False
     assert FriTap("t").follow_exec(False).build_config().device.follow_exec is False
 
 
@@ -533,9 +535,17 @@ def test_cli_no_follow_exec_flag_reaches_the_config(fake_cli):  # noqa: F811
     assert ssl_log.config.device.follow_exec is False
 
 
-def test_cli_follows_exec_by_default(fake_cli):  # noqa: F811
+def test_cli_does_not_follow_exec_by_default(fake_cli):  # noqa: F811
     ssl_log, _ = fake_cli("--non-interactive", "-s", "target")
-    assert ssl_log.config.device.follow_exec is True
+    # auto (None) resolves to off everywhere (Frida fork-child crash)
+    from friTap.config import resolve_follow_exec
+    assert resolve_follow_exec(ssl_log.config.device) is False
+
+
+def test_cli_follow_exec_flag_opts_in(fake_cli):  # noqa: F811
+    ssl_log, _ = fake_cli("--non-interactive", "-s", "--follow-exec", "target")
+    from friTap.config import resolve_follow_exec
+    assert resolve_follow_exec(ssl_log.config.device) is True
 
 
 # ----------------------------------------------------------------------
@@ -1103,3 +1113,110 @@ def test_unasked_fork_children_share_one_resumer_thread(stop_worker):
         assert _wait_resumed(obj, pid)
     assert threading.active_count() <= before + 1
     assert obj._suspended_pids == set()
+
+
+# ----------------------------------------------------------------------
+# A path change alone is no exec (macOS Chrome code_sign_clone flip)
+# ----------------------------------------------------------------------
+
+CHROME_APP = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+CHROME_CLONE = ("/private/var/folders/ab/cd1234/X/com.google.Chrome.code_sign_clone/"
+                "code_sign_clone.Xy12Zq/Google Chrome.app/Contents/MacOS/Google Chrome")
+
+
+class _AnsweringScript:
+    """Agent script stub whose agent_abi_version RPC answers, fails or hangs."""
+
+    def __init__(self, behaviour="answer"):
+        hang = threading.Event()
+
+        def agent_abi_version():
+            if behaviour == "hang":
+                hang.wait(WAIT)
+            if behaviour == "fail":
+                raise RuntimeError("script destroyed")
+            return 1
+
+        self.exports_sync = types.SimpleNamespace(agent_abi_version=agent_abi_version)
+
+
+@pytest.mark.parametrize("old, new, same", [
+    (CHROME_APP, CHROME_CLONE, True),
+    (CHROME_CLONE, CHROME_APP, True),
+    (CHROME_APP.replace("MacOS/Google Chrome", "Frameworks/Helper.app/Contents/MacOS/H"),
+     CHROME_CLONE.replace("MacOS/Google Chrome", "Frameworks/Helper.app/Contents/MacOS/H"),
+     True),
+    (CHROME_CLONE, "/Applications/Other.app/Contents/MacOS/Google Chrome", False),
+    ("/py/Python", "/opt/homebrew/opt/curl/bin/curl", False),
+    ("/Applications/A.app/Contents/MacOS/A", "/Users/me/A.app/Contents/MacOS/A", False),
+])
+def test_same_executable_image_normalizes_code_sign_clones(old, new, same):
+    from friTap.legacy.exec_follow import same_executable_image
+    assert same_executable_image(old, new) is same
+
+
+def test_watchdog_ignores_a_flip_to_the_code_sign_clone():
+    clock, held, paths = _FakeClock(), [], {7: CHROME_APP}
+    dog = _watchdog(paths, held, clock)
+    dog.watch(7)
+    for now, path in enumerate([CHROME_APP, CHROME_CLONE, CHROME_CLONE, CHROME_APP,
+                                CHROME_APP, CHROME_CLONE]):
+        paths[7], clock.now = path, now * 3.0
+        assert dog.poll_once() is False
+    assert held == []
+    dog.stop()
+
+
+@pytest.mark.parametrize("script, found", [
+    (_AnsweringScript(), True),
+    (types.SimpleNamespace(), False),  # no exports_sync at all
+    (types.SimpleNamespace(exports_sync=types.SimpleNamespace()), False),  # older bundle
+    (types.SimpleNamespace(exports_sync=types.SimpleNamespace(agent_abi_version=1)), False),
+])
+def test_agent_abi_reporter_only_returns_a_callable_rpc(script, found):
+    from friTap.legacy.exec_follow import agent_abi_reporter
+    reporter = agent_abi_reporter(script)
+    assert (reporter is not None) is found
+    if found:
+        assert reporter() == 1
+
+
+def _attached_logger_with_agent(behaviour, detached=False):
+    obj = _make_logger(spawn=False)
+    obj.process.is_detached = detached
+    obj.HELD_EXEC_PROBE_TIMEOUT = 0.2
+    obj._tracker.note_script(obj.process, _AnsweringScript(behaviour))
+    return obj
+
+
+def test_held_exec_suspect_with_a_live_agent_is_not_reattached(stop_worker):
+    obj = _attached_logger_with_agent("answer")
+    stop_worker(obj)
+    obj._on_held_exec_image(TARGET_PID, CHROME_APP)
+    threading.Event().wait(0.2)
+    obj._backend.attach.assert_not_called()
+    assert obj.instrument.sessions == [] and obj._suspended_pids == set()
+    assert obj._tracker.get(TARGET_PID).session is obj.process
+
+
+@pytest.mark.parametrize("behaviour, detached", [
+    ("answer", True),  # session reports the detach
+    ("hang", False),  # replaced image never replies
+    ("fail", False),
+])
+def test_held_exec_with_a_dead_agent_is_followed(stop_worker, behaviour, detached):
+    obj = _attached_logger_with_agent(behaviour, detached)
+    stop_worker(obj)
+    obj._on_held_exec_image(TARGET_PID, "/usr/bin/curl")
+    assert _wait_sessions(obj, 1) and _wait_resumed(obj, TARGET_PID)
+    assert obj._tracker.get(TARGET_PID).script is None  # new image, agent not yet known
+
+
+def test_teardown_in_attach_mode_never_claims_a_spawned_pid(fritap_log_records):
+    records = fritap_log_records("test.exec_following")
+    obj = _make_logger(spawn=False)
+    obj._death_before_capture = False
+    obj._track_suspended(TARGET_PID)
+    obj._resume_suspended_pids()
+    obj._backend.resume.assert_called_once_with(FAKE_DEVICE, TARGET_PID)
+    assert not any("spawned" in r.getMessage() for r in records)

@@ -95,6 +95,7 @@
       "to_dict": {
        "alpn": "",
        "cipher": "TLS_AES_256_GCM_SHA384",
+       "client_random": "2f54342d2d238c6ff4f875f0d5e883b117077865d6faffe87d2b948800c2e0cc",
        "depth": 0,
        "library": "",
        "name": "tls",

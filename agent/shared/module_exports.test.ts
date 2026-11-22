@@ -48,3 +48,38 @@ test("findModuleExport: pre-17 runtimes use the static Module.findExportByName",
         assert.equal(findModuleExport("libcharon.so", "derive_ike_keys"), addr);
     });
 });
+
+// Minimal NativePointer over a number (add/compare/isNull) for the bounds check.
+function P(v: number): any {
+    return { v, isNull: () => v === 0, add: (o: number) => P(v + o), compare: (o: any) => (v === o.v ? 0 : v < o.v ? -1 : 1) };
+}
+
+function ownedModule(name: string, exportAt: number | null, rangeEnd = 0x2000): any {
+    const base = P(0x1000);
+    return {
+        name, path: `/x/${name}`, base, size: 0x800,
+        findExportByName: () => (exportAt === null ? null : P(exportAt)),
+        enumerateRanges: () => [{ base, size: rangeEnd - 0x1000, protection: "r--" }],
+        enumerateExports: () => { throw new Error("own-module lookups never enumerate the export table"); },
+    };
+}
+
+test("findModuleExport ownModuleOnly: an address inside the module image (past Module.size) is kept", () => {
+    const module = ownedModule("libown.so", 0x1c00);
+    withModule(module, undefined, () => {
+        assert.equal((findModuleExport("libown.so", "probe", { ownModuleOnly: true }) as any)?.v, 0x1c00);
+    });
+});
+
+test("findModuleExport ownModuleOnly: a dependency's export (outside the image) is rejected", () => {
+    withModule(ownedModule("libdep.so", 0x9000), undefined, () => {
+        assert.equal(findModuleExport("libdep.so", "probe", { ownModuleOnly: true }), null);
+    });
+});
+
+test("findModuleExport ownModuleOnly: a miss or an unresolved module is null without any fallback", () => {
+    withModule(ownedModule("libnone.so", null), () => P(0x1100), () => {
+        assert.equal(findModuleExport("libnone.so", "probe", { ownModuleOnly: true }), null);
+        assert.equal(findModuleExport("libgone.so", "probe", { ownModuleOnly: true }), null);
+    });
+});

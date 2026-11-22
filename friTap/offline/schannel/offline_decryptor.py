@@ -2,36 +2,22 @@
 
 """Schannel offline decryptor: correlate + derive NSS keylog + decrypt (PUBLIC).
 
-The Schannel mem-scan engine recovers TLS secrets from lsass but cannot read the
-ClientHello random (it is not memory-resident), so it writes them UNPAIRED to a
-``.schannel.unpaired`` sidecar. This decryptor closes that gap OFFLINE:
+The Schannel mem-scan engine writes lsass secrets UNPAIRED to a
+``.schannel.unpaired`` sidecar (no client_random). This decryptor, offline:
 
-  1. parse the sidecar (:mod:`.unpaired`),
-  2. trial-decrypt each secret against the pcap to find its client_random
-     (:mod:`.correlate`, TLS 1.2 AND 1.3), producing a STANDARD NSS keylog
-     (``CLIENT_RANDOM``/``*_TRAFFIC_SECRET_0``/…),
-  3. write that derived keylog next to the sidecar, and
-  4. feed its lines that the primary ``--keylog`` does not already hold into the
-     SAME TLS single-pass that the ``--keylog`` path uses, so the recovered TLS
-     flows are decrypted and reconstructed exactly like any other — once (a
-     session whose exact lines the primary keylog already carries is decrypted
-     by the primary TLS pass, not a second time here).
+  1. parses the sidecar (:mod:`.unpaired`),
+  2. trial-decrypts each secret against the pcap to find its client_random
+     (:mod:`.correlate`), yielding a standard NSS keylog,
+  3. writes that keylog next to the sidecar
+     (``<sidecar-with-.unpaired-stripped>.nss.keylog``), and
+  4. feeds the lines the primary ``--keylog`` does not already hold into the same
+     TLS single pass (``run_tls_combined_pass``), so the flows get the normal TLS
+     layer and metadata. Sessions the primary keylog already carries are decrypted
+     only by the primary pass.
 
-INTEGRATION CHOICE — option (a): emit a standard NSS keylog and let the existing
-TLS single-pass consume it, rather than (b) emitting ``DatalogEvent``s directly.
-Producing a standard NSS keylog is the whole point of the correlation — it is what
-makes the secrets Wireshark-/tshark-loadable — and reusing the TLS single pass
-(the one-run ``run_tls_combined_pass``) means the decrypted Schannel flows get the
-exact same TLS layer, SNI/cipher/ALPN metadata, direction tracking and
-reconstruction as a normal ``--keylog`` capture, with no bespoke event plumbing
-to keep in sync.
-
-The entry registers ``requires_tls_strip=False`` (an INDEPENDENT emitter): it does
-not consume tshark's already-decrypted bytes; it supplies its OWN derived keylog
-and drives a fresh TLS pass over it. The derived keylog is written to disk in full
-(a real, reusable artifact) at ``<sidecar-with-.unpaired-stripped>.nss.keylog``.
-Secrets that could not be placed are counted (``undecryptable``) and summarized
-in one warning.
+The entry registers ``requires_tls_strip=False``: it supplies its own derived
+keylog and drives a fresh TLS pass. Unplaced secrets are counted
+(``undecryptable``) and summarized in one warning.
 """
 
 from __future__ import annotations
@@ -49,10 +35,7 @@ logger = logging.getLogger(__name__)
 
 
 def _derived_keylog_path(sidecar_path: str) -> str:
-    """Where the correlated NSS keylog is written (next to the sidecar).
-
-    ``keys.memscan.schannel.unpaired`` -> ``keys.memscan.schannel.nss.keylog``.
-    """
+    """``keys.memscan.schannel.unpaired`` -> ``keys.memscan.schannel.nss.keylog``."""
     if sidecar_path.endswith(".unpaired"):
         base = sidecar_path[: -len(".unpaired")]
     else:
@@ -64,17 +47,12 @@ def _schannel_offline_emitter(
     *, pcap_path, proto_keylog, tls_keylog_path, tshark_bin, tls_ports,
     bus, state, result,
 ) -> None:
-    """Correlate the ``.schannel.unpaired`` sidecar and decrypt the paired TLS.
+    """Correlate the sidecar and decrypt the paired TLS.
 
-    Never raises for a recoverable problem (missing sidecar, no tshark match, empty
-    correlation) — per the offline-emitter contract it logs and returns instead, so
-    a capture that yields no Schannel pairing still converts cleanly.
-
-    *proto_keylog* is the ``.schannel.unpaired`` sidecar path (``protocol_keylogs``
-    maps ``--schannel-unpaired`` -> ``schannel``). *tls_keylog_path* is the primary
-    TLS keylog (may be None): derived lines it already holds verbatim are left to
-    the primary TLS pass, so passing both for the same sessions does not
-    duplicate their flows.
+    Logs and returns on any recoverable problem (offline-emitter contract).
+    *proto_keylog* is the sidecar path; *tls_keylog_path* is the primary TLS keylog
+    (may be None), whose already-held lines are left to the primary pass so their
+    flows are not duplicated.
     """
     from .correlate import correlate_unpaired_detailed
     from .unpaired import parse_unpaired, tls12_masters, tls13_groups, tls13_secrets
@@ -171,9 +149,10 @@ def _nss_line_key(line: str) -> Optional[tuple]:
 
 def _lines_not_in_keylog(lines: Iterable[str],
                          keylog_path: Optional[str]) -> List[str]:
-    """The derived *lines* whose exact (label, client_random, secret) the
-    primary keylog does not already hold; all of them when it is absent or
-    unreadable."""
+    """The *lines* whose (label, client_random, secret) the primary keylog lacks.
+
+    All of them when the keylog is absent or unreadable.
+    """
     lines = list(lines)
     if not keylog_path:
         return lines
@@ -203,13 +182,9 @@ def _decrypt_with_lines(pcap_path, lines, tshark_bin, tls_ports, *,
 def _decrypt_with_derived_keylog(
     pcap_path, derived_keylog, tshark_bin, tls_ports, *, bus, state, result,
 ) -> None:
-    """Drive the standard TLS single-pass over the derived keylog (option a).
+    """Run the standard TLS single pass over the derived keylog.
 
-    One combined tshark run (:func:`~friTap.offline.pipeline_api.
-    run_tls_combined_pass`) reads the handshake metadata and the decrypted
-    application data together, exactly as the ``has_keys`` branch of
-    :func:`convert_pcap_to_tap` does: the recovered Schannel flows are decrypted
-    and reconstructed as ordinary TLS flows.
+    Mirrors the ``has_keys`` branch of :func:`convert_pcap_to_tap`.
     """
     from friTap.offline.pipeline_api import (
         StreamDirectionTracker,
@@ -225,11 +200,7 @@ def _decrypt_with_derived_keylog(
 
 
 def build_schannel_offline_decryptor_entry() -> OfflineDecryptorEntry:
-    """Build the Schannel :class:`OfflineDecryptorEntry`.
-
-    The decrypted output is standard TLS (the derived keylog drives the normal TLS
-    pass), so the flow layer is :class:`~friTap.flow.layers.TlsLayer`.
-    """
+    """Build the Schannel entry; output is standard TLS, so the layer is ``TlsLayer``."""
     from friTap.flow.layers import TlsLayer
 
     return OfflineDecryptorEntry(

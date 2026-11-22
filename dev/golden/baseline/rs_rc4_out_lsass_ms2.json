@@ -140,6 +140,7 @@
       "to_dict": {
        "alpn": "",
        "cipher": "TLS_AES_256_GCM_SHA384",
+       "client_random": "018c6e5d050114c882248cc0c2df296bd429a50d1aa1abc552654143793832b4",
        "depth": 0,
        "library": "",
        "name": "tls",
@@ -355,6 +356,7 @@
       "to_dict": {
        "alpn": "h2",
        "cipher": "ECDHE-RSA-AES256-GCM-SHA384",
+       "client_random": "6ab8e8400daa170310ebd85858caf38a9ec1646e6bc7eb1b563f5e23426e3759",
        "depth": 0,
        "library": "",
        "name": "tls",
@@ -468,7 +470,11 @@
      "sha256": [
       "6bdbc9c4883bbf25a521eb2f49fce8837d88a771b4c2ff42dffcc29d758c046e",
       "1bec0418b4f9847e394ad08e6cae02fe2a2dc006eeccedde05c5bfb8f21a96e6"
-     ]
+     ],
+     "stream_id": {
+      "0": 1,
+      "1": 1
+     }
     },
     "findings": [],
     "flow": {
@@ -544,6 +550,7 @@
      "ssl_session_id": "",
      "started": 1790502976.422753,
      "state": "complete",
+     "stream_id": 1,
      "tags": [],
      "tls_alpn": "h2",
      "tls_sni": "settings-win.data.microsoft.com",
@@ -557,6 +564,7 @@
       "to_dict": {
        "alpn": "h2",
        "cipher": "ECDHE-RSA-AES256-GCM-SHA384",
+       "client_random": "6ab8e8400daa170310ebd85858caf38a9ec1646e6bc7eb1b563f5e23426e3759",
        "depth": 0,
        "library": "",
        "name": "tls",
@@ -656,6 +664,7 @@
      "started": 1790502976.422753,
      "state": "complete",
      "status_code": 404,
+     "stream_id": 1,
      "tag_count": 0,
      "tls_alpn": "h2",
      "tls_sni": "settings-win.data.microsoft.com",
@@ -754,6 +763,7 @@
       "to_dict": {
        "alpn": "h2",
        "cipher": "ECDHE-RSA-AES256-GCM-SHA384",
+       "client_random": "6ab8e8400daa170310ebd85858caf38a9ec1646e6bc7eb1b563f5e23426e3759",
        "depth": 0,
        "library": "",
        "name": "tls",
@@ -861,7 +871,10 @@
      "count": 1,
      "sha256": [
       "fbc9f1252092b9d2c8cc81d4efecc02024e83b53a8a73204571cf015057d9c9a"
-     ]
+     ],
+     "stream_id": {
+      "0": 1
+     }
     },
     "findings": [],
     "flow": {
@@ -888,6 +901,7 @@
      "ssl_session_id": "",
      "started": 1790502976.527987,
      "state": "complete",
+     "stream_id": 1,
      "tags": [],
      "tls_alpn": "h2",
      "tls_sni": "settings-win.data.microsoft.com",
@@ -901,6 +915,7 @@
       "to_dict": {
        "alpn": "h2",
        "cipher": "ECDHE-RSA-AES256-GCM-SHA384",
+       "client_random": "6ab8e8400daa170310ebd85858caf38a9ec1646e6bc7eb1b563f5e23426e3759",
        "depth": 0,
        "library": "",
        "name": "tls",
@@ -947,6 +962,7 @@
      "started": 1790502976.527987,
      "state": "complete",
      "status_code": 0,
+     "stream_id": 1,
      "tag_count": 0,
      "tls_alpn": "h2",
      "tls_sni": "settings-win.data.microsoft.com",
@@ -1051,6 +1067,7 @@
       "to_dict": {
        "alpn": "h2",
        "cipher": "TLS_AES_256_GCM_SHA384",
+       "client_random": "3cd8d3138826edca1a4d06d415a4863d210d6c253182e505f87a7ba4830b74ed",
        "depth": 0,
        "library": "",
        "name": "tls",
@@ -1171,7 +1188,17 @@
       "81b83fe02e4a2e9d343e66696695542421fed8d486872a63eb8bd9d8a5010eb3",
       "9f33bf0b88ca121b9b2b3ff5eb3e775beb6d53826018e93450bdf3a280bcd61d",
       "77e6b5ba33c9273a3f5f739b3321f50646eeb76ca67110cdc3f89dcd79accf55"
-     ]
+     ],
+     "stream_id": {
+      "0": 1,
+      "1": 1,
+      "2": 1,
+      "3": 1,
+      "4": 1,
+      "5": 1,
+      "6": 1,
+      "7": 1
+     }
     },
     "findings": [],
     "flow": {
@@ -1275,6 +1302,7 @@
      "ssl_session_id": "",
      "started": 1790502978.334928,
      "state": "complete",
+     "stream_id": 1,
      "tags": [],
      "tls_alpn": "h2",
      "tls_sni": "assets.msn.com",
@@ -1288,6 +1316,7 @@
       "to_dict": {
        "alpn": "h2",
        "cipher": "TLS_AES_256_GCM_SHA384",
+       "client_random": "3cd8d3138826edca1a4d06d415a4863d210d6c253182e505f87a7ba4830b74ed",
        "depth": 0,
        "library": "",
        "name": "tls",
@@ -1415,6 +1444,7 @@
      "started": 1790502978.334928,
      "state": "complete",
      "status_code": 200,
+     "stream_id": 1,
      "tag_count": 0,
      "tls_alpn": "h2",
      "tls_sni": "assets.msn.com",
@@ -1513,6 +1543,7 @@
       "to_dict": {
        "alpn": "h2",
        "cipher": "TLS_AES_256_GCM_SHA384",
+       "client_random": "3cd8d3138826edca1a4d06d415a4863d210d6c253182e505f87a7ba4830b74ed",
        "depth": 0,
        "library": "",
        "name": "tls",
@@ -1703,6 +1734,7 @@
       "to_dict": {
        "alpn": "",
        "cipher": "TLS_AES_256_GCM_SHA384",
+       "client_random": "bbedf76f67689291e0f5819589e5b16e1043d14c3f3fc493f120c097093ca3c4",
        "depth": 0,
        "library": "",
        "name": "tls",
@@ -1819,7 +1851,13 @@
       "f530cd56f3d7e1bbe373c1c3e1ff2358cc54f92a6e5d9dc743fd2450caebcd90",
       "aae5b3f7049507e09fddbd2d418f8d1009d4eb4c11f81c4d8d9ec392c17456e6",
       "87960eb9a3a0d444c3a4060c65de493e338807520ef1aa330b45f4a3b9d93971"
-     ]
+     ],
+     "stream_id": {
+      "0": 1,
+      "1": 1,
+      "2": 1,
+      "3": 1
+     }
     },
     "findings": [],
     "flow": {
@@ -1901,6 +1939,7 @@
      "ssl_session_id": "",
      "started": 1790503000.29554,
      "state": "complete",
+     "stream_id": 1,
      "tags": [],
      "tls_alpn": "",
      "tls_sni": "browser.events.data.msn.com",
@@ -1914,6 +1953,7 @@
       "to_dict": {
        "alpn": "",
        "cipher": "TLS_AES_256_GCM_SHA384",
+       "client_random": "bbedf76f67689291e0f5819589e5b16e1043d14c3f3fc493f120c097093ca3c4",
        "depth": 0,
        "library": "",
        "name": "tls",
@@ -2019,6 +2059,7 @@
      "started": 1790503000.29554,
      "state": "complete",
      "status_code": 204,
+     "stream_id": 1,
      "tag_count": 0,
      "tls_alpn": "",
      "tls_sni": "browser.events.data.msn.com",
@@ -2098,6 +2139,7 @@
       "to_dict": {
        "alpn": "",
        "cipher": "TLS_AES_256_GCM_SHA384",
+       "client_random": "bbedf76f67689291e0f5819589e5b16e1043d14c3f3fc493f120c097093ca3c4",
        "depth": 0,
        "library": "",
        "name": "tls",

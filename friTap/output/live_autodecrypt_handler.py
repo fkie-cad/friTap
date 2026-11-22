@@ -150,9 +150,6 @@ class LiveAutoDecryptHandler(OutputHandler):
         self._logger.info("Wireshark connected — streaming auto-decrypt PCAPNG")
         return True
 
-    # ------------------------------------------------------------------
-    # PCAPNG block writers (all require self._write_lock)
-    # ------------------------------------------------------------------
 
     def _write_shb(self) -> None:
         """Write Section Header Block."""
@@ -235,9 +232,6 @@ class LiveAutoDecryptHandler(OutputHandler):
             self._logger.debug("EPB write failed (pipe closed?): %s", e)
             self._stop_event.set()
 
-    # ------------------------------------------------------------------
-    # Capture loop
-    # ------------------------------------------------------------------
 
     def _capture_loop(self) -> None:
         """Main capture thread: start tcpdump/scapy and stream packets."""
@@ -253,9 +247,6 @@ class LiveAutoDecryptHandler(OutputHandler):
         finally:
             self._stop_event.set()
 
-    # ------------------------------------------------------------------
-    # Local capture (scapy → tcpdump fallback)
-    # ------------------------------------------------------------------
 
     def _capture_local(self) -> None:
         """Capture on the local machine using scapy or tcpdump."""
@@ -323,9 +314,6 @@ class LiveAutoDecryptHandler(OutputHandler):
 
         self._read_pcap_stream(self._subprocess.stdout)
 
-    # ------------------------------------------------------------------
-    # Mobile capture (adb exec-out tcpdump)
-    # ------------------------------------------------------------------
 
     def _capture_mobile(self) -> None:
         """Capture on Android device via adb exec-out tcpdump."""
@@ -361,9 +349,6 @@ class LiveAutoDecryptHandler(OutputHandler):
             cmd.extend(["-s", self._device_id])
         return cmd
 
-    # ------------------------------------------------------------------
-    # Pcap stream parser (shared by local tcpdump and mobile)
-    # ------------------------------------------------------------------
 
     def _read_pcap_stream(self, stream: IO) -> None:
         """Read a pcap stream (global header + records) and write as PCAPNG EPBs."""
@@ -441,9 +426,6 @@ class LiveAutoDecryptHandler(OutputHandler):
             buf += chunk
         return bytes(buf)
 
-    # ------------------------------------------------------------------
-    # Cleanup
-    # ------------------------------------------------------------------
 
     def _stop_subprocess(self) -> None:
         """Terminate (then kill) the capture subprocess, if any. Idempotent."""

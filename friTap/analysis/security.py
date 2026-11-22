@@ -1,28 +1,15 @@
-"""
-TlsHygieneAnalyzer — flag transport-security weaknesses in captured flows.
+"""TlsHygieneAnalyzer: flag deprecated TLS/SSL versions, weak ciphers and cleartext.
 
-This analyzer reports **problems only**: a deprecated TLS/SSL version, a weak
-cipher suite, or cleartext (unencrypted) transport. A healthy, well-configured
-flow (TLS 1.2/1.3 with a strong AEAD suite) produces **no** finding, so the
-analyzer is byte-identical on healthy captures and adds no noise to the digest.
+Reports problems only; a healthy flow (TLS 1.2/1.3, strong AEAD suite) yields
+no finding. Findings are ``category="network"`` (digest ``security``/``all``
+focus, never ``privacy``) with a ``cwe`` and a stable ``metadata["check"]`` id
+keyed by :mod:`friTap.analysis.masvs`.
 
-Findings are tagged ``category="network"`` (so they surface under the digest's
-``security`` / ``all`` focus, never ``privacy``), each carries a ``cwe`` and a
-stable ``metadata["check"]`` id that the MASVS mapper
-(:mod:`friTap.analysis.masvs`) keys on.
-
-Data-source caveat (important):
-    friTap's **live** capture path records no TLS handshake metadata — the
-    ``version``/``cipher`` fields of ``flow.tls`` are populated only by the
-    offline pcap->tap producer (see :mod:`friTap.flow.collector`,
-    ``_stamp_tls_metadata``: "Metadata is OFFLINE-ONLY"). So the version/cipher
-    checks fire on ``--from-pcap``-derived ``.tap`` files; on a live capture
-    there is simply nothing to evaluate and this analyzer stays silent.
-    Cleartext detection is likewise meaningful only for offline plaintext
-    captures: friTap hooks encryption libraries, so every *live* flow is by
-    definition decrypted-TLS. Cleartext is therefore reported conservatively —
-    only for a flow that carries no TLS/QUIC layer, sits on a known plaintext
-    port, and actually parsed as HTTP.
+Data source: live capture records no handshake metadata, so ``flow.tls``
+``version``/``cipher`` exist only on offline pcap-derived ``.tap`` files (see
+:mod:`friTap.flow.collector`, ``_stamp_tls_metadata``); live, those checks stay
+silent. Cleartext is reported conservatively: no TLS/QUIC layer, a known
+plaintext port, and an actually parsed HTTP request/response.
 """
 
 from __future__ import annotations
@@ -37,7 +24,6 @@ if TYPE_CHECKING:
     from friTap.flow.models import Flow
 
 
-# CWE identifiers reused across checks (kept here so the mapping is one place).
 _CWE_WEAK_CRYPTO = "CWE-327"      # Use of a Broken or Risky Cryptographic Algorithm
 _CWE_INADEQUATE_STRENGTH = "CWE-326"  # Inadequate Encryption Strength
 _CWE_NO_PFS = "CWE-310"           # Cryptographic Issues (missing forward secrecy)
@@ -49,26 +35,17 @@ _PLAINTEXT_PORTS = frozenset({80, 8080, 8000})
 
 
 def _normalize_version(version: str) -> str:
-    """Normalize a handshake version string for comparison.
-
-    Collapses the common spellings — ``"TLS 1.2"``, ``"TLSv1.2"``, ``"TLS1.2"``,
-    ``"SSLv3"``, ``"SSL 3.0"`` — to a compact ``PROTOMAJOR.MINOR`` form
-    (``"TLS1.2"``, ``"SSL3.0"``, ``"SSL3"``).
-    """
+    """Collapse spellings (``"TLS 1.2"``, ``"TLSv1.2"``, ``"SSL 3.0"``) to ``"TLS1.2"`` / ``"SSL3.0"`` form."""
     return version.upper().replace("V", "").replace(" ", "").replace("_", "").strip()
 
 
 def _version_weakness(version: str) -> tuple[Severity, str, str] | None:
-    """Return ``(severity, label, cwe)`` for a weak version, else ``None``.
-
-    Only known-weak versions are flagged; an unrecognized string is left alone
-    (we never guess). TLS 1.2 and TLS 1.3 are considered healthy.
-    """
+    """``(severity, label, cwe)`` for a known-weak version; unrecognized strings and TLS 1.2/1.3 give ``None``."""
     s = _normalize_version(version)
     if not s:
         return None
     if s.startswith("SSL"):
-        # SSL 2.0 and SSL 3.0 are both broken (POODLE, DROWN, ...).
+        # SSL 2.0 and 3.0 are both broken (POODLE, DROWN).
         return (Severity.HIGH, "obsolete SSL", _CWE_WEAK_CRYPTO)
     if s in ("TLS1", "TLS1.0"):
         return (Severity.MEDIUM, "deprecated TLS 1.0", _CWE_INADEQUATE_STRENGTH)
@@ -78,13 +55,10 @@ def _version_weakness(version: str) -> tuple[Severity, str, str] | None:
 
 
 def _cipher_weakness(cipher: str) -> tuple[Severity, str, str] | None:
-    """Return ``(severity, label, cwe)`` for a weak cipher suite, else ``None``.
+    """``(severity, label, cwe)`` for a weak cipher suite (IANA or OpenSSL names), else ``None``.
 
-    Handles both IANA names (``TLS_RSA_WITH_RC4_128_SHA``) and OpenSSL short
-    names (``ECDHE-RSA-AES128-GCM-SHA256``). Checks run most-severe first and the
-    first match wins, so a ``TLS_RSA_WITH_RC4`` suite is reported as RC4 (HIGH),
-    not as missing forward secrecy. TLS 1.3 suites (``TLS_AES_*``,
-    ``TLS_CHACHA20_*``) match no rule and are left alone.
+    Most-severe check first, first match wins (RC4 over missing PFS). TLS 1.3
+    suites match no rule.
     """
     c = cipher.upper()
     if not c:
@@ -103,8 +77,7 @@ def _cipher_weakness(cipher: str) -> tuple[Severity, str, str] | None:
         return (Severity.HIGH, "DES cipher (56-bit)", _CWE_WEAK_CRYPTO)
     if "MD5" in c:
         return (Severity.MEDIUM, "MD5 MAC", _CWE_WEAK_CRYPTO)
-    # Static-RSA key exchange (no forward secrecy). Only the unambiguous IANA
-    # form is matched; OpenSSL short names are skipped to avoid false positives.
+    # Static RSA (no PFS): only the unambiguous IANA form, to avoid false positives.
     if c.startswith("TLS_RSA_WITH") or c.startswith("SSL_RSA_WITH"):
         return (Severity.LOW, "no forward secrecy (static RSA)", _CWE_NO_PFS)
     return None
@@ -122,7 +95,7 @@ class TlsHygieneAnalyzer:
         return findings
 
     def _check_transport_security(self, flow: "Flow", findings: list[Finding]) -> None:
-        """Evaluate the version/cipher of the flow's TLS or QUIC layer (if any)."""
+        """Check the version/cipher of the flow's TLS or QUIC layer, if any."""
         layer = flow.layer("tls") or flow.layer("quic")
         if layer is None:
             return
@@ -159,13 +132,7 @@ class TlsHygieneAnalyzer:
             ), "network", cwe=cwe, extra_metadata={"check": "weak_cipher"}))
 
     def _check_cleartext(self, flow: "Flow", findings: list[Finding]) -> None:
-        """Flag a flow that carries no encryption layer on a plaintext HTTP port.
-
-        Conservative by design (see the module docstring): requires the absence
-        of both a TLS and a QUIC layer, a known plaintext server port, and an
-        actually-parsed HTTP request/response, so live decrypted-TLS flows (on
-        443) are never mislabeled as cleartext.
-        """
+        """Flag a parsed HTTP flow on a plaintext port with no TLS/QUIC layer (conservative, see module docstring)."""
         if flow.layer("tls") is not None or flow.layer("quic") is not None:
             return
         port = getattr(flow, "dst_port", 0) or 0

@@ -66,6 +66,7 @@ friTap uses dynamic instrumentation to intercept SSL/TLS operations at the libra
 | **Conscrypt** | TBA | TBA | TBA | ✓ Full | TBA | Android system SSL |
 | **S2N-TLS** | ✓ Full | ✗ | TBA | ✓ Full | ✗ | AWS library |
 | **RustTLS** | Keys | TBI | TBI | Keys | TBI | Rust implementation |
+| **Fizz** | TBI | TBI | TBI | Keys | TBI | Meta's TLS 1.3 / mvfst QUIC (Facebook, Instagram), arm64 only |
 
 **Legend:**
 - ✓ **Full**: Complete support (keys + traffic decryption)

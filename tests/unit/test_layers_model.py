@@ -14,7 +14,7 @@ from friTap.flow.decryptors import (
 )
 from friTap.flow.layer_registry import (
     ProtocolDescriptor,
-    ProtocolRegistry,
+    LayerRegistry,
     get_registry,
 )
 from friTap.flow.layers import (
@@ -224,7 +224,7 @@ def test_registry_descriptor_name_mismatch_raises():
 
 
 def test_registry_register_and_list():
-    reg = ProtocolRegistry()
+    reg = LayerRegistry()
     assert reg.names() == frozenset()
     desc = ProtocolDescriptor("tls", TlsLayer, data_source="chunks")
     reg.register(desc)

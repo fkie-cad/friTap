@@ -160,3 +160,18 @@ export function safeKeyLenLogged(
 export function lenArg(a: any): number | undefined {
     return a ? (a as NativePointer).toUInt32() : undefined;
 }
+
+/**
+ * Secret width for hooks whose callers may not pass ssl_log_secret's length:
+ * `fallbackLen` when absent (old call sites), otherwise the validated claim
+ * with `fallbackLen` as the byte-walk answer for garbage claims.
+ */
+export function secretLenOrFallback(
+    claimedLen: number | undefined,
+    labelStr: string,
+    keyPtr: NativePointer,
+    fallbackLen: number,
+): number {
+    if (claimedLen === undefined) return fallbackLen;
+    return safeKeyLenLogged(claimedLen, labelStr, keyPtr, () => fallbackLen).len;
+}

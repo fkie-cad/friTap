@@ -1,24 +1,32 @@
 #!/usr/bin/env python3
-import atexit
 import logging
-import ntpath
 import os
 import random
 import re
 import secrets
+import shlex
 import struct
 import time
-import traceback
 import warnings
-from threading import Event, RLock, Thread
+from threading import RLock, Thread
 
 import psutil
 
-from friTap.constants import build_capture_bpf
+# Capture names used by pcap_full_capture are read from this module at call
+# time (scapy names, build_capture_bpf, linktype and temp-path helpers), so
+# patching friTap.pcap.<name> reaches the capture thread.
+from friTap.constants import build_capture_bpf  # noqa: F401
 
 from ._fs_util import is_non_empty_file
-from .android import Android
+from .android import Android, kill_background_adb_children
 from .constants import is_read_function
+from .pcap_full_capture import FullCaptureThread
+from .pcap_manifest import (  # noqa: F401 - _existing_keylog_files is imported from here
+    _MTIME_SLACK_SECONDS,
+    _existing_keylog_files,
+    _written_this_session,
+    write_capture_manifest,
+)
 from .pcap_utility import (
     MANIFEST_SUFFIX,
     PCAP_FORMAT_AUTO,
@@ -35,20 +43,13 @@ from .sinks.tcp_state import (
     warn_dropped_record,
 )
 
-# scapy emits "WARNING: No libpcap provider available ! pcap won't be used" from
-# logging.getLogger("scapy.loading") at IMPORT time (scapy/config.py,
-# _set_conf_sockets). friTap's core features do not need a host libpcap
-# provider: -k (keylog) and -p (decrypted-payload pcap) are assembled by hand
-# with struct.pack from bytes streamed by the Frida agent (write_pcap_header /
-# log_plaintext_payload below), and wrpcap/PcapReader are pure-Python file I/O.
-# Only -f/--full_capture and live auto-decrypt local capture need one, and those
-# now raise their own actionable, platform-aware error. So the banner is pure
-# noise on every Windows machine without Npcap.
-#
-# scapy/error.py only claims the "scapy" logger level while it is still NOTSET,
-# so a level set *before* the import sticks; the NOTSET child "scapy.loading"
-# inherits it. The level is restored afterwards so genuine runtime scapy
-# warnings are not swallowed for the rest of the process.
+# scapy logs "No libpcap provider available" from "scapy.loading" at import time.
+# Only -f/--full_capture and live local capture need libpcap (they raise their own
+# platform-aware error); -k and -p are built by hand with struct.pack. The banner
+# is noise on Windows without Npcap.
+# scapy/error.py claims the "scapy" logger level only while it is NOTSET, so a level
+# set before the import sticks. It is restored afterwards so real runtime scapy
+# warnings are not swallowed.
 _scapy_logger = logging.getLogger("scapy")
 _scapy_prev_level = _scapy_logger.level
 _scapy_logger.setLevel(logging.ERROR)
@@ -58,7 +59,7 @@ try:
     SCAPY_AVAILABLE = True
 except ImportError:
     SCAPY_AVAILABLE = False
-    # Create dummy objects for testing environments
+    # Stand-ins so the module imports without scapy.
     class Scapy_Exception(Exception):
         pass
 
@@ -81,7 +82,6 @@ except ImportError:
         def __iter__(self): return iter(())
         def close(self): pass
     
-    # Only print warning if not in testing mode
     import sys
     if 'pytest' not in sys.modules:
         logging.getLogger('friTap').warning('scapy is not installed, please install it by running: pip3 install scapy')
@@ -96,9 +96,7 @@ finally:
 INVALID_IPV4 = "0.0.0.0"
 INVALID_IPV6 = "::"
 
-# Silence scapy's *runtime* chatter (e.g. "Mac address to reach destination not
-# found"). The *load-time* "No libpcap provider available" banner is handled by
-# the logger guard around the scapy import above.
+# Silence scapy's runtime chatter (e.g. "Mac address to reach destination not found").
 logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
 warnings.simplefilter("ignore", ResourceWarning)
 
@@ -106,8 +104,7 @@ warnings.simplefilter("ignore", ResourceWarning)
 def _libpcap_hint() -> str:
     """Platform-aware guidance for a missing/unusable libpcap provider.
 
-    Lazy import keeps friTap.pcap free of any import cycle with fritap_utility
-    and matches the function-local-import convention used by other consumers.
+    Imported lazily to avoid an import cycle with fritap_utility.
     """
     from .fritap_utility import libpcap_provider_hint
     return libpcap_provider_hint()
@@ -127,8 +124,8 @@ def _packet_linktype(packet):
 def _existing_pcap_linktype(path):
     """Linktype from the header of an existing classic pcap at ``path``, else None.
 
-    ``wrpcap(append=True)`` keeps an existing file's header, so its linktype —
-    not the first packet of this run — is what every appended packet must match.
+    ``wrpcap(append=True)`` keeps an existing header, so that linktype (not the
+    first packet of this run) is what appended packets must match.
     """
     try:
         with open(path, "rb") as fh:
@@ -144,13 +141,11 @@ def _existing_pcap_linktype(path):
 def _normalize_to_linktype(packet, target_linktype):
     """Return ``packet`` framed for a pcap of ``target_linktype``, or None.
 
-    A classic pcap has ONE linktype (fixed by its header), but ``--loopback``
-    merges the primary NIC (Ethernet) with the loopback adapter, which is
-    DLT_NULL on macOS (lo0) and Windows (Npcap loopback). Written as-is, the
-    minority-linktype packets parse as garbage. Packets already of the target
-    linktype pass through untouched; an IP/IPv6 packet is re-wrapped in a
-    synthetic Ethernet header for an Ethernet file. Anything else cannot be
-    represented faithfully and is dropped (None) rather than stored corrupt.
+    A classic pcap has one linktype, but ``--loopback`` merges the Ethernet NIC with
+    the loopback adapter (DLT_NULL on macOS lo0 and Npcap loopback); written as-is,
+    the minority packets parse as garbage. IP/IPv6 packets are re-wrapped in a
+    synthetic Ethernet header for an Ethernet file. Anything else is dropped
+    (None) rather than stored corrupt.
     """
     if _packet_linktype(packet) == target_linktype:
         return packet
@@ -171,8 +166,8 @@ def _normalize_to_linktype(packet, target_linktype):
 def _ipv6_bytes(addr) -> bytes:
     """Return the 16-byte form of an IPv6 address given as a hex string.
 
-    Content-only packets (no socket 5-tuple) carry "", None or 0 instead; those
-    map to the :: placeholder so the synthetic header can still be written.
+    Content-only packets (no socket 5-tuple) carry "", None or 0; those map to
+    the :: placeholder.
     """
     if isinstance(addr, str):
         try:
@@ -185,12 +180,10 @@ def _ipv6_bytes(addr) -> bytes:
 
 
 def _write_pcap_record(pcap_file, fields, data) -> None:
-    """Write one pcap record (packed *fields* followed by *data*) in ONE write.
+    """Write one pcap record (packed *fields* then *data*) in a single write.
 
-    The plaintext pcap may be shared by several sessions (the Windows LSASS
-    worker writes the same ``-p`` file, see :mod:`friTap.output.shared_output_file`);
-    a single write keeps each record contiguous. The bytes are identical to
-    writing every field separately.
+    The ``-p`` file may be shared by several sessions (Windows LSASS worker, see
+    :mod:`friTap.output.shared_output_file`); one write keeps each record contiguous.
     """
     header = b"".join(struct.pack(fmt, value) for fmt, value in fields)
     pcap_file.write(header + data)
@@ -281,8 +274,7 @@ def _write_udp_datagram(pcap_file, ss_family, t, src_addr, src_port,
 def _validate_capture(path):
     """Reject a capture whose record lengths scapy would trust blindly.
 
-    Imported here: friTap.offline's package __init__ imports pcap_to_tap,
-    which would make a module-level import circular.
+    Imported lazily: friTap.offline's __init__ imports pcap_to_tap (circular).
     """
     from .offline.net.capture_validation import validate_capture_file
     validate_capture_file(path)
@@ -291,9 +283,8 @@ def _validate_capture(path):
 def _endpoints_packable(ss_family, src_addr, src_port, dst_addr, dst_port, logger):
     """Whether the ports (and IPv4 addresses) fit their header fields.
 
-    Values come from agent messages; an out-of-range port or IPv4 int drops
-    the record with a once-per-kind warning instead of raising struct.error.
-    IPv6 addresses are always packable (see _ipv6_bytes).
+    Values come from agent messages; an out-of-range port or IPv4 int drops the
+    record with a once-per-kind warning instead of raising struct.error.
     """
     try:
         validate_port(src_port)
@@ -320,42 +311,8 @@ def terminate_lingering_processes(parent_pid):
             child.kill()
 
 
-# Slack for coarse filesystem mtime resolution (FAT/exFAT store 2 s steps), so a
-# sidecar written in the first instant of this run is never mistaken for stale.
-_MTIME_SLACK_SECONDS = 2.0
-
-
-def _written_this_session(path, not_before) -> bool:
-    """Whether *path* is a non-empty file last modified at/after *not_before*.
-
-    ``not_before=None`` skips the age check (callers without a session clock).
-    """
-    try:
-        stat = os.stat(path)
-    except OSError:
-        return False
-    if stat.st_size == 0:
-        return False
-    return not_before is None or stat.st_mtime >= not_before - _MTIME_SLACK_SECONDS
-
-
-def _existing_keylog_files(mapping, not_before=None) -> dict:
-    """Keep only the ``{protocol: path}`` entries this session actually wrote.
-
-    Memory-scan sidecars (e.g. ``<base>.memscan.mtproto.keylog``) have stable
-    names and are only opened (``"w"``) when their first key arrives, so a file
-    left behind by an EARLIER run survives untouched when this run finds no
-    key. Existence alone would record that stale file in this run's manifest
-    and merge foreign keys offline; requiring content written at/after
-    *not_before* (the session start) excludes it without deleting anything.
-    """
-    return {proto: path for proto, path in (mapping or {}).items()
-            if path and os.path.isfile(path) and _written_this_session(path, not_before)}
-
-
-# The full capture is written to a temp file next to the requested output and
-# only renamed/converted to the final name when the capture is finalized; on
-# Android the device-side tcpdump file carries the same basename.
+# The full capture goes to a temp file next to the output and is renamed or
+# converted to the final name on finalize. The Android tcpdump file shares the basename.
 TEMP_CAPTURE_PREFIX = "_"
 
 
@@ -368,8 +325,7 @@ def temp_capture_basename(pcap_file_name) -> str:
 def temp_capture_path(pcap_file_name) -> str:
     """Temp capture path next to *pcap_file_name*: ``dirname/_basename``.
 
-    The prefix goes on the basename only -- prefixing the whole path turned
-    ``/tmp/cap.pcap`` into the bogus ``_/tmp/cap.pcap``.
+    The prefix goes on the basename only (``/tmp/cap.pcap`` -> ``/tmp/_cap.pcap``).
     """
     head = os.path.split(pcap_file_name)[0]
     base = temp_capture_basename(pcap_file_name)
@@ -382,11 +338,10 @@ _UNSAFE_DEVICE_NAME_CHARS = re.compile(r"[^A-Za-z0-9._-]")
 def device_capture_basename(pcap_file_name) -> str:
     """Per-run unique name of the on-device tcpdump file for *pcap_file_name*.
 
-    ``cap.pcap`` -> ``_cap.<host pid>-<random>.pcap``: two friTap runs with the
-    same ``-p`` basename must not share (and truncate / delete) one device
-    file. Shell-unsafe characters become ``_``. Pass the result to
-    ``Android.run_tcpdump_capture`` once; the Android instance keeps it for
-    the pull and the removal.
+    ``cap.pcap`` -> ``_cap.<host pid>-<random>.pcap``: two runs with the same
+    ``-p`` basename must not share (and truncate or delete) one device file.
+    Shell-unsafe characters become ``_``. ``Android.run_tcpdump_capture`` keeps
+    the name for the pull and the removal.
     """
     root, ext = os.path.splitext(temp_capture_basename(pcap_file_name))
     unique = f"{root}.{os.getpid()}-{secrets.token_hex(3)}{ext}"
@@ -395,36 +350,31 @@ def device_capture_basename(pcap_file_name) -> str:
 
 class PCAP:
 
-    # On-device capture teardown state (see stop_device_capture). Class-level
-    # defaults so instances built without __init__ (tests) still work; __init__
-    # gives every real instance its own lock.
+    # On-device teardown state (see stop_device_capture). Class-level defaults so
+    # tests that build instances via __new__ still work.
     _device_capture_lock = RLock()
     _device_capture_stopped = False
     _device_capture_result = None
+    # True once the device capture was pulled completely (the forced exit then
+    # has nothing to recover).
+    _device_capture_pulled = False
 
     def __init__(self,pcap_file_name,SSL_READ,SSL_WRITE, doFullCapture, isMobile, print_debug_infos=False,
                  owner_capture=False, owner_capture_opts=None, target_package=None, target_pid=None,
                  include_loopback=False, filter_infrastructure=True, pcap_format=PCAP_FORMAT_AUTO):
         self.pcap_file_name = pcap_file_name
-        # The -p container ("pcap"/"pcapng"). ``pcap_format`` is the config's
-        # resolved OutputConfig.pcap_container (or the requested format, which
-        # resolves to the same value); resolved here once, read by writes_pcapng.
+        # The -p container ("pcap"/"pcapng"), resolved once; read by writes_pcapng.
         self.pcap_container = resolve_pcap_format(pcap_file_name, pcap_format)
         self.logger = logging.getLogger('friTap')
-        # Full local capture (-f): also sniff the loopback interface so localhost
-        # traffic (127.0.0.1 / ::1) is recorded. Default OFF — opt-in via --loopback
-        # when a client talks to a local server (e.g. an RC4-in-TLS test server on
-        # 127.0.0.1:8443), which is otherwise invisible to a capture on the primary NIC.
-        # Best-effort: if the loopback adapter can't be opened (e.g. Npcap without
-        # loopback support), the primary capture still runs.
+        # --loopback (-f): also sniff the loopback interface; localhost traffic is
+        # invisible on the primary NIC. Best-effort: if the adapter cannot be
+        # opened (e.g. Npcap without loopback support) the primary capture still runs.
         self.include_loopback = include_loopback
-        # --no-filter-infrastructure: when False, frida/adb control ports are no
-        # longer excluded by the capture-side BPF.
+        # False (--no-filter-infrastructure): frida/adb ports are not excluded by the BPF.
         self.filter_infrastructure = filter_infrastructure
-        # --owner-capture: delegate full capture to the AppTap library to acquire an
-        # app-scoped (UID-scoped) pcap instead of capturing the whole device. These
-        # are intent (config); the *runtime* state lives in apptap_session/
-        # capture_tier/apptap_result, set once a session actually starts.
+        # --owner-capture: AppTap acquires an app (UID) scoped pcap instead of a
+        # whole-device one. These are config; runtime state is apptap_session,
+        # capture_tier and apptap_result, set once a session starts.
         self.owner_capture = owner_capture
         self.owner_capture_opts = owner_capture_opts or {}
         self.target_package = target_package
@@ -449,42 +399,32 @@ class PCAP:
         self.SSL_READ = SSL_READ
         self.SSL_WRITE = SSL_WRITE
 
-        # Distinct SERVER (destination) ports observed per transport, used to
-        # write the best-effort <pcap>.fritap.json sidecar manifest so the
-        # offline pcap-to-tap pipeline knows which ports to Decode-As.
-        # {"tcp": {443, ...}, "udp": {443, ...}}
+        # Distinct server ports per transport, written to the <pcap>.fritap.json
+        # manifest so offline replay knows which ports to Decode-As.
         self._observed_server_ports = {"tcp": set(), "udp": set()}
-        # Keylog file path, if friTap is also exporting an SSLKEYLOGFILE.
-        # Populated externally; recorded in the manifest when present.
+        # SSLKEYLOGFILE path when exported; populated externally.
         self.keylog_path = None
-        # Un-split base ``-k`` path (config.output.keylog). In a multi-protocol
-        # split capture the factory only hands us the per-protocol split paths,
-        # never the base; on Windows the target's TLS is SChannel, so the
-        # <base>.tls split is never written and the real TLS secrets land in this
-        # base file (written by the separate LSASS session). Kept as a manifest
-        # fallback so we record a keylog that actually exists. Populated externally.
+        # Un-split base ``-k`` path. In a split capture only the per-protocol paths
+        # arrive; on Windows (SChannel) the <base>.tls split is never written and
+        # the TLS secrets land in the base file (LSASS session), so it is the
+        # manifest fallback. Populated externally.
         self.base_keylog_path = None
-        # Wall-clock start of this capture session: memory-scan sidecars older
-        # than this belong to an earlier run and are kept out of the manifest.
+        # Memory-scan sidecars older than this belong to an earlier run.
         self._session_started_at = time.time()
-        # Active capture protocol (e.g. "mtproto", "telegram", "signal", "tls").
-        # Populated externally; used to record a protocol-specific keylog field
-        # in the manifest so offline decrypt routes the keys to the right
-        # decryptor (not just the generic TLS SSLKEYLOGFILE).
+        # Active protocol ("mtproto", "signal", "tls", ...), populated externally;
+        # selects the protocol-specific manifest keylog field for offline decrypt.
         self.capture_protocol = None
-        # Per-protocol split keylog paths, populated externally when multiple
-        # protocol formatters are active (``--protocol all|auto``). Recorded in
-        # the manifest under "keylogs" alongside the single "keylog" field so
-        # the offline pipeline can locate every split keylog. {protocol: path}.
+        # {protocol: path} split keylogs (``--protocol all|auto``), populated externally.
         self.active_keylogs = {}
-        # Memory-scan (-ms) keylog paths, {protocol: path}; see
-        # set_memory_scan_keylogs(). Populated externally.
+        # {protocol: path} memory-scan (-ms) keylogs; see set_memory_scan_keylogs().
         self.memory_scan_keylogs = {}
-        # The mid-stream TLS secret-bundle sidecar path the memory-scan engine
-        # intends to write, advertised via set_tls_midstream_secrets_path(). Used
-        # as the authoritative source when building the manifest so the reader
-        # cannot diverge from the writer's CWD-literal fallback. None until set.
+        # Path the memory-scan engine intends to write for the mid-stream TLS secret
+        # bundle (set_tls_midstream_secrets_path); authoritative for the manifest.
         self._tls_midstream_secrets_path = None
+        # --attribute-sdk request-context sidecar of a -f run; see set_request_contexts_path().
+        self._request_contexts_path = None
+        # -p sidecar with the synthetic QUIC connections' secrets; see set_quic_synthetic_keylog_path().
+        self._quic_synthetic_keylog_path = None
         self._device_capture_lock = RLock()
 
         if doFullCapture:
@@ -497,9 +437,8 @@ class PCAP:
                 self.logger.info("capturing whole traffic of target app")
         else:
             self.logger.info("capturing only plaintext data")
-            # When the user requested pcapng, PcapngOutputHandler will own
-            # the file and write a proper SHB. Skip the legacy classic-pcap
-            # header write that would otherwise be immediately overwritten.
+            # PcapngOutputHandler owns the file for pcapng; a classic header
+            # here would be overwritten.
             if self.writes_pcapng():
                 self.pcap_file = None
             else:
@@ -510,9 +449,8 @@ class PCAP:
     def _build_apptap_session(self, output):
         """Build an AppTap CaptureSession for owner-capture, or None to fall back.
 
-        Reuses friTap's adb/root plumbing via the executor adapter (Android) or
-        AppTap's LocalExecutor (Linux). Returns None when AppTap is unavailable or
-        no target identity is known, so the caller falls back to whole-device.
+        Uses friTap's adb plumbing (Android) or AppTap's LocalExecutor (Linux).
+        None when AppTap is missing or no target is known (whole-device fallback).
         """
         from .apptap_adapter import FritapAdbExecutor, apptap_available
         if not apptap_available():
@@ -573,11 +511,12 @@ class PCAP:
     def stop_device_capture(self):
         """Stop the on-device tcpdump, pull its pcap and delete the device file.
 
-        Idempotent and thread-safe: SIGINT, SIGTERM, target death, script
-        errors, normal exit and the atexit safety net may all call it, but the
-        teardown runs exactly once; later callers wait for it and get the same
-        result. Returns the local temp capture path (the file the finalize step
-        reads), or ``None`` when no device capture was ever started.
+        The device file is deleted only after a complete pull; a failed pull
+        keeps it and logs the adb command that recovers it.
+
+        Idempotent and thread-safe: signals, target death, errors, normal exit and
+        the atexit net may all call it; teardown runs once and later callers get the
+        same result. Returns the local temp capture path, or ``None`` if none started.
         """
         with self._device_capture_lock:
             if not self._device_capture_stopped:
@@ -589,10 +528,9 @@ class PCAP:
             return self._device_capture_result
 
     def _teardown_device_capture(self):
-        # No need to wait for a still-starting capture thread: it launches
-        # tcpdump under _device_capture_lock (held by our caller) and skips the
-        # launch once _device_capture_stopped is set, so the process handle
-        # read here is final.
+        # No wait for a still-starting thread: it launches tcpdump under
+        # _device_capture_lock (held by the caller) and skips once stopped, so the
+        # process handle read here is final.
         thread = getattr(self, "full_capture_thread", None)
         if thread is None or getattr(self, "android_Instance", None) is None:
             return None
@@ -609,11 +547,107 @@ class PCAP:
         except Exception as exc:
             self.logger.error(f"Error pulling the device capture: {exc}")
             pulled = None
-        android.remove_device_capture()
+        if pulled:
+            self._device_capture_pulled = True
+            android.remove_device_capture()
+        else:  # deleting it now would lose the only copy
+            android.keep_device_capture_for_recovery(
+                os.path.abspath(temp_capture_path(self.pcap_file_name)))
         return temp_capture_path(self.pcap_file_name) if pulled else None
 
+    # Bound of the forced-exit kill below; the user already asked to quit.
+    FORCED_KILL_ADB_TIMEOUT = 5
+
+    def kill_device_capture(self):
+        """Forced-exit net: SIGKILL friTap's device tcpdump now, without pulling.
+
+        os._exit skips the atexit net, so a forced exit calls this instead. It
+        takes no lock (the graceful stop_device_capture() may be holding it
+        mid-teardown) and makes one bounded adb call. Only friTap's own tcpdump
+        (pidfile pid, still named tcpdump) is killed. Returns True if the kill
+        was sent; never raises.
+        """
+        thread = getattr(self, "full_capture_thread", None)
+        android = getattr(self, "android_Instance", None)
+        process = getattr(thread, "android_capture_process", -1)
+        if android is None or process in (-1, None):
+            return False
+        sent = False
+        try:
+            result = android.adb.shell(self._forced_kill_command(android),
+                                       timeout=self.FORCED_KILL_ADB_TIMEOUT)
+            sent = True
+            if "killed" in (getattr(result, "stdout", "") or ""):
+                self.logger.info(
+                    "full capture: device tcpdump killed; its unpulled capture stays at "
+                    f"{android.dst_path}{android.pcap_name} on the device")
+        except Exception as exc:
+            self.logger.debug("forced kill of the device tcpdump failed: %s", exc)
+        try:
+            process.kill()  # the local adb client
+        except Exception:
+            pass
+        return sent
+
+    def device_pull_progress(self):
+        """Bytes the running device-capture pull wrote so far, or None when no pull runs."""
+        progress = getattr(getattr(self, "android_Instance", None), "pull_progress", None)
+        return progress() if callable(progress) else None
+
+    def abort_device_capture_pull(self):
+        """Forced-exit net: stop a running pull, then say how to recover the device capture.
+
+        Logs the recovery command whenever a device capture was started and not
+        pulled completely, unless the failed-pull path already logged it. Local
+        only (no adb call), so it cannot eat the forced exit's time budget.
+        Returns True when the recovery line was logged; never raises.
+        """
+        android = getattr(self, "android_Instance", None)
+        thread = getattr(self, "full_capture_thread", None)
+        if android is None or getattr(thread, "android_capture_process", -1) in (-1, None):
+            return False
+        try:
+            android.abort_pull()
+            if self._device_capture_pulled or getattr(android, "recovery_logged", False) is True:
+                return False
+            android.keep_device_capture_for_recovery(
+                os.path.abspath(temp_capture_path(self.pcap_file_name)), remove_pidfile=False)
+            return True
+        except Exception as exc:  # noqa: BLE001 - the exit must happen regardless
+            self.logger.debug("forced-exit pull abort failed: %s", exc)
+            return False
+
+    # Bound of the forced AppTap stop; its stop() makes several adb calls.
+    FORCED_OWNER_CAPTURE_STOP_SECONDS = 4.0
+
+    def abort_owner_capture(self):
+        """Forced-exit net: stop a running AppTap session, bounded. True if one was running."""
+        if getattr(self, "apptap_session", None) is None:
+            return False
+        worker = Thread(target=self.stop_owner_capture, daemon=True,
+                        name="fritap-forced-apptap-stop")
+        worker.start()
+        worker.join(self.FORCED_OWNER_CAPTURE_STOP_SECONDS)
+        return True
+
+    @staticmethod
+    def kill_adb_children():
+        """Forced-exit net: stop friTap's background adb children (they ignore the terminal's Ctrl+C)."""
+        return kill_background_adb_children()
+
+    @staticmethod
+    def _forced_kill_command(android):
+        """One device shell command: SIGKILL the pidfile's pid if it is still tcpdump."""
+        pid = getattr(android, "tcpdump_pid", None)
+        pid_expr = str(int(pid)) if pid is not None else (
+            f'$(cat "{android._capture_pidfile()}" 2>/dev/null)')
+        script = (f'p={pid_expr}; [ -n "$p" ] && grep -q tcpdump /proc/$p/comm 2>/dev/null'
+                  ' && kill -9 $p && echo killed')
+        # sh -c: the su elevators must run the whole script as root.
+        return f"sh -c {shlex.quote(script)}"
+
     def _log_root_unavailable(self):
-        """Explain why the Android full capture cannot run (unrooted vs. unknown)."""
+        """Log why the Android full capture cannot run (unrooted vs. unknown)."""
         from .android import RootState
         try:
             state = self.android_Instance.root_state
@@ -631,330 +665,10 @@ class PCAP:
             "plaintext/keylog capture is unaffected.")
 
     def get_instance_of_FullCaptureThread(self):
+        """A new, unstarted :class:`~friTap.pcap_full_capture.FullCaptureThread` for this capture."""
+        return FullCaptureThread(self)
 
-        pcap_class = self
-        
-        class FullCaptureThread(Thread):
-            
-            def __init__(self):
-                super(FullCaptureThread,self).__init__()
-                self.pcap_file_name = pcap_class.pcap_file_name
-                self.daemon = True
-                self.socket = None
-                self.loopback_socket = None
-                self.stop_capture = Event()
-                self.tmp_pcap_name = self._get_tmp_pcap_name()
-                self._file_linktype = None
-                self._warned_linktype_drop = False
 
-                self.mobile_subprocess = -1
-                self.android_capture_process = -1    
-                self.is_Mobile = pcap_class.is_Mobile
-                
-            
-            def _get_pcap_base_name(self):
-                head, tail = ntpath.split(self.pcap_file_name)
-                return tail or ntpath.basename(head)
-                
-            
-            def _get_pcap_dir_path(self):
-                dirname_wihtout_last_delimiter = ntpath.dirname(self.pcap_file_name)
-                if len(dirname_wihtout_last_delimiter) > 1:
-                    return dirname_wihtout_last_delimiter + self.pcap_file_name[len(dirname_wihtout_last_delimiter):(len(dirname_wihtout_last_delimiter)+1)]
-                else:
-                    return dirname_wihtout_last_delimiter
-            
-            
-            def _get_tmp_pcap_name(self):
-                return temp_capture_path(self.pcap_file_name)
-                
-            
-            def write_packet_to_pcap(self,packet):
-                """Append ``packet`` to the temp pcap, matching the file's linktype.
-
-                With --loopback, packets from two adapters of different
-                linktypes share one classic pcap; see _normalize_to_linktype.
-                """
-                if self._file_linktype is None:
-                    existing = _existing_pcap_linktype(self.tmp_pcap_name)
-                    self._file_linktype = (existing if existing is not None
-                                           else _packet_linktype(packet))
-                normalized = _normalize_to_linktype(packet, self._file_linktype)
-                if normalized is None:
-                    self._warn_dropped_packet(packet)
-                    return
-                wrpcap(self.tmp_pcap_name, normalized, append=True)  #appends packet to output file
-
-            def _warn_dropped_packet(self, packet):
-                if self._warned_linktype_drop:
-                    return
-                self._warned_linktype_drop = True
-                pcap_class.logger.warning(
-                    "full capture: dropping %s packets that cannot be stored in a "
-                    "linktype-%d pcap (mixed-interface capture via --loopback)",
-                    type(packet).__name__, self._file_linktype)
-            
-            
-            def clean_up_and_exit(self):
-                """Gracefully exit the FullCaptureThread"""
-                pcap_class.logger.info("Cleaning up FullCaptureThread resources.")
-
-                if getattr(pcap_class, "apptap_session", None) is not None:
-                    pcap_class.stop_owner_capture()
-
-                if self.socket:
-                    try:
-                        pcap_class.logger.info("Closing network socket.")
-                        self.socket.close()
-                    except Exception as e:
-                        pcap_class.logger.error(f"Error while closing the socket: {e}")
-                if self.loopback_socket:
-                    try:
-                        self.loopback_socket.close()
-                    except Exception as e:
-                        pcap_class.logger.debug(f"Error while closing the loopback socket: {e}")
-                if self.android_capture_process != -1:
-                    try:
-                        pcap_class.logger.info("Terminating android capture process.")
-                        self.android_capture_process.terminate()
-                        self.android_capture_process.wait(timeout=2)
-                    except Exception as e:
-                        pcap_class.logger.error(f"Error while terminating android capture process: {e}")
-
-            
-            
-            def _open_loopback_socket(self):
-                """Open an L2 listener on the loopback interface, or None (best-effort).
-
-                On Windows this needs Npcap's loopback adapter (``conf.loopback_name``,
-                e.g. "\\Device\\NPF_Loopback"); on Linux/macOS it is ``lo``/``lo0``. Any
-                failure (no loopback adapter, no permission) is logged and returns None
-                so the primary capture proceeds unaffected.
-                """
-                loop_name = getattr(conf, "loopback_name", None)
-                if not loop_name:
-                    pcap_class.logger.debug(
-                        "loopback capture: scapy knows no loopback adapter; skipping "
-                        "(on Windows, install Npcap with loopback support).")
-                    return None
-                try:
-                    sock = conf.L2listen(type=ETH_P_ALL, iface=loop_name)
-                    pcap_class.logger.info(
-                        "also capturing loopback traffic on %s (enabled via --loopback)",
-                        loop_name)
-                    return sock
-                except Exception as e:
-                    pcap_class.logger.warning(
-                        "loopback capture unavailable on %s (%s); continuing with the "
-                        "primary interface. On Windows, install Npcap with loopback "
-                        "support to capture 127.0.0.1 traffic.", loop_name, e)
-                    return None
-
-            def full_local_capture(self):
-                if getattr(pcap_class, "owner_capture", False):
-                    session = pcap_class._build_apptap_session(self.tmp_pcap_name)
-                    if session is not None:
-                        try:
-                            session.start()
-                            pcap_class.apptap_session = session
-                            pcap_class.capture_tier = getattr(session, "_chosen", None)
-                            pcap_class.logger.info(
-                                "owner-capture: AppTap acquiring app-scoped pcap (tier=%s)",
-                                pcap_class.capture_tier)
-                            return
-                        except Exception as exc:
-                            pcap_class.logger.error(
-                                "owner-capture: AppTap failed to start (%s); falling back "
-                                "to whole-device capture", exc)
-                            try:
-                                session.teardown()
-                            except Exception:
-                                pass
-                    # fall through to the legacy scapy capture below
-                try:
-
-                    self.socket = conf.L2listen(
-                        type=ETH_P_ALL
-                    )
-
-                    # Also sniff loopback so localhost traffic (127.0.0.1 / ::1) is
-                    # captured — a client talking to a local server is otherwise
-                    # invisible on the primary NIC. Opt-in via --loopback and
-                    # best-effort; a failure to open the loopback adapter degrades to
-                    # primary-only.
-                    sockets = [self.socket]
-                    if getattr(pcap_class, "include_loopback", False):
-                        self.loopback_socket = self._open_loopback_socket()
-                        if self.loopback_socket is not None:
-                            sockets.append(self.loopback_socket)
-
-                    pcap_class.logger.info("doing full local capture")
-
-                    capture_bpf = build_capture_bpf(
-                        filter_infrastructure=getattr(pcap_class, "filter_infrastructure", True),
-                        include_loopback=getattr(pcap_class, "include_loopback", False),
-                    )
-                    sniff(
-                        opened_socket=sockets if len(sockets) > 1 else self.socket,
-                        filter=capture_bpf or None,
-                        prn=self.write_packet_to_pcap,
-                        stop_filter=self.stop_capture_thread
-                    )
-                except PermissionError as e:
-                    pcap_class.logger.error(f"Full capture (-f) failed: {e}")
-                    pcap_class.logger.error(_libpcap_hint())
-                    self.clean_up_and_exit()
-                except RuntimeError as e:
-                    # Windows without Npcap: conf.L2listen resolves to scapy's
-                    # _NotAvailableSocket, whose __init__ raises RuntimeError
-                    # ("winpcap is not installed"). Catch it before the generic
-                    # handler so the user gets the Npcap hint, not "Unknown error".
-                    pcap_class.logger.error(f"Full capture (-f) failed: {e}")
-                    pcap_class.logger.error(_libpcap_hint())
-                    self.clean_up_and_exit()
-                except Scapy_Exception as e:
-                    pcap_class.logger.error(f"Full capture (-f) failed: {e}")
-                    pcap_class.logger.error(_libpcap_hint())
-                    self.clean_up_and_exit()
-                except TypeError as e:
-                    # Shutdown race: when the target exits, the stop path signals stop and
-                    # closes the capture socket(s) while scapy's sniff() is still blocked in
-                    # select_objects. A closed Windows pcap socket's fileno() returns None, so
-                    # scapy's `i.fileno() < 0` raises "'<' not supported between ... NoneType
-                    # and int". That is a benign teardown artifact, not a capture failure, so
-                    # we end cleanly here without the misleading "unexpected error"/Npcap hint.
-                    tearing_down = False
-                    sc = getattr(self, "stop_capture", None)
-                    if sc is not None:
-                        try:
-                            tearing_down = sc.is_set() if hasattr(sc, "is_set") else sc.isSet()
-                        except Exception:
-                            pass
-                    if not tearing_down:
-                        for s in (self.socket, getattr(self, "loopback_socket", None)):
-                            if s is None:
-                                continue
-                            try:
-                                if s.fileno() is None:   # closed pcap handle -> teardown race
-                                    tearing_down = True
-                                    break
-                            except Exception:
-                                tearing_down = True   # fileno() on a dead socket -> teardown
-                                break
-                    if tearing_down:
-                        pcap_class.logger.debug(f"Full capture stopped during teardown ({e}).")
-                    else:
-                        pcap_class.logger.error(f"Full capture (-f) failed with an unexpected error: {e}")
-                        pcap_class.logger.error(_libpcap_hint())
-                        pcap_class.logger.debug("Full traceback for debugging:")
-                        pcap_class.logger.debug(traceback.format_exc())
-                    self.clean_up_and_exit()
-                except Exception as e:
-                    pcap_class.logger.error(f"Full capture (-f) failed with an unexpected error: {e}")
-                    pcap_class.logger.error(_libpcap_hint())
-                    pcap_class.logger.debug("Full traceback for debugging:")
-                    pcap_class.logger.debug(traceback.format_exc())
-                    self.clean_up_and_exit()
-                
-                
-            def run(self):
-                if self.is_Mobile:
-                    try:
-                        self.mobile_subprocess = self.full_mobile_capture()
-                    except Exception as e:
-                        pcap_class.logger.error(f"Full mobile capture unavailable: {e}")
-                        pcap_class.logger.debug(traceback.format_exc())
-                        self.mobile_subprocess = -1
-                else:
-                    self.full_local_capture()
-            
-            
-            def join(self, timeout=None):
-                self.stop_capture.set()
-
-                # owner-capture: AppTap owns its own capture process + teardown.
-                if getattr(pcap_class, "apptap_session", None) is not None:
-                    pcap_class.stop_owner_capture()
-                    super().join(timeout)
-                    return
-
-                # Terminate the tcpdump process if running
-                #if self.android_capture_process and self.android_capture_process.poll() in {None, -2, -15}:
-                if self.is_Mobile and pcap_class.android_Instance.is_Android:
-                    if self.android_capture_process != -1 and self.android_capture_process.poll() is None:
-                        # The one idempotent device teardown: stop tcpdump by
-                        # pid (terminating the local adb client alone leaves it
-                        # running), pull the pcap, delete the device file.
-                        pcap_class.stop_device_capture()
-
-                super().join(timeout)
-            
-            
-            def stop_capture_thread(self, packet):
-                if hasattr(self.stop_capture, "is_set"):
-                    status = self.stop_capture.is_set()
-                else:
-                    status = self.stop_capture.isSet()
-                return status
-                
-                
-            def full_mobile_capture(self):
-                if pcap_class.android_Instance.is_Android:
-                    if not pcap_class.android_Instance.adb_check_root():
-                        pcap_class._log_root_unavailable()
-                        return -1
-
-                    if getattr(pcap_class, "owner_capture", False):
-                        session = pcap_class._build_apptap_session(self.tmp_pcap_name)
-                        if session is not None:
-                            try:
-                                session.start()
-                                pcap_class.apptap_session = session
-                                pcap_class.capture_tier = getattr(session, "_chosen", None)
-                                pcap_class.logger.info(
-                                    "owner-capture: AppTap acquiring app-scoped pcap (tier=%s)",
-                                    pcap_class.capture_tier)
-                                # mobile_subprocess stays -1: AppTap owns its own
-                                # capture process and teardown; legacy tcpdump skipped.
-                                return -1
-                            except Exception as exc:
-                                pcap_class.logger.error(
-                                    "owner-capture: AppTap failed to start (%s); falling back "
-                                    "to whole-device capture", exc)
-                                try:
-                                    session.teardown()
-                                except Exception:
-                                    pass
-                        # fall through to the legacy whole-device capture below
-
-                    if not pcap_class.android_Instance.is_tcpdump_available:
-                        pcap_class.android_Instance.install_tcpdump()
-                    # Start under the teardown lock: either tcpdump is running
-                    # before stop_device_capture() looks, or the teardown already
-                    # happened and tcpdump must not start at all (it would leak).
-                    with pcap_class._device_capture_lock:
-                        if pcap_class._device_capture_stopped:
-                            pcap_class.logger.info(
-                                "full capture: session already ending; not starting tcpdump")
-                            return -1
-                        self.android_capture_process = pcap_class.android_Instance.run_tcpdump_capture(
-                            device_capture_basename(self.pcap_file_name),
-                            include_loopback=getattr(pcap_class, "include_loopback", False),
-                            filter_infrastructure=getattr(pcap_class, "filter_infrastructure", True))
-                    # Safety net for exits that bypass friTap's own teardown.
-                    atexit.register(pcap_class.stop_device_capture)
-
-                    pcap_class.logger.info("doing full capture on Android")
-                    return self.android_capture_process
-                else:
-                    pcap_class.logger.error("currently a full capture on iOS is not supported\nAbborting...")
-                    exit(2)
-                    
-        ## End of inner class FullCaptureThread 
-        instance_of_thread_class = FullCaptureThread()
-        return instance_of_thread_class
-   
-     
     def write_pcap_header(self, pcap_file):
         self.pcap_file = pcap_file
         for writes in (
@@ -969,41 +683,27 @@ class PCAP:
         return pcap_file    
     
     def __create_plaintext_pcap(self):
-        # Shared per path: the Windows LSASS session logs plaintext into the same
-        # -p file, and a second private "wb" open would truncate this one. Only
-        # the first opener writes the global header.
+        # Shared per path: the Windows LSASS session writes the same -p file, and a
+        # second private "wb" open would truncate it. Only the first opener writes the header.
         from .output.shared_output_file import open_shared_output_file
         pcap_file, _created = open_shared_output_file(
             self.pcap_file_name, "wb", 0, initializer=self.write_pcap_header)
         return pcap_file
     
     def log_plaintext_payload(self, ss_family, function, src_addr, src_port,
-                 dst_addr, dst_port, data, transport="tcp"):
-        """Writes the captured data to a pcap file.
-        Args:
-        pcap_file: The opened pcap file.
-        ss_family: The family of the connection, IPv4/IPv6
-        function: The function that was intercepted ("SSL_read" or "SSL_write").
-        src_addr: The source address of the logged packet.
-        src_port: The source port of the logged packet.
-        dst_addr: The destination address of the logged packet.
-        dst_port: The destination port of the logged packet.
-        data: The decrypted packet data.
-        transport: "tcp" (default) or "udp". QUIC plaintext rides on UDP and
-                   must be framed as IP+UDP (protocol 17) rather than IP+TCP.
+                 dst_addr, dst_port, data, transport="tcp", timestamp=None):
+        """Write decrypted *data* to the ``-p`` pcap as synthetic IP+TCP (or IP+UDP) records.
+
+        *function* ("SSL_read"/"SSL_write") gives the direction. *transport* is
+        "udp" for QUIC plaintext. *timestamp* is epoch seconds; None means now.
         """
 
-        t = time.time()
+        t = time.time() if timestamp is None else timestamp
 
-        # Plaintext captured at an application decrypt boundary (Signal / Telegram
-        # Secret-Chat E2E and other out-of-band-content hooks) frequently has no
-        # socket 5-tuple, so src/dst addr+port arrive as "" (or None). The
-        # synthetic IP/TCP(/UDP) header below packs them as integers, so normalize
-        # any non-integer to 0 — a 0.0.0.0:0 placeholder. The addresses are purely
-        # cosmetic for these content-only packets; this keeps the pcap writer from
-        # raising struct.error and dropping the payload.
-        # IPv6 addresses legitimately arrive as 32-char hex strings; those are
-        # packed via _ipv6_bytes() below, so only IPv4 addresses are forced to int.
+        # Plaintext from app-level decrypt hooks (Signal, Telegram Secret Chat) often
+        # has no socket 5-tuple, so addr/port arrive as "" or None. The headers pack
+        # integers, so non-integers become a 0.0.0.0:0 placeholder instead of raising
+        # struct.error. IPv6 hex strings are packed by _ipv6_bytes, so only IPv4 is forced.
         if ss_family != "AF_INET6":
             if not isinstance(src_addr, int):
                 src_addr = 0
@@ -1018,8 +718,6 @@ class PCAP:
                                    dst_addr, dst_port, self.logger):
             return
 
-        # Record the server-side port for the manifest. On a read the server is
-        # the source; on a write it is the destination.
         self._record_server_port(transport, function, src_port, dst_port)
 
         if transport == "udp":
@@ -1043,9 +741,8 @@ class PCAP:
             self.ssl_sessions[session_unique_key] = (random.randint(0, 0xFFFFFFFF),
                                                 random.randint(0, 0xFFFFFFFF))
 
-        # Payloads larger than one IP packet are split into several segments;
-        # each one advances the sequence number of its direction, so the
-        # segments are contiguous and reassemble to the original bytes.
+        # Payloads over one IP packet are split; each segment advances its
+        # direction's sequence number so they reassemble to the original bytes.
         client_sent, server_sent = self.ssl_sessions[session_unique_key]
         for segment in split_payload(data, max_segment_payload(ss_family, "tcp")):
             seq, ack = (server_sent, client_sent) if is_read else (client_sent, server_sent)
@@ -1060,12 +757,10 @@ class PCAP:
 
     def _log_plaintext_payload_udp(self, ss_family, src_addr, src_port,
                  dst_addr, dst_port, data, t):
-        """Writes the captured data to the pcap file framed as IP+UDP.
+        """Write QUIC plaintext as IP+UDP datagrams.
 
-        Used for QUIC plaintext, which rides on UDP (protocol 17). Unlike the
-        TCP path there is no seq/ack and no ssl_sessions bookkeeping — UDP is
-        connectionless, so each datagram stands alone. A payload larger than
-        one IP packet is written as several datagrams.
+        No seq/ack or ssl_sessions state; a payload over one IP packet becomes
+        several datagrams.
         """
         if ss_family not in ("AF_INET", "AF_INET6"):
             self.logger.warning("Packet has unknown/unsupported family!")
@@ -1075,16 +770,9 @@ class PCAP:
                                 dst_addr, dst_port, segment)
 
 
-    # creating a filter for scapy or wiresharks display filter depending on the provided socket_trace_set which looks like
     @staticmethod
     def get_filter_from_traced_sockets(traced_Socket_Set, filter_type="bpf"):
-        """
-        Generate a filter string from traced sockets.
-        
-        :param traced_Socket_Set: Set of frozensets containing socket info.
-        :param filter_type: "bpf" for BPF filters or "display" for Wireshark display filters.
-        :return: Filter string.
-        """
+        """Build a "bpf" or Wireshark "display" filter string from a set of socket frozensets."""
         filters = []
         for socket_info in traced_Socket_Set:
             socket_dict = dict(socket_info)  # Convert frozenset back to a dictionary
@@ -1110,23 +798,15 @@ class PCAP:
 
         
     def _temp_pcap_path(self):
-        """Return the temp file path produced by FullCaptureThread.
-
-        Mirrors ``_get_tmp_pcap_name`` in the inner thread class so the
-        finalization helpers work for both relative and absolute filenames.
-        For ``capture.pcapng`` → ``_capture.pcapng``; for
-        ``/tmp/capture.pcapng`` → ``/tmp/_capture.pcapng``.
-        """
+        """Temp capture path produced by FullCaptureThread (``/tmp/c.pcapng`` -> ``/tmp/_c.pcapng``)."""
         return temp_capture_path(self.pcap_file_name)
 
     @staticmethod
     def _write_minimal_pcapng_with_keys(output_pcapng, formatted_keys, link_type=1):
         """Write a zero-packet pcapng (SHB + IDB + optional DSB).
 
-        Used by ``_emit_pcapng_with_dsb`` when the source pcap is
-        unavailable or unreadable, to ensure the user still keeps the
-        TLS keys instead of getting a scapy traceback. Default link
-        type is DLT_EN10MB (1) for the no-source-to-probe case.
+        Used by ``_emit_pcapng_with_dsb`` when the source pcap is missing or
+        unreadable, so the keys survive. Default link type is DLT_EN10MB (1).
         """
         from .output.pcapng_blocks import build_dsb, build_idb, build_shb
         with open(output_pcapng, "wb") as fh:
@@ -1138,21 +818,14 @@ class PCAP:
 
     def _emit_pcapng_with_dsb(self, source_pcap, output_pcapng,
                               formatted_keys, bpf_filter=None):
-        """Emit a pcapng of source_pcap to output_pcapng with a DSB block
-        embedding all formatted_keys. Linktype is preserved from the source.
+        """Emit a pcapng of *source_pcap* with a DSB block embedding *formatted_keys*.
 
-        Streams packets via PcapReader so multi-GB captures don't materialise
-        the full PacketList in memory. When a BPF filter is supplied we fall
-        back to ``sniff`` because scapy's BPF compilation needs the L2 layer.
+        Streams via PcapReader so multi-GB captures stay out of memory; a BPF
+        filter falls back to ``sniff`` (scapy's BPF needs the L2 layer). A missing
+        or empty source still yields a minimal SHB+IDB(+DSB) pcapng so the keys survive.
 
-        Defensive: if the source pcap is missing or zero-sized (e.g. the
-        sniff thread saw no packets, or the temp file was already moved
-        away), still write a minimal valid pcapng with SHB+IDB(+DSB) so
-        the user keeps the TLS keys instead of getting a scapy traceback.
-
-        Returns True when *source_pcap* is no longer needed (its packets are in
-        the output, or it held none) and False when it could not be read, so
-        the caller keeps the raw capture instead of losing its packets.
+        Returns True when *source_pcap* is no longer needed, False when it could
+        not be read (the caller then keeps the raw capture).
         """
         from .output.pcapng_blocks import build_dsb, build_epb, build_idb, build_shb
 
@@ -1189,9 +862,8 @@ class PCAP:
                         fh.write(build_epb(bytes(pkt), t_us))
             return True
         except (EOFError, struct.error, Scapy_Exception, ValueError, MemoryError) as exc:
-            # Truncated/corrupt source (ValueError covers CaptureFormatError
-            # from the length pre-check): log the path so the user can
-            # inspect, but still produce a usable output with the keys.
+            # Truncated/corrupt source (ValueError covers CaptureFormatError from
+            # the length pre-check): still produce a usable keys-only output.
             self.logger.error(
                 "PCAPNG finalization failed reading %s: malformed or truncated "
                 "capture (%s: %s) — emitting keys-only output",
@@ -1207,17 +879,13 @@ class PCAP:
     def _emit_final(self, source_pcap, formatted_keys, bpf_filter=None):
         """Emit the final -p file in the resolved container format.
 
-        The container comes from :meth:`writes_pcapng` (``--pcap-format``,
-        else the extension). For pcapng: emit a fresh pcapng with embedded DSB
-        block. For classic pcap with a filter: write filtered classic pcap.
-        For classic pcap with no filter: rename the temp file in place — source
-        is already classic pcap, and the rename is on the same filesystem
-        because _temp_pcap_path puts the temp alongside the final.
+        pcapng: fresh file with an embedded DSB. Classic with a filter: filtered
+        pcap. Classic without: rename in place (same filesystem, since the temp
+        sits beside the final).
 
-        The temp capture is removed once the final file holds its packets, on
-        every path (including an exception raised mid-write, which keeps it).
-        A temp that could not be converted is kept and its path logged, so no
-        captured packets are lost.
+        The temp capture is removed once the final file holds its packets. One
+        that could not be converted (or an exception mid-write) is kept and
+        logged, so no packets are lost.
         """
         consumed = False
         try:
@@ -1251,9 +919,8 @@ class PCAP:
     def _write_filtered_pcap(self, source_pcap, bpf_filter):
         """Write the BPF-filtered packets of *source_pcap* as the final classic pcap.
 
-        A malformed temp capture is left in place (nothing is lost) and
-        reported instead of raising out of the finalize step. Returns True when
-        the final file was written.
+        A malformed temp capture is left in place and reported instead of raising.
+        Returns True when the final file was written.
         """
         try:
             _validate_capture(source_pcap)
@@ -1270,22 +937,16 @@ class PCAP:
     def _record_server_port(self, transport, function, src_port, dst_port):
         """Record the distinct server (destination) port for the manifest.
 
-        On a read the remote server is the *source*; on a write it is the
-        *destination*. Best-effort and fully guarded — never raises.
+        On a read the server is the source; on a write it is the destination.
+        Best-effort, never raises.
         """
         try:
-            # The server side of the 4-tuple is determined purely by the
-            # *direction* of the call, never by transport (TCP vs UDP/QUIC):
-            #   - on a READ the peer wrote to us, so the peer (server) is the
-            #     source -> server_port = src_port
-            #   - on a WRITE we wrote to the peer, so the peer (server) is the
-            #     destination -> server_port = dst_port
+            # The server side depends on direction only, never on transport.
             if is_read_function(function):
                 server_port = src_port
             else:
                 server_port = dst_port
-            # Choosing the transport bucket is an independent decision: QUIC
-            # plaintext rides on UDP, everything else is recorded as TCP.
+            # QUIC plaintext rides on UDP; everything else is filed as TCP.
             transport_key = "udp" if transport == "udp" else "tcp"
             if isinstance(server_port, int) and server_port > 0:
                 self._observed_server_ports[transport_key].add(server_port)
@@ -1295,19 +956,13 @@ class PCAP:
     def _seed_server_ports_from_sockets(self, valid_sockets):
         """Best-effort: add destination ports from traced sockets to the manifest sets.
 
-        Socket dicts are not guaranteed to carry port/transport keys, so every
-        lookup is optional and the whole helper is guarded.
-
-        Transport-bucket caveat: the traced-socket descriptors emitted by the
-        agent (see ssl_logger_core._on_message) only carry src/dst addr+port and
-        ss_family — there is *no* protocol/transport field. We therefore honor a
-        transport hint *if one is ever present* (``ss_protocol``/``protocol``),
-        but when none is available we fall back to TCP. This means UDP/QUIC
-        server ports seeded purely from a socket trace are filed under TCP; we do
-        not invent a transport we cannot observe. Ports recorded via the
-        plaintext-logging path (``_record_server_port``) carry a real transport
-        and are bucketed correctly, and the user can always pass
-        ``--quic-port`` to record QUIC ports explicitly.
+        Socket dicts may lack port/transport keys, so every lookup is optional.
+        The agent's socket descriptors carry no transport field (see
+        ssl_logger_core._on_message), so a ``ss_protocol``/``protocol`` hint is
+        honored only if present; otherwise ports are filed under TCP. UDP/QUIC
+        ports seeded only from a socket trace are therefore filed as TCP; ports
+        from ``_record_server_port`` have a real transport, and ``--quic-port``
+        records QUIC ports explicitly.
         """
         try:
             for sock in valid_sockets:
@@ -1319,8 +974,6 @@ class PCAP:
                         continue
                 if dst_port <= 0:
                     continue
-                # Honor a transport hint when the socket dict provides one;
-                # otherwise default to TCP (see transport-bucket caveat above).
                 proto = str(sock.get("ss_protocol") or sock.get("protocol") or "").lower()
                 transport_key = "udp" if "udp" in proto else "tcp"
                 self._observed_server_ports[transport_key].add(dst_port)
@@ -1329,15 +982,12 @@ class PCAP:
 
     @staticmethod
     def _keylog_with_content(*candidates) -> "str | None":
-        """Return the first candidate keylog path that exists AND is non-empty.
+        """First candidate keylog path that exists and is non-empty.
 
-        Used to pick the TLS keylog for the manifest: the per-protocol split path
-        is preferred, but on Windows the LSASS hook worker writes the TLS secrets to
-        the BASE ``-k`` file, not the split ``<base>.tls.log`` (which is then never
-        created). Recording that phantom split path makes an offline replay fail with
-        "keylog file not found". Falling back to the base keylog (which actually holds
-        the secrets) fixes it. Falls back to the first candidate when none has content
-        (so the field is still populated for diagnostics).
+        On Windows the LSASS worker writes TLS secrets to the base ``-k`` file and
+        never creates the split ``<base>.tls.log``; recording that phantom path
+        makes offline replay fail with "keylog file not found". Falls back to the
+        first non-empty-name candidate when none has content.
         """
         for path in candidates:
             if PCAP._is_written_keylog(path):
@@ -1366,8 +1016,7 @@ class PCAP:
     def _resolve_written_keylog(pcap) -> "str | None":
         """First TLS keylog candidate of *pcap* that exists with content.
 
-        A staticmethod taking the PCAP explicitly so ``_write_capture_manifest``
-        also works on the lightweight stubs the unit tests bind it to.
+        Static so ``_write_capture_manifest`` also works on the stubs tests bind it to.
         """
         for path in PCAP._tls_keylog_candidates(pcap):
             if PCAP._is_written_keylog(path):
@@ -1377,30 +1026,25 @@ class PCAP:
     def written_keylog_path(self) -> "str | None":
         """The TLS keylog that was really written (exists, non-empty), else ``None``.
 
-        Single source of truth for "did this capture write a keylog?": the
-        capture manifest and the shutdown decryption hint both ask this, so
-        they can never disagree. Resolves the path lazily at call time, unlike
-        a handle snapshot taken before the first key arrived.
+        The manifest and the shutdown decryption hint both ask this so they agree.
+        Resolved at call time, since the first key may arrive after startup.
         """
         return self._resolve_written_keylog(self)
 
     def set_active_keylogs(self, mapping: dict) -> None:
         """Record the per-protocol split keylog paths for the manifest.
 
-        Called externally when multiple protocol formatters are active and the
-        single ``-k`` path has been split per protocol. Stored defensively (a
-        shallow copy) and surfaced in the manifest under the "keylogs" field.
+        Called when the single ``-k`` path was split per protocol. Stored as a
+        shallow copy; surfaced in the manifest as "keylogs".
         """
         self.active_keylogs = dict(mapping or {})
 
     def set_base_keylog(self, path) -> None:
         """Record the un-split base ``-k`` path for the manifest fallback.
 
-        Called externally alongside :meth:`set_active_keylogs` in a multi-protocol
-        split capture. The base file (``config.output.keylog``) is where a
-        SChannel/LSASS TLS session writes its secrets when the ``<base>.tls`` split
-        is never produced, so the manifest can fall back to it instead of recording
-        a phantom split path.
+        Called with :meth:`set_active_keylogs`. A SChannel/LSASS TLS session writes
+        its secrets here when the ``<base>.tls`` split is never produced, so the
+        manifest falls back to it instead of a phantom split path.
         """
         self.base_keylog_path = path or None
 
@@ -1408,23 +1052,31 @@ class PCAP:
         """Record the memory-scan (``-ms``) keylog paths for the manifest.
 
         *mapping* is ``{protocol: path}`` (``"tls"`` = the NSS memscan keylog,
-        ``"mtproto"``/``"telegram"`` = its ``.mtproto.keylog`` sidecar). Used as
-        the fallback key source when no hooked-key keylog exists (e.g. a
-        memory-scan-only full capture). Paths are only recorded if the scanner
-        actually wrote them, since the files are created lazily.
+        ``"mtproto"``/``"telegram"`` = its ``.mtproto.keylog`` sidecar). Fallback
+        key source when no hooked-key keylog exists. Only paths the scanner
+        actually wrote are recorded, since the files are created lazily.
         """
         self.memory_scan_keylogs = dict(mapping or {})
 
     def set_tls_midstream_secrets_path(self, path) -> None:
         """Record the mid-stream TLS secret-bundle sidecar path the engine intends.
 
-        The memory-scan engine is the source of truth for this path (including its
-        current-directory literal fallback). Advertising the engine's intended path
-        here — rather than recomputing it from the keylog stem — keeps the manifest
-        reader from diverging from the writer. Best-effort: a falsy path is ignored.
+        The engine owns this path (including its current-directory fallback);
+        recording it avoids recomputing it from the keylog stem and diverging
+        from the writer. A falsy path is ignored.
         """
         if path:
             self._tls_midstream_secrets_path = str(path)
+
+    def set_request_contexts_path(self, path) -> None:
+        """Record the ``.request_contexts.jsonl`` sidecar for the manifest. A falsy path is ignored."""
+        if path:
+            self._request_contexts_path = str(path)
+
+    def set_quic_synthetic_keylog_path(self, path) -> None:
+        """Record the ``-p`` synthetic-QUIC keylog sidecar for the manifest. A falsy path is ignored."""
+        if path:
+            self._quic_synthetic_keylog_path = str(path)
 
     def set_endpoint_pinner(self, pinner) -> None:
         """Hand over the router's option-5 :class:`~friTap.endpoint_pinner.EndpointPinner`.
@@ -1441,16 +1093,28 @@ class PCAP:
         is a regular file (not a live FIFO). Never raises.
         """
         try:
-            pinner = getattr(self, "_endpoint_pinner", None)
-            mappings = pinner.mappings() if pinner is not None else []
-            if not mappings or not os.path.isfile(self.pcap_file_name):
-                return
-            from .pcap_tuple_rewrite import rewrite_synthetic_endpoints
-            summary = rewrite_synthetic_endpoints(self.pcap_file_name, mappings, self.logger)
-            self._add_mapping_overflow(summary, pinner)
-            self._write_synthetic_endpoints_manifest(summary)
+            manifest = {}
+            summary = self._rewrite_synthetic_streams()
+            if summary is not None:
+                manifest["synthetic_endpoints"] = summary
+            quic_keylog = getattr(self, "_quic_synthetic_keylog_path", None)
+            if is_non_empty_file(quic_keylog):
+                manifest["quic_synthetic_keylog"] = quic_keylog
+            if manifest:
+                self._write_plaintext_manifest(manifest)
         except Exception:  # noqa: BLE001 - finalize must never break teardown
             self.logger.debug("plaintext pcap finalize failed", exc_info=True)
+
+    def _rewrite_synthetic_streams(self):
+        """Rewrite the pinned synthetic streams; the summary, or None when nothing to do."""
+        pinner = getattr(self, "_endpoint_pinner", None)
+        mappings = pinner.mappings() if pinner is not None else []
+        if not mappings or not os.path.isfile(self.pcap_file_name):
+            return None
+        from .pcap_tuple_rewrite import rewrite_synthetic_endpoints
+        summary = rewrite_synthetic_endpoints(self.pcap_file_name, mappings, self.logger)
+        self._add_mapping_overflow(summary, pinner)
+        return summary
 
     @staticmethod
     def _add_mapping_overflow(summary: dict, pinner) -> None:
@@ -1459,18 +1123,17 @@ class PCAP:
         if overflow > 0:
             summary["mapping_overflow"] = overflow
 
-    def _write_synthetic_endpoints_manifest(self, summary: dict) -> None:
-        """Write ``<pcap>.fritap.json`` with the additive ``synthetic_endpoints`` key.
+    def _write_plaintext_manifest(self, manifest: dict) -> None:
+        """Write ``<pcap>.fritap.json`` for a ``-p`` capture (plaintext-only keys).
 
-        A ``-p`` pcap holds plaintext, so the TLS port / keylog keys of the
-        full-capture manifest are deliberately left out (they would make the
-        offline pipeline try to decrypt plaintext).
+        TLS port and keylog keys are left out: they would make offline replay try
+        to decrypt plaintext.
         """
         import json as _json
         manifest_path = self.pcap_file_name + MANIFEST_SUFFIX
         try:
             with open(manifest_path, "w", encoding="utf-8") as fh:
-                _json.dump({"synthetic_endpoints": summary}, fh, indent=2)
+                _json.dump(manifest, fh, indent=2)
             self.logger.debug(f"Wrote capture manifest {manifest_path}")
         except OSError as e:
             self.logger.warning(f"Could not write capture manifest: {e}")
@@ -1478,10 +1141,8 @@ class PCAP:
     def _add_known_server_ports(self, transport_key, ports) -> None:
         """Seed explicit server ports into ``_observed_server_ports[transport_key]``.
 
-        Shared, fully-guarded helper behind ``set_known_tls_ports`` /
-        ``set_known_quic_ports``. Each port is coerced to a positive int;
-        anything else is skipped. Side-effect-free when *ports* is falsy, so a
-        capture with no explicit ``--tls-port``/``--quic-port`` is unaffected.
+        Behind ``set_known_tls_ports`` / ``set_known_quic_ports``. Each port is
+        coerced to a positive int; anything else is skipped.
         """
         if not ports:
             return
@@ -1499,205 +1160,40 @@ class PCAP:
     def set_known_tls_ports(self, ports) -> None:
         """Record explicit TLS (TCP) server ports for the manifest.
 
-        Called at capture-configure time when the user passes a capture-side
-        ``--tls-port``; seeds ``_observed_server_ports["tcp"]`` so the manifest's
-        ``tls_ports`` is populated even for a pure ``--full_capture`` that never
-        observes the loopback/non-standard TLS server (e.g. 127.0.0.1:8443).
-        This lets the offline Decode-As pipeline recover TLS (and nested RC4)
-        streams on non-standard ports. Best-effort and side-effect-free when unset.
+        Seeds ``tls_ports`` from ``--tls-port`` so a pure ``--full_capture`` that
+        never sees a non-standard TLS server (e.g. 127.0.0.1:8443) still lets
+        offline Decode-As recover TLS (and nested RC4) streams there.
         """
         self._add_known_server_ports("tcp", ports)
 
     def set_known_quic_ports(self, ports) -> None:
         """Record explicit QUIC (UDP) server ports for the manifest.
 
-        Capture-side counterpart of ``set_known_tls_ports`` for a capture-time
-        ``--quic-port``; seeds ``_observed_server_ports["udp"]`` so the manifest's
-        ``quic_ports`` covers non-standard QUIC server ports. Best-effort and
-        side-effect-free when unset.
+        UDP counterpart of ``set_known_tls_ports`` for ``--quic-port``.
         """
         self._add_known_server_ports("udp", ports)
 
     def _write_capture_manifest(self):
         """Write a best-effort ``<pcap>.fritap.json`` sidecar manifest.
 
-        Records the distinct TLS (TCP) and QUIC (UDP) server ports observed
-        during capture plus the keylog path when known, so the offline
-        ``--from-pcap`` pipeline can auto-load Decode-As ports and the keylog.
+        Records the TLS (TCP) and QUIC (UDP) server ports plus keylog paths so
+        offline ``--from-pcap`` can auto-load Decode-As ports and keys. A write
+        failure never breaks finalize.
 
-        Fully guarded: a manifest write failure never breaks capture finalize.
-
-        NOTE: ports come from the plaintext-logging path (``log_plaintext_payload``),
-        which sees every decrypted record's 4-tuple. In pure full-capture mode
-        with no plaintext logging that path is never exercised, so the sets are
-        additionally seeded from traced-socket destination ports when available:
-        ``create_application_traffic_pcap`` seeds from its valid sockets and
-        ``finalize_full_capture`` seeds from any ``traced_Socket_Set`` the caller
-        passes. When no per-connection socket data exists at all (pure
-        ``--full_capture`` without ``--socket_trace``) the sets may still be
-        empty; this is acceptable for a best-effort convenience file and the
-        user can pass ``--tls-port``/``--quic-port`` to record ports explicitly.
+        Ports come from ``log_plaintext_payload``, which a pure full capture never
+        calls, so they are also seeded from traced sockets. Without
+        ``--socket_trace`` the sets may stay empty; ``--tls-port``/``--quic-port``
+        record ports explicitly.
         """
-        try:
-            import json as _json
-            manifest = {
-                "tls_ports": sorted(self._observed_server_ports.get("tcp", set())),
-                "quic_ports": sorted(self._observed_server_ports.get("udp", set())),
-            }
-            # When multiple protocol formatters are active (e.g. --protocol signal
-            # also emits TLS keys) the single -k path is split per protocol into
-            # <base>.<proto>.log siblings; the authoritative per-protocol paths
-            # live in active_keylogs.
-            active_keylogs = getattr(self, "active_keylogs", None) or {}
-            # Heap-scanner keylogs that were actually written. They only fill in
-            # when no hooked-key keylog exists (memory-scan-only capture), so an
-            # offline replay still finds e.g. the .mtproto.keylog sidecar.
-            memscan_keylogs = _existing_keylog_files(
-                getattr(self, "memory_scan_keylogs", None),
-                not_before=getattr(self, "_session_started_at", None),
-            )
-            if not self.keylog_path and memscan_keylogs:
-                if "tls" in memscan_keylogs:
-                    manifest["keylog"] = str(memscan_keylogs["tls"])
-                try:
-                    from friTap.offline.registry import get_offline_decryptor_registry
-                    for entry in get_offline_decryptor_registry().list():
-                        if entry.protocol_name == self.capture_protocol \
-                                and entry.protocol_name in memscan_keylogs:
-                            manifest[entry.cli_dest] = str(memscan_keylogs[entry.protocol_name])
-                            break
-                except Exception as e:
-                    self.logger.debug(f"manifest memory-scan keylog mapping skipped: {e}")
-            if memscan_keylogs:
-                manifest["memory_scan_keylogs"] = {
-                    proto: str(path) for proto, path in memscan_keylogs.items()
-                }
-            # Mid-stream TLS 1.3 secret-bundle sidecar (flows with no captured
-            # ClientHello). The BoringSSL memscan engine writes it co-located with
-            # the memory-scan keylog as ``<stem>.tls_midstream.secrets.jsonl``;
-            # record its path when it exists with content so the offline pipeline
-            # runs the mid-stream binding stage. Best-effort: never break finalize.
-            try:
-                # Source of truth: the memory-scan engine's own intended path,
-                # advertised via set_tls_midstream_secrets_path(). Preferred so the
-                # reader cannot diverge from the writer's CWD-literal fallback. Only
-                # recompute from the keylog stem when that path was never set.
-                midstream_secrets = getattr(self, "_tls_midstream_secrets_path", None)
-                if not (midstream_secrets and os.path.isfile(midstream_secrets)
-                        and os.path.getsize(midstream_secrets) > 0):
-                    from friTap.memory_scanning import _sidecar_paths_for
-                    # All memscan sidecars share one base stem, so any memscan
-                    # keylog entry resolves to the same tls_midstream path. Prefer
-                    # the "tls" entry, but fall back to any available one — under
-                    # --protocol signal there is no "tls" keylog even though the
-                    # BoringSSL engine still writes the mid-stream bundle sidecar.
-                    _ms_keylogs = getattr(self, "memory_scan_keylogs", None) or {}
-                    ms_stem_source = _ms_keylogs.get("tls")
-                    if not ms_stem_source and _ms_keylogs:
-                        ms_stem_source = next(iter(_ms_keylogs.values()), None)
-                    if ms_stem_source:
-                        midstream_secrets = _sidecar_paths_for(
-                            str(ms_stem_source)).get("tls_midstream_secrets")
-                if (midstream_secrets and os.path.isfile(midstream_secrets)
-                        and os.path.getsize(midstream_secrets) > 0):
-                    manifest["tls_midstream_secrets"] = str(midstream_secrets)
-            except Exception as e:
-                self.logger.debug(
-                    f"manifest tls_midstream secrets mapping skipped: {e}")
-            # Prefer the per-protocol TLS split, then the BASE -k file, then the
-            # last-handler split path. On Windows the target's TLS is SChannel, so
-            # the <base>.tls split is never written and the real TLS secrets land in
-            # the base -k keylog (written by the separate LSASS session). The base
-            # path is not carried in active_keylogs (the factory only hands us the
-            # splits), so it is passed separately via set_base_keylog() and slotted
-            # in here as the middle candidate (see _tls_keylog_candidates).
-            # written_keylog_path() is shared with the shutdown decryption hint so
-            # both always agree. It returns None unless a candidate really exists
-            # with content (the old first-candidate fallback is what produced the
-            # phantom .tls path), so a never-written split is omitted, not recorded.
-            tls_keylog = self._resolve_written_keylog(self)  # == written_keylog_path()
-            tls_keylog_has_content = tls_keylog is not None
-            if self.keylog_path:
-                # Generic "keylog" = the TLS keylog (the SSLKEYLOGFILE a back-compat
-                # consumer feeds to tshark to strip TLS first). In a multi-protocol
-                # split capture (e.g. --protocol signal also emits TLS keys),
-                # active_keylogs carries a per-protocol "tls" entry — prefer it so
-                # this field is DETERMINISTICALLY the TLS split, not whichever
-                # KeylogOutputHandler happened to set self.keylog_path last (the
-                # protocol split would point a TLS consumer at the wrong keys and
-                # decrypt nothing). Single-protocol captures have no "tls" split and
-                # fall back to self.keylog_path unchanged. Only record it when the
-                # resolved keylog actually exists — never emit a phantom path.
-                if tls_keylog_has_content:
-                    manifest["keylog"] = tls_keylog
-                # Also record the keylog under the active protocol's offline
-                # decryptor field (its registry cli_dest, e.g. "mtproto_keylog" /
-                # "signal_keylog") so the manifest-driven offline pipeline routes
-                # the keys to friTap's own decryptor instead of treating them as a
-                # generic TLS SSLKEYLOGFILE (which yields 0 flows for MTProto/Signal).
-                # CRITICAL: use the per-protocol SPLIT path when one exists — for a
-                # multi-protocol capture the base -k path holds the TLS keys, NOT
-                # the protocol's keys, so writing it here would point e.g.
-                # signal_keylog at the TLS log and decrypt 0 Signal messages. A split
-                # is recorded only when it was actually written (exists + non-empty);
-                # a never-written split is dropped rather than recorded as a phantom,
-                # while the base -k fallback (the hooked-key writer's own file) is kept.
-                try:
-                    from friTap.offline.registry import get_offline_decryptor_registry
-                    for entry in get_offline_decryptor_registry().list():
-                        if entry.protocol_name == self.capture_protocol:
-                            proto_split = active_keylogs.get(entry.protocol_name)
-                            if proto_split:
-                                if os.path.isfile(proto_split) \
-                                        and os.path.getsize(proto_split) > 0:
-                                    manifest[entry.cli_dest] = str(proto_split)
-                            else:
-                                manifest[entry.cli_dest] = str(self.keylog_path)
-                            break
-                except Exception as e:
-                    self.logger.debug(f"manifest protocol-keylog mapping skipped: {e}")
-            # Record every per-protocol split path that was ACTUALLY written so the
-            # offline pipeline can locate each keylog without chasing a phantom path
-            # (a never-written <base>.tls/<base>.rc4 split is dropped). Only a
-            # multi-protocol split capture populates active_keylogs; a single-protocol
-            # capture leaves it empty and gets no "keylogs" field (unchanged). The
-            # single "keylog" field above is preserved for back-compat.
-            if active_keylogs:
-                existing_active_keylogs = _existing_keylog_files(
-                    active_keylogs,
-                    not_before=getattr(self, "_session_started_at", None),
-                )
-                resolved_keylogs = {
-                    proto: str(path) for proto, path in existing_active_keylogs.items()
-                }
-                # Overlay the resolved TLS keylog (which may be the base -k file, not
-                # the split) so the offline pipeline's per-protocol map also points at
-                # a keylog that exists.
-                if tls_keylog_has_content:
-                    resolved_keylogs["tls"] = tls_keylog
-                if resolved_keylogs:
-                    manifest["keylogs"] = resolved_keylogs
-            manifest_path = self.pcap_file_name + MANIFEST_SUFFIX
-            with open(manifest_path, "w", encoding="utf-8") as fh:
-                _json.dump(manifest, fh, indent=2)
-            self.logger.debug(f"Wrote capture manifest {manifest_path}")
-        except Exception as e:
-            self.logger.warning(f"Could not write capture manifest: {e}")
+        write_capture_manifest(self)
 
     def finalize_full_capture(self, formatted_keys=(), traced_Socket_Set=None):
-        """Finalize the *unfiltered* full capture: emit the temp file at
-        ``self.pcap_file_name`` in the user-requested format. Embeds DSB
-        when the target is pcapng.
+        """Finalize the unfiltered full capture at ``self.pcap_file_name`` (DSB for pcapng).
 
-        ``traced_Socket_Set`` (optional) is the caller's set of frozenset
-        socket descriptors. When supplied, its destination ports seed the
-        manifest's TLS/QUIC port sets so the offline pipeline's custom-port
-        zero-config (Decode-As) still works even though pure ``--full_capture``
-        never exercises the plaintext-logging path that normally records ports.
-
-        A capture that never started (unrooted device, failed spawn before
-        tcpdump ran) leaves no temp file; that is reported as information and
-        nothing is written, not as an errno failure.
+        ``traced_Socket_Set`` (frozenset socket descriptors) seeds the manifest
+        ports, since a pure ``--full_capture`` never records them via plaintext
+        logging. A capture that never started (unrooted device, failed spawn)
+        leaves no temp file; that is logged as information, not an error.
         """
         if not os.path.exists(self._temp_pcap_path()):
             self.logger.info(
@@ -1710,26 +1206,17 @@ class PCAP:
             self.logger.error(f"Error finalizing full capture: {e}")
         else:
             self.logger.info(f"Full capture written to {self.pcap_file_name}")
-            # A full capture holds only ciphertext; point the user at friTap's own
-            # offline replay so they can decrypt it with the keylog they captured.
+            # A full capture holds only ciphertext; point at offline replay.
             self.logger.info(
                 f"To replay/decrypt this capture, run:  fritap -r {self.pcap_file_name}")
-        # Seed manifest ports from any per-connection socket data the caller has.
-        # Pure full captures (no plaintext logging) never hit
-        # log_plaintext_payload, so this is the only chance to record ports.
+        # The only chance to record ports for a pure full capture.
         if traced_Socket_Set:
             socket_dicts = [dict(entry) for entry in traced_Socket_Set]
             self._seed_server_ports_from_sockets(socket_dicts)
         if not (self._observed_server_ports.get("tcp")
                 or self._observed_server_ports.get("udp")):
-            # No reliable per-connection port/transport data was available at
-            # finalize time (the common case for pure --full_capture without
-            # --socket_trace). Don't fake ports — but this is harmless for
-            # standard-port protocols (e.g. Signal/HTTPS on 443), where offline
-            # decryption needs no custom-port hint. Only matters for non-standard
-            # server ports; the user can record them with --tls-port/--quic-port
-            # (or --socket_trace) when needed. Keep at debug to avoid alarming the
-            # common case.
+            # Common for pure --full_capture without --socket_trace. Ports are not
+            # faked; standard-port protocols need no hint, so this stays at debug.
             self.logger.debug(
                 "No server ports recorded for this full capture. This is "
                 "informational and harmless for standard-port protocols "
@@ -1739,16 +1226,12 @@ class PCAP:
             )
         self._write_capture_manifest()
 
-    # this function is able to reduce a capture to the traffic from the traced target application by using the information from the socket trace and applying a bpf filter of those traced packets
     def create_application_traffic_pcap(self, traced_Socket_Set, pcap_obj,
                                         is_verbose=False, formatted_keys=()):
-        """Filter the temp full capture down to application traffic and
-        write the result at ``self.pcap_file_name`` in the user-requested
-        format (pcap or pcapng+DSB).
+        """Reduce the temp full capture to the traced app's traffic via a BPF filter.
 
-        On any internal error (no sockets, no valid sockets, no BPF filter
-        producible), falls back to ``finalize_full_capture`` so the user
-        always gets a final file at the requested path with the right format.
+        Writes ``self.pcap_file_name`` (pcap or pcapng+DSB). With no usable sockets
+        or filter it falls back to ``finalize_full_capture`` so a final file exists.
         """
         def is_valid_socket(socket_info):
             return (
@@ -1769,7 +1252,6 @@ class PCAP:
             self.logger.error("No valid sockets found. Falling back to full capture.")
             return self.finalize_full_capture(formatted_keys)
 
-        # Seed the manifest with destination ports from the traced sockets.
         self._seed_server_ports_from_sockets(valid_sockets)
 
         bpf_filter = PCAP.get_filter_from_traced_sockets(valid_sockets, filter_type="bpf")

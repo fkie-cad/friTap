@@ -5,7 +5,7 @@ from __future__ import annotations
 from friTap.flow import display, layer_pipeline, layer_registry
 from friTap.flow.layer_registry import (
     ProtocolDescriptor,
-    ProtocolRegistry,
+    LayerRegistry,
     _register_builtins,
     carrier_for_inner,
     inner_e2e_layer_names,
@@ -24,8 +24,8 @@ class _PluginLayer(ProtocolLayer):
     NAME = "zzmsg"
 
 
-def _builtin_registry() -> ProtocolRegistry:
-    registry = ProtocolRegistry()
+def _builtin_registry() -> LayerRegistry:
+    registry = LayerRegistry()
     _register_builtins(registry)
     return registry
 
@@ -72,7 +72,7 @@ def test_third_party_message_transport_is_derived():
 
 
 def test_inner_e2e_rank_ties_keep_registration_order():
-    registry = ProtocolRegistry()
+    registry = LayerRegistry()
     for name in ("b", "a"):
         layer = type(f"_{name}", (ProtocolLayer,), {"NAME": name})
         registry.register(ProtocolDescriptor(name, layer, inner_e2e_rank=100))

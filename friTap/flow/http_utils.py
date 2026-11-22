@@ -1,7 +1,4 @@
-"""HTTP content utilities for flow analysis.
-
-Helpers for Content-Disposition parsing, image detection, and filename extraction.
-"""
+"""HTTP content helpers: Content-Disposition parsing, image detection, filename extraction."""
 
 import re
 from pathlib import PurePosixPath
@@ -61,15 +58,7 @@ def is_image_content_type(content_type: str) -> bool:
 
 
 def parse_content_disposition_filename(header_value: str) -> Optional[str]:
-    """Extract filename from a Content-Disposition header value.
-
-    Supports:
-      - ``filename*=UTF-8''encoded%20name.jpg`` (RFC 5987)
-      - ``filename="name.jpg"`` (quoted)
-      - ``filename=name.jpg`` (token)
-
-    Returns ``None`` if no filename is found.
-    """
+    """Filename from a Content-Disposition value (RFC 5987 ``filename*=``, quoted, or token); ``None`` if absent."""
     if not header_value:
         return None
 
@@ -89,11 +78,7 @@ def parse_content_disposition_filename(header_value: str) -> Optional[str]:
 
 
 def filename_from_url(url: str) -> Optional[str]:
-    """Extract a plausible filename from the path component of a URL.
-
-    Returns ``None`` if no meaningful filename can be extracted
-    (e.g., ``/`` or empty path).
-    """
+    """Plausible filename from a URL's path; ``None`` for ``/`` or an empty path."""
     if not url:
         return None
     try:
@@ -120,10 +105,7 @@ _IMAGE_MAGIC = (
 
 
 def detect_image_mime_from_bytes(data: bytes) -> Optional[str]:
-    """Detect image MIME type from the first bytes of ``data``.
-
-    Returns ``None`` if no known image signature matches.
-    """
+    """Image MIME type from the first bytes of ``data``; ``None`` if no signature matches."""
     if len(data) < 4:
         return None
     for magic, mime in _IMAGE_MAGIC:
@@ -136,10 +118,7 @@ def detect_image_mime_from_bytes(data: bytes) -> Optional[str]:
 
 
 def sanitize_filename(name: str) -> str:
-    """Replace characters unsafe in filenames, collapse runs, strip edges.
-
-    Keeps alphanumerics, hyphens, underscores, and dots.
-    """
+    """Replace unsafe filename characters (keeps alphanumerics, ``-``, ``_``, ``.``), collapse runs, strip edges."""
     sanitized = re.sub(r"[^\w.\-]", "_", name)
     sanitized = re.sub(r"_+", "_", sanitized)
     sanitized = sanitized.strip("._")
@@ -147,10 +126,7 @@ def sanitize_filename(name: str) -> str:
 
 
 def extension_for_image_mime(content_type: str) -> str:
-    """Return an appropriate file extension for an image MIME type.
-
-    Returns ``.bin`` if the type is not recognized.
-    """
+    """File extension for an image MIME type; ``.bin`` if unrecognized."""
     mime = content_type.split(";", 1)[0].strip().lower()
     if "/" in mime:
         subtype = mime.split("/", 1)[1]

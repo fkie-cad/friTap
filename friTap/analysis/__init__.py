@@ -1,22 +1,12 @@
 """
-friTap analysis framework — composable analyzers for .tap file analysis.
-
-Works both offline (via TapReader) and live (via AnalyzerPlugin + EventBus).
+Composable analyzers for .tap files, offline (TapReader) or live (EventBus).
 
 Usage::
 
-    from friTap.analysis import analyze_tap, IocAnalyzer, CredentialAnalyzer
-
-    # Offline: analyze a .tap file
     findings = analyze_tap(IocAnalyzer(), "capture.tap")
-    for f in findings:
-        print(f"{f.severity.value}: {f.title}")
-
-    # Compose multiple analyzers
     findings = analyze_tap_multi([IocAnalyzer(), CredentialAnalyzer()], "capture.tap")
 
-    # Live: wire an analyzer to the EventBus via plugin adapter
-    plugin = AnalyzerPlugin(IocAnalyzer())
+    plugin = AnalyzerPlugin(IocAnalyzer())  # live
     session.lifecycle_bus.subscribe(FlowEvent, plugin.on_flow)
 """
 
@@ -45,17 +35,12 @@ class Severity(str, Enum):
     INFO = "info"
 
 
-# Canonical severity ranking derived from the enum's declaration order
-# (CRITICAL=0 … INFO=4): lower rank == more severe. This is the single source
-# of truth — callers that need an ordering should use ``severity_rank``.
+# Rank follows declaration order (CRITICAL=0 .. INFO=4); use ``severity_rank``.
 _SEVERITY_RANK: dict[Severity, int] = {sev: i for i, sev in enumerate(Severity)}
 
 
 def severity_rank(severity) -> int:
-    """Return the rank of a :class:`Severity` (or its string value).
-
-    Lower rank == more severe. Unknown values rank as ``INFO`` (least severe).
-    """
+    """Rank of a :class:`Severity` (or its string); lower is more severe, unknown ranks as INFO."""
     try:
         sev = severity if isinstance(severity, Severity) else Severity(severity)
     except ValueError:
@@ -67,16 +52,10 @@ def severity_rank(severity) -> int:
 class Finding:
     """An immutable analysis finding.
 
-    Attributes:
-        severity: Finding severity level.
-        title: Short human-readable title.
-        description: Detailed description of the finding.
-        source: Name of the analyzer that produced this finding.
-        flow_id: ID of the flow that triggered the finding (empty for cross-flow).
-        confidence: Confidence score from 0.0 to 1.0.
-        timestamp: When the finding was created (epoch float).
-        evidence: Structured evidence data (flow_id, matched_data, location, etc.).
-        metadata: Optional extension fields (MITRE ATT&CK ID, CVE, etc.).
+    ``source`` is the producing analyzer's name; ``flow_id`` is empty for
+    cross-flow findings; ``confidence`` is 0.0-1.0; ``timestamp`` is epoch seconds;
+    ``evidence`` is structured data (matched_data, location, ...); ``metadata``
+    holds extension fields (category, cwe, MITRE ATT&CK ID, CVE, ...).
     """
     severity: Severity
     title: str
@@ -90,62 +69,31 @@ class Finding:
 
     @property
     def category(self) -> str | None:
-        """Finding category (``secret``/``pii``/``network``/``protocol``).
-
-        Read-only convenience accessor over ``metadata["category"]``. This is a
-        property — not a dataclass field — so the frozen contract, equality, and
-        :func:`dataclasses.asdict` serialization are all unaffected. The category
-        taxonomy is documented in :mod:`friTap.analysis.filtering`.
-        """
+        """``metadata["category"]`` (taxonomy: :mod:`friTap.analysis.filtering`)."""
         return self.metadata.get("category")
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialize to a JSON-friendly dict.
-
-        This is the single serialization contract shared by reporters,
-        the ``.tap`` REC_FINDING record, and the findings sidecar.
-        ``severity`` is stored as its string value.
-
-        Derived from :func:`dataclasses.asdict` so new dataclass fields are
-        serialized automatically without editing this method (#34). ``asdict``
-        already deep-copies nested ``dict`` fields (evidence/metadata), matching
-        the previous behaviour; we only convert the ``severity`` enum to its
-        ``.value`` string afterwards.
-        """
+        """JSON dict shared by reporters, the ``.tap`` REC_FINDING and the sidecar (severity as string)."""
         data = dataclasses.asdict(self)
         data["severity"] = self.severity.value
         return data
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "Finding":
-        """Inverse of :meth:`to_dict`. Unknown keys are ignored.
-
-        Unknown or empty ``severity`` values fall back to ``Severity.INFO``
-        (mirroring :func:`severity_rank`) so deserializing a ``.tap`` written
-        by a different friTap version or hand-edited record never raises.
-
-        Field selection is driven by :func:`dataclasses.fields` so new fields
-        are picked up automatically without editing this method (#34); any key
-        not matching a known field is ignored per the documented contract.
-        """
+        """Inverse of :meth:`to_dict`; ignores unknown keys, maps bad severity to INFO, never raises."""
         field_names = {f.name for f in dataclasses.fields(cls)}
         kwargs = {k: v for k, v in d.items() if k in field_names}
 
-        # The required string fields have no dataclass default; preserve the
-        # legacy contract of defaulting them to "" so from_dict stays total over
-        # partial/hand-edited records. Optional fields fall back to the
-        # dataclass defaults when absent.
+        # Required strings have no dataclass default; keep from_dict total.
         for required in ("title", "description", "source"):
             kwargs.setdefault(required, "")
 
-        # Coerce severity, preserving the unknown/empty -> INFO guard.
         try:
             kwargs["severity"] = Severity(d.get("severity", "info"))
         except ValueError:
             kwargs["severity"] = Severity.INFO
 
-        # Normalize falsy evidence/metadata to empty dicts (legacy "or {}"
-        # guard) only when the key is present; absent keys use the defaults.
+        # Falsy evidence/metadata (e.g. None) becomes {}.
         for opt in ("evidence", "metadata"):
             if opt in kwargs and not kwargs[opt]:
                 kwargs[opt] = {}
@@ -153,21 +101,15 @@ class Finding:
         return cls(**kwargs)
 
 
-# Evidence keys, in priority order, that typically hold a finding's matched
-# value. Shared so the TUI's finding-detail view and findings-list preview agree
-# on what counts as "the value" (avoids the two drifting out of sync).
+# Priority-ordered keys holding a finding's matched value; shared by the TUI
+# detail view and list preview so they agree.
 EVIDENCE_VALUE_KEYS = (
     "matched_data", "match", "value", "secret", "token", "credential", "data",
 )
 
 
 def primary_evidence_value(finding: "Finding") -> "str | None":
-    """Return the finding's matched value from its evidence, or ``None``.
-
-    Picks the first present string value among :data:`EVIDENCE_VALUE_KEYS`
-    (by priority). Used for the finding-detail "Matched value" line and the
-    findings-list preview snippet.
-    """
+    """First non-empty string evidence value among :data:`EVIDENCE_VALUE_KEYS`, or ``None``."""
     evidence = getattr(finding, "evidence", None) or {}
     for key in EVIDENCE_VALUE_KEYS:
         val = evidence.get(key)
@@ -178,16 +120,11 @@ def primary_evidence_value(finding: "Finding") -> "str | None":
 
 @runtime_checkable
 class BaseAnalyzer(Protocol):
-    """Protocol for flow-level analyzers.
-
-    Implement ``analyze_flow`` to produce findings from a single flow.
-    The analyzer is agnostic to whether it runs live or offline —
-    the AnalyzerPlugin adapter handles live mode.
-    """
+    """Protocol for flow-level analyzers; live or offline (AnalyzerPlugin adapts live mode)."""
     name: str
 
     def analyze_flow(self, flow: "Flow") -> list[Finding]:
-        """Analyze a single flow and return findings."""
+        """Return findings for one flow."""
         ...
 
 
@@ -195,7 +132,7 @@ ANALYZER_ERROR_TITLE = "Analyzer error"
 
 
 def _analyzer_error_finding(analyzer_name: str, flow_id: str, exc: BaseException) -> Finding:
-    """Build the informational finding recorded when an analyzer crashes on a flow."""
+    """INFO finding recorded when an analyzer crashes on a flow."""
     message = str(exc)[:120]
     return Finding(
         severity=Severity.INFO,
@@ -231,18 +168,7 @@ def run_analyzer_safely(analyzer: BaseAnalyzer, flow: "Flow") -> list[Finding]:
 
 
 def analyze_tap(analyzer: BaseAnalyzer, tap_path: str) -> list[Finding]:
-    """Run an analyzer over all flows in a .tap file.
-
-    This is a free function — not a method on BaseAnalyzer — because
-    it composes TapReader iteration with analyzer logic.
-
-    Args:
-        analyzer: An object implementing the BaseAnalyzer protocol.
-        tap_path: Path to a .tap capture file.
-
-    Returns:
-        List of findings from all flows.
-    """
+    """Findings of *analyzer* over every flow of a .tap file."""
     from friTap.flow.tap_reader import TapReader
 
     findings: list[Finding] = []
@@ -255,18 +181,7 @@ def analyze_tap(analyzer: BaseAnalyzer, tap_path: str) -> list[Finding]:
 
 
 def analyze_tap_multi(analyzers: list[BaseAnalyzer], tap_path: str) -> list[Finding]:
-    """Run multiple analyzers over all flows in a .tap file.
-
-    Each flow is passed to every analyzer. This avoids re-reading the
-    .tap file once per analyzer.
-
-    Args:
-        analyzers: List of analyzer instances.
-        tap_path: Path to a .tap capture file.
-
-    Returns:
-        Combined list of findings from all analyzers and flows.
-    """
+    """Like :func:`analyze_tap` for several analyzers in one read."""
     from friTap.flow.tap_reader import TapReader
 
     findings: list[Finding] = []
@@ -280,19 +195,9 @@ def analyze_tap_multi(analyzers: list[BaseAnalyzer], tap_path: str) -> list[Find
 
 
 class AnalyzerPlugin:
-    """Thin adapter that wires any BaseAnalyzer to the EventBus for live analysis.
+    """Adapter that wires a BaseAnalyzer to the EventBus for live analysis.
 
-    Usage::
-
-        from friTap.analysis import AnalyzerPlugin, IocAnalyzer
-
-        plugin = AnalyzerPlugin(IocAnalyzer())
-        # In a FriTapPlugin.on_load():
-        session.lifecycle_bus.subscribe(FlowEvent, plugin._on_flow)
-
-        # After capture:
-        for finding in plugin.findings:
-            print(finding)
+    Subscribe ``plugin.on_flow`` to ``FlowEvent``; results accumulate in ``plugin.findings``.
     """
 
     def __init__(self, analyzer: BaseAnalyzer) -> None:
@@ -304,17 +209,13 @@ class AnalyzerPlugin:
         return f"analyzer:{self._analyzer.name}"
 
     def analyze(self, flow: "Flow") -> list[Finding]:
-        """Run the wrapped analyzer on *flow*, accumulate, and return its findings.
-
-        Public entry point for callers that already hold a completed flow (e.g.
-        an off-thread scan worker), so they don't reach into ``_analyzer``.
-        """
+        """Analyze a completed flow; accumulates and returns its findings."""
         found = run_analyzer_safely(self._analyzer, flow)
         self.findings.extend(found)
         return found
 
     def on_flow(self, event: "FlowEvent") -> None:
-        """EventBus callback for FlowEvent. Analyzes completed flows."""
+        """FlowEvent callback; analyzes completed flows."""
         from friTap.flow.models import FlowEventType
         if event.flow_event_type == FlowEventType.COMPLETED and event.flow is not None:
             self.analyze(event.flow)

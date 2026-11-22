@@ -4,6 +4,7 @@ import { socket_library } from "../../../../platforms/android.js";
 import {PatternBasedHooking, get_CPU_specific_pattern, hasUsablePatternsFor } from "../../../tls/shared/pattern_based_hooking.js";
 import { patterns, isPatternReplaced } from "../../../../fritap_agent.js"
 import { devlog, devlog_error } from "../../../../util/log.js";
+import { lenArg } from "../../../../shared/keylog_length.js";
 
 /**
  * Right now we assume that we are targeting the https://github.com/metartc/metaRTC framework but could be actually another library.
@@ -43,18 +44,19 @@ export class MetaRTC_Android extends Flutter {
     install_key_extraction_hook(){
         const metartcModule = Process.findModuleByName(this.module_name);
         const hooker = new PatternBasedHooking(metartcModule);
+        // args[3] is ssl_log_secret's length: SHA-384 suites need 48 bytes, not 32.
 
         if (isPatternReplaced() && hasUsablePatternsFor(patterns, this.module_name, "libstartup.so", "Dump-Keys")){
             devlog("Hooking libstartup (metartc) functions by patterns from JSON file");
             hooker.hook_DumpKeys(this.module_name,"libstartup.so",patterns,(args: any[]) => {
-                this.dumpKeys(args[1], args[0], args[2]);  // Unpack args into dumpKeys
+                this.dumpKeys(args[1], args[0], args[2], lenArg(args[3]));  // Unpack args into dumpKeys
             });
         }else{
             // This are the default patterns for hooking ssl_log_secret in BoringSSL inside Flutter
             hooker.hookModuleByPattern(
                 get_CPU_specific_pattern(this.default_pattern),
                 (args) => {
-                    this.dumpKeys(args[1], args[0], args[2]);  // Hook args passed to dumpKeys
+                    this.dumpKeys(args[1], args[0], args[2], lenArg(args[3]));  // Hook args passed to dumpKeys
                 }
             );
         }

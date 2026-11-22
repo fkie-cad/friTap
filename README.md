@@ -187,6 +187,7 @@ fritap -do -v com.example.app
 | Conscrypt                 |     TBA       |    TBA        |  TBA     |   Full   | TBA          |
 | S2n-tls                   |     Full      |    LibNO      |  TBA     |   Full   | LibNO        |
 | RusTLS                    |     Keys      |    TBI        |  TBI     |   Keys   | TBI          |
+| Fizz (Meta)               |     TBI       |    TBI        |  TBI     |   Keys   | TBI          |
 ```
 **R/W-Hook only** = Logging data sent and received by process<br>
 **Keys** = Only the keying material can be extracted<br>
@@ -196,6 +197,8 @@ fritap -do -v com.example.app
 **LibNO** = This library is not supported for this plattform<br>
 
 **We verified the Windows implementations only for Windows 10**
+
+**Fizz (Meta)** (TLS 1.3 + mvfst QUIC in Facebook/Instagram) is supported on Android arm64 only, keys only (`-k`); pair it with `-f -p` and decrypt in Wireshark. See [docs/libraries/others.md](docs/libraries/others.md#fizz-meta).
 
 ## Frida compatibility
 

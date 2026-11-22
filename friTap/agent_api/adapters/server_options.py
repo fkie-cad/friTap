@@ -1,17 +1,13 @@
-"""
-Shared command-line options of the agent adapters (``fritap q``, ``mcp``, ``serve``).
+"""Shared command-line options of the agent adapters (``fritap q``, ``mcp``, ``serve``).
 
-``add_server_options(parser)`` adds the sandbox/permission flags and
-``build_context(ns)`` turns the parsed namespace into a :class:`ToolContext`.
-Servers (MCP/REST) deny capture unless ``--allow-capture`` is given and
-redact finding values unless ``--allow-values`` is given.
+``add_server_options(parser)`` adds the sandbox/permission flags; ``build_context(ns)`` turns the
+parsed namespace into a :class:`ToolContext`. Servers deny capture unless ``--allow-capture`` and
+redact finding values unless ``--allow-values``.
 
-``is_server_invocation(argv, parser)`` is the pre-argparse dispatch guard (same
-idea as :func:`friTap.commands.devices.is_listing_invocation`): ``fritap mcp``
-/ ``fritap serve`` is only the subcommand when EVERY following token is one of
-its options, so ``fritap serve -m`` still captures a process named ``serve``.
-Option names and whether they take a value are read from the command's real
-argparse parser, so a new option needs no second list.
+``is_server_invocation(argv, parser)`` is the pre-argparse dispatch guard (like
+``friTap.commands.devices.is_listing_invocation``): ``fritap mcp``/``serve`` is the subcommand only
+when every following token is one of its options, so ``fritap serve -m`` still captures a process
+named ``serve``. Option names come from the real argparse parser, so a new option needs no second list.
 """
 
 from __future__ import annotations
@@ -55,8 +51,7 @@ def build_context(ns: argparse.Namespace, *, allow_capture: bool | None = None,
                   allow_values: bool | None = None) -> ToolContext:
     """Build the :class:`ToolContext` from parsed options.
 
-    ``allow_capture`` / ``allow_values`` override the parsed switches (the
-    ``fritap q`` CLI always allows both: the local user owns the data).
+    ``allow_capture``/``allow_values`` override the parsed switches (``fritap q`` always allows both).
     """
     root = Path(ns.root).expanduser() if ns.root else Path.cwd()
     return ToolContext(

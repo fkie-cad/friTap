@@ -140,10 +140,6 @@ RENDERERS: dict[str, Callable[[dict], str]] = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Flow drill-down (``fritap report <tap> --flow f<N>``)
-# ---------------------------------------------------------------------------
-
 def _flow_header_lines(detail: dict) -> list[str]:
     flow = detail["flow"]
     times = " .. ".join(t for t in (flow["started"], flow["ended"]) if t) or "?"

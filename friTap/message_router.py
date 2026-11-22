@@ -1,17 +1,14 @@
 #!/usr/bin/env python3
 
-"""
-Message routing for friTap.
-
-Extracted from SSL_Logger to reduce file length.
-Routes agent message payloads to the EventBus as typed events.
-"""
+"""Routes agent message payloads to the EventBus as typed events."""
 
 from __future__ import annotations
 
 import logging
+import time
 from typing import get_args
 
+from .agent_socket_fields import coerce_port, get_addr_string, resolve_ss_family, sanitize_raw_addr
 from .caller_stack_shapes import (
     REQUEST_CONTEXT_FRAME_LIMIT,
     REQUEST_CONTEXT_FRAME_TEXT_LIMIT,
@@ -26,6 +23,7 @@ from .caller_stack_shapes import (
     strict_int,
     untrusted_caller_stack,
 )
+from .capture_time import held_capture_times
 from .client_random import normalize_client_random
 from .connection_index import resolve_connection_key
 from .constants import DIRECTION_READ, ContentType, direction_for_function
@@ -45,13 +43,7 @@ from .events import (
     RequestContextEvent,
     SessionEvent,
 )
-from .legacy.ssl_logger_core import (
-    coerce_port,
-    resolve_ss_family,
-    sanitize_raw_addr,
-)
 from .schemas.agent_messages import RequestContextPoint
-from .ssl_logger import get_addr_string
 from .text_safety import safe_terminal_text
 
 #: Agent devlog content types routed as debug-level dev diagnostics, mapped to
@@ -103,22 +95,12 @@ def request_context_fields(payload: dict) -> dict:
 
 
 def payload_protocol(payload: dict, default: str) -> str:
-    """The protocol an agent message is tagged with.
-
-    The agent (ABI >= 3) always stamps a concrete protocol: the emitting hook's
-    record protocol under ``--protocol auto|all``. ``default`` -- the protocol
-    the message's content type belongs to (e.g. ``"tls"`` for keylog/datalog,
-    ``"ssh"`` for SSH key records) -- covers a message without a tag.
-    """
+    """The protocol tag of an agent message (ABI >= 3 always stamps one); ``default`` covers an untagged message."""
     return str(payload.get("protocol") or default)
 
 
 def _with_normalized_client_random(payload: dict) -> dict:
-    """*payload* with ``client_random`` normalized (see
-    :func:`~friTap.client_random.normalize_client_random`), so every emitter
-    keys on the same form. The caller's dict is never mutated; payloads
-    without the field are returned as-is.
-    """
+    """*payload* with ``client_random`` normalized so every emitter keys on the same form; never mutates the input."""
     if "client_random" not in payload:
         return payload
     return {**payload, "client_random": normalize_client_random(payload["client_random"])}
@@ -137,29 +119,26 @@ class _CanonicalProxy:
 class MessageRouter:
     """Routes agent message payloads to typed EventBus events.
 
-    Supports optional display filtering via set_filter(). When a filter is
-    active, datalog events that don't match the filter are silently dropped.
-    Keylog, lifecycle, and meta events always pass through.
+    With a display filter set, non-matching datalog events are dropped;
+    keylog, lifecycle and meta events always pass.
     """
 
     def __init__(self, event_bus: "EventBus", active_protocol=None) -> None:
         self._event_bus = event_bus
         self._logger = logging.getLogger("friTap.router")
         self._data_filter = None  # Optional FilterEngine for network-level filtering
-        # Option 5: sticky per-client_random tuple for TCP records, synthetic
-        # when the agent sent none. Public so the pcap finalize path can read
-        # its mapping table (synthetic -> real) via ``mappings()``.
+        # Receives plaintext_api_learned / module_offsets_learned payloads; None
+        # drops them. A callable keeps the router free of cache I/O.
+        self._learned_offsets_sink = None
+        # Sticky per-client_random tuple for TCP records, synthetic when the
+        # agent sent none. Public so pcap finalize can read ``mappings()``.
         self.endpoint_pinner = EndpointPinner()
-        # Render the anti-tamper banner at most once per session, even though
-        # several agent code paths may emit `anti_tamper_detected` (detection +
-        # loader-hook skip). Subsequent events still flow to API consumers.
+        # The banner prints once even if several agent paths report anti-tamper;
+        # later events still reach API consumers.
         self._anti_tamper_bannered = False
-        # The user-selected --protocol set (Foundation F1 multi-protocol). May be
-        # given as a single name, a comma-joined string ("tls,telegram"), a
-        # list/set, or None. When "telegram" is among the selection, MTProto
-        # cloud keys AND Secret-Chat E2E keys are routed into ONE combined keylog
-        # file (both emitted as protocol="telegram"); otherwise behaviour is
-        # unchanged.
+        # The --protocol selection: a name, a comma-joined string, a list/set or
+        # None. With "telegram" selected, MTProto cloud keys and Secret-Chat E2E
+        # keys share one keylog (both emitted as protocol="telegram").
         if active_protocol is None:
             _names = []
         elif isinstance(active_protocol, str):
@@ -167,12 +146,15 @@ class MessageRouter:
         else:
             _names = [str(p).strip() for p in active_protocol if str(p).strip()]
         self._active_protocols = set(_names)
-        # Primary retained for any single-value consumer / debugging.
         self._active_protocol = _names[0] if _names else None
 
     def set_filter(self, filter_engine) -> None:
         """Set a display filter engine. Only network-level fields are checked."""
         self._data_filter = filter_engine
+
+    def set_learned_offsets_sink(self, sink) -> None:
+        """Forward ``plaintext_api_learned`` / ``module_offsets_learned`` payloads to *sink* (None disables)."""
+        self._learned_offsets_sink = sink
 
     def route(self, payload: dict, data: bytes) -> None:
         """Parse an agent message payload and emit the corresponding event."""
@@ -225,6 +207,19 @@ class MessageRouter:
             self._emit_caller_stack(payload)
         elif content_type == ContentType.REQUEST_CONTEXT:
             self._emit_request_context(payload)
+        elif content_type in (ContentType.PLAINTEXT_API_LEARNED,
+                              ContentType.MODULE_OFFSETS_LEARNED):
+            self._record_learned_offsets(payload)
+
+    def _record_learned_offsets(self, payload: dict) -> None:
+        sink = self._learned_offsets_sink
+        if sink is None:
+            return
+        # A cache failure must never break message routing for the capture.
+        try:
+            sink(payload)
+        except Exception:  # noqa: BLE001
+            self._logger.debug("learned offsets: recording failed", exc_info=True)
 
     def _emit_keylog(self, payload: dict) -> None:
         self._event_bus.emit(KeylogEvent(
@@ -234,13 +229,7 @@ class MessageRouter:
 
     @staticmethod
     def _resolve_addresses(payload: dict) -> tuple:
-        """Extract, validate and normalize source/destination addresses.
-
-        Every field is agent-controlled: the family is whitelisted, addresses
-        are parsed as IPv4/IPv6 (anything else -- including the raw value --
-        becomes the empty "missing address"), and ports are coerced to
-        0..65535. An unknown family is treated like a missing one.
-        """
+        """Validated source/destination addresses and ports from the (untrusted) agent fields."""
         # A family outside the whitelist invalidates its addresses too.
         ss_family, addr_family = resolve_ss_family(payload.get("ss_family"))
         src_addr = payload.get("src_addr", "")
@@ -257,8 +246,10 @@ class MessageRouter:
 
     def _datalog_endpoints(self, payload: dict, client_random: str,
                            direction: str) -> ResolvedEndpoints:
-        """The record's endpoints after option-5 pinning (unchanged when it
-        does not apply: non-TCP transport or no client_random)."""
+        """The record's endpoints after pinning (unchanged for non-TCP or no client_random).
+
+        Unpinned endpoints are synthetic only when the agent flags them (a QUIC
+        tuple guessed before the peer was readable)."""
         (src_addr_str, src_port, dst_addr_str, dst_port,
          ss_family, src_addr, dst_addr) = self._resolve_addresses(payload)
         record = RecordEndpoints(src_addr_str, src_port, dst_addr_str, dst_port,
@@ -267,11 +258,12 @@ class MessageRouter:
             client_random, payload.get("transport", "tcp"),
             direction == DIRECTION_READ, record)
         return resolved if resolved is not None else ResolvedEndpoints(
-            src_addr_str, src_port, dst_addr_str, dst_port, src_addr, dst_addr, ss_family)
+            src_addr_str, src_port, dst_addr_str, dst_port, src_addr, dst_addr, ss_family,
+            synthetic=payload.get("endpoints_synthetic") is True)
 
     @staticmethod
     def _endpoint_fields(endpoints: ResolvedEndpoints) -> dict:
-        """DatalogEvent address fields (incl. the option-5 flag and observed_*)."""
+        """DatalogEvent address fields (incl. the synthetic flag and observed_*)."""
         observed = endpoints.observed
         return {
             "src_addr": endpoints.src_addr, "src_port": endpoints.src_port,
@@ -299,7 +291,10 @@ class MessageRouter:
             ):
                 return
 
+        timestamp, received_at = held_capture_times(payload.get("held_ms"), time.time())
         self._event_bus.emit(DatalogEvent(
+            timestamp=timestamp,
+            received_at=received_at,
             data=data,
             function=function,
             direction=direction,
@@ -312,6 +307,9 @@ class MessageRouter:
             quic_dcid=str(payload.get("quic_dcid", "")),
             quic_stream_type=str(payload.get("quic_stream_type", "")),
             quic_payload=str(payload.get("quic_payload") or ""),
+            quic_midstream=payload.get("quic_midstream") is True,
+            stream_offset=strict_int(payload.get("stream_offset")),
+            fin=payload.get("fin") is True,
             library=str(payload.get("library") or ""),
             protocol=payload_protocol(payload, "tls"),
             **self._endpoint_fields(endpoints),
@@ -325,10 +323,7 @@ class MessageRouter:
         ))
 
     def _emit_anti_tamper_detected(self, payload: dict) -> None:
-        """Surface a detected anti-tamper runtime (e.g. PairIP). Renders ONE
-        blank-line-padded red banner to the CLI (the single presentation point;
-        the agent emits only the structured signal) and emits a structured event
-        so API consumers (friTap/api.py) can react programmatically."""
+        """Print one red anti-tamper banner (e.g. PairIP) and emit an event for API consumers."""
         name = safe_terminal_text(payload.get("name") or payload.get("library", ""))
         note = safe_terminal_text(payload.get("note", ""))
         skipped = bool(payload.get("skippedLoaderHook", False))
@@ -346,18 +341,16 @@ class MessageRouter:
         ))
 
     def _emit_console(self, payload: dict, level: str = "info") -> None:
-        # Agent console text is printed verbatim by the console sinks: escape
-        # terminal control sequences (ANSI/OSC injection) at the source.
+        # Sinks print agent text verbatim: escape control sequences (ANSI/OSC injection).
         self._event_bus.emit(ConsoleEvent(
             message=safe_terminal_text(payload.get("console", "")),
             level=level,
         ))
 
     def _emit_agent_dev_console(self, message: str) -> None:
-        # Agent developer diagnostics (console_dev, devlog_*) are demoted to
-        # debug level and tagged with their origin: they reach --debug-log and
-        # -d/-do output, never the normal console, the TUI activity log or a
-        # non-debug JSONL stream. *message* must already be escaped.
+        # Agent dev diagnostics (console_dev, devlog_*) are debug level with an
+        # origin tag: they reach --debug-log and -d/-do only, never the normal
+        # console, TUI log or non-debug JSONL. *message* must already be escaped.
         self._event_bus.emit(ConsoleEvent(
             message=message,
             level="debug",
@@ -369,35 +362,28 @@ class MessageRouter:
             safe_terminal_text(payload.get("console_dev", "")))
 
     def _emit_console_devlog(self, payload: dict, agent_level) -> None:
-        # Agent devlog_*() lines ({contentType: "console_debug" | "console_info"
-        # | ..., message}) take the same debug-level path as console_dev: they
-        # reach --debug-log and stay off the normal console unless debug output
-        # is enabled. devlog_debug (*agent_level* None) stays unprefixed;
-        # info/warn/error carry the agent's level and callsite so the real
-        # severity survives in the debug log.
+        # devlog_*() lines take the console_dev debug path. devlog_debug
+        # (*agent_level* None) is unprefixed; info/warn/error carry the agent's
+        # level and callsite so the real severity survives in the debug log.
         message = safe_terminal_text(str(payload.get("message", "")))
         if agent_level is not None:
             message = f"{format_devlog_prefix(agent_level, payload)} {message}"
         self._emit_agent_dev_console(message)
 
     def _emit_hook_breadcrumb(self, payload: dict) -> None:
-        # In-memory crash-attribution marker (never printed). SSL_Logger stores
-        # the last one so on_detach can name the hook that was executing if the
-        # target dies inside it.
+        # Never printed: SSL_Logger keeps the last one so on_detach can name the
+        # hook that was running if the target dies inside it.
         self._event_bus.emit(HookBreadcrumbEvent(
             marker=payload.get("hook_breadcrumb", ""),
         ))
 
     def _emit_platform_report(self, payload: dict) -> None:
-        # The agent's one-shot "which platform branch did I take?" report. Kept
-        # dumb on purpose: SSL_Logger owns the presentation (one unconditional
-        # log line) and the --probe acknowledgement, so the router carries no
-        # probe-mode policy.
+        # Forwarded as-is: SSL_Logger owns the log line and the --probe
+        # acknowledgement, so the router carries no probe-mode policy.
         try:
             abi = int(payload.get("abi", 0) or 0)
         except (TypeError, ValueError):
-            # A bundle that sends a non-numeric ABI is still worth reporting;
-            # only the version number is unknown.
+            # A non-numeric ABI is still worth reporting; only the version is unknown.
             abi = 0
         self._event_bus.emit(PlatformReportEvent(
             platform=safe_terminal_text(payload.get("platform", "")),
@@ -407,14 +393,10 @@ class MessageRouter:
         ))
 
     def _emit_ssh_key(self, payload: dict) -> None:
-        """Format an SSH per-direction key/IV record as one line and emit a KeylogEvent.
+        """Emit an SSH per-direction key/IV line (``SSH_ENC_KEY_C2S``, ``SSH_IV_S2C``, ...) as a KeylogEvent.
 
-        Lines use the labels OpenSSH writes via friTap's cipher_init hook
-        (`SSH_ENC_KEY_C2S`, `SSH_ENC_KEY_S2C`, `SSH_IV_C2S`, `SSH_IV_S2C`).
-        These are NOT the Wireshark SSH dissector's wire format — they land in
-        the regular keys.log for users who want raw derived key material.
-        Wireshark consumption uses the side-car file produced from
-        :meth:`_emit_ssh_keylog`.
+        This is raw derived key material for keys.log, not the Wireshark SSH
+        dissector format; that comes from :meth:`_emit_ssh_keylog`.
         """
         key_type = payload.get("key_type", "")
         key_data = payload.get("key_data", "")
@@ -429,10 +411,8 @@ class MessageRouter:
     def _emit_ssh_keylog(self, payload: dict) -> None:
         """Emit a SHARED_SECRET KeylogEvent for the Wireshark SSH dissector.
 
-        Routed to the unified :class:`KeylogOutputHandler` bound to the SSH
-        :class:`SshKeylogFormatter`. The structured ``payload`` carries the
-        fields that the formatter turns into ``<cookie> SHARED_SECRET <hex>``
-        lines; Wireshark performs the RFC 4253 §7.2 KDF internally.
+        The formatter renders ``<cookie> SHARED_SECRET <hex>``; Wireshark runs
+        the RFC 4253 §7.2 KDF itself.
         """
         self._event_bus.emit(KeylogEvent(
             protocol="ssh",
@@ -448,14 +428,8 @@ class MessageRouter:
     def _emit_ipsec_ike_keys(self, payload: dict) -> None:
         """Emit a structured IKE_SA KeylogEvent (protocol ``"ipsec"``).
 
-        Routed to the dedicated
-        :class:`~friTap.output.ipsec_decryption_tables.IPsecDecryptionTableHandler`
-        (bound to the :class:`~friTap.protocols.ipsec_handler.IPsecKeylogFormatter`),
-        which renders one ``ikev2_decryption_table`` row. The router stays
-        protocol-agnostic and forwards the fields verbatim — SPIs and keys are
-        lowercase hex already in on-wire byte order; the formatter validates and
-        the writer de-duplicates. When ``-j`` is active the same event is also
-        picked up by the JSON handler (subject to the key-material policy).
+        Fields are forwarded verbatim (SPIs and keys are lowercase hex in
+        on-wire order); the formatter renders one ``ikev2_decryption_table`` row.
         """
         keys = payload.get("keys") or {}
         self._event_bus.emit(KeylogEvent(
@@ -479,11 +453,9 @@ class MessageRouter:
         ))
 
     def _emit_ipsec_esp_keys(self, payload: dict) -> None:
-        """Emit a structured CHILD_SA (ESP) KeylogEvent (protocol ``"ipsec"``).
+        """Emit a structured CHILD_SA (ESP) KeylogEvent from the kernel ``add_sa`` keys.
 
-        Counterpart of :meth:`_emit_ipsec_ike_keys` for the per-direction ESP
-        keys from the kernel ``add_sa``; the formatter renders one ``esp_sa``
-        row. SPI and keys are lowercase hex in on-wire order (no byte-swap).
+        SPI and keys are lowercase hex in on-wire order (no byte-swap).
         """
         self._event_bus.emit(KeylogEvent(
             protocol="ipsec",
@@ -503,22 +475,16 @@ class MessageRouter:
     def _emit_mtproto_key(self, payload: dict) -> None:
         """Emit a structured MTProto auth-key KeylogEvent.
 
-        Routed to the unified :class:`KeylogOutputHandler` bound to the
-        :class:`MtprotoKeylogFormatter`, which renders the canonical
-        ``MTPROTO_AUTH_KEY <dc_id> <auth_key_id> <auth_key> <key_type>`` line.
-
-        Under ``--protocol telegram`` these cloud keys are emitted as
-        ``protocol="telegram"`` so they land in the single combined Telegram
-        keylog (alongside the Secret-Chat E2E keys); otherwise they keep their
-        historical ``protocol="mtproto"`` routing.
+        Rendered as ``MTPROTO_AUTH_KEY <dc_id> <auth_key_id> <auth_key> <key_type>``.
+        Under ``--protocol telegram`` the protocol is ``"telegram"`` (combined
+        keylog with the E2E keys), else ``"mtproto"``.
         """
         protocol = "telegram" if "telegram" in self._active_protocols else "mtproto"
         auth_key = str(payload.get("auth_key", ""))
         auth_key_id = str(payload.get("auth_key_id", ""))
-        # Datacenter::getAuthKey does not always populate the auth_key_id
-        # out-param, but the id is by definition the low 64 bits of SHA1(auth_key).
-        # Derive it here when absent so every captured temp/PFS key produces a
-        # usable keylog line (the offline decryptor looks records up by this id).
+        # Datacenter::getAuthKey does not always fill the auth_key_id out-param;
+        # the id is the low 64 bits of SHA1(auth_key), and the offline decryptor
+        # looks keys up by it.
         if len(auth_key_id) != 16 and len(auth_key) == 512:
             try:
                 import hashlib
@@ -536,14 +502,9 @@ class MessageRouter:
         ))
 
     def _emit_telegram_e2e_key(self, payload: dict) -> None:
-        """Emit a structured Telegram Secret-Chat (E2E) key-material KeylogEvent.
+        """Emit a Telegram Secret-Chat key as ``MTPROTO_E2E_KEY <key_fingerprint> <shared_key> <chat_id>``.
 
-        Routed to the unified :class:`KeylogOutputHandler` bound to the
-        :class:`TelegramKeylogFormatter`, which renders the canonical
-        ``MTPROTO_E2E_KEY <key_fingerprint> <shared_key> <chat_id>`` line into the
-        SAME combined Telegram keylog as the MTProto cloud keys. Always emitted as
-        ``protocol="telegram"`` (the E2E keys only exist under the Telegram
-        protocol selection).
+        Always ``protocol="telegram"``, in the same keylog as the MTProto cloud keys.
         """
         self._event_bus.emit(KeylogEvent(
             protocol="telegram",
@@ -557,11 +518,8 @@ class MessageRouter:
     def _emit_private_key_material(self, payload: dict) -> None:
         """Emit a key-material KeylogEvent for a registry-driven protocol.
 
-        The agent tags the message with ``classifier`` (= the protocol name) and
-        carries the protocol's keylog fields as plain payload entries. The router
-        stays protocol-agnostic — it forwards those fields verbatim and the
-        protocol's :class:`KeylogFormatter` (resolved by ``protocol``) renders the
-        keylog line. Reusable by any protocol; nothing here is protocol-specific.
+        ``classifier`` is the protocol name; the other payload fields are
+        forwarded verbatim to that protocol's formatter.
         """
         classifier = str(payload.get("classifier", ""))
         if not classifier:
@@ -573,12 +531,9 @@ class MessageRouter:
         self._event_bus.emit(KeylogEvent(protocol=classifier, payload=fields))
 
     def _emit_private_plaintext(self, payload: dict, data: bytes) -> None:
-        """Emit decrypted app-layer plaintext as a DatalogEvent tagged with the
-        payload's ``classifier`` (= protocol name).
+        """Emit decrypted plaintext as a DatalogEvent tagged with the payload's ``classifier``.
 
-        Generic counterpart of :meth:`_emit_telegram_e2e_plaintext`: content
-        captured out-of-band at a decrypt hook, so socket metadata is best-effort
-        (the call site may not carry the 5-tuple). Protocol-agnostic.
+        Captured at a decrypt hook, so socket metadata is best-effort.
         """
         classifier = str(payload.get("classifier", ""))
         if not classifier:
@@ -600,17 +555,11 @@ class MessageRouter:
         ))
 
     def _emit_telegram_e2e_plaintext(self, payload: dict, data: bytes) -> None:
-        """Emit decrypted Telegram Secret-Chat plaintext as a ``telegram_e2e``
-        DatalogEvent.
+        """Emit Secret-Chat plaintext as a ``telegram_e2e`` DatalogEvent.
 
-        Sourced from the agent's Java-layer Secret-Chat hooks
-        (``SecretChatHelper.processDecryptedObject`` /
-        ``performSendEncryptedRequest``). Like the Signal path, this is
-        out-of-band content captured at the SecretChatHelper boundary rather than
-        by decrypting the pcap; socket metadata is best-effort (the call site may
-        not carry the 5-tuple). The ``ssl_session_id`` keys live plaintext into
-        its own ``telegram_e2e`` flow per Secret-Chat id — the same approach the
-        offline path uses.
+        Comes from the Java hooks (``SecretChatHelper.processDecryptedObject`` /
+        ``performSendEncryptedRequest``), so socket metadata is best-effort.
+        ``ssl_session_id`` gives each Secret-Chat id its own flow, as offline does.
         """
         src_addr_str, src_port, dst_addr_str, dst_port, ss_family, src_addr, dst_addr = self._resolve_addresses(payload)
         self._event_bus.emit(DatalogEvent(
@@ -645,14 +594,11 @@ class MessageRouter:
 
     def _filter_candidates(self, endpoints: ResolvedEndpoints, client_random: str,
                            direction: str) -> list:
-        """The tuples a record may be filtered on: its emitted (pinned) one plus,
-        under a synthetic pin, the real tuple it carries (``observed``) or the
-        one learned earlier for the connection.
+        """The tuples a record may be filtered on: the emitted (pinned) one plus, under a synthetic pin, the real one.
 
-        A synthetic-only record of a connection whose real tuple was never
-        seen has only its 198.18/15 tuple, which no host/port filter on a real
-        address can match -- such records are dropped by those filters, as
-        before; protocol-only filters still pass them.
+        The real tuple is the record's ``observed`` one or one learned earlier.
+        A record whose real tuple was never seen has only its 198.18/15 tuple,
+        which host/port filters drop; protocol-only filters still pass it.
         """
         candidates = [endpoints]
         if not endpoints.synthetic:
@@ -687,16 +633,11 @@ class MessageRouter:
             return True
 
     def _emit_caller_stack(self, payload: dict) -> None:
-        """Emit a :class:`CallerStackEvent` for every ``caller_stack`` backtrace.
+        """Emit a :class:`CallerStackEvent` per ``--attribute-sdk`` backtrace (once per connection).
 
-        The agent sends this once per connection under ``--attribute-sdk``. The
-        frame strings (``java_frames``, ``native_frames[].module``) are
-        attacker-controlled: :func:`~friTap.analysis.attribution.sdk.classify_frames`
-        uses them purely as lookup keys, and ``sdk`` carries only the trusted
-        ``{sdk, vendor, category}`` dict on a signature match (``None``
-        otherwise). The frames themselves travel escaped and length-capped under
-        ``untrusted`` (see :mod:`friTap.caller_stack_shapes`), so an unclassified
-        stack still reaches the collector as the flow's ``caller_stack``.
+        Frame strings are attacker-controlled: they only serve as lookup keys,
+        and ``sdk`` holds the trusted ``{sdk, vendor, category}`` dict on a match
+        (else ``None``). The frames travel escaped and capped under ``untrusted``.
         """
         java_frames, native_modules = caller_stack_lookup_keys(payload)
         sdk = self._classify_caller_stack(java_frames, native_modules)
@@ -737,11 +678,9 @@ class MessageRouter:
 
     @staticmethod
     def _caller_stack_identity(payload: dict) -> dict:
-        """The optional connection/thread identity fields of a ``caller_stack``
-        payload, coerced to their event types (missing/invalid -> empty/0).
+        """Optional connection/thread identity fields, coerced to event types (missing/invalid -> empty/0).
 
-        ``thread_name`` and ``transport_module`` come from the target, so they
-        are escaped like other agent text and capped at 120 characters.
+        ``thread_name`` and ``transport_module`` come from the target, so they are escaped and capped.
         """
         return {
             "client_random": payload.get("client_random", ""),
@@ -770,19 +709,11 @@ class MessageRouter:
 
     def _emit_lifecycle(self, payload: dict) -> None:
         src_addr_str, src_port, dst_addr_str, dst_port, *_ = self._resolve_addresses(payload)
-        # connection_index.resolve_connection_key is the single source of truth
-        # for connection keying. FlowCollector.on_data uses the very same helper
-        # for DatalogEvents, so lifecycle keys and data keys agree by sharing
-        # this function — there is no duplicated construction left to "keep in
-        # sync". We MUST pass the same ``protocol`` both sites derive for a
-        # connection (here from the payload, there from the event) so that, e.g.
-        # a QUIC connection produces a ``cr:quic:...`` / ``sid:quic:...`` /
-        # ``net:quic:...`` key on BOTH paths instead of a mismatched ``tls`` key
-        # on one side. (The agent stamps both lifecycle and datalog messages via
-        # sendWithProtocol, i.e. with the same selected protocol.)
-        # The same coerced value also rides the emitted SessionEvent below; the
-        # empty/None -> "tls" coercion is ALSO enforced inside
-        # resolve_connection_key, so the two paths can never key differently.
+        # FlowCollector.on_data uses the same resolve_connection_key for
+        # DatalogEvents, so lifecycle and data keys agree only if both pass the
+        # same ``protocol`` (e.g. ``cr:quic:...``, not a ``tls`` key on one side).
+        # The agent tags both message kinds alike; empty/None -> "tls" is also
+        # enforced inside resolve_connection_key.
         protocol = payload_protocol(payload, "tls")
         client_random = payload.get("client_random", "")
         conn_id = resolve_connection_key(
@@ -792,15 +723,10 @@ class MessageRouter:
             protocol=protocol,
         )
 
-        # METADATA IS OFFLINE-ONLY. The live agent path deliberately carries NO
-        # TLS handshake metadata (cipher_suite/protocol_version/server_name/alpn):
-        # those are produced solely by the offline pcap+keys -> .tap pipeline
-        # (offline/tshark.py), where tshark has the full handshake. The live
-        # SessionEvent carries ONLY connection IDENTITY + lifecycle so flows are
-        # keyed/finalized; its metadata fields stay at their "" defaults. Do NOT
-        # re-introduce metadata reads here — that would split the source of truth
-        # and let live and offline metadata drift. (_stamp_tls_metadata still
-        # consumes these fields, but only from the offline producer's events.)
+        # TLS handshake metadata (cipher_suite/protocol_version/server_name/alpn)
+        # is offline-only, produced by offline/tshark.py from the full handshake.
+        # The live SessionEvent carries identity + lifecycle and leaves those
+        # fields at "" so live and offline metadata cannot drift.
         self._event_bus.emit(SessionEvent(
             session_id=str(payload.get("ssl_session_id", "")),
             event_type=payload.get("event", ""),

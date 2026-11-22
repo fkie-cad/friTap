@@ -28,6 +28,8 @@ from .pcapng_blocks import (
     build_idb,
     build_shb,
 )
+from .provisional_endpoint_hold import ProvisionalEndpointHold
+from .quic_pcap_bridge import QuicPcapBridge
 
 if TYPE_CHECKING:
     from ..events import DatalogEvent, EventBus, KeylogEvent
@@ -47,6 +49,9 @@ class PcapngOutputHandler(OutputHandler):
         self._tracker = TcpSessionTracker()
         self._dedup = KeyDeduplicator()
         self._epb_count = 0
+        # Keeps guessed QUIC tuples out of the file as a separate fake conversation.
+        self._provisional_hold = ProvisionalEndpointHold()
+        self._quic_bridge = QuicPcapBridge(notice=self._logger.info)
 
     def setup(self, event_bus: "EventBus") -> None:
         # Shared per path: the Windows LSASS session writes the same -p file.
@@ -67,10 +72,11 @@ class PcapngOutputHandler(OutputHandler):
         file_obj.write(build_idb())
 
     def _attach(self, file_obj: IO, event_bus: "EventBus") -> None:
-        from ..events import DatalogEvent, KeylogEvent
+        from ..events import DatalogEvent, KeylogEvent, SessionEvent
         self._file = file_obj
         event_bus.subscribe(KeylogEvent, self.on_keylog)
         event_bus.subscribe(DatalogEvent, self.on_data)
+        event_bus.subscribe(SessionEvent, self.on_session)
 
     def on_keylog(self, event: "KeylogEvent") -> None:
         if event.key_data and self._dedup.is_new(event.key_data):
@@ -78,10 +84,23 @@ class PcapngOutputHandler(OutputHandler):
             self._flush_dsb()
 
     def on_data(self, event: "DatalogEvent") -> None:
-        if not self._file or not event.data:
+        if not self._file or not self._quic_bridge.should_write(event):
             return
         self._flush_dsb()
-        self._write_epb(event)
+        for record in self._provisional_hold.admit(event):
+            self._write_record(record)
+
+    def on_session(self, event) -> None:
+        if self._file:
+            self._quic_bridge.close_on_destroyed(event, self._write_epb, self._write_secrets)
+
+    def _write_record(self, event: "DatalogEvent") -> None:
+        self._quic_bridge.route(event, self._write_epb, self._write_secrets)
+
+    def _write_secrets(self, lines) -> None:
+        # Straight to the file: these are not -k keys (no dedup, no formatter).
+        self._file.write(build_dsb("".join(line + "\n" for line in lines).encode("utf-8")))
+        self._file.flush()
 
     def _flush_dsb(self) -> None:
         """Write pending key material as a Decryption Secrets Block."""
@@ -102,7 +121,7 @@ class PcapngOutputHandler(OutputHandler):
             raise
         self._pending_keys.clear()
 
-    def _write_epb(self, event: "DatalogEvent") -> None:
+    def _write_epb(self, event: "DatalogEvent", timestamp: Optional[float] = None) -> None:
         """Write Enhanced Packet Block with IP+TCP framing."""
         if not self._file or not event.data:
             return
@@ -121,7 +140,7 @@ class PcapngOutputHandler(OutputHandler):
             transport=event.transport,
         )
 
-        t_us = int(time.time() * 1_000_000)
+        t_us = int((time.time() if timestamp is None else timestamp) * 1_000_000)
         for packet in packets:
             self._write_packet_block(packet, t_us)
 
@@ -132,8 +151,22 @@ class PcapngOutputHandler(OutputHandler):
         if self._epb_count % EPB_FLUSH_INTERVAL == 0:
             self._file.flush()
 
+    def _release_held_records(self) -> None:
+        """Write records whose real tuple never appeared, with their guessed tuple."""
+        for record in self._provisional_hold.drain():
+            # Per record: one failed write must not drop the rest.
+            try:
+                self._write_record(record)
+            except (OSError, ValueError) as e:
+                self._logger.warning("Failed to write a held record on close: %s", e)
+        try:
+            self._quic_bridge.close_all(self._write_epb, self._write_secrets)
+        except (OSError, ValueError) as e:
+            self._logger.warning("Failed to close synthetic QUIC connections: %s", e)
+
     def close(self) -> None:
         if self._file:
+            self._release_held_records()
             self._tracker.clear()
             try:
                 self._flush_dsb()

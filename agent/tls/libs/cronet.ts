@@ -6,6 +6,7 @@ import { devlog, devlog_debug, devlog_error, log } from "../../util/log.js";
 import { safeKeyLenLogged } from "../../shared/keylog_length.js";
 import { pcap_enabled, patterns as patternsJson, isPatternReplaced, enable_default_fd } from "../../fritap_agent.js";
 import { hasUsablePatternsFor } from "../shared/cronet_patterns.js";
+import { plaintextRowWillHandle } from "../shared/boringssl_plaintext_resolver.js";
 import { noteHandshakeLogged, observeHandshakeSecret } from "../../shared/tls13_secret_recovery.js";
 import { openSslSessionIdDecoder } from "../definitions/openssl.js";
 import { isWindows, isiOS, isMacOS } from "../../util/process_infos.js";
@@ -265,10 +266,21 @@ export class Cronet {
     // Emit a single notice per (module, action, reason) explaining why stripped-Cronet
     // plaintext is unavailable: "missing" = no symbols and no byte-pattern at all;
     // "pending" = a byte-pattern exists but the SSL_get_fd hook point isn't wired yet.
+    // Same predicate the supplementary row applies, so the notice is suppressed only when that row really hooks.
+    private plaintextRowWillHandle(action: "SSL_Read" | "SSL_Write"): boolean {
+        const mod = Process.findModuleByName(this.module_name);
+        return mod !== null && plaintextRowWillHandle(mod, action === "SSL_Read" ? "SSL_read" : "SSL_write");
+    }
+
     private noticePlaintext(action: "SSL_Read" | "SSL_Write", reason: "missing" | "pending"): void {
         const key = `${this.module_name}:${action}:${reason}`;
         if (Cronet.plaintextNoticeShown.has(key)) return;
         Cronet.plaintextNoticeShown.add(key);
+        if (this.plaintextRowWillHandle(action)) {
+            // The supplementary chromium_plaintext row hooks this module and reports its own outcome.
+            devlog(`[Cronet modern] ${this.module_name}: ${action} not exported; plaintext is left to the BoringSSL plaintext row`);
+            return;
+        }
         if (reason === "missing") {
             log(`[!] ${this.module_name}: plaintext PCAP requested but neither ${action} symbols nor byte-patterns are available for this module; plaintext capture unavailable.`);
         } else {

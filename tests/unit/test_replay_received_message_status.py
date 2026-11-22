@@ -20,6 +20,7 @@ pytest.importorskip("textual")
 
 from friTap.tui.screens import main_screen as ms  # noqa: E402
 from friTap.tui.widgets.flow_list import FlowListWidget  # noqa: E402
+from tests.unit._tui_flow_helpers import FakeReplay  # noqa: E402
 
 
 def _summary(flow_id, transport, has_request, has_response, method="decryptedMessage",
@@ -30,21 +31,6 @@ def _summary(flow_id, transport, has_request, has_response, method="decryptedMes
         transport=transport, protocol=protocol, method=method, total_size=0,
         has_request=has_request, has_response=has_response, flow_method=flow_method,
     )
-
-
-class _FakeReplay:
-    def __init__(self, summaries):
-        self._summaries = summaries
-        self.flow_count = len(summaries)
-
-    def load(self):
-        pass
-
-    def get_summaries(self):
-        return list(self._summaries)
-
-    def get_flow(self, flow_id):
-        return None
 
 
 class _FakeList:
@@ -62,10 +48,13 @@ class _FakeList:
 
 
 def _replay(monkeypatch, summaries):
-    from friTap.tui import replay_controller
+    from friTap.flow import replay as replay_module
 
-    monkeypatch.setattr(replay_controller, "ReplayController", lambda path: _FakeReplay(summaries))
+    monkeypatch.setattr(replay_module, "ReplayController", lambda path: FakeReplay([], summaries))
     screen = ms.MainScreen.__new__(ms.MainScreen)
+    screen._replay_ctrl = None
+    screen._analyzer_run_id = 0
+    screen._findings_cache = None
     fake_list = _FakeList()
     monkeypatch.setattr(screen, "query_one", lambda *a, **k: fake_list, raising=False)
     monkeypatch.setattr(screen, "_update_capture_indicator", lambda: None, raising=False)
@@ -76,15 +65,17 @@ def _replay(monkeypatch, summaries):
 
 
 def test_is_received_message_summary():
+    from friTap.flow.replay_rows import is_received_message_summary
+
     recv = _summary("r", "telegram_e2e", False, True)
     sent = _summary("s", "telegram_e2e", True, False)
     paired = _summary("p", "mtproto", True, True)
     tls = _summary("t", "tls", False, True)
     flow = SimpleNamespace
-    assert ms._is_received_message_summary(flow(transport="telegram_e2e"), recv)
-    assert not ms._is_received_message_summary(flow(transport="telegram_e2e"), sent)
-    assert not ms._is_received_message_summary(flow(transport="mtproto"), paired)
-    assert not ms._is_received_message_summary(flow(transport="tls"), tls)
+    assert is_received_message_summary(flow(transport="telegram_e2e"), recv)
+    assert not is_received_message_summary(flow(transport="telegram_e2e"), sent)
+    assert not is_received_message_summary(flow(transport="mtproto"), paired)
+    assert not is_received_message_summary(flow(transport="tls"), tls)
 
 
 def test_replay_status_column_shows_real_direction(monkeypatch):

@@ -23,8 +23,11 @@ from friTap.synthetic_endpoints import flow_endpoints_synthetic
 
 if TYPE_CHECKING:
     from friTap.flow.models import Flow
+    from friTap.parsers.app_ciphers.applovin_keyring import AppLovinKeyring
 
 HAR_VERSION = "1.2"
+APP_CIPHER_FIELD = "_fritap_app_cipher"
+APPLOVIN_CIPHER = "applovin_mediate"
 _TEXT_MIME_MARKERS = ("text", "json", "xml", "html", "javascript", "css",
                       "x-www-form-urlencoded", "svg", "yaml")
 
@@ -118,6 +121,40 @@ def _har_response(flow: "Flow", include_bodies: bool) -> dict:
     }
 
 
+class LazyKeyring:
+    """Builds ``AppLovinKeyring.from_sources()`` on first use only.
+
+    Captures without AppLovin envelopes never pay for env parsing or
+    bundle mining; an explicit *keyring* is returned as-is.
+    """
+
+    def __init__(self, keyring: "AppLovinKeyring | None" = None) -> None:
+        self._keyring = keyring
+
+    def get(self) -> "AppLovinKeyring":
+        if self._keyring is None:
+            from friTap.parsers.app_ciphers.applovin_keyring import AppLovinKeyring
+
+            self._keyring = AppLovinKeyring.from_sources()
+        return self._keyring
+
+
+def app_cipher_field(flow: "Flow", keyring: LazyKeyring) -> dict | None:
+    """``_fritap_app_cipher`` value for an AppLovin mediate request, else ``None``."""
+    from friTap.analysis.applovin_mediate import find_mediate_envelope, variant_label
+
+    envelope = find_mediate_envelope(flow)
+    if envelope is None:
+        return None
+    result, reason = keyring.get().try_decrypt(envelope)
+    record: dict[str, Any] = {"cipher": APPLOVIN_CIPHER, "protocol_id": envelope.protocol_id}
+    if result is None:
+        return {**record, "decrypted": False, "reason": reason}
+    payload = result.json if result.json is not None else result.plaintext.decode("utf-8", "replace")
+    return {**record, "decrypted": True, "timestamp_ms": result.timestamp_ms,
+            "variant": variant_label(result), "json": payload}
+
+
 def _entry_comment(flow: "Flow") -> str:
     parts = []
     if flow.ssl_session_id:
@@ -132,8 +169,16 @@ def _has_synthetic_server(flow: "Flow") -> bool:
     return flow_endpoints_synthetic(flow)
 
 
-def flow_to_har_entry(flow: "Flow", include_bodies: bool = False) -> dict | None:
-    """Convert one flow to a HAR entry; ``None`` for non-HTTP flows."""
+def flow_to_har_entry(
+    flow: "Flow",
+    include_bodies: bool = False,
+    keyring: LazyKeyring | None = None,
+) -> dict | None:
+    """Convert one flow to a HAR entry; ``None`` for non-HTTP flows.
+
+    With *include_bodies*, an AppLovin mediate request also gets its
+    decrypted payload (or the failure reason) as ``_fritap_app_cipher``.
+    """
     if flow.request is None and flow.response is None:
         return None
     duration_ms = max(0, int((flow.ended - flow.started) * 1000)) if flow.ended > 0 else 0
@@ -150,10 +195,22 @@ def flow_to_har_entry(flow: "Flow", include_bodies: bool = False) -> dict | None
     if _has_synthetic_server(flow):
         # Optional in HAR 1.2; a synthetic 198.18.0.0/15 address is no real server.
         del entry["serverIPAddress"]
+    stream_id = flow.stream_id
+    if stream_id is not None:
+        # HAR permits custom fields with a leading underscore.
+        entry["_streamId"] = stream_id
     comment = _entry_comment(flow)
     if comment:
         entry["comment"] = comment
+    if include_bodies:
+        _add_app_cipher(entry, flow, keyring or LazyKeyring())
     return entry
+
+
+def _add_app_cipher(entry: dict, flow: "Flow", keyring: LazyKeyring) -> None:
+    app_cipher = app_cipher_field(flow, keyring)
+    if app_cipher is not None:
+        entry[APP_CIPHER_FIELD] = app_cipher
 
 
 def _selected_flows(reader: Any, keep: Callable[["Flow"], bool] | None):
@@ -166,19 +223,25 @@ def tap_to_har(
     tap_path: str,
     include_bodies: bool = False,
     keep: Callable[["Flow"], bool] | None = None,
+    keyring: "AppLovinKeyring | None" = None,
 ) -> dict:
     """Convert the capture at *tap_path* to a HAR 1.2 document.
 
     Args:
         tap_path: ``.tap`` capture.
-        include_bodies: Embed request/response bodies (raw values).
+        include_bodies: Embed request/response bodies (raw values) and
+            decrypted app-layer cipher payloads (``_fritap_app_cipher``).
         keep: Optional flow predicate (e.g. ``FlowSelector(...).matches``).
+        keyring: AppLovin key material; defaults to
+            ``AppLovinKeyring.from_sources()``, built only when an envelope
+            is encountered.
     """
     from friTap.flow.tap_reader import TapReader
 
+    lazy_keyring = LazyKeyring(keyring)
     with TapReader(tap_path) as reader:
         entries = [entry for flow in _selected_flows(reader, keep)
-                   if (entry := flow_to_har_entry(flow, include_bodies)) is not None]
+                   if (entry := flow_to_har_entry(flow, include_bodies, lazy_keyring)) is not None]
     return {
         "log": {
             "version": HAR_VERSION,
@@ -189,4 +252,12 @@ def tap_to_har(
     }
 
 
-__all__ = ["HAR_VERSION", "body_to_har", "flow_to_har_entry", "tap_to_har"]
+__all__ = [
+    "APP_CIPHER_FIELD",
+    "HAR_VERSION",
+    "LazyKeyring",
+    "app_cipher_field",
+    "body_to_har",
+    "flow_to_har_entry",
+    "tap_to_har",
+]

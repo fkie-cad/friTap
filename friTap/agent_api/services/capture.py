@@ -44,7 +44,7 @@ def request_from_params(params: dict[str, Any]) -> CaptureRequest:
         protocol_options=dict(params.get("protocol_options") or {}),
         capture=params.get("capture", DEFAULT_CAPTURE_MODE),
         duration_s=params.get("duration_s", DEFAULT_DURATION_S),
-        follow_exec=params.get("follow_exec", True),
+        follow_exec=params.get("follow_exec", False),
         anti_root=params.get("anti_root", False),
     )
 

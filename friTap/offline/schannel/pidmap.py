@@ -1,19 +1,16 @@
 """Attribute each TLS session (and its secrets) to the owning process (PUBLIC).
 
 Port of ``research/memory_scan_lsass/tools/schannel_pidmap.py``. lsass serves every
-process, so a secret recovered from lsass memory carries no PID. Nothing in lsass
-reliably stores the owning PID next to the key material, so we do NOT read a PID out
-of lsass — we correlate on the one artifact the owning process provably controls:
-its TCP 4-tuple::
+process and stores no owning PID next to the key material, so the join uses the
+owning process's TCP 4-tuple::
 
     netstat  : PID           -> (local ip:port, remote ip:port)   [ESTABLISHED snapshot]
     pcap     : 4-tuple       -> tcp.stream -> ClientHello client_random
     keylog   : client_random -> {LABEL: secret}
     =>  PID -> client_random -> secrets
 
-This distinguishes concurrent processes that all use lsass, because each owns a
-distinct 4-tuple. This module ports the PURE join helpers; the pcap read itself
-(scapy/tshark) is environment-dependent and lives in the dev/live tooling.
+Each concurrent process owns a distinct 4-tuple. Only the pure join helpers live
+here; the pcap read is environment-dependent and lives in the dev/live tooling.
 """
 
 from __future__ import annotations

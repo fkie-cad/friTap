@@ -4,7 +4,6 @@ import { devlog, devlog_debug, devlog_error, log } from "../util/log.js";
 import { safeKeyLenLogged } from "./keylog_length.js";
 import { LruMap } from "./lru.js";
 import { sslIdentity } from "./ssl_identity.js";
-import { callAbiForModule, readSslLogSecretCall } from "./call_abi.js";
 import {
     CLIENT_RANDOM_CACHE_MAX,
     tryReadClientRandomAt,
@@ -14,7 +13,7 @@ import {
     observeHandshakeSecret,
 } from "./tls13_secret_recovery.js";
 import { keylog_enabled, offsets } from "../fritap_agent.js";
-import { guardKeylogDumpKeys, onAllKeylogTiersMissed, startTier4InParallelWithPattern } from "./boringssl_keylog_outcome.js";
+import { attachSslLogSecretHook, guardKeylogDumpKeys, onAllKeylogTiersMissed, startTier4InParallelWithPattern } from "./boringssl_keylog_outcome.js";
 import { PatternOutcomeSource, pollPatternOutcome } from "./boringssl_pattern_hook.js";
 // Side-effect import: registers the tier-4 anchor locator with
 // boringssl_keylog_outcome. Imported here because this module is on the BoringSSL
@@ -186,24 +185,7 @@ export type DumpKeysCb = (
     secretLen: number
 ) => void;
 
-export function attachSslLogSecretHook(addr: NativePointer, cb: DumpKeysCb, moduleName: string = ""): boolean {
-    // bssl::ssl_log_secret(SSL const*, char const*, Span<u8 const>): the Span is
-    // (data, size) in registers on SysV/AAPCS64 but passed by reference on Win64
-    // (see call_abi.ts), so read it under the module's ABI.
-    const abi = callAbiForModule(moduleName);
-    try {
-        Interceptor.attach(addr, {
-            onEnter(args) {
-                const c = readSslLogSecretCall(args, this.context, abi);
-                cb(c.label, c.ssl, c.data, c.len);
-            },
-        });
-        return true;
-    } catch (e) {
-        devlog_error(`[boringssl-sym] Interceptor.attach failed: ${e}`);
-        return false;
-    }
-}
+export { attachSslLogSecretHook };
 
 /**
  * Default 1-second wait used by scheduleBoringSSLSymbolFallback. Pattern-based
@@ -350,7 +332,7 @@ export function installBoringSSLSymbolHook(moduleName: string, dumpKeys: DumpKey
     if (!r) return false;
     // Guarded: the legacy Cronet chain runs this in parallel with a still-running
     // pattern scan on the same ssl_log_secret; only one tier may emit each secret.
-    const ok = attachSslLogSecretHook(r.address, guardKeylogDumpKeys(moduleName, "symbol", dumpKeys), moduleName);
+    const ok = attachSslLogSecretHook(r.address, "symbol", guardKeylogDumpKeys(moduleName, "symbol", dumpKeys), moduleName);
     if (ok) {
         // Use `log` (level=info) so the success banner reaches stdout under
         // default verbosity — `devlog` (level=debug) was only visible with

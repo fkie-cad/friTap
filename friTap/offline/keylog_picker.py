@@ -1,19 +1,12 @@
 """Pure helpers behind the pcap-to-tap keylog *protocol picker* (no TUI code).
 
-The raw offline-decryptor registry lists every friTap-owned decryptor
-(``mtproto``, ``telegram``, ``rc4``, ``schannel``, ``signal``, ...). The picker
-shows a friendlier set:
+The picker shows ``tls`` first (tshark's own TLS decryption), then standalone
+offline decryptors, then one ``custom`` entry grouping custom ciphers such as
+``rc4``. Entries with a ``picker_group`` (e.g. ``schannel``) are hidden;
+:func:`resolve_keylog_protocol` routes a keylog chosen under the group to the
+grouped entry whose ``accepts_keylog`` accepts it.
 
-  * ``tls`` always comes first (tshark's own TLS decryption).
-  * Custom ciphers (e.g. ``rc4``) are grouped under one ``custom`` entry
-    (displayed as "custom encryption"), listed last.
-  * Entries with a ``picker_group`` (e.g. ``schannel``, a Windows TLS backend)
-    are hidden; they are reached through their group entry instead —
-    :func:`resolve_keylog_protocol` routes a keylog supplied under the group to
-    the grouped entry whose ``accepts_keylog`` predicate accepts it (a Schannel
-    ``.schannel.unpaired`` sidecar under ``tls`` -> ``schannel``).
-
-Every function here is total: failures degrade to a safe default, never raise.
+Every function here degrades to a safe default instead of raising.
 """
 
 from __future__ import annotations
@@ -155,11 +148,7 @@ def keylog_protocol_label(
 
 
 class MergedKeylog(NamedTuple):
-    """Result of :func:`merge_keylogs`.
-
-    * ``path`` — the combined keylog file on disk.
-    * ``key_count`` — number of distinct (de-duplicated) key lines it holds.
-    """
+    """Result of :func:`merge_keylogs`: the combined file and its distinct key-line count."""
 
     path: str
     key_count: int
@@ -168,9 +157,8 @@ class MergedKeylog(NamedTuple):
 def _merged_output_name(first: str, protocol: str) -> str:
     """Deterministic ``<stem>.merged.<proto>.keylog`` basename for *first*.
 
-    Strips any prior ``.merged`` / ``.merged.<proto>`` marker so re-merging an
-    already-merged file (the incremental "store a third keylog" case) keeps a
-    stable name instead of growing ``.merged.merged.…`` on every pass.
+    Strips any prior ``.merged``/``.merged.<proto>`` marker so re-merging a merged
+    file keeps a stable name.
     """
     stem = os.path.splitext(os.path.basename(first))[0]
     marker = f".merged.{protocol}"
@@ -208,12 +196,9 @@ def _read_keylog_sections(path: str) -> tuple[List[str], List[str]]:
 
 
 def count_distinct_keys(paths: Sequence[str]) -> int:
-    """Count the DISTINCT non-comment key lines across every readable *paths*.
+    """Count the distinct non-comment key lines across the readable *paths*.
 
-    Uses the same de-duplication rule as :func:`merge_keylogs` (first-seen set of
-    :func:`_read_keylog_sections` key lines), so a keylog-count and a later merge
-    of the same files agree. Total: unreadable/missing paths are skipped, never
-    raises; returns 0 when nothing readable is found.
+    Unreadable paths are skipped; never raises.
     """
     seen_keys: set = set()
     for path in paths:
@@ -269,29 +254,17 @@ def merge_keylogs(
     protocol: str,
     out_dir: Optional[str] = None,
 ) -> Optional[MergedKeylog]:
-    """Merge same-protocol keylog *paths* into ONE combined keylog file.
+    """Write the de-duplicated union of the key lines in *paths* to one keylog.
 
-    Produces the UNION of the de-duplicated key lines from every readable input
-    (first-seen order preserved). For an MTProto keylog this keeps every
-    distinct ``MTPROTO_AUTH_KEY`` / ``MTPROTO_E2E_KEY`` / ``MTPROTO_OBF_KEY``
-    line, so an E2E-only file merged with an auth+E2E+OBF file yields one file
-    carrying all three key types.
+    The inputs may be named by an untrusted capture manifest, so only well-formed
+    keylog lines for *protocol* are copied (:func:`is_valid_keylog_line_for`);
+    everything else is dropped with one warning, so an arbitrary file such as a
+    private key contributes zero lines. No comment header is written (the Signal
+    dissector does not skip ``#`` lines).
 
-    The inputs may be named by an untrusted capture manifest, so only
-    well-formed keylog lines for *protocol* are copied (NSS lines for ``tls``,
-    ``LABEL <hex|decimal|base64> ...`` otherwise — see
-    :func:`~friTap.output.keylog_format.is_valid_keylog_line_for`). ``#``
-    comment lines and anything else are dropped (counted, one warning), so an
-    arbitrary file such as a private key contributes zero lines. No comment
-    header is written (the Signal dissector does not skip ``#`` lines).
-
-    The result is written to *out_dir* (default: the system temp dir) as
-    ``<stem>.merged.<proto>.keylog`` and returned as a :class:`MergedKeylog`.
-
-    Total: returns ``None`` (never raises) when nothing readable is found or the
-    write fails, so the caller can fall back to its previous behavior. A
-    *protocol* that is not ``^[a-z0-9_]+$`` is refused (``None``): it becomes
-    part of the output file name.
+    Writes ``<stem>.merged.<proto>.keylog`` to *out_dir* (default: temp dir).
+    Returns ``None`` when nothing is readable or the write fails. A *protocol*
+    not matching ``^[a-z0-9_]+$`` is refused since it becomes part of the file name.
     """
     if not is_safe_protocol_name(protocol):
         logger.warning("Refusing to merge keylogs for unsafe protocol name %r", protocol)
@@ -328,12 +301,10 @@ def merge_memory_scan_sidecars(
 ) -> Dict[str, str]:
     """Union each memory-scan sidecar keylog into the selected keylog for its protocol.
 
-    *sidecars* is a manifest's nested ``memory_scan_keylogs`` map (protocol ->
-    path; ``"telegram"`` is folded into ``"mtproto"``). *current_keylog* returns
-    the caller's currently selected keylog for a protocol (or ``None``). Returns
-    ``{protocol: merged_path}`` for every sidecar that exists and merged; a
-    missing sidecar or failed merge is simply absent, so the caller keeps its
-    previous keylog. Never raises (see :func:`merge_keylogs`).
+    *sidecars* is a manifest's ``memory_scan_keylogs`` map (protocol -> path;
+    ``"telegram"`` folds into ``"mtproto"``). *current_keylog* returns the
+    selected keylog for a protocol or ``None``. Returns ``{protocol: merged_path}``
+    for each successful merge; failures are absent. Never raises.
     """
     def _merge(protocol: str, sidecar: Optional[str]) -> None:
         if not sidecar or not is_bounded_regular_file(sidecar):

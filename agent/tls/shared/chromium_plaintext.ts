@@ -4,7 +4,7 @@
 // libchrome, WebView's libwebviewchromium) and stripped Cronet builds
 // (libcronet.<ver>.so, embedded or GMS Dynamite). Their BoringSSL is statically
 // linked and exports nothing, so the Cronet hooker can only extract keys; the
-// record-layer API is located by boringssl_plaintext_locator.ts instead.
+// record-layer API is resolved by boringssl_plaintext_resolver.ts instead.
 //
 // Chrome drives SSL through its own BIO (net::SocketBIOAdapter), so SSL_get_fd
 // is meaningless (-1). The records are attributed with friTap's SSL-scoped fd
@@ -17,7 +17,8 @@ import { pcap_enabled } from "../../fritap_agent.js";
 import { readAddresses } from "../../shared/shared_functions.js";
 import { SslPlaintextHooks, SslPlaintextHost } from "../../shared/ssl_plaintext_hooks.js";
 import { fdLessSslGetFd, sessionlessSslSessionGetId } from "../../shared/optional_ssl_fd_session.js";
-import { describeLocated, locateBoringSslPlaintextApi, LocatedPlaintextApi } from "./boringssl_plaintext_locator.js";
+import { describeLocated, LocatedPlaintextApi } from "./boringssl_plaintext_locator.js";
+import { PlaintextFunctionSource, ResolvedPlaintextApi, exportsSslRecordApi, resolveBoringSslPlaintext } from "./boringssl_plaintext_resolver.js";
 import { prefetchSslLayout } from "../../shared/ssl_layout_autolocate.js";
 import { SslLayout, setSslLayout, sslLayoutFor } from "../../shared/ssl_identity.js";
 
@@ -86,12 +87,16 @@ export function attachChromiumPlaintextHooks(hooks: PlaintextHookAttacher, api: 
     if (api.sslWrite) hooks.attachWrite(api.sslWrite);
 }
 
-/**
- * True when `mod` exports SSL_read or SSL_write: some libcronet builds do, and
- * their primary row hooks those exports, so the locator path must stay out.
- */
-export function exportsSslRecordApi(mod: Pick<Module, "findExportByName">): boolean {
-    return mod.findExportByName("SSL_read") !== null || mod.findExportByName("SSL_write") !== null;
+const SOURCE_DESCRIPTION: Record<PlaintextFunctionSource, string> = {
+    offsets: "from --offsets",
+    learned: "from the learned-offset cache",
+    locator: "located via ssl_lib.cc error-site anchors",
+};
+
+function describeSource(api: ResolvedPlaintextApi): string {
+    if (api.source !== "mixed") return SOURCE_DESCRIPTION[api.source];
+    const part = (fn: "SSL_read" | "SSL_write") => `${fn} ${api.sources[fn] ? SOURCE_DESCRIPTION[api.sources[fn]!] : "unresolved"}`;
+    return `${part("SSL_read")}, ${part("SSL_write")}`;
 }
 
 /**
@@ -113,11 +118,9 @@ export async function installChromiumPlaintextHooks(moduleName: string, socketLi
             devlog(`[Chromium plaintext] ${moduleName}: SSL_read/SSL_write are exported; left to the export-based hooks`);
             return false;
         }
-        const api = await locateBoringSslPlaintextApi(mod);
-        if (!api || (!api.sslRead && !api.sslWrite)) {
-            log(`[!] ${moduleName}: BoringSSL SSL_read/SSL_write not located; TCP TLS plaintext unavailable (keys only)`);
-            return false;
-        }
+        // The resolver emits the once-per-module miss notice itself.
+        const api = await resolveBoringSslPlaintext(mod);
+        if (!api) return false;
         const hooks = new SslPlaintextHooks(chromiumPlaintextHost(moduleName, socketLibrary, isBaseHook),
                                             NO_MODIFICATIONS, false);
         prepareSslLayout(moduleName);
@@ -125,10 +128,23 @@ export async function installChromiumPlaintextHooks(moduleName: string, socketLi
         // Exports only: a no-op on stripped builds, harmless where SSL_free is exported.
         hooks.installScopeHooks();
         log(`[*] ${moduleName}: hooked statically linked BoringSSL for TCP TLS plaintext ` +
-            `(${describeLocated(mod, api)}; located via ssl_lib.cc error-site anchors)`);
+            `(${describeLocated(mod, api)}; ${describeSource(api)})`);
         return true;
     } catch (e) {
         devlog(`[Chromium plaintext] ${moduleName}: install failed: ${e}`);
         return false;
     }
+}
+
+/** A supplementary row's hookFn: what installChromiumPlaintextHooks resolves, or `false` without plaintext pcap. */
+export type ChromiumPlaintextExecutor = (moduleName: string, isBaseHook: boolean) => false | Promise<boolean>;
+
+/**
+ * The per-platform executor (ModuleHookingType contract: `false` when nothing can be
+ * installed, else whether the async locator found and hooked the API). The socket
+ * library is read at call time: the platform module that exports it imports the wrapper.
+ */
+export function chromiumPlaintextExecutor(socketLibrary: () => string): ChromiumPlaintextExecutor {
+    return (moduleName, isBaseHook) =>
+        pcap_enabled ? installChromiumPlaintextHooks(moduleName, socketLibrary(), isBaseHook) : false;
 }

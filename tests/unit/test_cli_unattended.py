@@ -45,7 +45,14 @@ def test_exit_code_values_are_the_documented_ones():
 
 def test_exit_codes_are_distinct_and_exported():
     values = [getattr(exit_codes, name) for name in exit_codes.__all__]
-    assert len(set(values)) == len(values) == 4
+    assert len(set(values)) == len(values) == 6
+
+
+def test_forced_exit_codes_are_the_documented_ones():
+    import signal
+    assert (exit_codes.EXIT_FORCED_SIGINT, exit_codes.EXIT_FORCED_SIGTERM) == (130, 143)
+    assert exit_codes.forced_exit_code(signal.SIGINT) == exit_codes.EXIT_FORCED_SIGINT
+    assert exit_codes.forced_exit_code(signal.SIGTERM) == exit_codes.EXIT_FORCED_SIGTERM
 
 
 def test_argparse_usage_error_exits_with_usage_code(monkeypatch, capsys):

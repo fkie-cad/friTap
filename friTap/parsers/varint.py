@@ -2,11 +2,7 @@
 
 
 def decode_varint(data: bytes, offset: int = 0) -> tuple[int, int]:
-    """Decode a QUIC variable-length integer (RFC 9000 Section 16).
-
-    Returns (value, bytes_consumed).
-    Raises ValueError if insufficient data.
-    """
+    """Decode a QUIC varint (RFC 9000 §16): ``(value, bytes_consumed)``; ValueError on insufficient data."""
     if offset >= len(data):
         raise ValueError("insufficient data for varint")
     first = data[offset]
@@ -27,10 +23,7 @@ decode_quic_varint = decode_varint
 
 
 def encode_varint(value: int) -> bytes:
-    """Encode an integer as a QUIC variable-length integer.
-
-    Used primarily for testing round-trips.
-    """
+    """Encode an int as a QUIC varint (used mainly for round-trip tests)."""
     if value < 0x40:
         return bytes([value])
     elif value < 0x4000:

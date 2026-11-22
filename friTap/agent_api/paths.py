@@ -1,8 +1,7 @@
-"""
-Sandboxed path resolution for agent API tools.
+"""Sandboxed path resolution for agent API tools.
 
-Paths given by an agent are untrusted: they are resolved (symlinks included)
-and must stay inside the context's sandbox root.
+Agent-supplied paths are untrusted: they are resolved (symlinks included) and must stay inside the
+context's sandbox root.
 """
 
 from __future__ import annotations
@@ -22,10 +21,8 @@ def resolve_under_root(
 ) -> Path:
     """Resolve ``path_str`` (relative to ``root``) to a real path inside ``root``.
 
-    Raises:
-        ToolError: ``bad_param`` (empty path / wrong suffix), ``forbidden``
-            (resolves outside ``root``, e.g. via ``..`` or a symlink) or
-            ``not_found`` (``must_exist`` and the file is missing).
+    Raises ``bad_param`` (empty path / wrong suffix), ``forbidden`` (outside ``root``, e.g. via ``..``
+    or a symlink) or ``not_found`` (``must_exist`` and missing).
     """
     if not path_str:
         raise ToolError("path must not be empty", "bad_param")

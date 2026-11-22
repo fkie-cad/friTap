@@ -1,14 +1,11 @@
-"""Top-level orchestrator: transport messages -> decrypted secret-chat messages.
+"""Transport messages -> decrypted secret-chat messages.
 
-Secret-chat E2E blobs are TL-``bytes``-framed payloads embedded inside the
-already-decrypted MTProto transport messages produced by
-:func:`friTap.offline.mtproto.decrypt.iter_decrypted_messages`. This module scans
-those transport messages for E2E blobs keyed by a known fingerprint, peels off
-the second AES-IGE layer (:mod:`friTap.offline.mtproto.crypto`), and yields the
-inner TL payloads. Deeper TL parsing is left to a downstream parser.
-
-The crypto backend is imported lazily; a :class:`MtprotoDependencyError` from the
-transport decryptor propagates so the parent offline driver can skip cleanly.
+Scans the decrypted MTProto transport messages from
+:func:`friTap.offline.mtproto.decrypt.iter_decrypted_messages` for
+TL-``bytes``-framed E2E blobs keyed by a known fingerprint, peels off the second
+AES-IGE layer, and yields the inner TL payloads. A
+:class:`MtprotoDependencyError` from the transport decryptor propagates so the
+offline driver can skip cleanly.
 """
 
 from __future__ import annotations
@@ -29,24 +26,13 @@ _TL_LONG_MARKER = 0xFE
 def iter_e2e_blobs(data: bytes, fingerprints: Set[bytes]) -> Iterator[Tuple[bytes, bytes]]:
     """Yield ``(fingerprint, blob)`` for every TL-``bytes``-framed E2E blob in ``data``.
 
-    Scans for any 8-byte window equal to a known fingerprint. At a candidate
-    position ``p`` the immediately preceding TL ``bytes`` length is read (a single
-    byte when ``< 254``, else the 0xFE + 3-byte-LE long form). The match is
-    accepted only when the framed length describes a valid E2E blob
-    (``>= header + one AES block``, block-aligned body, in bounds); the blob is
-    then yielded and the scan resumes past it.
+    A known-fingerprint match anchors each candidate; the TL ``bytes`` length
+    just before it must describe a valid E2E blob (``>= header + one AES
+    block``, block-aligned body, in bounds), then the scan resumes past it.
 
-    Note on *unknown* fingerprints: this scanner cannot report them, and that is
-    structural rather than an omission. The known-fingerprint match IS the
-    anchor -- the TL length is only validated once a candidate position has been
-    found. Inverting the scan (anchor on a plausible TL length, then read the 8
-    bytes after it as a fingerprint) has no precision left to stand on: the
-    accepted short-form lengths are the 14 values ``40, 56, ... 248``, so roughly
-    one random byte in 18 opens a "blob" and every one of them would report a
-    fake 8-byte fingerprint. Surfacing real unknown fingerprints needs a TL-aware
-    walk that locates ``encryptedMessage`` constructors, which is a different
-    scanner. The cloud layer has no such problem: there the auth_key_id sits at a
-    known offset in every record (see ``MtprotoStats.unknown_key_ids``).
+    Unknown fingerprints cannot be reported: anchoring on a plausible TL length
+    instead would accept about one random byte in 18 (short-form lengths
+    ``40, 56, ... 248``). That needs a TL-aware ``encryptedMessage`` walk.
     """
     fp_len = crypto.E2E_FINGERPRINT_LEN
     hits = {fp: -1 for fp in fingerprints if len(fp) == fp_len}
@@ -109,11 +95,10 @@ def iter_secret_chat_messages(
 
     For each transport message, every embedded E2E blob keyed by a known
     fingerprint is decrypted with the per-chat shared key and unframed into its
-    TL payload. An unknown fingerprint is ignored -- it is invisible to this
-    layer by construction, see :func:`iter_e2e_blobs`, so unlike the cloud layer
-    there is no unknown-fingerprint counter to report. A blob whose msg_key fails
-    to verify (or whose framing is bad) counts as ``records_undecryptable``. The
-    address/port/family/direction are copied from the carrying transport message.
+    TL payload. Unknown fingerprints are invisible here (see
+    :func:`iter_e2e_blobs`). A blob whose msg_key fails to verify or whose
+    framing is bad counts as ``records_undecryptable``. Addressing and direction
+    are copied from the carrying transport message.
     """
     if stats is None:
         stats = SecretChatStats()
@@ -161,13 +146,9 @@ def iter_decrypted_secret_chats(
     stats: Optional[SecretChatStats] = None,
     tstats: Optional[object] = None,
 ) -> Iterator[SecretChatMessage]:
-    """Convenience: pcap -> transport messages -> decrypted secret-chat messages.
+    """pcap -> transport messages -> decrypted secret-chat messages.
 
-    Runs the transport decryptor (:func:`friTap.offline.mtproto.decrypt.\
-iter_decrypted_messages`) over ``pcap_path`` with ``auth_keymap`` and pipes its
-    output into :func:`iter_secret_chat_messages` keyed by ``secret_keymap``.
     ``tstats`` collects transport-level counters; ``stats`` the secret-chat ones.
-    The transport decryptor is imported lazily.
     """
     from ..decrypt import iter_decrypted_messages
 

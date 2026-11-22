@@ -35,6 +35,72 @@ def format_byte_size(size_bytes: int) -> str:
     return f"{size:.1f} TB"
 
 
+def single_stream_id(stream_ids) -> Optional[int]:
+    """The one id shared by all non-None *stream_ids*; None if none or mixed."""
+    found: Optional[int] = None
+    for sid in stream_ids:
+        if sid is None:
+            continue
+        if found is None:
+            found = sid
+        elif sid != found:
+            return None
+    return found
+
+
+# Terminal Flow.stream_id cache state: chunk ids disagree (multi-stream).
+_MIXED_STREAMS = object()
+
+
+def put_stream_id(out: dict, stream_id: Optional[int]) -> dict:
+    """Add ``stream_id`` to the serialized *out* only when known."""
+    if stream_id is not None:
+        out["stream_id"] = stream_id
+    return out
+
+
+def shared_summary_fields(
+    flow: "Flow", filter_attrs: Optional[Mapping[str, tuple]] = None,
+) -> dict[str, Any]:
+    """Summary fields both FlowSummary shapes (here and tap_format) derive the same way from *flow*, as constructor kwargs.
+
+    A pure read (``flow.layer()`` never grows the stack). *filter_attrs* goes to ``filter_inputs_from_flow``.
+    """
+    # Local imports: friTap.filter's package __init__ pulls in the evaluator, which must stay free to import friTap.flow (cycle).
+    from friTap.filter.layer_fields import filter_inputs_from_flow
+    from friTap.filter.protocols import flow_has_ohttp
+
+    tls = flow.layer("tls")
+    outer_app, inner_e2e, inner_summary = _display.layered_scalars_from_flow(flow)
+    flow_method = getattr(flow, "flow_method", "") or _display.method_from_messages(flow)
+    filter_attrs, protocols = filter_inputs_from_flow(flow, filter_attrs)
+    return {
+        "flow_id": flow.flow_id,
+        "connection_id": flow.connection_id,
+        "src_addr": flow.src_addr,
+        "src_port": flow.src_port,
+        "dst_addr": flow.dst_addr,
+        "dst_port": flow.dst_port,
+        "ssl_session_id": flow.ssl_session_id,
+        "started": flow.started,
+        "ended": flow.ended,
+        "transport": getattr(flow, "transport", "tls") or "tls",
+        "has_ohttp": flow_has_ohttp(flow),
+        "tls_sni": tls.sni if tls is not None else "",
+        "tls_alpn": tls.alpn if tls is not None else "",
+        "tag_count": len(getattr(flow, "tags", []) or []),
+        "finding_count": len(getattr(flow, "findings", []) or []),
+        "has_notes": bool(getattr(flow, "notes", "")),
+        "outer_app_protocol": outer_app,
+        "inner_e2e_protocol": inner_e2e,
+        "inner_summary": inner_summary,
+        "flow_method": flow_method,
+        "stream_id": flow.stream_id,
+        "filter_attrs": filter_attrs,
+        "protocols": protocols,
+    }
+
+
 class FlowState(Enum):
     ACTIVE = "active"
     COMPLETE = "complete"
@@ -55,16 +121,11 @@ class FlowChunk:
     direction: str  # "read" or "write"
     timestamp: float
     function: str = ""
-    # Real transport stream id (QUIC) when known. In-memory only: the tap
-    # format serializes chunk fields explicitly and does not persist it.
+    # Real transport stream id (QUIC/HTTP/2) when known; persisted per chunk only when set.
     stream_id: Optional[int] = None
 
 
-# TLS handshake metadata is now the ``tls`` protocol LAYER (TlsLayer in
-# friTap/flow/layers.py), carrying the same library/version/sni/alpn/cipher
-# fields plus the shared layer facets (.data/.parsed/.depth). ``TlsMetadata``
-# remains as an alias so existing imports/constructions keep working; a Flow
-# exposes it via ``flow.tls`` (resolved from ``flow.layers`` by __getattr__).
+# TLS handshake metadata is the ``tls`` layer (TlsLayer); ``flow.tls`` resolves it via __getattr__.
 TlsMetadata = TlsLayer
 
 
@@ -73,10 +134,7 @@ _OHTTP_SENTINEL = object()  # Truthy sentinel for FlowSummary OHTTP filter compa
 
 @dataclass(frozen=True, slots=True)
 class _ParseStub:
-    """Minimal stand-in for ParseResult in FlowSummary.
-
-    Holds only the fields read by the filter engine and display widgets.
-    """
+    """Minimal ParseResult stand-in for FlowSummary: only the fields the filter engine and display read."""
     protocol: str = ""
     method: str = ""
     url: str = ""
@@ -90,13 +148,24 @@ class _ParseStub:
     is_control_frame: bool = False
 
 
+def _parse_stub(result: "Optional[ParseResult]") -> Optional[_ParseStub]:
+    """The summary stub of a request/response *result*, or None."""
+    if result is None:
+        return None
+    return _ParseStub(
+        protocol=result.protocol, method=result.method, url=result.url,
+        host=result.host, status_code=result.status_code,
+        status_text=result.status_text, content_type=result.content_type,
+        content_encoding=result.content_encoding, body_size=result.body_size,
+        stream_id=result.stream_id, is_control_frame=result.is_control_frame,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class FlowSummary:
-    """Lightweight snapshot of a Flow for list display and filtering.
+    """Lightweight scalar snapshot of a Flow (~200 bytes, no chunks/bodies) for list display and filtering.
 
-    Contains only scalar metadata (~200 bytes) — no chunks, no body bytes.
-    Compatible with the filter engine (has ``request``/``response`` stubs
-    with the same attribute names as ParseResult).
+    ``request``/``response`` stubs use ParseResult's attribute names for the filter engine.
     """
     flow_id: str = ""
     connection_id: str = ""
@@ -108,9 +177,7 @@ class FlowSummary:
     state: FlowState = FlowState.ACTIVE
     started: float = 0.0
     ended: float = 0.0
-    # Transport/encryption protocol of the underlying connection ("tls", "quic",
-    # "signal", ...). Mirrors Flow.transport so consumers can group/filter from
-    # the cheap summary without materializing the full Flow.
+    # Mirrors Flow.transport ("tls", "quic", "signal", ...) for grouping without the full Flow.
     transport: str = "tls"
     request: Optional[_ParseStub] = None
     response: Optional[_ParseStub] = None
@@ -128,23 +195,18 @@ class FlowSummary:
     tag_count: int = 0
     finding_count: int = 0
     has_notes: bool = False
-    # Layered protocol-display scalars (so the layered display works without a
-    # live layer stack). See friTap.flow.display.display_protocol_layered.
+    # Layered protocol-display scalars (display.display_protocol_layered).
     outer_app_protocol: str = ""
     inner_e2e_protocol: str = ""
     inner_summary: str = ""
-    # Primary TL operation derived from the flow's message-bearing layers (e.g.
-    # "sendMessage", "users", "updates"). Surfaced in the Method column without
-    # loading full messages. See friTap.flow.display.method_from_messages.
+    # Primary TL operation from message-bearing layers (display.method_from_messages), shown in the Method column.
     flow_method: str = ""
-    # Precomputed display-filter inputs, so filtering behaves identically on a
-    # live flow and on a row rebuilt from a .tap (which has no layer stack).
-    # ``filter_attrs`` maps per-protocol filter fields (``mtproto.method`` ...)
-    # to their values (see friTap.filter.layer_fields); ``protocols`` holds the
-    # canonical protocol names (see friTap.filter.protocols). The mapping is a
-    # plain dict (so the summary pickles, deep-copies and survives
-    # dataclasses.asdict) that must be treated as READ-ONLY; dicts are
-    # unhashable, so it is excluded from hash().
+    # Real transport stream id of a single-stream flow (see Flow.stream_id).
+    stream_id: Optional[int] = None
+    # Precomputed display-filter inputs so filtering matches on a live flow and on a row rebuilt
+    # from a .tap (no layer stack): ``filter_attrs`` maps per-protocol fields (friTap.filter.layer_fields)
+    # to values, ``protocols`` holds canonical names (friTap.filter.protocols). Plain dict (pickles,
+    # survives asdict) and READ-ONLY; unhashable, so excluded from hash().
     filter_attrs: Mapping[str, tuple] = field(default_factory=dict, hash=False)
     protocols: frozenset[str] = frozenset()
 
@@ -197,7 +259,7 @@ class FlowSummary:
 
     @property
     def ohttp_inner_request(self):
-        # Filter engine checks `is not None` — return a truthy sentinel
+        # Filter engine only checks `is not None`: return a truthy sentinel.
         return _OHTTP_SENTINEL if self.has_ohttp else None
 
     @property
@@ -208,68 +270,17 @@ class FlowSummary:
     def from_flow(
         flow: "Flow", filter_attrs: Optional[Mapping[str, tuple]] = None,
     ) -> "FlowSummary":
-        """Create a summary snapshot from a full Flow.
-
-        *filter_attrs* reuses display-filter attributes already extracted for
-        an unchanged layer stack (live rebuilds); by default they are derived
-        from ``flow.layers``.
-        """
-        # Local imports: friTap.filter's package __init__ pulls in the evaluator,
-        # which must stay free to import friTap.flow without a cycle.
-        from friTap.filter.layer_fields import filter_inputs_from_flow
-        from friTap.filter.protocols import flow_has_ohttp
-
-        req_stub = None
-        if flow.request is not None:
-            r = flow.request
-            req_stub = _ParseStub(
-                protocol=r.protocol, method=r.method, url=r.url,
-                host=r.host, status_code=r.status_code, status_text=r.status_text,
-                content_type=r.content_type, content_encoding=r.content_encoding,
-                body_size=r.body_size, stream_id=r.stream_id,
-                is_control_frame=r.is_control_frame,
-            )
-        resp_stub = None
-        if flow.response is not None:
-            r = flow.response
-            resp_stub = _ParseStub(
-                protocol=r.protocol, method=r.method, url=r.url,
-                host=r.host, status_code=r.status_code, status_text=r.status_text,
-                content_type=r.content_type, content_encoding=r.content_encoding,
-                body_size=r.body_size, stream_id=r.stream_id,
-                is_control_frame=r.is_control_frame,
-            )
-        # Non-mutating lookup: a summary is a pure read, so use layer() (None if
-        # absent) rather than flow.tls, which would attach an empty layer.
-        tls_layer = flow.layer("tls")
-        # Prefer a scalar already set on the flow (e.g. a synthetic, layerless
-        # flow rebuilt from a .tap summary in the TUI flow list), since
-        # layered_scalars_from_flow returns "" for a flow with no layer stack.
-        # Live flows have layers and no preset scalars, so they fall through to
-        # the computed values and keep working unchanged.
-        s_outer, s_inner, s_summary = _display.layered_scalars_from_flow(flow)
-        outer_app = getattr(flow, "outer_app_protocol", "") or s_outer
-        inner_e2e = getattr(flow, "inner_e2e_protocol", "") or s_inner
-        inner_summary = getattr(flow, "inner_summary", "") or s_summary
-        # Primary TL operation from the message-bearing layers; falls back to a
-        # preset scalar (synthetic flows rebuilt from a .tap have no live layers).
-        flow_method = getattr(flow, "flow_method", "") or _display.method_from_messages(flow)
-        filter_attrs, protocols = filter_inputs_from_flow(flow, filter_attrs)
+        """Summary snapshot of a full Flow; *filter_attrs* reuses attributes already extracted for an unchanged layer stack (live rebuilds)."""
+        fields = shared_summary_fields(flow, filter_attrs)
+        # Prefer a scalar already set on the flow (a layerless flow rebuilt from a .tap summary),
+        # since layered_scalars_from_flow returns "" without a layer stack.
+        for name in ("outer_app_protocol", "inner_e2e_protocol", "inner_summary"):
+            fields[name] = getattr(flow, name, "") or fields[name]
         return FlowSummary(
-            flow_id=flow.flow_id,
-            connection_id=flow.connection_id,
-            src_addr=flow.src_addr,
-            src_port=flow.src_port,
-            dst_addr=flow.dst_addr,
-            dst_port=flow.dst_port,
-            ssl_session_id=flow.ssl_session_id,
+            **fields,
             state=flow.state,
-            started=flow.started,
-            ended=flow.ended,
-            transport=getattr(flow, "transport", "tls") or "tls",
-            request=req_stub,
-            response=resp_stub,
-            has_ohttp=flow_has_ohttp(flow),
+            request=_parse_stub(flow.request),
+            response=_parse_stub(flow.response),
             has_trailing_data=flow.trailing_bytes is not None,
             trailing_protocol=flow.trailing_protocol,
             has_response_trailing_data=flow.response_trailing_bytes is not None,
@@ -277,46 +288,32 @@ class FlowSummary:
             total_bytes=flow._total_bytes,
             detected_protocol=flow.detected_protocol,
             process_name=flow.process_name,
-            tls_sni=(tls_layer.sni if tls_layer is not None else ""),
-            tls_alpn=(tls_layer.alpn if tls_layer is not None else ""),
-            tag_count=len(flow.tags),
-            finding_count=len(flow.findings),
-            has_notes=bool(flow.notes),
-            outer_app_protocol=outer_app,
-            inner_e2e_protocol=inner_e2e,
-            inner_summary=inner_summary,
-            flow_method=flow_method,
-            filter_attrs=filter_attrs,
-            protocols=protocols,
         )
 
     @staticmethod
     def from_tap_summary(tap_summary: Any, flow: "Flow") -> "FlowSummary":
-        """Summary for a replay row: *flow* is the layerless synthetic Flow
-        rebuilt from *tap_summary* (a decoded ``tap_format.FlowSummary``).
+        """Summary for a replay row: *flow* is the layerless synthetic Flow rebuilt from *tap_summary*.
 
-        The synthetic flow has no layer stack or OHTTP payloads, so the
-        display-filter inputs decoded from the tap's ``meta["layers"]`` are
-        taken over directly; only the protocols of a re-parsed
-        request/response (computed by :meth:`from_flow`) are added on top.
+        It has no layer stack or OHTTP payloads, so the filter inputs decoded from the tap's
+        ``meta["layers"]`` are taken over; only protocols of a re-parsed request/response are added.
         """
         summary = FlowSummary.from_flow(flow, filter_attrs=tap_summary.filter_attrs)
         return replace(
             summary,
             protocols=tap_summary.protocols | summary.protocols,
             has_ohttp=summary.has_ohttp or tap_summary.has_ohttp,
+            # The synthetic flow has no chunks to derive the stream id from.
+            stream_id=(summary.stream_id if summary.stream_id is not None
+                       else tap_summary.stream_id),
         )
 
     def to_dict(self) -> dict:
-        """Return a JSON-safe, body-free dict for a high-level flow overview.
+        """Return a JSON-safe, body-free overview dict.
 
-        Emits the canonical FlowSummary key set shared with
-        :meth:`friTap.flow.tap_format.FlowSummary.to_dict` so that live
-        summaries (built via :meth:`from_flow`) and offline summaries (read
-        from a .tap) render identically in a web UI / TUI / CLI overview.
+        Same key set as :meth:`friTap.flow.tap_format.FlowSummary.to_dict`, so live and offline summaries render identically.
         """
         req, resp = self.request, self.response
-        return {
+        out = {
             "flow_id": self.flow_id,
             "connection_id": self.connection_id,
             "src_addr": self.src_addr,
@@ -328,11 +325,8 @@ class FlowSummary:
             "started": self.started,
             "ended": self.ended,
             "transport": self.transport,
-            # Deterministic and parity-matched with tap_format.FlowSummary.to_dict:
-            # the `duration` property returns wall-clock `time.time() - started`
-            # for in-progress flows (ended == 0), which is non-deterministic and
-            # would diverge from the offline summary shape. A serialized snapshot
-            # uses 0.0 until the flow completes.
+            # Deterministic, parity with the offline shape: the ``duration`` property uses
+            # wall-clock time for in-progress flows, so a snapshot uses 0.0 until completion.
             "duration": (self.ended - self.started) if self.ended > 0 else 0.0,
             "protocol": (self.detected_protocol
                          or (req.protocol if req else "")
@@ -355,6 +349,8 @@ class FlowSummary:
             "inner_summary": self.inner_summary,
             "flow_method": self.flow_method,
         }
+        # Omitted when unknown, in parity with tap_format.FlowSummary.to_dict.
+        return put_stream_id(out, self.stream_id)
 
 
 @dataclass
@@ -368,11 +364,8 @@ class Flow:
     dst_port: int = 0
     ssl_session_id: str = ""
 
-    # Transport/encryption protocol of the underlying connection: "tls"
-    # (TLS-over-TCP, the default) or "quic" (QUIC-over-UDP). Stamped from
-    # ``event.protocol`` at flow creation (FlowCollector._stamp_metadata). The
-    # Flow itself stores no other transport hint, so the LayerPipeline reads
-    # this to decide whether the layer-0 transport is a TlsLayer or QuicLayer.
+    # Transport of the connection: "tls" (default) or "quic"; stamped from ``event.protocol``
+    # at creation (FlowCollector._stamp_metadata). LayerPipeline reads it to pick TlsLayer vs QuicLayer.
     transport: str = "tls"
 
     # State
@@ -392,9 +385,8 @@ class Flow:
     trailing_bytes: Optional[bytes] = None
     trailing_protocol: str = ""
     trailing_parse: Optional[ParseResult] = None
-    # Trailing data left over in the READ (response) direction. The legacy
-    # trailing_* slot above keeps holding write-direction / direction-less
-    # leftovers, so parsers that do not report a direction are unchanged.
+    # Trailing data left in the READ (response) direction; the trailing_* slot above keeps
+    # write-direction / direction-less leftovers so direction-less parsers are unchanged.
     response_trailing_bytes: Optional[bytes] = None
     response_trailing_protocol: str = ""
     response_trailing_parse: Optional[ParseResult] = None
@@ -402,34 +394,22 @@ class Flow:
     # Raw
     chunks: list[FlowChunk] = field(default_factory=list)
 
-    # Cached byte total (incremented by FlowCollector when appending chunks)
+    # Cached byte total (incremented by FlowCollector when appending chunks).
     _total_bytes: int = 0
 
-    # True once the flow exceeded the collector's per-flow retained-payload cap
-    # (FlowCollector MAX_FLOW_CHUNK_BYTES): ``_total_bytes`` keeps counting but
-    # later payload chunks are not retained in ``chunks``.
+    # True once the flow exceeded the per-flow retained-payload cap (MAX_FLOW_CHUNK_BYTES):
+    # ``_total_bytes`` keeps counting but later chunks are not retained.
     truncated: bool = False
 
-    # Protocol detected by the parser registry, populated even when no
-    # ``request``/``response`` is produced yet (e.g. HTTP/2 control-frame-only
-    # flows). Used as a display fallback before showing "unknown".
+    # Protocol detected by the parser registry even without a request/response yet; display fallback before "unknown".
     detected_protocol: str = ""
 
-    # ------------------------------------------------------------------
-    # Schema v2 additive enrichment fields (all optional, back-compat safe)
-    # ------------------------------------------------------------------
+    # Schema v2 additive enrichment fields (all optional).
 
-    # Explicit endpoint-role labeling (v2-reserved). ``src_*``/``dst_*`` remain
-    # the canonical transport endpoints (used across display/collector/filters);
-    # these name the same two ends by *role* — local (instrumented process) and
-    # remote (peer). They are stored fields (not properties) because both the
-    # FLOW decode path (tap_format.decode_flow) and the collector assign them,
-    # and they are persisted as their own keys in the .tap meta. They are
-    # populated from src/dst in exactly ONE place — FlowCollector._enrich_flow —
-    # which is the single source of truth for the local==src / remote==dst
-    # mapping; everything else only reads them. Kept as a v2 hook so a future
-    # capture source that distinguishes role from src/dst order (e.g. inbound
-    # server flows) can set them without changing readers.
+    # Role labels for the endpoints: ``src_*``/``dst_*`` stay the canonical transport endpoints;
+    # these name the same ends as local (instrumented process) / remote (peer). Stored fields
+    # (set by tap_format.decode_flow and the collector, persisted as their own meta keys),
+    # derived from src/dst in ONE place, FlowCollector._enrich_flow; everything else only reads them.
     local_addr: str = ""
     local_port: int = 0
     remote_addr: str = ""
@@ -439,76 +419,89 @@ class Flow:
     process_name: str = ""
     package_name: str = ""
 
-    # Resolved SDK attribution (opt-in, --attribute-sdk). Populated by the
-    # FlowCollector from a ``caller_stack`` agent message whose backtrace
-    # resolved to a known SDK: the trusted ``{"sdk", "vendor", "category"}``
-    # dict from the bundled signature table (friTap/analysis/attribution/sdk.py),
-    # or ``None`` when no backtrace was captured or none matched. Additive and
-    # persisted into the .tap meta only when set, so a flow without it is
-    # byte-identical to today.
+    # Resolved SDK attribution (``--attribute-sdk``): the trusted ``{"sdk", "vendor", "category"}``
+    # dict from the bundled signature table (friTap/analysis/attribution/sdk.py), or ``None``.
+    # Persisted into the .tap meta only when set.
     sdk: Optional[dict] = None
 
-    # Compact caller stack of the flow's connection (opt-in, --attribute-sdk),
-    # stored whether or not it matched an SDK: ``{transport_module,
-    # thread_name, tid, pid, native_frames[:8] ({module, symbol}),
-    # java_frames[:8]}``, strings escaped and capped at 80 characters (see
-    # friTap/caller_stack_shapes.py). Target-controlled text; ``None`` when no
-    # stack was joined. Persisted into the .tap meta only when set.
+    # Compact caller stack of the flow's connection (``--attribute-sdk``), stored whether or not it
+    # matched an SDK: ``{transport_module, thread_name, tid, pid, native_frames[:8], java_frames[:8]}``,
+    # strings escaped and capped at 80 chars (friTap/caller_stack_shapes.py). Target-controlled
+    # text; ``None`` when no stack was joined. Persisted only when set.
     caller_stack: Optional[dict] = None
 
-    # Transport vs originator attribution (friTap/flow/attribution.py):
-    # ``{"transport": {module, kind}, "originator": {sdk, vendor, category},
-    # "confidence", "source", "bucket", "mixed": True}``, every key optional.
-    # The transport is stamped on every TLS/QUIC flow with a known library; the
-    # originator group only when a classified caller stack joined. ``None``
-    # otherwise.
+    # Transport vs originator attribution (friTap/flow/attribution.py): ``{"transport": {module, kind},
+    # "originator": {sdk, vendor, category}, "confidence", "source", "bucket", "mixed": True}``, every
+    # key optional. Transport is stamped on every TLS/QUIC flow with a known library; originator only
+    # when a classified caller stack joined.
     attribution: Optional[dict] = None
 
-    # True while src/dst (and local/remote) are a synthetic 198.18.0.0/15 pin
-    # for an fd-less connection (option 5, friTap/endpoint_pinner.py) rather
-    # than a real socket address. Cleared when the real tuple is observed and
-    # the endpoints are upgraded. Persisted into the .tap meta only when True.
+    # True while src/dst (and local/remote) are a synthetic 198.18.0.0/15 pin for an fd-less
+    # connection (option 5, friTap/endpoint_pinner.py); cleared when the real tuple is observed.
+    # Persisted only when True.
     endpoints_synthetic: bool = False
 
-    # Ordered protocol layer stack (outermost transport -> innermost), e.g.
-    # [tls, http2] or [quic, http3]. Per-flow LINEAR (HTTP/2-3 streams are
-    # already separate flows). Resolved by name via __getattr__: ``flow.tls``,
-    # ``flow.quic``, ``flow.ssh`` each return their typed layer (lazily created
-    # empty if absent, so e.g. ``flow.tls.sni`` is never None — matching the
-    # old TlsMetadata value-object ergonomics). Whole-layer writes go through
-    # add_layer/set_layer; field mutation (``flow.tls.sni = ...``) works on the
-    # cached instance returned by __getattr__.
+    # Ordered layer stack (outermost transport -> innermost), e.g. [tls, http2]; per-flow LINEAR
+    # (HTTP/2-3 streams are separate flows). ``flow.tls`` / ``flow.quic`` / ``flow.ssh`` resolve
+    # by name via __getattr__ (lazily created empty, so ``flow.tls.sni`` is never None). Whole-layer
+    # writes go through add_layer/set_layer; field mutation works on the cached instance.
     layers: list[ProtocolLayer] = field(default_factory=list, repr=False)
 
-    # Hook origin. ``hook_function`` mirrors the dominant chunk.function;
-    # ``hook_stack`` is reserved for full backtraces (NICE-later).
+    # Hook origin: ``hook_function`` mirrors the dominant chunk.function; ``hook_stack`` is reserved.
     hook_function: str = ""
     hook_stack: str = ""
 
     # Mutable analyst annotations.
     tags: list[str] = field(default_factory=list)
     notes: str = ""
-    # Attached analysis findings. Typed loosely as ``list`` to avoid importing
-    # ``friTap.analysis`` here (it imports ``flow.models`` under TYPE_CHECKING);
-    # elements are ``friTap.analysis.Finding`` instances.
+    # Attached findings, typed loosely to avoid importing ``friTap.analysis`` here (it imports models under TYPE_CHECKING).
     findings: list = field(default_factory=list)
+
+    # (chunks list, scanned length, id so far or _MIXED_STREAMS) backing
+    # ``stream_id``.
+    _stream_id_cache: Optional[tuple] = field(
+        default=None, init=False, repr=False, compare=False)
+
+    @property
+    def stream_id(self) -> Optional[int]:
+        """Real transport stream id when every id-carrying chunk agrees (None if none or mixed).
+
+        Chunks are append-only, so the cache is keyed on the list object (held, so its id
+        cannot be reused) and only the new tail is scanned.
+        """
+        chunks = self.chunks
+        # Snapshot the length first: chunks appended concurrently after this
+        # point stay unscanned for the next call.
+        end = len(chunks)
+        cache = self._stream_id_cache
+        if cache is not None and cache[0] is chunks and cache[1] <= end:
+            scanned, found = cache[1], cache[2]
+        else:
+            scanned, found = 0, None
+        if found is not _MIXED_STREAMS:
+            for index in range(scanned, end):
+                sid = chunks[index].stream_id
+                if sid is None:
+                    continue
+                if found is None:
+                    found = sid
+                elif sid != found:
+                    found = _MIXED_STREAMS
+                    break
+        if end != scanned:
+            self._stream_id_cache = (chunks, end, found)
+        return None if found is _MIXED_STREAMS else found
 
     # ------------------------------------------------------------------
     # Protocol layer access (flow.<protocol> -> typed ProtocolLayer)
     # ------------------------------------------------------------------
 
     def __getattr__(self, name: str):
-        # Only invoked when normal attribute lookup fails — real dataclass
-        # fields/methods never reach here. Resolve a registered protocol name
-        # to its layer (lazily creating an empty one so flow.tls/flow.quic are
-        # never-None, matching the old TlsMetadata ergonomics). Anything else
-        # raises AttributeError so getattr(flow, x, default) (filter engine,
-        # copy/pickle dunder probing) keeps working.
-        #
-        # This materializes-and-attaches by design: it is the writable
-        # never-None ergonomic (``flow.tls.version = ...`` persists). PURE-READ
-        # probes that must NOT grow the stack (serializers, snapshots) must use
-        # the non-mutating :meth:`layer` instead of attribute access.
+        # Only invoked when normal lookup fails. Resolves a registered protocol name to its
+        # layer, lazily creating an empty one (so flow.tls/flow.quic are never None); anything
+        # else raises AttributeError so getattr(flow, x, default) (filter engine, copy/pickle
+        # probing) keeps working. This attaches by design (``flow.tls.version = ...`` persists):
+        # PURE-READ probes (serializers, snapshots) must use the non-mutating :meth:`layer`.
         if name.startswith("_"):
             raise AttributeError(name)
         layers = self.__dict__.get("layers")
@@ -525,9 +518,7 @@ class Flow:
 
     def _create_layer(self, name: str, desc) -> ProtocolLayer:
         layer = desc.layer_cls()
-        # Stamp the per-instance name so generic layers (AppLayer, registered
-        # under several names against one class) report the right ``name``.
-        # Harmless for typed layers (their ``NAME`` already equals ``name``).
+        # Per-instance name so generic layers (AppLayer, one class under several names) report the right ``name``.
         layer._name = name
         layer.depth = len(self.layers)
         layer._flow = self
@@ -570,10 +561,8 @@ class Flow:
         return self.add_layer(layer)
 
     def __copy__(self) -> "Flow":
-        # Shallow copy that re-lists the mutable containers (chunks, layers) so
-        # appending to a live flow does not mutate a snapshot's lists. Element
-        # objects are shared, matching the pre-existing snapshot semantics
-        # (the collector already shared the TlsMetadata/FlowChunk objects).
+        # Shallow copy that re-lists the mutable containers (chunks, layers) so appends to a live
+        # flow do not mutate a snapshot; elements are shared.
         new = Flow.__new__(Flow)
         new.__dict__.update(self.__dict__)
         new.chunks = list(self.chunks)
@@ -590,13 +579,11 @@ class Flow:
 
     @property
     def segments(self) -> list[dict]:
-        """Return segment descriptors for multi-protocol rendering.
+        """Segment descriptors for multi-protocol rendering.
 
-        Each segment is a dict with keys: type ('parsed'|'raw'), protocol,
-        parse_result (or None), data (raw bytes for 'raw' type), source.
-
-        The response-direction trailing segment (source ``"response_trailing"``)
-        is appended last. The TUI addresses segments PER PANE: on each pane,
+        Each is a dict with keys type ('parsed'|'raw'), protocol, parse_result (or None),
+        data (raw bytes for 'raw'), source. The response-direction trailing segment
+        (source ``"response_trailing"``) is last. The TUI addresses segments PER PANE:
         segment 1 is that pane's own trailing segment (see ``pane_segments``).
         """
         segs: list[dict] = []
@@ -713,16 +700,13 @@ class Flow:
     def to_dict(self, include_bodies: bool = False) -> dict:
         """Return a JSON-safe dict view of this flow for API/web consumers.
 
-        Covers identity, transport/timing, parsed request/response (via
-        :meth:`ParseResult.to_dict`), the protocol layer names, analyst
-        annotations and attached findings. Raw chunk bytes are never included;
-        request/response bodies are included (hex-encoded) only when
-        *include_bodies* is True. Uses the non-mutating :meth:`layer` lookup so
-        serializing never grows the layer stack.
+        Covers identity, transport/timing, parsed request/response, layer names, annotations
+        and findings. Chunk bytes are never included; bodies only (hex) when *include_bodies*.
+        Uses the non-mutating :meth:`layer` so serializing never grows the layer stack.
         """
         tls = self.layer("tls")
         total_bytes = self._total_bytes or sum(len(c.data) for c in self.chunks)
-        return {
+        out = {
             "flow_id": self.flow_id,
             "connection_id": self.connection_id,
             "src_addr": self.src_addr,
@@ -734,8 +718,7 @@ class Flow:
             "state": self.state.value if isinstance(self.state, FlowState) else str(self.state),
             "started": self.started,
             "ended": self.ended,
-            # Deterministic: avoid the wall-clock `duration` property for an
-            # in-progress flow so the serialized snapshot is stable across calls.
+            # Deterministic: avoid the wall-clock ``duration`` for in-progress flows.
             "duration": (self.ended - self.started) if self.ended > 0 else 0.0,
             "protocol": self.display_protocol,
             "detected_protocol": self.detected_protocol,
@@ -751,21 +734,14 @@ class Flow:
             "response": self.response.to_dict(include_body=include_bodies) if self.response else None,
             "findings": [f.to_dict() for f in self.findings],
         }
+        return put_stream_id(out, self.stream_id)
 
-    # ------------------------------------------------------------------
-    # On-demand body reconstruction from raw chunks
-    # ------------------------------------------------------------------
 
-    # Cache for reconstructed bodies: {direction: bytes}
+        # Cache for reconstructed bodies: {direction: bytes}.
     _body_cache: dict = field(default_factory=dict, repr=False)
 
     def reconstruct_body(self, direction: str) -> bytes:
-        """Reconstruct the body for *direction* ('read' or 'write') from raw chunks.
-
-        Bodies are no longer accumulated in parsers — this method extracts
-        them on demand from ``self.chunks``.  The result is cached so repeated
-        calls are cheap.
-        """
+        """Reconstruct the body for *direction* from raw chunks, cached per direction."""
         if direction in self._body_cache:
             return self._body_cache[direction]
 
@@ -817,15 +793,17 @@ class Flow:
         return b"".join(body_parts)
 
     def _extract_h2_body(self, direction: str) -> bytes:
-        """Extract HTTP/2 DATA frame payloads from raw chunks.
+        """Extract HTTP/2 DATA payloads from raw chunks (stateless scan, no HPACK).
 
-        Stateless scan — no HPACK needed for body-only extraction. Stream id 0
-        (no parsed message) keeps the DATA of every stream.
+        Without a parsed message the flow's own stream is used; stream id 0 (unknown) keeps every stream's DATA.
         """
         from friTap.parsers.http2_dataframe import http2_data_for_stream
 
         msg = self.request if direction == "write" else self.response
-        stream_id = msg.stream_id if msg is not None else 0
+        if msg is not None:
+            stream_id = msg.stream_id
+        else:
+            stream_id = self.stream_id or 0
         body, _degraded = http2_data_for_stream(
             self.get_direction_bytes(direction), stream_id
         )
@@ -844,9 +822,6 @@ class Flow:
             return msg.body
         return b""
 
-    # ------------------------------------------------------------------
-    # Header / body / content-type access
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _get_header(msg: "Optional[ParseResult]", name: str, default: str = "") -> str:
@@ -865,12 +840,10 @@ class Flow:
         encoding_override: str = "",
         max_out: Optional[int] = None,
     ) -> bytes:
-        """Decompressed body of *msg*; output bounded by *max_out*.
+        """Decompressed body of *msg*, output bounded by *max_out*.
 
-        *max_out* defaults to ``MAX_DECOMPRESSED_BODY`` (explicit saves); the
-        automatic ``get_decompressed_*_body`` paths pass the smaller
-        ``MAX_AUTO_DECOMPRESS``. Results are cached in ``_body_cache`` per
-        (direction, encoding, max_out) and cleared with it.
+        Defaults to ``MAX_DECOMPRESSED_BODY`` (explicit saves); the automatic paths pass the smaller
+        ``MAX_AUTO_DECOMPRESS``. Cached in ``_body_cache`` per (direction, encoding, max_out).
         """
         if msg is None:
             return b""
@@ -952,16 +925,14 @@ class Flow:
     ) -> Optional["ProtobufView"]:
         """Decode the request body as protobuf (gRPC framing auto-detected).
 
-        Returns a :class:`~friTap.parsers.protobuf.view.ProtobufView`, or
-        ``None`` when the body is empty or does not look like protobuf.
-        A returned view may still hold no decoded message: check
-        ``view.ok`` and read ``view.notes`` / ``view.error`` for why.
+        Returns a :class:`~friTap.parsers.protobuf.view.ProtobufView`, or ``None`` when the
+        body is empty or not protobuf-like. A view may hold no decoded message: check
+        ``view.ok``, ``view.notes`` / ``view.error``.
 
         Args:
-            schema_path: Optional ``.proto`` source or compiled ``.desc``
-                descriptor set; used together with *message_type*. Without
-                both, the wire decoder runs and a note says why.
-            force: If ``True``, attempt decoding regardless of content type.
+            schema_path: Optional ``.proto`` or compiled ``.desc`` descriptor set, used with *message_type*.
+                Without both, the wire decoder runs and a note says why.
+            force: If ``True``, decode regardless of content type.
             message_type: Fully qualified message type for *schema_path*.
         """
         return self._decode_protobuf(

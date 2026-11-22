@@ -5,7 +5,7 @@ from collections import OrderedDict
 
 _log = logging.getLogger(__name__)
 
-# Try to import hpack for HPACK header decompression
+# hpack is optional: without it headers are not decoded.
 _hpack_available = False
 try:
     from hpack import Decoder as HpackDecoder
@@ -31,7 +31,7 @@ from .http2_constants import (  # noqa: E402
     unpack_frame_header,
 )
 
-# HTTP/2 connection preface (legacy private alias of the shared constant)
+# HTTP/2 connection preface (private alias of the shared constant).
 _CONNECTION_PREFACE = HTTP2_PREFACE
 
 # Frame types
@@ -89,7 +89,7 @@ _FLAG_ACK = 0x01
 # Frame types that may create per-stream state for a new stream id. Other
 # stream-level frames (PRIORITY, WINDOW_UPDATE, RST_STREAM, ...) never do, so a
 # flood of them on fresh ids allocates nothing. CONTINUATION is kept so a stray
-# one is still surfaced as a protocol error (#39).
+# one is still surfaced as a protocol error.
 _STREAM_CREATING_FRAMES = frozenset({
     _FRAME_HEADERS, _FRAME_DATA, _FRAME_PUSH_PROMISE, _FRAME_CONTINUATION,
 })
@@ -116,7 +116,7 @@ _SETTINGS_PARAMS: dict[int, str] = {
     0x6: "MAX_HEADER_LIST_SIZE",
 }
 
-# Frame type display names (shared table; legacy private alias)
+# Frame type display names (shared table; private alias).
 _FRAME_TYPE_NAMES = HTTP2_FRAME_TYPE_NAMES
 
 # GOAWAY error codes (RFC 7540 Section 7)
@@ -139,12 +139,7 @@ _GOAWAY_ERRORS: dict[int, str] = {
 
 
 def decode_header_text(raw) -> str:
-    """Decode a raw header name/value to text.
-
-    UTF-8 (identical to hpack's own decoding) with a per-field latin-1
-    fallback for non-UTF-8 bytes; a ``str`` is returned unchanged. Shared by
-    every parser that must render header fields exactly as HTTP/2 does.
-    """
+    """Decode a raw header name/value to text: UTF-8 (as hpack does) with a per-field latin-1 fallback; a ``str`` is returned unchanged. Shared by every parser rendering headers as HTTP/2 does."""
     if isinstance(raw, str):
         return raw
     data = bytes(raw)
@@ -155,13 +150,7 @@ def decode_header_text(raw) -> str:
 
 
 def is_h2_control_frame_data(data: bytes) -> bool:
-    """Check if data consists entirely of HTTP/2 connection-level frames (stream_id == 0).
-
-    Per RFC 7540 Section 4.1, each frame has a 9-byte header:
-    Length (3 octets) + Type (1) + Flags (1) + Reserved (1 bit) + Stream ID (31 bits).
-    Connection-level frames use stream_id == 0 and include SETTINGS, PING,
-    WINDOW_UPDATE, and GOAWAY (Sections 6.5, 6.7, 6.8, 6.9).
-    """
+    """True if *data* consists entirely of connection-level frames (stream_id == 0: SETTINGS, PING, WINDOW_UPDATE, GOAWAY; RFC 7540 §4.1, §6.5-6.9)."""
     if not data or len(data) < _FRAME_HEADER_SIZE:
         return False
     offset = 0
@@ -211,31 +200,21 @@ class _StreamState:
         self.content_encoding: str = ""
         self.content_type: str = ""
         self.end_stream_seen: bool = False
-        # Kept as the union "is ANY header block awaiting a CONTINUATION on this
-        # stream" (read in flush() / preserved for external consumers). The two
-        # fields below disambiguate WHICH block (#39).
+        # Union of "any header block awaiting a CONTINUATION" (read by flush()); the per-kind flags say which.
         self.awaiting_continuation: bool = False
-        # True while accumulating a PUSH_PROMISE header block (possibly across
-        # CONTINUATION frames); the block advances the HPACK table but is not
-        # applied to this stream's own headers.
+        # True while accumulating a PUSH_PROMISE block (possibly across CONTINUATIONs): it advances
+        # the HPACK table but is not applied to this stream's headers.
         self.pending_push_promise: bool = False
-        # SEPARATE accumulation buffer for PUSH_PROMISE header-block fragments
-        # (#45). PUSH_PROMISE describes a *server-pushed* stream and must never
-        # share ``header_bytes`` with a possibly half-buffered real HEADERS
-        # block on the same stream — mixing them corrupts both.
+        # Separate PUSH_PROMISE fragment buffer: sharing ``header_bytes`` with a half-buffered HEADERS block would corrupt both.
         self.push_header_bytes: bytearray = bytearray()
-        # Independent "awaiting CONTINUATION" flags for the two block kinds
-        # (#39). A CONTINUATION is routed to whichever block is open; finalizing
-        # one kind must never clear the other's pending state. A CONTINUATION
-        # with neither flag set is a protocol error.
+        # Per-kind "awaiting CONTINUATION" flags: a CONTINUATION goes to the open block and finalizing
+        # one kind must not clear the other; a CONTINUATION with neither flag is a protocol error.
         self.headers_awaiting_continuation: bool = False
         self.push_awaiting_continuation: bool = False
         # RFC 7540 §6.2: a HEADERS frame may carry END_STREAM even when its
-        # header block is continued in CONTINUATION frames (which can NOT carry
-        # END_STREAM). When END_HEADERS is deferred we remember the END_STREAM
-        # intent here so the stream still finalizes once the block completes,
-        # instead of being silently lost and the request/response only ever
-        # surfacing as incomplete (#62).
+        # header block is continued in CONTINUATION frames (which cannot carry
+        # END_STREAM). Remembered here so the stream still finalizes when the
+        # block completes.
         self.pending_end_stream: bool = False
         # Set to "hpack-desync" when this stream's headers could not be
         # decoded; consumers use it to tell "undecodable" from a real status.
@@ -252,14 +231,9 @@ class _StreamState:
 
 
 class Http2Parser(BaseParser):
-    """HTTP/2 frame-level parser.
+    """HTTP/2 frame-level parser: 9-byte frame headers, HPACK decompression (hpack library), per-stream DATA accumulation.
 
-    Parses 9-byte frame headers, decompresses HPACK headers using the hpack
-    library, accumulates DATA frame payloads per stream, and returns
-    ParseResults when END_STREAM is encountered.
-
-    Maintains separate HPACK decoders and buffers per direction to handle
-    independent header compression contexts for requests vs responses.
+    Returns ParseResults at END_STREAM. Keeps separate HPACK decoders and buffers per direction (independent compression contexts for requests vs responses).
     """
 
     PROTOCOL = PROTOCOL_HTTP2
@@ -312,23 +286,16 @@ class Http2Parser(BaseParser):
     # --- Frame log (per-frame byte attribution for the flow collector) -----
 
     def enable_frame_log(self) -> None:
-        """Start recording the raw bytes of every frame this parser consumes.
-
-        The flow collector uses it to hand each HTTP/2 stream's flow exactly
-        its own frames. Off by default, so other users retain nothing extra.
-        """
+        """Start recording the raw bytes of every consumed frame (off by default); the flow collector uses it to give each stream's flow exactly its own frames."""
         if self._frame_log is None:
             self._frame_log = []
 
     def take_frame_log(self) -> list[tuple[str, int, bytes]]:
         """Return and clear the ``(direction, stream_id, raw_frame)`` log.
 
-        Entries are complete frames (9-byte header included) in wire order;
-        the connection preface is reported on stream 0. A header block
-        (HEADERS/PUSH_PROMISE plus CONTINUATIONs) is reported as a whole once
-        END_HEADERS arrives, i.e. in the same feed as the result it produces.
-        Oversize frames are skipped unbuffered and so never reported.
-        :meth:`flush` adds whatever was still held or partially buffered.
+        Complete frames (9-byte header included) in wire order; the preface is reported on stream 0. A header
+        block (HEADERS/PUSH_PROMISE + CONTINUATIONs) is reported whole once END_HEADERS arrives, in the same
+        feed as its result. Oversize frames are skipped unbuffered and never reported. :meth:`flush` adds held/partial bytes.
         """
         log = self._frame_log
         if not log:
@@ -457,13 +424,9 @@ class Http2Parser(BaseParser):
         )
         if frame_type > _MAX_VALID_FRAME_TYPE:
             return False
-        # A DATA frame (type 0x0) MUST be associated with a non-zero stream
-        # (RFC 7540 Sec 6.1); DATA on stream 0 is a connection error and never
-        # valid HTTP/2. Plaintext mDNS/DNS-over-UDP messages start with a zero
-        # transaction id + flags (e.g. a response "00 00 84 00 ...") which decode
-        # as a zero-stream DATA frame, so without this guard they are mislabelled
-        # HTTP/2. A genuine mid-connection DATA frame rides a non-zero stream and
-        # is unaffected.
+        # DATA (type 0x0) MUST have a non-zero stream (RFC 7540 §6.1). Plaintext mDNS/DNS-over-UDP
+        # (zero transaction id + flags, e.g. "00 00 84 00 ...") decodes as a zero-stream DATA frame and
+        # would be mislabelled HTTP/2; a genuine mid-connection DATA frame is unaffected.
         if frame_type == _FRAME_DATA and stream_id == 0:
             return False
         # Without the preface, apply strict initial-window constraints
@@ -502,22 +465,15 @@ class Http2Parser(BaseParser):
         results: list[ParseResult] = []
         control_frames: list[tuple[int, int, bytes]] = []
 
-        # Strip connection preface if present
-        if not self._preface_seen[direction]:
-            if buf.startswith(_CONNECTION_PREFACE):
-                del buf[:len(_CONNECTION_PREFACE)]
-                self._preface_seen[direction] = True
-                self._log_frame(direction, 0, _CONNECTION_PREFACE)
-            elif _CONNECTION_PREFACE[:len(buf)] == buf:
-                # Buffer is a prefix of the connection preface — wait for more data
-                return results
+        if not self._strip_preface(direction, buf):
+            return results
 
         while self._skip_buffered(direction, buf) and len(buf) >= _FRAME_HEADER_SIZE:
             header = self._parse_frame_header(buf[:_FRAME_HEADER_SIZE])
             length, frame_type, flags, stream_id = header
 
             # A frame above the peer's SETTINGS_MAX_FRAME_SIZE is skipped by
-            # counting its payload off as it arrives — never buffered (it may
+            # counting its payload off as it arrives, never buffered (it may
             # announce up to 16 MiB).
             if self._is_oversize_frame(direction, length):
                 self._begin_oversize_skip(streams, buf, header, direction)
@@ -533,7 +489,7 @@ class Http2Parser(BaseParser):
             if frame_type > _MAX_VALID_FRAME_TYPE:
                 continue
 
-            # Collect connection-level frames (stream_id == 0)
+            # Connection-level frames (stream_id == 0).
             if stream_id == 0:
                 control_frames.append((frame_type, flags, payload))
                 if frame_type == _FRAME_SETTINGS:
@@ -544,8 +500,8 @@ class Http2Parser(BaseParser):
                 streams.pop(stream_id, None)
                 continue
 
-            # PRIORITY / WINDOW_UPDATE / ... carry nothing we track per stream;
-            # never allocate state for them (flood on fresh ids, #4).
+            # PRIORITY / WINDOW_UPDATE / ... carry nothing tracked per stream;
+            # never allocate state for them (flood on fresh ids).
             if frame_type not in _STREAM_CREATING_FRAMES:
                 continue
 
@@ -553,103 +509,26 @@ class Http2Parser(BaseParser):
                 streams, stream_id, direction, results
             )
 
-            # Whether this frame is allowed to honor an END_STREAM flag and
-            # finalize the parent request/response stream (#15). A PUSH_PROMISE
-            # block — or a CONTINUATION completing one — describes a *pushed*
-            # stream and must NEVER close the parent it arrived on.
-            finalizes_parent = False
-
-            if frame_type == _FRAME_HEADERS:
-                prefix_len = self._headers_prefix_len(flags)
-                if self._padded_frame_is_valid(payload, flags, prefix_len):
-                    self._append_header_fragment(
-                        stream,
-                        self._strip_padded_frame(payload, flags, prefix_len),
-                        direction,
-                    )
-                else:
-                    self._reject_header_block(stream, direction, "invalid-padding")
-                if flags & _FLAG_END_HEADERS:
-                    self._finalize_headers(stream, decoder, flags, direction, results)
-                    finalizes_parent = True
-                else:
-                    # Await a CONTINUATION that completes this real HEADERS block.
-                    # Carry the HEADERS frame's END_STREAM intent forward (#62):
-                    # the completing CONTINUATION cannot repeat it, so without
-                    # this the stream would never finalize.
-                    stream.headers_awaiting_continuation = True
-                    if flags & _FLAG_END_STREAM:
-                        stream.pending_end_stream = True
-                    self._sync_awaiting(stream)
-
-            elif frame_type == _FRAME_PUSH_PROMISE:
-                # A PUSH_PROMISE block mutates the read-direction HPACK dynamic
-                # table just like HEADERS does. It must be fed to the decoder in
-                # wire order or later responses desync ("Invalid table index").
-                # It is accumulated in a SEPARATE buffer (#45) so it can never
-                # corrupt a concurrently half-buffered real HEADERS block, and
-                # it never finalizes the parent stream (#15).
-                if self._padded_frame_is_valid(
-                    payload, flags, _PUSH_PROMISE_PREFIX_LEN
-                ):
-                    self._append_push_fragment(
-                        stream,
-                        self._strip_padded_frame(
-                            payload, flags, _PUSH_PROMISE_PREFIX_LEN
-                        ),
-                        direction,
-                    )
-                else:
-                    self._reject_push_block(stream, direction, "invalid-padding")
-                stream.pending_push_promise = True
-                if flags & _FLAG_END_HEADERS:
-                    self._finalize_push_promise(stream, decoder, direction)
-                else:
-                    stream.push_awaiting_continuation = True
-                    self._sync_awaiting(stream)
-
+            # Whether this frame may honor END_STREAM and finalize the parent
+            # stream. A PUSH_PROMISE block (or its CONTINUATION) describes a
+            # pushed stream and must never close the parent.
+            if frame_type == _FRAME_DATA:
+                finalizes_parent = self._on_data_frame(stream, payload, flags)
+            elif frame_type == _FRAME_HEADERS:
+                finalizes_parent = self._on_headers_frame(
+                    stream, payload, flags, decoder, direction, results)
             elif frame_type == _FRAME_CONTINUATION:
-                # A CONTINUATION is only valid for a stream with an open header
-                # block (#39). It completes whichever block is still awaiting
-                # one; per RFC 7540 §6.10 only one can be open at a time. A
-                # CONTINUATION with neither block open is a protocol error —
-                # surface it instead of silently appending into a buffer.
-                if stream.push_awaiting_continuation:
-                    self._append_push_fragment(stream, payload, direction)
-                    if flags & _FLAG_END_HEADERS:
-                        self._finalize_push_promise(stream, decoder, direction)
-                elif stream.headers_awaiting_continuation:
-                    self._append_header_fragment(stream, payload, direction)
-                    if flags & _FLAG_END_HEADERS:
-                        self._finalize_headers(stream, decoder, flags, direction, results)
-                        finalizes_parent = True
-                else:
-                    stream.error = "protocol-error"
-                    _log.warning(
-                        "Unexpected CONTINUATION on stream %d (%s) with no "
-                        "block awaiting continuation — protocol error",
-                        stream_id, direction,
-                    )
+                finalizes_parent = self._on_continuation_frame(
+                    stream, payload, flags, decoder, direction, results)
+            else:  # _FRAME_PUSH_PROMISE
+                self._on_push_promise_frame(stream, payload, flags, decoder, direction)
+                finalizes_parent = False
 
-            elif frame_type == _FRAME_DATA:
-                if not self._data_padding_is_valid(payload, flags):
-                    # Body accounting only; the HPACK table is unaffected.
-                    stream.error = stream.error or "invalid-padding"
-                actual_data = self._strip_padding(payload, flags)
-                stream.body_size += len(actual_data)
-                finalizes_parent = True
-
-            # Only HEADERS / DATA / a CONTINUATION that completes a real HEADERS
-            # block may finalize the parent on END_STREAM. PUSH_PROMISE frames
-            # (and CONTINUATIONs of them) carry their own END_HEADERS semantics
-            # and never legitimately set END_STREAM for the parent (#15).
-            # ``pending_end_stream`` covers the split-headers case (#62) where
-            # END_STREAM rode the HEADERS frame but END_HEADERS was deferred to
-            # the CONTINUATION that now finalizes the block.
+            # ``pending_end_stream`` covers END_STREAM on a HEADERS frame whose
+            # END_HEADERS arrived later in a CONTINUATION.
             if (flags & _FLAG_END_STREAM or stream.pending_end_stream) and finalizes_parent:
                 stream.end_stream_seen = True
-                result = self._build_result(stream)
-                results.append(result)
+                results.append(self._build_result(stream))
                 streams.pop(stream_id, None)
 
         # Produce a synthetic result when only control frames were seen
@@ -661,12 +540,105 @@ class Http2Parser(BaseParser):
 
         return results
 
+    def _strip_preface(self, direction: str, buf: bytearray) -> bool:
+        """Drop the connection preface once; False while *buf* is a partial preface."""
+        if self._preface_seen[direction]:
+            return True
+        if buf.startswith(_CONNECTION_PREFACE):
+            del buf[:len(_CONNECTION_PREFACE)]
+            self._preface_seen[direction] = True
+            self._log_frame(direction, 0, _CONNECTION_PREFACE)
+        elif _CONNECTION_PREFACE[:len(buf)] == buf:
+            return False
+        return True
+
+    # --- Per-frame-type handlers. Each returns whether the frame may honor
+    # END_STREAM for its stream: only HEADERS, DATA and a CONTINUATION that
+    # completes a real HEADERS block can. PUSH_PROMISE frames (and their
+    # CONTINUATIONs) carry their own END_HEADERS semantics and never
+    # legitimately set END_STREAM for the parent.
+
+    def _on_headers_frame(self, stream: _StreamState, payload: bytes, flags: int,
+                          decoder, direction: str, results: list) -> bool:
+        prefix_len = self._headers_prefix_len(flags)
+        if self._padded_frame_is_valid(payload, flags, prefix_len):
+            self._append_header_fragment(
+                stream,
+                self._strip_padded_frame(payload, flags, prefix_len),
+                direction,
+            )
+        else:
+            self._reject_header_block(stream, direction, "invalid-padding")
+        if flags & _FLAG_END_HEADERS:
+            self._finalize_headers(stream, decoder, flags, direction, results)
+            return True
+        # Await a CONTINUATION that completes this real HEADERS block.
+        # Carry END_STREAM forward: the completing CONTINUATION cannot repeat it.
+        stream.headers_awaiting_continuation = True
+        if flags & _FLAG_END_STREAM:
+            stream.pending_end_stream = True
+        self._sync_awaiting(stream)
+        return False
+
+    def _on_push_promise_frame(self, stream: _StreamState, payload: bytes, flags: int,
+                               decoder, direction: str) -> None:
+        # A PUSH_PROMISE block mutates the read-direction HPACK dynamic table
+        # just like HEADERS does. It must be fed to the decoder in wire order or
+        # later responses desync ("Invalid table index"). It uses its own buffer
+        # so a half-buffered real HEADERS block is not corrupted.
+        if self._padded_frame_is_valid(payload, flags, _PUSH_PROMISE_PREFIX_LEN):
+            self._append_push_fragment(
+                stream,
+                self._strip_padded_frame(payload, flags, _PUSH_PROMISE_PREFIX_LEN),
+                direction,
+            )
+        else:
+            self._reject_push_block(stream, direction, "invalid-padding")
+        stream.pending_push_promise = True
+        if flags & _FLAG_END_HEADERS:
+            self._finalize_push_promise(stream, decoder, direction)
+        else:
+            stream.push_awaiting_continuation = True
+            self._sync_awaiting(stream)
+
+    def _on_continuation_frame(self, stream: _StreamState, payload: bytes, flags: int,
+                               decoder, direction: str, results: list) -> bool:
+        # A CONTINUATION completes whichever header block is still awaiting one;
+        # per RFC 7540 §6.10 only one can be open at a time. A CONTINUATION
+        # with neither block open is a protocol error: surface it instead of
+        # silently appending into a buffer.
+        if stream.push_awaiting_continuation:
+            self._append_push_fragment(stream, payload, direction)
+            if flags & _FLAG_END_HEADERS:
+                self._finalize_push_promise(stream, decoder, direction)
+            return False
+        if stream.headers_awaiting_continuation:
+            self._append_header_fragment(stream, payload, direction)
+            if flags & _FLAG_END_HEADERS:
+                self._finalize_headers(stream, decoder, flags, direction, results)
+                return True
+            return False
+        stream.error = "protocol-error"
+        _log.warning(
+            "Unexpected CONTINUATION on stream %d (%s) with no "
+            "block awaiting continuation — protocol error",
+            stream.stream_id, direction,
+        )
+        return False
+
+    def _on_data_frame(self, stream: _StreamState, payload: bytes, flags: int) -> bool:
+        if not self._data_padding_is_valid(payload, flags):
+            # Body accounting only; the HPACK table is unaffected.
+            stream.error = stream.error or "invalid-padding"
+        stream.body_size += len(self._strip_padding(payload, flags))
+        return True
+
     def flush(self) -> list[ParseResult]:
         """Return partial streams as incomplete results."""
         results: list[ParseResult] = []
         for direction, streams in self._streams.items():
             for stream in streams.values():
-                # #51: a stream still awaiting a CONTINUATION (or with a
+                # A stream still awaiting a CONTINUATION (or with a
                 # pending PUSH_PROMISE block) at flush time never completed its
                 # header block. Surface that as an error so a poisoned/partial
                 # block is not reported as a clean status-0 result. Don't clobber
@@ -688,7 +660,7 @@ class Http2Parser(BaseParser):
     @staticmethod
     def _sync_awaiting(stream: _StreamState) -> None:
         """Keep ``awaiting_continuation`` as the union of the two per-kind flags
-        so flush() (#51) and external consumers see a single meaningful signal.
+        so flush() and external consumers see one signal.
         """
         stream.awaiting_continuation = (
             stream.headers_awaiting_continuation
@@ -710,7 +682,7 @@ class Http2Parser(BaseParser):
         results: list[ParseResult],
     ) -> _StreamState:
         """``_get_stream`` that first evicts the oldest streams when creating
-        a new one would exceed ``_MAX_OPEN_STREAMS`` (#4)."""
+        a new one would exceed ``_MAX_OPEN_STREAMS``."""
         if stream_id not in streams:
             self._evict_oldest_streams(streams, direction, results)
         return self._get_stream(streams, stream_id, direction)
@@ -760,7 +732,7 @@ class Http2Parser(BaseParser):
         self, stream: _StreamState, direction: str, reason: str,
     ) -> None:
         """Drop a PUSH_PROMISE block and poison the direction. The parent
-        stream's ``error`` is left untouched (#16)."""
+        stream's ``error`` is left untouched."""
         stream.push_header_bytes = bytearray()
         self._poison_direction(direction, stream.stream_id, f"PUSH_PROMISE {reason}")
 
@@ -875,18 +847,11 @@ class Http2Parser(BaseParser):
 
     @staticmethod
     def _strip_padded_frame(payload: bytes, flags: int, prefix_len: int) -> bytes:
-        """Return the HPACK header-block fragment from a PADDED-capable frame.
+        """HPACK header-block fragment of a PADDED-capable frame (HEADERS, PUSH_PROMISE).
 
-        Shared by HEADERS and PUSH_PROMISE (#57). Layout is::
-
-            [Pad Length (1, if PADDED)] [fixed prefix (prefix_len)]
-            Header Block Fragment [Padding (pad_length, if PADDED)]
-
-        ``prefix_len`` is the frame-specific fixed field preceding the fragment:
-        the PRIORITY block for HEADERS, the 4-byte promised stream id for
-        PUSH_PROMISE. A SINGLE consistent boundary is applied: per RFC 7540
-        §6.1, if the padding length is >= the bytes remaining after the
-        pad-length octet, the frame is invalid and an empty fragment is returned.
+        Layout: ``[Pad Length (1, if PADDED)] [fixed prefix (prefix_len)] Fragment [Padding]``; *prefix_len* is the
+        PRIORITY block for HEADERS, the 4-byte promised stream id for PUSH_PROMISE. Per RFC 7540 §6.1 a padding
+        length >= the bytes remaining after the pad-length octet makes the frame invalid: an empty fragment is returned.
         """
         offset = 0
         pad_length = 0
@@ -898,8 +863,7 @@ class Http2Parser(BaseParser):
             offset += 1
             # RFC 7540 §6.1: the Pad Length must be strictly less than the
             # payload remaining after the Pad Length octet. If padding is >=
-            # that remainder the frame is invalid — reject consistently for
-            # both HEADERS and PUSH_PROMISE (#57).
+            # that remainder the frame is invalid (HEADERS and PUSH_PROMISE).
             if pad_length >= len(payload) - 1:
                 return b""
 
@@ -942,13 +906,9 @@ class Http2Parser(BaseParser):
 
     @classmethod
     def _strip_push_promise(cls, payload: bytes, flags: int) -> bytes:
-        """Return the header-block fragment of a PUSH_PROMISE payload.
+        """Header-block fragment of a PUSH_PROMISE payload (:meth:`_strip_padded_frame`; RFC 7540 §6.6).
 
-        Thin backward-compatible wrapper around the shared
-        :meth:`_strip_padded_frame` (#57). PUSH_PROMISE (RFC 7540 §6.6) is
-        PADDED-capable, never carries PRIORITY, and prefixes its fragment with a
-        4-byte promised stream id; the id is skipped — we only keep the HPACK
-        table in sync, not emit the pushed request as its own flow.
+        PADDED-capable, no PRIORITY, 4-byte promised stream id prefix (skipped: only the HPACK table is kept in sync, the pushed request is not emitted as a flow).
         """
         return cls._strip_padded_frame(payload, flags, _PUSH_PROMISE_PREFIX_LEN)
 
@@ -959,11 +919,11 @@ class Http2Parser(BaseParser):
         """Decode headers and emit an intermediate result if END_STREAM not yet seen."""
         self._decode_headers(stream, decoder, direction)
         # Clear only the real-HEADERS continuation state; a pending PUSH_PROMISE
-        # block (if any) keeps its own flag (#39).
+        # block (if any) keeps its own flag.
         stream.headers_awaiting_continuation = False
         self._sync_awaiting(stream)
         # END_STREAM may never arrive for long-lived connections. Treat a
-        # carried-forward END_STREAM (split-headers, #62) the same as one on the
+        # carried-forward END_STREAM the same as one on the
         # current frame so the caller's finalize check emits a COMPLETE result
         # rather than this intermediate incomplete one.
         if not (flags & _FLAG_END_STREAM or stream.pending_end_stream):
@@ -972,24 +932,16 @@ class Http2Parser(BaseParser):
     def _finalize_push_promise(
         self, stream: _StreamState, decoder: HpackDecoder, direction: str,
     ) -> None:
-        """Run a completed PUSH_PROMISE block through the decoder to keep the
-        dynamic table in sync, then discard the decoded headers.
+        """Run a completed PUSH_PROMISE block through the decoder to keep the dynamic table in sync, then discard the headers.
 
-        Decodes from the SEPARATE ``push_header_bytes`` buffer (#45) so the
-        parent's own ``header_bytes`` is untouched, and with ``stamp_error=False``
-        so a PUSH_PROMISE HPACK failure never writes ``error`` onto the parent
-        request/response stream (#16). A failure still poisons the direction,
-        because the dynamic table is genuinely desynced for later frames.
-
-        Emitting the promised request as its own flow is out of scope; the only
-        requirement is that the read-direction HPACK table stays consistent so
-        subsequent response :status references decode correctly.
+        Decodes from ``push_header_bytes`` with ``stamp_error=False`` so a failure never writes ``error`` onto the
+        parent stream; a failure still poisons the direction (the table is genuinely desynced for later frames).
         """
         block = bytes(stream.push_header_bytes)
         stream.push_header_bytes = bytearray()
         self._run_hpack(stream, decoder, direction, block, stamp_error=False)
         # Clear only push-promise state; a half-buffered real HEADERS block on
-        # the same stream keeps awaiting its own CONTINUATION (#39/#45).
+        # the same stream keeps awaiting its own CONTINUATION.
         stream.push_awaiting_continuation = False
         stream.pending_push_promise = False
         self._sync_awaiting(stream)
@@ -1014,9 +966,8 @@ class Http2Parser(BaseParser):
     def _apply_decoded_headers(
         self, stream: _StreamState, headers: list[tuple[str, str]],
     ) -> None:
-        """Merge a decoded block into the stream (as before), within the
-        per-stream field caps. Blocks after the first are also kept in
-        ``trailers`` (#5)."""
+        """Merge a decoded block into the stream within the per-stream field
+        caps. Blocks after the first are also kept in ``trailers``."""
         admitted = self._admit_header_fields(stream, headers)
         if stream.header_blocks_decoded > 0:
             stream.trailers.update(admitted)
@@ -1051,15 +1002,11 @@ class Http2Parser(BaseParser):
         self, stream: _StreamState, decoder: HpackDecoder, direction: str,
         block: bytes, stamp_error: bool = True,
     ) -> list[tuple[str, str]] | None:
-        """Decode ``block`` against the direction's HPACK decoder, advancing its
-        dynamic table.
+        """Decode ``block`` against the direction's HPACK decoder, advancing its dynamic table.
 
-        Returns the decoded (name, value) pairs, or ``None`` when decoding is
-        unavailable or failed. A genuine HPACKDecodingError poisons the
-        direction (HPACK cannot resync after a desync). Only when
-        ``stamp_error`` is True is ``error = "hpack-desync"`` written onto
-        ``stream`` — push-promise decodes pass False so a pushed block's failure
-        never mislabels the parent request/response (#16).
+        Returns the (name, value) pairs, or ``None`` when decoding is unavailable or failed. A genuine
+        HPACKDecodingError poisons the direction (HPACK cannot resync). ``error = "hpack-desync"`` is
+        written onto ``stream`` only when ``stamp_error`` is True (push-promise decodes pass False).
         """
         if decoder is None:
             # hpack library not installed — skip decoding; not an error.

@@ -19,9 +19,13 @@
 
 import { devlog, _isShuttingDownNow } from "../util/log.js";
 import { toHexPattern } from "../util/hex.js";
+import { isMachOModule, machOSectionRange } from "./macho_header.js";
+import { readableByteCount } from "../util/safe_memory.js";
 import {
-    isADRP, isADR, isADDimm64, isLDRimmU64, isBL, isBLR, isBLRAuth, endsFallThrough, writesReg,
-    decodeADRPImm, decodeADRImm, decodeADDImm12, decodeLDRU64Imm, decodeBLImm, regRd, regRn,
+    isADRP, isADR, isADDimm64, isLDRimmU64, isBL, isBLR, isBLRAuth, isAnyCall, endsFallThrough, writesReg,
+    isRET, isUnconditionalB, isSTRimmU64,
+    decodeADRPImm, decodeADRImm, decodeADDImm12, decodeLDRU64Imm, decodeBLImm, regRd, regRn, regRt2,
+    isFunctionPrologueWord,
     addImm64ScanPattern, ldrU64ScanPattern, adrTopByteForTarget,
 } from "./arm64.js";
 
@@ -223,6 +227,11 @@ export class XrefScanAborted extends Error {
     constructor() { super("xref scan aborted: agent is shutting down"); }
 }
 
+/** Per-call scan outcome: `complete` turns false when part of the scan could not run (its misses then prove nothing). */
+export interface ScanStatus {
+    complete: boolean;
+}
+
 /** Default event-loop yield between chunks (Frida and Node both provide setTimeout). */
 export function yieldToEventLoop(): Promise<void> {
     return new Promise<void>((resolve) => setTimeout(resolve, 0));
@@ -266,7 +275,7 @@ function compilePattern(pattern: string): string | MatchPattern {
  * job's onMatch in address order within a chunk, and yielding between chunks.
  * Slices overlap by (longest pattern - 1) bytes so no match straddling a chunk
  * boundary is lost; a match is reported only by the chunk it STARTS in.
- * An unreadable slice is skipped, never fatal. Once the agent starts shutting
+ * An unreadable slice is skipped, never fatal (it clears `status.complete`). Once the agent starts shutting
  * down (detach / SIGINT) the pass stops at the next chunk with XrefScanAborted,
  * so no scan keeps spinning inside the target after the host went away.
  */
@@ -275,6 +284,7 @@ export async function scanRangesChunked(
     jobs: ChunkScanJob[],
     chunkBytes: number = XREF_SCAN_CHUNK_BYTES,
     yieldFn: () => Promise<void> = yieldToEventLoop,
+    status?: ScanStatus,
 ): Promise<void> {
     if (jobs.length === 0) return;
     const shapes = jobs.map((j) => withoutLeadingWildcards(j.pattern));
@@ -290,7 +300,10 @@ export async function scanRangesChunked(
                 let hits: MemoryScanMatch[] = [];
                 try {
                     hits = Memory.scanSync(chunkStart, scanSize, compiled[i]);
-                } catch (_e) { continue; /* unreadable slice */ }
+                } catch (_e) {
+                    if (status) status.complete = false;
+                    continue;
+                }
                 const skipped = shapes[i].skipped;
                 for (const hit of hits) {
                     // The full pattern starts `skipped` bytes before the hit: report it from
@@ -380,14 +393,14 @@ function isAligned(addr: NativePointer, align: number): boolean {
  * (shape (2)). One chunked pass for all targets; 8-byte aligned slots only.
  */
 async function findPointerSlots(
-    mod: Module, targets: NativePointer[], chunkBytes: number, yieldFn: () => Promise<void>,
+    mod: Module, targets: NativePointer[], chunkBytes: number, yieldFn: () => Promise<void>, status?: ScanStatus,
 ): Promise<NativePointer[][]> {
     const slots: NativePointer[][] = targets.map(() => []);
     const jobs = new Map<string, ((a: NativePointer) => void)[]>();
     targets.forEach((t, i) => addJob(jobs, pointerScanPattern(t), (a) => {
         if (isAligned(a, 8) && slots[i].length < MAX_LOAD_SITES) slots[i].push(a);
     }));
-    await scanRangesChunked(dataRanges(mod), toJobs(jobs), chunkBytes, yieldFn);
+    await scanRangesChunked(dataRanges(mod), toJobs(jobs), chunkBytes, yieldFn, status);
     return slots;
 }
 
@@ -413,9 +426,10 @@ export async function findStringLoadSitesAsync(
     chunkBytes: number = XREF_SCAN_CHUNK_BYTES,
     yieldFn: () => Promise<void> = yieldToEventLoop,
     maxSites: number = MAX_LOAD_SITES,
+    status?: ScanStatus,
 ): Promise<NativePointer[][]> {
     const sites: NativePointer[][] = targets.map(() => []);
-    const slots = await findPointerSlots(mod, targets, chunkBytes, yieldFn);
+    const slots = await findPointerSlots(mod, targets, chunkBytes, yieldFn, status);
     const jobs = new Map<string, ((a: NativePointer) => void)[]>();
     let rangeStart: NativePointer = mod.base;
     const verifyAt = (i: number, page: NativePointer, isShape: (insn: number) => boolean) =>
@@ -441,9 +455,9 @@ export async function findStringLoadSitesAsync(
     const codeJobs = toJobs(jobs);
     for (const range of mod.enumerateRanges("r-x")) {
         rangeStart = range.base;
-        await scanRangesChunked([range], codeJobs, chunkBytes, yieldFn);
+        await scanRangesChunked([range], codeJobs, chunkBytes, yieldFn, status);
     }
-    await findAdrSites(mod, targets, sites, chunkBytes, yieldFn);
+    await findAdrSites(mod, targets, sites, chunkBytes, yieldFn, status);
     return sites.map((list) => dedupeSorted(list).slice(0, maxSites));
 }
 
@@ -511,7 +525,7 @@ function wordInRanges(addr: NativePointer, ranges: ScanRange[]): boolean {
  */
 async function findAdrSites(
     mod: Module, targets: NativePointer[], sites: NativePointer[][],
-    chunkBytes: number, yieldFn: () => Promise<void>,
+    chunkBytes: number, yieldFn: () => Promise<void>, status?: ScanStatus,
 ): Promise<void> {
     const code = mod.enumerateRanges("r-x") as ScanRange[];
     for (let low2 = 0; low2 < 4; low2++) {
@@ -531,7 +545,7 @@ async function findAdrSites(
         };
         const needle = adrTopByteForTarget(low2).toString(16).padStart(2, "0");
         await scanRangesChunked(adrScanWindows(code, group), [{ pattern: needle, onMatch: onTopByte }],
-            chunkBytes, yieldFn);
+            chunkBytes, yieldFn, status);
     }
 }
 
@@ -541,26 +555,48 @@ function dedupeSorted(list: NativePointer[]): NativePointer[] {
     return sorted.filter((p, k) => k === 0 || !p.equals(sorted[k - 1]));
 }
 
+/** Mach-O sections that hold C string literals; they sit inside the r-x __TEXT segment. */
+const MACHO_STRING_SECTIONS: [string, string][] = [["__TEXT", "__cstring"], ["__TEXT", "__const"]];
+
+/**
+ * Ranges per anchor-string pass, built only when the pass runs; a pass runs only
+ * while some anchor is still missing. ELF: r-- data, then r-x. Mach-O with the
+ * string sections: those, then r-- data, then all of r-x (anchors in __ustring,
+ * __oslogstring or lld-merged read-only sections).
+ */
+function anchorStringRangePasses(mod: Module): (() => ScanRange[])[] {
+    const data = () => dataRanges(mod);
+    const code = () => mod.enumerateRanges("r-x") as ScanRange[];
+    if (isMachOModule(mod)) {
+        const sections = MACHO_STRING_SECTIONS.map(([seg, sect]) => machOSectionRange(mod, seg, sect))
+            .filter((r): r is ScanRange => r !== null);
+        if (sections.length > 0) return [() => sections, data, code];
+    }
+    return [data, code];
+}
+
 /**
  * Async multi-string counterpart of findAnchorString(): the first address of
  * each ASCII string (pass the NUL in it to pin the terminator), or null. Data
  * ranges are scanned first; executable ranges only for strings still missing,
- * matching findAnchorString's r-- then r-x fallback. One chunked pass per group.
+ * matching findAnchorString's r-- then r-x fallback (Mach-O: string sections first,
+ * see anchorStringRangePasses). One chunked pass per group.
  */
 export async function findAnchorStringsAsync(
     mod: Module,
     asciis: string[],
     chunkBytes: number = XREF_SCAN_CHUNK_BYTES,
     yieldFn: () => Promise<void> = yieldToEventLoop,
+    status?: ScanStatus,
 ): Promise<(NativePointer | null)[]> {
     const found: (NativePointer | null)[] = asciis.map(() => null);
-    for (const ranges of [dataRanges(mod), mod.enumerateRanges("r-x") as ScanRange[]]) {
+    for (const rangesOfPass of anchorStringRangePasses(mod)) {
         const jobs = new Map<string, ((a: NativePointer) => void)[]>();
         asciis.forEach((s, i) => {
             if (found[i] === null) addJob(jobs, toHexPattern(s), (a) => { if (found[i] === null) found[i] = a; });
         });
         if (jobs.size === 0) break;
-        await scanRangesChunked(ranges, toJobs(jobs), chunkBytes, yieldFn);
+        await scanRangesChunked(rangesOfPass(), toJobs(jobs), chunkBytes, yieldFn, status);
     }
     return found;
 }
@@ -604,14 +640,15 @@ export function literalStart(inside: NativePointer, maxBack: number = 512): Nati
  * literal's load sites; an anchor whose literal is absent yields [].
  */
 export async function anchorSiteFunctions(
-    mod: Module, functions: FunctionBoundsSource, anchors: AnchorSpec[],
+    mod: Module, functions: FunctionBoundsSource, anchors: AnchorSpec[], status?: ScanStatus,
 ): Promise<AnchorSite[][]> {
-    const hits = await findAnchorStringsAsync(mod, anchors.map((a) => a.text + "\u0000"));
+    const hits = await findAnchorStringsAsync(mod, anchors.map((a) => a.text + "\u0000"),
+        XREF_SCAN_CHUNK_BYTES, yieldToEventLoop, status);
     const found = anchors.map((a, i) => ({ a, hit: hits[i] })).filter((x) => x.hit !== null);
     const targets = found.map(({ a, hit }) => a.literalSuffix ? literalStart(hit!) : hit!);
     const maxSites = Math.max(MAX_LOAD_SITES, ...anchors.map((a) => a.maxSites ?? MAX_LOAD_SITES));
     const loads = targets.length > 0
-        ? await findStringLoadSitesAsync(mod, targets, XREF_SCAN_CHUNK_BYTES, yieldToEventLoop, maxSites)
+        ? await findStringLoadSitesAsync(mod, targets, XREF_SCAN_CHUNK_BYTES, yieldToEventLoop, maxSites, status)
         : [];
     const sitesByAnchor = new Map<AnchorSpec, AnchorSite[]>();
     found.forEach(({ a }, k) => sitesByAnchor.set(a, loads[k]
@@ -625,6 +662,129 @@ export function moduleOffsetLabel(mod: Module, p: NativePointer | null, missing:
     return p === null ? missing : "+0x" + p.sub(mod.base).toString(16);
 }
 
+// ---- outlined register-shuffle stubs ----------------------------------------
+
+/** `mov xD, xM` / `mov wD, wM` (ORR with XZR/WZR, no shift), either width. */
+export function isRegisterMove(insn: number): boolean {
+    return ((insn & 0x7fe0ffe0) >>> 0) === 0x2a0003e0;
+}
+
+/** STP Xt1, Xt2, [Xn, #imm] (signed offset, no writeback) or STR Xt, [Xn, #imm]. */
+export function isRegisterSave(insn: number): boolean {
+    return ((insn & 0xffc00000) >>> 0) === 0xa9000000 || isSTRimmU64(insn);
+}
+
+/** Which words a stub body may contain, and how many before its RET. */
+export interface OutlinedStubShape { maxBodyWords: number; allowSaves: boolean; }
+
+/** Arg-setup stub: up to 4 register moves, then RET. */
+export const ARG_SETUP_STUB: OutlinedStubShape = { maxBodyWords: 4, allowSaves: false };
+/** Register-save stub: up to 8 instructions in all (moves and stp/str saves), the last a RET. */
+export const REGISTER_SAVE_STUB: OutlinedStubShape = { maxBodyWords: 7, allowSaves: true };
+
+/**
+ * The body words (RET excluded) when `words` starts with a tiny outlined stub of
+ * `shape`, else null. Such a stub moves or spills registers and returns; it is
+ * never a real callee and never clobbers registers it does not name.
+ */
+export function outlinedStubBody(words: number[], shape: OutlinedStubShape): number[] | null {
+    const last = Math.min(words.length - 1, shape.maxBodyWords);
+    for (let i = 0; i <= last; i++) {
+        const w = words[i] >>> 0;
+        if (isRET(w)) return words.slice(0, i).map((x) => x >>> 0);
+        if (!isRegisterMove(w) && !(shape.allowSaves && isRegisterSave(w))) return null;
+    }
+    return null;
+}
+
+/**
+ * Up to `count` readable instruction words at `addr` (stops at the first unmapped
+ * one): one readability walk, then ONE readByteArray. The Uint32Array view reads
+ * the host's (= target's, in-process) little-endian words, exactly like readU32.
+ */
+export function readInstructionWords(addr: NativePointer, count: number): number[] {
+    const wordCount = Math.floor(readableByteCount(addr, count * 4) / 4);
+    if (wordCount === 0) return [];
+    try {
+        const bytes = addr.readByteArray(wordCount * 4);
+        return bytes === null ? [] : Array.from(new Uint32Array(bytes));
+    } catch (_e) {
+        return [];
+    }
+}
+
+/**
+ * Byte length of the function starting at `fn` per `table` (its bounds must start
+ * exactly there), capped at `capBytes`; the cap when the end is unknown.
+ */
+export function functionByteLength(fn: NativePointer, table: FunctionBoundsSource | null, capBytes: number): number {
+    const bounds = table?.bounds(fn) ?? null;
+    if (bounds === null || bounds.end === null || !bounds.start.equals(fn)) return capBytes;
+    return Math.min(bounds.end.sub(fn).toUInt32(), capBytes);
+}
+
+/**
+ * Direct call targets in `words` (decoded at numeric address `base`), in order,
+ * deduplicated: every BL target, plus every unconditional B whose target leaves
+ * the window (a tail call; a B inside the window is an intra-function jump).
+ */
+export function directCallTargets(words: number[], base: number): number[] {
+    const end = base + words.length * 4;
+    const targets: number[] = [];
+    words.forEach((word, i) => {
+        const w = word >>> 0;
+        const pc = base + i * 4;
+        if (!isBL(w) && !isUnconditionalB(w)) return;
+        const target = pc + decodeBLImm(w);
+        if (isUnconditionalB(w) && target >= base && target < end) return;
+        if (!targets.includes(target)) targets.push(target);
+    });
+    return targets;
+}
+
+/** Up to `count` words at `addr`, stopping at the first unreadable one. */
+export function readWordsUpTo(addr: NativePointer, count: number): number[] {
+    const words: number[] = [];
+    try {
+        for (let i = 0; i < count; i++) words.push(addr.add(i * 4).readU32());
+    } catch (_e) { /* unreadable tail: decode what was read */ }
+    return words;
+}
+
+function isArgSetupStubAt(addr: NativePointer): boolean {
+    return outlinedStubBody(readWordsUpTo(addr, ARG_SETUP_STUB.maxBodyWords + 1), ARG_SETUP_STUB) !== null;
+}
+
+/** A non-call write of x30: the epilogue reload that precedes a tail call. */
+function reloadsLinkRegister(insn: number): boolean {
+    return writesReg(insn, 30) && !isAnyCall(insn);
+}
+
+/**
+ * x30 reloaded from the stack, the way an epilogue does it: `ldr x30, [sp…]`
+ * (unsigned offset, pre- or post-index) or `ldp …, [sp…]` naming x30. LLVM
+ * also uses x30 as a scratch GPR, so any other write of it is not an epilogue.
+ */
+export function isEpilogueLinkReload(insn: number): boolean {
+    const w = insn >>> 0;
+    if (regRn(w) !== 31) return false;
+    const ldrX30 = ((w & 0xffc00000) >>> 0) === 0xf9400000 || ((w & 0xffe00400) >>> 0) === 0xf8400400;
+    if (ldrX30) return regRd(w) === 30;
+    const op = (w & 0xffc00000) >>> 0;
+    const ldpX = op === 0xa8c00000 || op === 0xa9400000 || op === 0xa9c00000; // post / offset / pre
+    return ldpX && (regRd(w) === 30 || regRt2(w) === 30);
+}
+
+/**
+ * A tail-call B target is only trusted when it leaves the site's function (known
+ * bounds) or, without bounds, starts like a function; a loop or join label does neither.
+ */
+function isTailCallTarget(site: NativePointer, tgt: NativePointer, functions?: FunctionBoundsSource): boolean {
+    const fn = functions?.bounds(site) ?? null;
+    if (fn !== null && fn.end !== null) return tgt.compare(fn.start) < 0 || tgt.compare(fn.end) >= 0;
+    try { return isFunctionPrologueWord(tgt.readU32()); } catch (_e) { return false; }
+}
+
 /**
  * Walk forward from `from` (exclusive of its own instruction) toward `limit` and
  * return the resolved target of the FIRST BL/BLR encountered. BL has a
@@ -635,18 +795,26 @@ export function moduleOffsetLabel(mod: Module, p: NativePointer | null, missing:
  * instruction after which execution does not fall through (endsFallThrough:
  * unconditional B, RET/RETAA/RETAB, BR*, BRK/UDF). Without this, a site that
  * tail-calls its callee (`b ssl_log_secret`) or simply returns would "resolve"
- * the first BL of the NEXT function. An unconditional B is deliberately not
- * followed nor voted for: from the word alone a tail call cannot be told apart
- * from an intra-function jump (loop, if/else join, cross-jumped call block),
- * so its target is not known to be the callee. Losing that site's vote is the
- * fail-closed outcome.
+ * the first BL of the NEXT function. An unconditional B is not followed. It is
+ * voted for only as a TAIL CALL: an in-module target reached after the walk saw
+ * x30 reloaded from the stack (the epilogue `ldr/ldp x30, ...`). A B without
+ * that epilogue may be an intra-function jump (loop, if/else join, cross-jumped
+ * call block), so its target is not known to be the callee and the site loses
+ * its vote (fail closed). The B target must also leave the site's function
+ * (`functions` bounds) or, without bounds, start with a prologue word.
+ *
+ * A BL into a tiny outlined argument-setup stub (`mov x0, x20; mov x2, x21;
+ * ret`, emitted by machine outliners such as Flutter's) is not a call target:
+ * the stub only shuffles registers, so the walk continues to the real call.
  */
 export function firstCallTargetForward(
     from: NativePointer, limit: NativePointer, modStart: NativePointer, modEnd: NativePointer,
+    functions?: FunctionBoundsSource,
 ): NativePointer | null {
     let cursor = from.add(4);
     const maxWalk = 0x400; // ~256 instructions; the call is very close
     let walked = 0;
+    let linkRegisterRestored = false;
     while (cursor.compare(limit) < 0 && walked < maxWalk) {
         let insn = 0;
         try {
@@ -657,13 +825,19 @@ export function firstCallTargetForward(
         // BL is a direct, resolvable PC-relative call.
         if (isBL(insn)) {
             const tgt = blTarget(cursor, insn);
-            if (inModule(tgt, modStart, modEnd)) return tgt;
+            if (inModule(tgt, modStart, modEnd) && !isArgSetupStubAt(tgt)) return tgt;
         }
         // BLR is an indirect call whose target we cannot statically resolve.
         if (isBLR(insn) || isBLRAuth(insn)) {
             devlog(`[arm64-xref] forward walk hit unresolvable BLR @ ${cursor}`);
             return null;
         }
+        if (isUnconditionalB(insn) && linkRegisterRestored) {
+            const tgt = blTarget(cursor, insn); // B shares BL's imm26 encoding
+            if (inModule(tgt, modStart, modEnd) && isTailCallTarget(from, tgt, functions)) return tgt;
+        }
+        // Only a stack reload of x30 arms the tail-call vote; any later x30 write disarms it.
+        if (reloadsLinkRegister(insn)) linkRegisterRestored = isEpilogueLinkReload(insn);
         // Tail call, return, indirect jump or trap: the next word is not reached.
         if (endsFallThrough(insn)) {
             devlog(`[arm64-xref] forward walk hit a non-fall-through instruction @ ${cursor} before any BL`);

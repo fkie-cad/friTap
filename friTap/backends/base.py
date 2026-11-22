@@ -1,14 +1,9 @@
 #!/usr/bin/env python3
 
-"""
-Abstract base class for instrumentation backends.
+"""Abstract base class for instrumentation backends.
 
-friTap supports multiple backends for dynamic instrumentation:
-- Frida (default): Cross-platform, full-featured
-- eBPF (future): Linux-only, kernel-level, read-only (maybe windows in the future?)
-- GDB (future): Debugger-based, single-threaded
-- LLDB (future): Debugger-based, single-threaded
-- Other backends may be added in the future (e.g. DynamoRIO, PIN, x64dbg, etc.)
+Frida is the default and full-featured backend. GDB and LLDB are
+debugger-based and single-threaded; eBPF is a Linux-only, read-only stub.
 """
 
 from __future__ import annotations
@@ -21,30 +16,23 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, Optional
 
-# ---------------------------------------------------------------------------
-# Backend exception hierarchy
-# ---------------------------------------------------------------------------
-
 @dataclass
 class BackendErrorContext:
-    """Cheap diagnostic snapshot collected at error time.
+    """Cheap, best-effort diagnostic snapshot taken at error time.
 
-    All fields are best-effort and may be ``None``/sentinel when the
-    information could not be sampled. Safe to log; intentionally avoids
-    secrets or full stack traces (those go to the debug log file).
+    Fields are ``None``/sentinel when not sampled. Safe to log: holds no
+    secrets or stack traces (those go to the debug log file).
     """
     euid: int = -1
     platform: str = ""
     sip_enabled: Optional[bool] = None        # macOS only; None elsewhere
     target_alive: Optional[bool] = None
     server_reachable: Optional[bool] = None
-    # frida's ``query_system_parameters()["access"]`` ("full" / "jailed").
-    # On a USB Android device with NO frida-server running, frida 17 still
-    # answers via an ADB-only fallback and reports "jailed" — so this field
-    # is what tells "server answered" apart from "a real server answered".
+    # ``query_system_parameters()["access"]`` ("full" / "jailed"). With no
+    # frida-server on a USB Android device, frida 17 still answers via an
+    # ADB-only fallback as "jailed", so this tells a real server apart.
     server_access: Optional[str] = None
-    # macOS target binary probes; populated when target is a PID and
-    # ``codesign``/``ps`` are available. ``None`` means "not sampled".
+    # macOS target binary probes (PID target, ``codesign``/``ps`` present).
     target_path: Optional[str] = None
     target_hardened_runtime: Optional[bool] = None
     target_library_validation_disabled: Optional[bool] = None
@@ -55,10 +43,9 @@ class BackendErrorContext:
 class BackendError(Exception):
     """Base exception for all backend errors.
 
-    Carries a rich payload so callers (and the TUI) can distinguish
-    *backend-said-no* from *the-environment-said-no* and surface frida's
-    actual reason verbatim. Positional ``message``-only construction is
-    preserved so any existing ``raise BackendError("msg")`` keeps working.
+    Carries the original exception, a category and a context so callers and
+    the TUI can tell *backend-said-no* from *environment-said-no*.
+    ``BackendError("msg")`` is valid.
     """
 
     def __init__(
@@ -80,10 +67,7 @@ class BackendError(Exception):
         lines = [self.message]
         orig = self.original_exception
         if orig is not None:
-            # Always show the original exception class — it's how the user
-            # tells "frida said no" (PermissionDeniedError / TimedOutError /
-            # …) apart from a backend bug. Skip the redundant message
-            # repeat when it matches.
+            # The original class tells "frida said no" apart from a backend bug.
             cls = type(orig).__name__
             if str(orig) and str(orig) != self.message:
                 lines.append(f"  ↳ {cls}: {orig}")
@@ -94,8 +78,7 @@ class BackendError(Exception):
                 "This is a friTap bug, not your environment. Please file an issue."
             )
         elif self.category == "script_load_timeout":
-            # The elapsed time and the breadcrumb are the only two facts that
-            # narrow down *where* the agent wedged, so surface both here.
+            # Elapsed time and breadcrumb are the only clues to where the agent wedged.
             lines.append(
                 f"  ↳ agent did not finish loading within "
                 f"{getattr(self, 'elapsed_seconds', 0.0):.1f}s"
@@ -117,8 +100,7 @@ class BackendError(Exception):
             for k, v in ctx.extra.items():
                 bits.append(f"{k}={v}")
             lines.append("  context: " + ", ".join(bits))
-            # Target-binary probes get their own line — these are the most
-            # likely remaining culprits when the basic context looks fine.
+            # Own line: likeliest culprits when the basic context looks fine.
             tgt_bits = []
             if ctx.target_path:
                 tgt_bits.append(f"path={ctx.target_path}")
@@ -174,11 +156,9 @@ class BackendInvalidOperationError(BackendError):
 class BackendScriptLoadTimeout(BackendError):
     """``load_script()`` did not return within the allotted time.
 
-    Frida's ``script.load()`` blocks until the agent's top-level code
-    finishes, and the agent blocks there waiting for the host's startup
-    handshake — so a wedged agent (or an unanswered handshake) hangs the
-    whole session with no diagnostic at all. The bound turns that silent
-    hang into this error.
+    Frida's ``script.load()`` blocks until the agent's top-level code ends,
+    and the agent waits there for the host's startup handshake, so a wedged
+    agent hangs the session silently. The bound turns that into this error.
     """
 
     def __init__(
@@ -198,26 +178,15 @@ class BackendScriptLoadTimeout(BackendError):
             context=context,
         )
         self.elapsed_seconds = elapsed_seconds
-        # The bound that actually fired. Carried on the exception because it is
-        # the EFFECTIVE value — tripled for scan-heavy configs — and the CLI only
-        # knows the raw --script-load-timeout the user typed, so reporting that
-        # would tell a --patterns user "bound: 20.0s" for a load killed at 60s.
+        # The effective bound (tripled for scan-heavy configs); the CLI only
+        # knows the raw --script-load-timeout and would misreport it.
         self.bound_seconds = bound_seconds
-        # Filled in by the caller that owns the agent's breadcrumb trail
-        # (SSL_Logger); the backend itself has no visibility into it.
+        # Set by SSL_Logger, which owns the breadcrumb trail.
         self.breadcrumb = breadcrumb
 
 
-# ---------------------------------------------------------------------------
-# Type-safe enums
-# ---------------------------------------------------------------------------
-
 class BackendName(str, Enum):
-    """Validated backend identifiers.
-
-    Inherits ``str`` so that ``BackendName.FRIDA == "frida"`` is True,
-    making migration from bare string literals safe and incremental.
-    """
+    """Validated backend identifiers; ``BackendName.FRIDA == "frida"`` is True."""
     FRIDA = "frida"
     GDB = "gdb"
     LLDB = "lldb"
@@ -225,18 +194,10 @@ class BackendName(str, Enum):
 
 
 class ScriptRuntime(str, Enum):
-    """JavaScript runtime for Frida-based script execution.
-
-    Inherits ``str`` so that ``ScriptRuntime.QJS == "qjs"`` is True.
-    GDB/LLDB backends ignore this parameter.
-    """
+    """JavaScript runtime for Frida scripts (GDB/LLDB ignore it)."""
     QJS = "qjs"
     V8 = "v8"
 
-
-# ---------------------------------------------------------------------------
-# Shared data types
-# ---------------------------------------------------------------------------
 
 @dataclass
 class ThreadInfo:
@@ -256,62 +217,32 @@ class ProcessInfo:
 
 
 class Backend(ABC):
-    """
-    Abstract interface for an instrumentation backend.
+    """Abstract instrumentation backend.
 
-    All backend-specific calls (device discovery, process attach/spawn,
-    script injection, messaging) go through this interface so that the
-    core SSL_Logger / FriTap API remains backend-agnostic.
+    All device, attach/spawn, script and messaging calls go through this
+    interface so SSL_Logger / the FriTap API stay backend-agnostic.
     """
 
     @abstractmethod
     def get_device(self, mobile: bool | str = False, host: str | None = None) -> Any:
-        """
-        Obtain a handle to the target device.
+        """Return a backend-specific device handle.
 
-        Parameters
-        ----------
-        mobile : bool | str
-            True for default USB device, or a device-ID string.
-        host : str | None
-            Remote device address (ip:port).
-
-        Returns
-        -------
-        device
-            Backend-specific device handle.
+        *mobile*: True for the default USB device, or a device-ID string.
+        *host*: remote device address (ip:port).
         """
         ...
 
     @abstractmethod
     def attach(self, device: Any, target: str) -> Any:
-        """
-        Attach to a running process on *device*.
+        """Attach to a running process; *target* is a name or a PID string.
 
-        Parameters
-        ----------
-        device
-            Device handle from :meth:`get_device`.
-        target : str
-            Process name or PID (as string).
-
-        Returns
-        -------
-        process
-            Backend-specific process/session handle.
+        Returns a backend-specific process/session handle.
         """
         ...
 
     @abstractmethod
     def spawn(self, device: Any, target: str, env: dict | None = None) -> tuple[Any, int]:
-        """
-        Spawn a new process on *device*.
-
-        Returns
-        -------
-        (process, pid)
-            Backend-specific process handle and the PID.
-        """
+        """Spawn a process; returns ``(process handle, pid)``."""
         ...
 
     @abstractmethod
@@ -321,30 +252,17 @@ class Backend(ABC):
 
     @abstractmethod
     def create_script(self, process: Any, script_source: str, runtime: str = "qjs") -> Any:
-        """
-        Create an instrumentation script on the given process.
-
-        Returns
-        -------
-        script
-            Backend-specific script handle.
-        """
+        """Create an instrumentation script; returns a backend-specific handle."""
         ...
 
     @abstractmethod
     def load_script(self, script: Any, *, timeout: float | None = None) -> None:
         """Load/inject the script into the target process.
 
-        Parameters
-        ----------
-        script
-            Script handle from :meth:`create_script`.
-        timeout : float | None
-            Upper bound in seconds for the (potentially blocking) load.
-            ``None`` or ``0`` disables the bound and loads inline on the
-            calling thread. Backends whose load is cheap and synchronous
-            may ignore it; a backend that exceeds the bound raises
-            :class:`BackendScriptLoadTimeout`.
+        *timeout* bounds the (potentially blocking) load in seconds; ``None``
+        or ``0`` loads inline on the calling thread. Cheap synchronous
+        backends may ignore it; one that exceeds it raises
+        :class:`BackendScriptLoadTimeout`.
         """
         ...
 
@@ -409,11 +327,7 @@ class Backend(ABC):
         ...
 
     def query_system_parameters(self, device: Any) -> dict:
-        """Query system parameters from the target device.
-
-        Returns a dict with keys like 'os', 'arch', 'platform', etc.
-        Default returns empty dict for backends that don't support this.
-        """
+        """Return a dict of device parameters ('os', 'arch', ...); empty if unsupported."""
         return {}
 
     def enumerate_processes(self, device: Any) -> list[ProcessInfo]:
@@ -429,20 +343,16 @@ class Backend(ABC):
         raise NotImplementedError(f"{self.name} backend does not support process paths")
 
     def process_name(self, device: Any, pid: int) -> str | None:
-        """Return the best display name for *pid* (an Android package id when
-        the backend knows one), or ``None`` when it cannot be resolved.
+        """Best display name for *pid* (an Android package id if known), else ``None``.
 
-        Used once after attaching by numeric PID so flow classification sees
-        a real process name instead of the PID string. Default: unsupported.
+        Used after attaching by numeric PID so flow classification sees a
+        real name. Default: unsupported.
         """
         return None
 
     def check_connectivity(self, device: Any) -> bool:
-        """Test whether *device* is reachable without materializing full process list.
-
-        Default implementation calls ``enumerate_processes()``; subclasses
-        may provide a lighter-weight check.
-        """
+        """True if *device* is reachable. Default calls ``enumerate_processes()``;
+        subclasses may override with a lighter check."""
         try:
             self.enumerate_processes(device)
             return True
@@ -480,8 +390,8 @@ class Backend(ABC):
         ...
 
     def on_process_crashed(self, device: Any, callback: Callable) -> None:
-        """Register a device-level process-crashed callback (carries a full
-        native crash report). Optional — no-op on backends without the concept."""
+        """Register a device-level process-crashed callback (carries a native
+        crash report). No-op on backends without the concept."""
         return None
 
     def off_process_crashed(self, device: Any, callback: Callable) -> None:
@@ -501,7 +411,7 @@ class Backend(ABC):
         ...
 
     def version_at_least(self, major: int, minor: int = 0) -> bool:
-        """Check if the backend version is at least major.minor."""
+        """True if the backend version is at least major.minor."""
         return self._parsed_version >= (major, minor)
 
     @functools.cached_property
@@ -513,12 +423,8 @@ class Backend(ABC):
         except (AttributeError, ValueError):
             return (0, 0)
 
-    # ------------------------------------------------------------------
-    # Detach callback helpers (shared by GDB / LLDB backends)
-    # ------------------------------------------------------------------
-
     def _init_detach_callbacks(self) -> None:
-        """Initialize the detach callback registry."""
+        """Create the detach callback registry."""
         self._detach_callbacks: dict[int, list[Callable]] = {}
 
     def _get_process_pid(self, process: Any) -> int:
@@ -538,16 +444,10 @@ class Backend(ABC):
                 pass
         self._detach_callbacks.pop(pid, None)
 
-    # ------------------------------------------------------------------
-    # Memory helpers (shared by GDB / LLDB backends)
-    # ------------------------------------------------------------------
-
     def read_pointer(self, target, addr: int) -> int:
-        """Read a pointer-sized value from target memory.
+        """Read a pointer-sized value via ``read_memory()``.
 
-        Uses ``read_memory()`` (implemented by each backend) as the
-        underlying primitive.  GDB overrides this with cached arch
-        detection because GDB targets lack ``GetAddressByteSize()``.
+        GDB overrides this because its targets lack ``GetAddressByteSize()``.
         """
         ptr_size = getattr(target, 'GetAddressByteSize', lambda: 8)()
         if ptr_size not in (4, 8):
@@ -571,10 +471,7 @@ class Backend(ABC):
 
     @staticmethod
     def _extract_function_names(script_source: str) -> list[str]:
-        """Extract function names from a Frida-style script source.
-
-        Shared by GDB and LLDB backends for ``create_script()``.
-        """
+        """Function names in a Frida-style script source (GDB/LLDB ``create_script``)."""
         fn_names = re.findall(
             r'(?:Module\.findExportByName|BreakpointCreateByName)\s*\(\s*["\']([^"\']+)',
             script_source

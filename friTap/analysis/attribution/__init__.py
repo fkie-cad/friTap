@@ -1,10 +1,9 @@
 """Offline destination-attribution for friTap.
 
-Maps a captured host to its owning entity, a tracker category and a
-first-/third-party verdict, using offline datasets: a bundled friTap-curated
-tracker seed plus a Public Suffix List snapshot. A local-only full DuckDuckGo
-Tracker Radar map (``data/trackers_full.json``, CC BY-NC-SA 4.0, never
-shipped) is preferred over the seed when present.
+Maps a captured host to its owner, tracker category and first-/third-party
+verdict from a bundled tracker seed plus a Public Suffix List snapshot. A
+local-only DuckDuckGo Tracker Radar map (``data/trackers_full.json``,
+CC BY-NC-SA 4.0, never shipped) is preferred over the seed when present.
 
 Typical use::
 
@@ -15,9 +14,8 @@ Typical use::
     att.category   # -> "analytics"
     att.party      # -> "third"
 
-The module-level :func:`classify` lazily builds and caches a single default
-:class:`TrackerResolver`. Nothing is read from disk or the network at import
-time; the data files are opened on the first call only.
+:func:`classify` lazily builds one cached default :class:`TrackerResolver`;
+nothing is read at import time.
 """
 
 from __future__ import annotations
@@ -32,8 +30,7 @@ from friTap.analysis.attribution.resolver import (
     TrackerResolver,
 )
 
-#: Sentinel ``first_party`` value asking callers to infer the set (see
-#: :func:`infer_first_party`) from the hosts in scope instead of supplying one.
+#: ``first_party`` sentinel: infer the set via :func:`infer_first_party`.
 AUTO_FIRST_PARTY = "auto"
 
 __all__ = [
@@ -53,13 +50,9 @@ _default_resolver: Optional[TrackerResolver] = None
 
 
 def normalize_first_party(first_party):
-    """Normalize a ``first_party`` argument to ``None``, ``"auto"`` or a domain list.
+    """Normalize ``first_party`` to ``None``, ``"auto"`` or a stripped domain list.
 
-    ``"auto"`` (:data:`AUTO_FIRST_PARTY`) and ``None`` are returned unchanged.
-    Any other string is a comma-separated domain list (``"a.com, b.com"`` ->
-    ``["a.com", "b.com"]``) -- never iterated character by character. A list
-    or tuple keeps its domains; in both cases entries are stripped and empties
-    dropped.
+    A string is split on commas (``"a.com, b.com"``), never per character.
     """
     if first_party is None or first_party == AUTO_FIRST_PARTY:
         return first_party
@@ -77,11 +70,7 @@ def _resolver() -> TrackerResolver:
 
 
 def classify(host: str, first_party_domains: Iterable[str] = ()) -> Attribution:
-    """Classify ``host`` using the cached default :class:`TrackerResolver`.
-
-    See :meth:`TrackerResolver.classify`. The default resolver is created on
-    the first call (lazy, offline) and reused thereafter.
-    """
+    """Classify ``host`` with the cached default resolver (:meth:`TrackerResolver.classify`)."""
     return _resolver().classify(host, first_party_domains)
 
 
@@ -99,23 +88,15 @@ def make_classifier(first_party=()):
 
 
 def infer_first_party(host_counts, classify: Callable[[str], dict]) -> list:
-    """Infer the app's own first-party registrable domains from contacted hosts.
+    """Infer the app's first-party registrable domains from contacted hosts.
 
-    Heuristic (documented so it stays stable): reduce every contacted host to
-    its registrable domain (eTLD+1) via *classify*, **excluding** any host the
-    classifier marks as a known tracker (an ``owner`` or ``category`` is set) —
-    a tracker is never the app's own backend, even when it is contacted most.
-    Sum request counts per surviving registrable domain and return the
-    most-contacted one, plus every other non-tracker domain whose count is at
-    least 50% of that top count (so an app that talks to one or two backends is
-    captured, while far-less-contacted domains are left out). Ties break
-    lexicographically. Returns ``[]`` when nothing qualifies (no hosts, or every
-    contacted domain is a known tracker).
+    Heuristic (kept stable): reduce each host to its eTLD+1 via *classify*,
+    skipping known trackers (``owner`` or ``category`` set; a tracker is never
+    the app's backend). Sum counts per domain; return the top domain plus every
+    domain with at least 50% of the top count, sorted. ``[]`` if none qualify.
 
-    :param host_counts: a mapping ``{host: count}`` or an iterable of
-        ``(host, count)`` pairs (e.g. a digest's host rows).
-    :param classify: a ``host -> dict`` callable (see :func:`make_classifier`)
-        exposing ``registrable_domain`` and the tracker ``owner``/``category``.
+    ``host_counts`` is ``{host: count}`` or ``(host, count)`` pairs;
+    ``classify`` is a ``host -> dict`` callable (see :func:`make_classifier`).
     """
     items = host_counts.items() if hasattr(host_counts, "items") else host_counts
     totals: dict[str, int] = {}

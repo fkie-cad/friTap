@@ -16,30 +16,32 @@
  */
 
 import { devlog } from "../util/log.js";
+import { makeHookRegistry } from "./hook_registry.js";
+import { DetachReportBuilder, DetachSummary } from "./detach_report.js";
 
-type TeardownFn = () => void;
+/**
+ * A teardown may return a small summary (plain object of number|string|boolean,
+ * e.g. NSS `{owned, toApp, toNull, stale, failed}`) that lands in the
+ * DetachReport. Existing teardowns that return nothing stay valid.
+ */
+export type DetachTeardownFn = (() => void) | (() => DetachSummary | void);
 
-const teardowns: { label: string; fn: TeardownFn }[] = [];
+const teardowns = makeHookRegistry({ reverse: true });
 
-/** Register a revert to run on graceful detach / script dispose. */
-export function registerDetachTeardown(label: string, fn: TeardownFn): void {
-    teardowns.push({ label, fn });
+/** Register a revert to run on graceful detach / script dispose; `label` names its report step. */
+export function registerDetachTeardown(label: string, fn: DetachTeardownFn): void {
+    teardowns.register(fn, label);
 }
 
 /**
  * Run every registered teardown in reverse install order, isolating failures so
  * one bad revert cannot block the others or the native detach that follows.
- * Idempotent: the registry is emptied afterwards.
+ * Each runs as report step `teardown:<label>` (timed, error and summary kept).
+ * Without a report the outcome is discarded. Idempotent (the registry is
+ * emptied first); never throws.
  */
-export function runDetachTeardowns(): void {
-    for (let i = teardowns.length - 1; i >= 0; i--) {
-        try {
-            teardowns[i].fn();
-        } catch (_e) {
-            /* best-effort; detach must proceed regardless */
-        }
-    }
-    teardowns.length = 0;
+export function runDetachTeardowns(report: DetachReportBuilder = new DetachReportBuilder()): void {
+    teardowns.run((label, fn) => report.step(`teardown:${label}`, fn));
 }
 
 // TODO: signal_java.ts has its own copy of this loop.

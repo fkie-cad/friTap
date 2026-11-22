@@ -26,13 +26,29 @@ function writeSockaddrIn(sa: any, port: number): void {
     for (let i = 0; i < 16; i += 4) sa.add(i).writeU32(b.readUInt32LE(i));
 }
 
+/** Socket fds answered like Winsock under Wine: sockaddr_in6 with Windows' AF_INET6 = 23. */
+const winsockV6Fds = new Set<number>();
+
+function writeWinsockV6(sa: any, port: number): void {
+    const b = Buffer.alloc(28);
+    b.writeUInt16LE(23, 0);                       // Windows AF_INET6
+    b.writeUInt16BE(port, 2);
+    Buffer.from([0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]).copy(b, 8);
+    for (let i = 0; i < 28; i += 4) sa.add(i).writeU32(b.readUInt32LE(i));
+}
+
 installFakes({
     getpeername: (fd: number, sa: any) => {
         if (failingPeerFds.has(fd)) return -1;
-        writeSockaddrIn(sa, 443);
+        if (winsockV6Fds.has(fd)) writeWinsockV6(sa, 443);
+        else writeSockaddrIn(sa, 443);
         return 0;
     },
-    getsockname: (_fd: number, sa: any) => { writeSockaddrIn(sa, 50000); return 0; },
+    getsockname: (fd: number, sa: any) => {
+        if (winsockV6Fds.has(fd)) writeWinsockV6(sa, 50000);
+        else writeSockaddrIn(sa, 50000);
+        return 0;
+    },
 });
 
 test("a working socket resolves its oriented tuple (write: local -> peer, read: peer -> local)", () => {
@@ -61,6 +77,18 @@ test("a failing getpeername under --enable_default_fd yields the oriented placeh
         assert.deepEqual(getPortsAndAddresses(8, true, SOCKET_FNS, true), defaultFdPlaceholderTuple(true));
     } finally {
         failingPeerFds.delete(8);
+    }
+});
+
+test("Winsock under Wine (platform linux): a family-23 IPv6 tuple decodes as AF_INET6, not dropped", () => {
+    winsockV6Fds.add(7);
+    try {
+        const m = getPortsAndAddresses(7, false, SOCKET_FNS, false);
+        assert.ok(m, "the IPv6 record must not be dropped");
+        assert.deepEqual([m.ss_family, m.src_port, m.dst_port, m.dst_addr],
+            ["AF_INET6", 50000, 443, "20010DB8000000000000000000000001"]);
+    } finally {
+        winsockV6Fds.delete(7);
     }
 });
 

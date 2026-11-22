@@ -1,10 +1,7 @@
-"""
-Read services over a ``.tap`` capture: digest, endpoints, flow detail, findings.
+"""Read services over a ``.tap`` capture: digest, endpoints, flow detail, findings.
 
-Thin adapters around :mod:`friTap.analysis.digest` / ``digest_flow`` so the
-agent tools share one implementation (and one safety contract) with
-``fritap report``: payload strings stay under ``untrusted``, finding values
-are redacted unless ``show_values``.
+Thin adapters around :mod:`friTap.analysis.digest` / ``digest_flow``, shared with ``fritap report``:
+payload strings stay under ``untrusted``, finding values are redacted unless ``show_values``.
 """
 
 from __future__ import annotations
@@ -28,11 +25,9 @@ SCAN_CACHE_SIZE = 4
 class TapResultCache:
     """Small thread-safe LRU of results computed from a ``.tap`` file.
 
-    Keyed by the file's real path, ``st_mtime_ns`` and ``st_size`` (a
-    rewritten capture misses) plus the caller's parameters, so paging
-    ``list_endpoints``/``list_findings`` or calling several read tools on one
-    capture decodes it once instead of once per call. Cached values are
-    shared: callers must not mutate them.
+    Keyed by real path, ``st_mtime_ns``, ``st_size`` (a rewritten capture misses) and the caller's
+    parameters, so paging or calling several read tools on one capture decodes it once.
+    Cached values are shared: callers must not mutate them.
     """
 
     def __init__(self, maxsize: int = SCAN_CACHE_SIZE) -> None:
@@ -112,10 +107,6 @@ def _source(tap: Path, scan: Any) -> dict[str, Any]:
     return {"file": tap.name, "flows_total": scan.flows_total, "flows_selected": scan.selected}
 
 
-# ---------------------------------------------------------------------------
-# Digest
-# ---------------------------------------------------------------------------
-
 def digest_scan(tap: Path, params: dict[str, Any]):
     """The digest's ``scan_tap`` pass (focus analyzers), memoized in :data:`scan_cache`.
 
@@ -156,10 +147,6 @@ def digest_markdown(doc: dict[str, Any]) -> str:
     return render_markdown(doc)
 
 
-# ---------------------------------------------------------------------------
-# Endpoints
-# ---------------------------------------------------------------------------
-
 def _flatten_endpoints(sections: dict[str, dict]) -> list[dict]:
     rows = [{"protocol": group, **row}
             for group, section in sections.items() for row in section["endpoints"]]
@@ -176,10 +163,6 @@ def endpoints(tap: Path, params: dict[str, Any]) -> tuple[dict[str, Any], list[d
     scan = cached_scan(tap, params)
     return _source(tap, scan), _flatten_endpoints(protocol_sections(scan.agg))
 
-
-# ---------------------------------------------------------------------------
-# Flow detail
-# ---------------------------------------------------------------------------
 
 def project_flow_fields(detail: dict[str, Any], fields: Iterable[str] | None) -> dict[str, Any]:
     """Keep the envelope keys plus the requested ``fields`` (all when ``None``)."""
@@ -200,10 +183,6 @@ def flow_detail(tap: Path, params: dict[str, Any]) -> dict[str, Any]:
                                show_values=params.get("show_values", False))
     return project_flow_fields(detail, params.get("fields"))
 
-
-# ---------------------------------------------------------------------------
-# Findings
-# ---------------------------------------------------------------------------
 
 def _finding_filter(params: dict[str, Any]):
     from friTap.analysis.filtering import FindingFilter
@@ -231,17 +210,12 @@ def findings(tap: Path, params: dict[str, Any]) -> tuple[dict[str, Any], dict[st
             finding_rows(selected, show_values, scan.ordinals, params.get("masvs", False)))
 
 
-# ---------------------------------------------------------------------------
-# Canary known-value search (find_values)
-# ---------------------------------------------------------------------------
-
 def _count_by(rows: list[dict], key: str) -> dict[str, int]:
     """Count rows grouped by ``row[key]`` (sorted for a stable document)."""
     return dict(sorted(Counter(str(r.get(key, "")) for r in rows).items()))
 
 
 def _canary_warnings(canaries: list) -> list[dict]:
-    """The non-empty ``Canary.warning`` notes, as serializable rows."""
     return [{"label": c.label, "kind": c.kind, "warning": c.warning}
             for c in canaries if c.warning]
 
@@ -280,11 +254,10 @@ def _find_values_body(tap: Path, flows_total: int,
 
 
 def find_values(tap: Path, params: dict[str, Any]) -> dict[str, Any]:
-    """Search a capture for the operator's known canary values.
+    """Search a capture for the operator's known canary values (and their obvious obfuscations).
 
-    Expands each ``{value, kind, label}`` spec into its obvious obfuscations
-    and scans every decoded flow. Matched spans stay under ``untrusted`` and
-    are withheld unless ``show_values`` (gated by the registry / server policy).
+    Matched spans stay under ``untrusted`` and are withheld unless ``show_values``
+    (gated by the registry / server policy).
     """
     from friTap.analysis import canary
     from friTap.analysis.digest import flow_ref
@@ -294,8 +267,7 @@ def find_values(tap: Path, params: dict[str, Any]) -> dict[str, Any]:
     show_values = bool(params.get("show_values", False))
     candidates = canary.build_candidates(canaries)
 
-    # Stream flows once (don't hold every decoded body in memory) and tag each
-    # hit with the shared f<N> ref the other read tools emit, not the raw id.
+    # Stream flows once (not every decoded body in memory); hits carry the shared f<N> ref.
     rows: list[dict] = []
     flows_total = 0
     with TapReader(str(tap)) as reader:

@@ -1,12 +1,9 @@
-"""
-Process-wide registry of live capture sessions.
+"""Process-wide registry of live capture sessions.
 
-:class:`SessionManager` enforces the capture policy of the calling
-:class:`~friTap.agent_api.context.ToolContext` (``allow_capture``, target
-allow-list), caps concurrent captures and owns the session directories
-(``<root>/.fritap-sessions/<id>``). The module-level :data:`default_manager`
-is stopped at interpreter exit; :func:`tap_path_for` lets read tools accept a
-``session_id`` instead of a tap path.
+:class:`SessionManager` enforces the capture policy of the calling ``ToolContext`` (``allow_capture``,
+target allow-list), caps concurrent captures and owns the session directories
+(``<root>/.fritap-sessions/<id>``). :data:`default_manager` is stopped at interpreter exit;
+:func:`tap_path_for` lets read tools take a ``session_id`` instead of a tap path.
 """
 
 from __future__ import annotations
@@ -53,8 +50,6 @@ class SessionManager:
         self._sessions: dict[str, CaptureSession] = {}
         self._lock = threading.Lock()
 
-    # -- start ---------------------------------------------------------------
-
     def start(self, request: CaptureRequest, ctx: ToolContext) -> CaptureSession:
         """Check policy and limits, then launch ``request`` (its session_dir is ignored)."""
         check_capture_allowed(request.target, ctx)
@@ -75,8 +70,6 @@ class SessionManager:
             raise ToolError(
                 f"{running} captures already running (max {self.max_sessions})",
                 "limit_reached", hint="stop a running session with stop_capture first")
-
-    # -- lookup --------------------------------------------------------------
 
     def get(self, session_id: str) -> CaptureSession:
         with self._lock:
@@ -102,8 +95,6 @@ class SessionManager:
                             "not_found", hint="check capture_status for the error")
         return tap
 
-    # -- stop ----------------------------------------------------------------
-
     def stop(self, session_id: str, timeout: Optional[float] = None) -> dict[str, Any]:
         session = self.get(session_id)
         return session.stop() if timeout is None else session.stop(timeout)
@@ -128,13 +119,9 @@ def check_capture_allowed(target: str, ctx: ToolContext) -> None:
 def sandbox_option_paths(request: CaptureRequest, ctx: ToolContext) -> CaptureRequest:
     """Resolve file-path option values (``offsets``/``patterns``) under ``ctx.root``.
 
-    Inline JSON passes through only for options that accept it (``offsets``);
-    a path must exist inside the sandbox root and is replaced by its absolute
-    real path (the friTap child may run elsewhere).
-
-    Raises:
-        ToolError: ``forbidden`` (outside the root) or ``not_found``, with
-            ``option`` / ``param`` naming the offending option.
+    Inline JSON passes through only for options that accept it (``offsets``). A path must exist inside
+    the sandbox root and becomes its absolute real path (the friTap child may run elsewhere); otherwise
+    ``forbidden``/``not_found`` with ``option``/``param`` naming it.
     """
     options = dict(request.protocol_options)
     for name in protocol_catalog.path_option_names():
@@ -162,12 +149,7 @@ atexit.register(default_manager.stop_all)
 
 
 def tap_path_for(session_id: str) -> Path:
-    """Tap path of a finished session of :data:`default_manager`.
-
-    Raises:
-        ToolError: ``not_found`` (unknown session / no tap) or
-            ``capture_running`` (hint: call stop_capture first).
-    """
+    """Tap path of a finished session of :data:`default_manager` (``not_found`` / ``capture_running``)."""
     return default_manager.tap_path_for(session_id)
 
 

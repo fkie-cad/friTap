@@ -29,6 +29,10 @@ import { toHexString } from "../../util/hex.js";
 /** Address value; bigint so tagged (TBI) 64-bit pointers keep full precision. */
 export type Address = bigint;
 
+export function toAddress(p: NativePointer): Address {
+    return BigInt(p.toString());
+}
+
 /** Read-only view of process memory used by the discovery (Frida or a test fake). */
 export interface QuicheMemory {
     readonly pointerSize: number;
@@ -189,18 +193,15 @@ function isSessionSlot(mem: QuicheMemory, stream: Address, offset: number, sessi
 
 type ConnectionLink = Omit<QuicheLayout, "streamSession">;
 
-/** Find QuicSession::connection_: a polymorphic object pointing back at the session and holding the address pair. */
-function findConnectionLink(mem: QuicheMemory, session: Address): ConnectionLink | null {
+/**
+ * Find QuicSession::connection_: the first slot passing sessionConnectionAt, with
+ * the `known` connection layout or, without one, the connection's own layout.
+ */
+function findConnectionLink(mem: QuicheMemory, session: Address, known: QuicheConnectionLayout | null): ConnectionLink | null {
     const ps = mem.pointerSize;
     for (let offset = ps; offset + ps <= SESSION_SCAN_BYTES; offset += ps) {
-        const connection = mem.readPointer(session + BigInt(offset));
-        if (connection === null || connection === 0n || connection === session) continue;
-        if (!hasModuleVtable(mem, connection)) continue;
-        const bytes = mem.readBytes(connection, CONNECTION_SCAN_BYTES);
-        if (!bytes || !containsPointer(bytes, session, ps)) continue;
-        const connectionAddresses = findAddressPairOffset(bytes);
-        if (connectionAddresses === null) continue;
-        return { sessionConnection: offset, connectionAddresses, connectionVtable: mem.readPointer(connection)! };
+        const match = sessionConnectionMatch(mem, session, offset, known);
+        if (match) return { sessionConnection: offset, ...match.layout };
     }
     return null;
 }
@@ -216,7 +217,7 @@ export function discoverQuicheLayout(mem: QuicheMemory, stream: Address): Quiche
     for (let offset = 2 * ps; offset + 2 * ps <= STREAM_SCAN_BYTES; offset += ps) {
         const session = mem.readPointer(stream + BigInt(offset));
         if (session === null || !isSessionSlot(mem, stream, offset, session)) continue;
-        const link = findConnectionLink(mem, session);
+        const link = findConnectionLink(mem, session, null);
         if (link) return { streamSession: offset, ...link };
     }
     return null;
@@ -254,6 +255,53 @@ export function readStreamLink(mem: QuicheMemory, layout: QuicheLayout, stream: 
     const idBytes = mem.readBytes(stream + BigInt(layout.streamSession - mem.pointerSize), 4);
     if (!addresses || !idBytes || idBytes.length < 4) return null;
     return { connection: connection!, streamId: u32le(idBytes, 0), ...addresses };
+}
+
+// ---- checks of a single offset (seeded hints are validated with these) -------
+
+/** The session at stream+`streamSession`, when that slot passes the discovery's session check. */
+export function streamSessionAt(mem: QuicheMemory, stream: Address, streamSession: number): Address | null {
+    const session = mem.readPointer(stream + BigInt(streamSession));
+    return session !== null && isSessionSlot(mem, stream, streamSession, session) ? session : null;
+}
+
+/**
+ * The connection at session+`sessionConnection` when it passes discoverSessionLayout's
+ * test: points back at the session and carries the `known` vtable (or, without
+ * one, is polymorphic and holds the repeated address pair).
+ */
+export function sessionConnectionAt(mem: QuicheMemory, session: Address, sessionConnection: number,
+                                    known: QuicheConnectionLayout | null): Address | null {
+    return sessionConnectionMatch(mem, session, sessionConnection, known)?.connection ?? null;
+}
+
+/** sessionConnectionAt plus the connection layout it matched (`known`, or the one its bytes reveal). */
+function sessionConnectionMatch(mem: QuicheMemory, session: Address, sessionConnection: number,
+                                known: QuicheConnectionLayout | null):
+        { connection: Address; layout: QuicheConnectionLayout } | null {
+    if (session === 0n) return null;
+    const connection = mem.readPointer(session + BigInt(sessionConnection));
+    if (connection === null || connection === 0n || connection === session) return null;
+    const vtable = mem.readPointer(connection);
+    if (known ? vtable !== known.connectionVtable : !hasModuleVtable(mem, connection)) return null;
+    const bytes = mem.readBytes(connection, CONNECTION_SCAN_BYTES);
+    if (!bytes || !containsPointer(bytes, session, mem.pointerSize)) return null;
+    if (known) return { connection, layout: known };
+    // Kept from this one scan of the bytes so discovery need not rescan them.
+    const connectionAddresses = findAddressPairOffset(bytes);
+    return connectionAddresses === null ? null : { connection, layout: { connectionAddresses, connectionVtable: vtable! } };
+}
+
+/**
+ * True when `connection` carries the layout's vtable and, at its address offset,
+ * a routable peer plus a self address that is routable or still unspecified
+ * (a client knows its peer from construction; self may wait for the first packet).
+ */
+export function connectionLayoutHolds(mem: QuicheMemory, layout: QuicheConnectionLayout, connection: Address): boolean {
+    const addresses = readConnectionAddresses(mem, layout, connection);
+    if (addresses === null || !isRoutableEndpoint(addresses.peer)) return false;
+    const self = addresses.self;
+    return self !== null && (self.family === "UNSPEC" || isRoutableEndpoint(self));
 }
 
 /** Resolve a QuicSession (session-level hooks) to its connection; streamId is the caller's. */
@@ -296,17 +344,7 @@ export function discoverConnectionLayout(mem: QuicheMemory, connection: Address)
  */
 export function discoverSessionLayout(mem: QuicheMemory, session: Address, known: QuicheConnectionLayout | null = null):
         (QuicheConnectionLayout & { sessionConnection: number }) | null {
-    if (session === 0n) return null;
-    if (!known) return findConnectionLink(mem, session);
-    const ps = mem.pointerSize;
-    for (let offset = ps; offset + ps <= SESSION_SCAN_BYTES; offset += ps) {
-        const connection = mem.readPointer(session + BigInt(offset));
-        if (connection === null || connection === 0n || connection === session) continue;
-        if (mem.readPointer(connection) !== known.connectionVtable) continue;
-        const bytes = mem.readBytes(connection, CONNECTION_SCAN_BYTES);
-        if (bytes && containsPointer(bytes, session, ps)) return { sessionConnection: offset, ...known };
-    }
-    return null;
+    return session === 0n ? null : findConnectionLink(mem, session, known);
 }
 
 /** Resolve a QuicConnection (connection-level hooks) to its addresses; streamId is the caller's. */
@@ -314,4 +352,48 @@ export function readConnectionLink(mem: QuicheMemory, layout: QuicheConnectionLa
                                    streamId: number): QuicheStreamLink | null {
     const addresses = readConnectionAddresses(mem, layout, connection);
     return addresses ? { connection, streamId, ...addresses } : null;
+}
+
+// ---------------------------------------------------------------------------
+// TlsClientHandshaker -> connection (CryptoConnect hook)
+//
+// TlsClientHandshaker keeps its QuicSession* (session_) at +0x108 in every
+// measured arm64 build (Chrome, WebView, Cronet 141/143/148, HttpEngine). The
+// connection is then reached through the already-learned session layout and
+// recognised by its exact vtable, so nothing new is learned here.
+// ---------------------------------------------------------------------------
+
+export const HANDSHAKER_SESSION_OFFSET = 0x108;
+const HANDSHAKER_SCAN_BYTES = 0x200;
+
+/** The learned session -> connection link a handshaker lookup relies on. */
+export interface SessionConnectionLink { sessionConnection: number; connectionVtable: Address; }
+
+/** handshaker+offset -> session -> connection, when that connection carries the known vtable. */
+export function connectionViaHandshakerSlot(mem: QuicheMemory, handshaker: Address, offset: number,
+                                            link: SessionConnectionLink): Address | null {
+    const session = mem.readPointer(handshaker + BigInt(offset));
+    if (session === null || session === 0n || session === handshaker) return null;
+    const connection = mem.readPointer(session + BigInt(link.sessionConnection));
+    if (connection === null || connection === 0n) return null;
+    return mem.readPointer(connection) === link.connectionVtable ? connection : null;
+}
+
+/**
+ * The handshaker's connection and the session_ offset that led to it: the
+ * `preferred` offset first, then every pointer slot of the handshaker's head.
+ * Null when no slot validates.
+ */
+export function findHandshakerConnection(mem: QuicheMemory, handshaker: Address, link: SessionConnectionLink,
+                                         preferred: number = HANDSHAKER_SESSION_OFFSET):
+        { handshakerSession: number; connection: Address } | null {
+    if (handshaker === 0n) return null;
+    const ps = mem.pointerSize;
+    const offsets = [preferred];
+    for (let offset = ps; offset + ps <= HANDSHAKER_SCAN_BYTES; offset += ps) if (offset !== preferred) offsets.push(offset);
+    for (const offset of offsets) {
+        const connection = connectionViaHandshakerSlot(mem, handshaker, offset, link);
+        if (connection !== null) return { handshakerSession: offset, connection };
+    }
+    return null;
 }

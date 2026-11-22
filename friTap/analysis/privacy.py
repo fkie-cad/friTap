@@ -1,28 +1,21 @@
-"""
-PrivacyAnalyzer — detect personally identifiable information (PII) in HTTP flows.
+"""PrivacyAnalyzer: detect PII in HTTP headers, JSON/form bodies, URL path and query.
 
-Scans HTTP headers, request/response bodies (JSON + form-encoded), the URL
-path and query string for personal data that has privacy / compliance
-implications. Detections are deliberately conservative: free-text regex matches
-are gated either by a known PII context (header name, JSON key, form field,
-query parameter) or by an algorithmic check (Luhn for cards/IMEI, mod-97 for
-IBAN) so the default-on noise stays bounded.
+Conservative: free-text regex matches need a known PII context (header name,
+JSON key, form field, query parameter) or an algorithmic check (Luhn for
+cards/IMEI, mod-97 for IBAN), keeping default-on noise bounded.
 
-Detected categories (see the taxonomy table in the project docs):
+Categories (taxonomy table in the project docs):
   - email, phone_e164, phone_loose
   - credit_card_pan (Luhn + IIN), iban (mod-97), ssn_us, imei (Luhn)
   - mac_address, android_id, advertising_id, ip_pii
   - geolocation, postal_address, date_of_birth, passport, health
 
-``geolocation`` covers: sibling lat/lon keys; a lat/lon pair or numeric array
-under a geo-ish key (coordinates/geo/position/location/...); Plus Codes / Open
-Location Codes (the ``+``-separated form, also matched in free text); and
-geohashes (only under an explicit ``geohash`` key — a bare geohash is
-indistinguishable from an ordinary token, so it is never matched in free text).
+``geolocation``: sibling lat/lon keys; a lat/lon pair or numeric array under a
+geo-ish key; Plus Codes (also in free text); geohashes only under an explicit
+``geohash`` key (a bare one is indistinguishable from a token).
 
 Raw values are redacted by default and never appear in a finding's
-``description``. Set ``reveal_pii=True`` to store the raw value in evidence
-(still kept out of the description).
+``description``; ``reveal_pii=True`` stores the raw value in evidence only.
 """
 
 from __future__ import annotations
@@ -50,10 +43,6 @@ from friTap.analysis.ioc import _EMAIL_PATTERN, _IPV4_PATTERN, _is_private_ip
 if TYPE_CHECKING:
     from friTap.flow.models import Flow
 
-
-# ---------------------------------------------------------------------------
-# Detection patterns
-# ---------------------------------------------------------------------------
 
 # E.164: leading '+', no leading zero, total 8-15 digits.
 _PHONE_E164_PATTERN = re.compile(r"\+[1-9]\d{7,14}\b")
@@ -128,10 +117,6 @@ _PASSPORT_PATTERN = re.compile(r"^[A-Za-z0-9]{6,9}$")
 _MAX_COORD_MAGNITUDE = 1e6
 
 
-# ---------------------------------------------------------------------------
-# Context key hints (lower-cased comparisons)
-# ---------------------------------------------------------------------------
-
 _ANDROID_ID_KEYS = ("android_id",)
 _AD_ID_KEYS = ("gaid", "idfa", "advertising_id", "adid", "idfv")
 _AD_HOSTS = ("doubleclick", "adjust", "appsflyer", "googleadservices")
@@ -158,10 +143,6 @@ _DOB_KEYS = ("dob", "birth", "birthdate", "birthday", "geburtsdatum", "date_of_b
 _PASSPORT_KEYS = ("passport", "passport_no", "passport_number")
 _HEALTH_KEYS = ("diagnosis", "icd10", "icd_10", "prescription", "blood_type", "medical_record")
 
-
-# ---------------------------------------------------------------------------
-# Module-level validators
-# ---------------------------------------------------------------------------
 
 def _luhn(digits: str) -> bool:
     """Return ``True`` if *digits* (a string of digits) passes the Luhn check."""
@@ -853,15 +834,11 @@ class PrivacyAnalyzer:
 
     @staticmethod
     def _is_integer_coord(value) -> bool:
-        """True when the value is an integer with no decimal notation.
+        """True for an int, or a string without a decimal point.
 
-        The goal is to reject low-precision integer IDs stored in lat/lon-named
-        fields (``{"lat": 52}``), not legitimate boundary coordinates like
-        ``90.0``. After ``json.loads`` an ``int`` came from a source with no
-        decimal point, whereas a ``float`` (even an integer-valued one) came from
-        a decimal literal and signals an intended coordinate — so floats are
-        never treated as integer coords. Strings are integer coords only when
-        they contain no decimal point.
+        Rejects integer IDs in lat/lon-named fields (``{"lat": 52}``) but not
+        boundary coordinates like ``90.0``: after ``json.loads`` a float, even an
+        integer-valued one, came from a decimal literal and is never an integer coord.
         """
         if isinstance(value, bool):
             return False

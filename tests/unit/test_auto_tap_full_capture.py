@@ -179,6 +179,28 @@ def test_auto_build_tap_success_logs_summary(tmp_path, collected, capsys):
     assert capsys.readouterr().out == ""
 
 
+def test_auto_build_tap_forwards_the_manifest_request_contexts(tmp_path, collected, monkeypatch):
+    import json
+
+    import friTap.offline.pcap_to_tap as p2t
+
+    logger, _ = collected
+    pcap = _write(tmp_path / "cap.pcap")
+    _write(tmp_path / "cap.contexts.jsonl", b"")
+    with open(f"{pcap}.fritap.json", "w", encoding="utf-8") as fh:
+        json.dump({"request_contexts": "cap.contexts.jsonl"}, fh)
+    seen = {}
+
+    def convert(pcap_path, *, tap_path, **kwargs):
+        seen.update(kwargs)
+        open(tap_path, "wb").close()
+        return ConvertResult(tap_path=tap_path)
+
+    monkeypatch.setattr(p2t, "convert_pcap_to_tap", convert)
+    assert auto_tap.auto_build_tap(pcap, str(tmp_path / "o.tap"), logger=logger)
+    assert seen["request_contexts"] == str(tmp_path / "cap.contexts.jsonl")
+
+
 # ------------------------------------------------------------ factory -----
 
 def _handlers_for(full_capture, collected_logger):
@@ -213,9 +235,12 @@ def _cleanup_shell(order, tap_output="out.tap"):
         protocol="tls", target="app")
     shell.logger = MagicMock()
     shell.special_logger = MagicMock()
-    for name in ("_stop_instrument_thread", "_stop_consumer_thread", "_finalize_live_scan",
+    for name in ("_stop_instrument_thread", "_finalize_live_scan",
                  "_release_lsass_contributor"):
         setattr(shell, name, MagicMock())
+    # Shutdown steps 2-3: the agent's graceful_detach RPC, then the drain.
+    shell._detach_agent_gracefully = lambda: order.append("graceful")
+    shell._stop_consumer_thread = lambda: order.append("drain")
     shell.close_output_handlers = lambda: order.append("close")
     shell._auto_relabel_schannel_keylog = lambda _p: order.append("relabel")
     pcap_obj = MagicMock(apptap_session=None, capture_tier=None, pcap_file_name="cap.pcap")
@@ -240,7 +265,7 @@ def test_cleanup_builds_tap_after_relabel_before_done(monkeypatch):
                         lambda pcap, tap, **kw: (order.append("auto_tap"),
                                                  calls.append((pcap, tap, kw))))
     _cleanup_shell(order)._run_cleanup_steps(full_capture=True)
-    assert order == ["close", "finalize", "relabel", "auto_tap", "done"]
+    assert order == ["graceful", "drain", "close", "finalize", "relabel", "auto_tap", "done"]
     pcap, tap, kwargs = calls[0]
     assert (pcap, tap, kwargs["keylog_path"], kwargs["capture_target"]) == \
         ("cap.pcap", "out.tap", "keys.log", "app")

@@ -1,14 +1,9 @@
 """Public API for offline-decryptor plugins (the pcap -> .tap pipeline surface).
 
-Offline-decryptor plugins (Signal, RC4, Schannel, ...) drive the same writer,
-event and TLS single-pass machinery as :mod:`friTap.offline.pcap_to_tap`. This
-module is the supported surface for that: plugins import from here instead of
-reaching into ``pcap_to_tap`` private names. ``pcap_to_tap`` imports what it
-uses from here (keeping a few historical private aliases such as
-``_WriterState``).
-
-It must not import ``pcap_to_tap`` or any offline protocol package (see
-``tests/unit/test_architecture_layering.py``, rule R2).
+Plugins (Signal, RC4, Schannel, ...) import the writer, event and TLS
+single-pass machinery from here instead of ``pcap_to_tap`` private names.
+Must not import ``pcap_to_tap`` or any offline protocol package
+(``tests/unit/test_architecture_layering.py``, rule R2).
 """
 
 from __future__ import annotations
@@ -42,14 +37,10 @@ from .tshark import (
     tshark_version,
 )
 
-# Kept under the historical module name so the moved code logs exactly as it
-# did inside pcap_to_tap (same logger object, same record names).
+# Shares pcap_to_tap's logger so records keep that name.
 logger = logging.getLogger("friTap.offline.pcap_to_tap")
 
 
-# ---------------------------------------------------------------------------
-# Conversion summary
-# ---------------------------------------------------------------------------
 
 @dataclass
 class ConvertResult:
@@ -58,35 +49,25 @@ class ConvertResult:
     flow_count: int = 0
     decrypted_packet_count: int = 0
     stream_count: int = 0
-    # QUIC per-packet drops (e.g. misaligned stream id/payload lists). Kept
-    # distinct from dropped TLS streams below so the two are not conflated.
+    # QUIC per-packet drops (e.g. misaligned id/payload lists), distinct from dropped TLS streams.
     dropped_packet_count: int = 0
     # TLS streams that could not be followed/decoded (whole-stream drops).
     dropped_stream_count: int = 0
     findings_count: int = 0
-    # Streams skipped during a keyless (plaintext) conversion because they were
-    # encrypted (TLS/QUIC) and therefore need keys. Drives the "looks encrypted —
-    # pass --keylog" hint in the offline CLI.
+    # Encrypted streams skipped by a keyless conversion; drives the CLI's "pass --keylog" hint.
     encrypted_streams_skipped: int = 0
-    # Protocol-generic counters keyed by counter_prefix, e.g.
-    # ``{"<prefix>": {"messages": 6, "streams": 2, "undecryptable": 0, ...}}``.
-    # Every registry-driven protocol (built-in or plugin) needs only this dict
-    # (no new dataclass field). Populated via :meth:`record_protocol`. The frozen
-    # v1 flat counters (:data:`~friTap.offline.result_schema.V1_FLAT_COUNTERS`)
-    # are read-only property views of it, attached below the class.
+    # ``{counter_prefix: {"messages": 6, ...}}`` via :meth:`record_protocol`; the frozen v1 flat counters are read-only views of it.
     per_protocol: dict = field(default_factory=dict)
 
     def record_protocol(self, prefix: str, **counters) -> None:
-        """Accumulate one protocol decryptor's counters into ``per_protocol[prefix]``.
+        """Accumulate one decryptor's counters into ``per_protocol[prefix]``.
 
         A new bucket starts as a deep copy of the frozen v1 defaults
-        (:data:`~friTap.offline.result_schema.V1_BUCKET_DEFAULTS`), so every
-        bucket carries the same keys whether or not the protocol reports them.
-        Each counter then merges by type (see :func:`_merge_counter`): booleans
-        latch (OR), numbers add, mappings merge-add per key, ``None`` is skipped
-        and anything else raises :class:`TypeError`. A counter name outside the
-        v1 defaults simply becomes a new bucket key.
-        """
+        (:data:`~friTap.offline.result_schema.V1_BUCKET_DEFAULTS`). Counters merge by
+        type (:func:`_merge_counter`): booleans OR, numbers add, mappings merge-add,
+        ``None`` is skipped, anything else raises :class:`TypeError`. Unknown names
+        become new bucket keys.
+"""
         bucket = self.per_protocol.get(prefix)
         if bucket is None:
             bucket = self.per_protocol[prefix] = copy.deepcopy(V1_BUCKET_DEFAULTS)
@@ -94,13 +75,7 @@ class ConvertResult:
             _merge_counter(bucket, name, value)
 
     def to_dict(self) -> dict:
-        """Return a JSON-safe dict view of this conversion summary.
-
-        Lets web/API callers serialize the result of a pcap-to-tap conversion
-        without reaching into the dataclass fields by hand. The key order is the
-        frozen v1 layout: the dataclass fields, with the legacy flat counters
-        re-inserted right before ``per_protocol``.
-        """
+        """JSON-safe dict in the frozen v1 key order: fields, flat counters just before ``per_protocol``."""
         data = asdict(self)
         per_protocol = data.pop("per_protocol")
         for flat_name, _prefix, _key in V1_FLAT_COUNTERS:
@@ -126,12 +101,11 @@ del _flat_name, _prefix, _key
 def _merge_counter(bucket: dict, name: str, value) -> None:
     """Merge one ``record_protocol`` counter *value* into *bucket[name]*.
 
-    Dispatches on the bucket's existing value (on *value* for a new key) so the
-    v1 semantics hold exactly: a boolean is checked BEFORE int (``bool`` is an
-    ``int`` subclass) and latches with OR; numbers add; a mapping merge-adds per
-    key (preserving first-seen order); ``None`` is skipped. Anything else raises
-    :class:`TypeError` rather than silently corrupting the summary.
-    """
+    Dispatches on the existing value (on *value* for a new key): bool BEFORE int
+    (``bool`` subclasses ``int``) latches with OR; numbers add; mappings merge-add
+    preserving first-seen order; ``None`` is skipped; anything else raises
+    :class:`TypeError` rather than corrupting the summary.
+"""
     if value is None:
         return
     if name not in bucket:
@@ -162,12 +136,8 @@ def _initial_counter(name: str, value):
         f"record_protocol: unsupported counter type {type(value).__name__} for {name!r}"
     )
 
-# ---------------------------------------------------------------------------
-# tshark `-T ek` field helpers
-# ---------------------------------------------------------------------------
 
-# ``ek_field`` / ``ek_as_list`` / ``ek_first`` live in friTap.offline.tshark next
-# to the `-T ek` producers and are re-exported here (same objects).
+# ``ek_field`` / ``ek_as_list`` / ``ek_first`` are re-exported from friTap.offline.tshark.
 
 
 def coerce_int(value, default: int | None = 0):
@@ -193,8 +163,7 @@ def coerce_float(value, default: float = 0.0) -> float:
 def extract_addrs(layers: dict) -> tuple[str, str, str]:
     """Return ``(src_addr, dst_addr, ss_family)`` from a `-T ek` layers dict.
 
-    Prefers IPv6 endpoints when present, else IPv4. Shared by every
-    packet->events translator so the address/family logic lives in one place.
+    Prefers IPv6 endpoints when present, else IPv4.
     """
     ip6_src = ek_first(ek_field(layers, "ipv6.src"))
     ip6_dst = ek_first(ek_field(layers, "ipv6.dst"))
@@ -206,23 +175,14 @@ def extract_addrs(layers: dict) -> tuple[str, str, str]:
         "AF_INET",
     )
 
-# ---------------------------------------------------------------------------
-# Direction tracking and the lazily-opened writer
-# ---------------------------------------------------------------------------
 
 class StreamDirectionTracker:
     """Map each packet to "write" (client->server) or "read" (server->client).
 
-    The client endpoint for a stream is chosen by SERVER PORT when possible: the
-    endpoint that is NOT the well-known server port is the client. This mirrors
-    how :func:`~friTap.offline.tshark._server_node_index` picks the server side
-    on the TLS follow path, and it labels direction correctly even when the
-    capture starts mid-flow or the first datagram is server-originated.
-
-    Only when NEITHER endpoint matches a known server port do we fall back to
-    the original first-packet-is-client order, so behaviour is unchanged for
-    captures that hit a known port (the common case).
-    """
+    The client is the endpoint not on a known server port (as
+    :func:`~friTap.offline.tshark._server_node_index`), correct for mid-flow
+    captures. Only when neither port is known is the first packet's source the client.
+"""
 
     def __init__(self, server_ports: tuple[int, ...] = ()) -> None:
         self._client_endpoint: dict[str, tuple[str, int]] = {}
@@ -242,13 +202,7 @@ class StreamDirectionTracker:
         dst_ip: str | None = None,
         dst_port: int | None = None,
     ) -> str:
-        """Return "write" or "read" for a packet on *stream_key*.
-
-        When *dst_port* is a known server port the source is the client, and
-        vice versa, regardless of which datagram arrived first. Falls back to
-        the first-packet-is-client heuristic only when neither endpoint port is
-        a known server port.
-        """
+        """"write" or "read" for a packet on *stream_key*; the client endpoint is fixed on the first packet."""
         client = self._client_endpoint.get(stream_key)
         if client is None:
             client = self._derive_client_endpoint(
@@ -263,18 +217,10 @@ class StreamDirectionTracker:
         dst_ip: str | None,
         dst_port: int | None,
     ) -> tuple[str, int]:
-        """Pick the client endpoint for a stream's first observed packet.
-
-        Prefer the server port: if the destination is a known server port the
-        SOURCE is the client; if the SOURCE is a known server port this first
-        packet is server-originated and the DESTINATION is the client. When
-        neither matches, keep the legacy assumption that the first packet's
-        source is the client.
-        """
+        """Client endpoint for a stream's first packet: the one not on a server port, else the source."""
         if dst_port in self._server_ports:
             return (src_ip, src_port)
         if src_port in self._server_ports and dst_ip is not None and dst_port is not None:
-            # Server-originated first packet: the destination is the client.
             return (dst_ip, dst_port)
         return (src_ip, src_port)
 
@@ -291,13 +237,10 @@ def _copy_keylog_into_tap(writer: TapWriter, keylog_path: str) -> None:
         logger.warning("Could not read keylog %s for embedding", keylog_path, exc_info=True)
 
 
-# Per-conversion protocol state namespaces: a protocol package registers a
-# factory (and the legacy WriterState attribute names it owns) once at import;
-# each WriterState then creates that namespace lazily on first access.
+# Per-conversion protocol state namespaces: a package registers a factory (and the legacy WriterState attribute names it owns) once; each WriterState creates the namespace lazily.
 _PROTOCOL_STATE_FACTORIES: dict = {}
 _LEGACY_ATTR_OWNERS: dict = {}
-# Public attributes WriterState sets on ITSELF in __init__. A namespace may never
-# claim one: routing e.g. ``opened`` would silently hijack the writer's own state.
+# Attributes WriterState sets on itself; a namespace may not claim one (routing e.g. ``opened`` would hijack the writer).
 _WRITER_STATE_OWN_ATTRS = frozenset({"opened", "inner_meta", "tls_spans"})
 
 
@@ -310,14 +253,10 @@ def register_protocol_state(name: str, factory: Callable[[], object],
                             legacy_attrs: Iterable[str] = ()) -> None:
     """Register the per-conversion state namespace *name* built by *factory*.
 
-    *legacy_attrs* are historical ``WriterState`` attribute names that now live
-    on the namespace; ``state.<attr>`` reads and writes keep working by being
-    routed to ``state.protocol_state(name).<attr>``. Re-registering *name*
-    replaces its factory (idempotent for package re-imports); claiming an
-    attribute another namespace already owns, a private ``_``-name, or a name
-    that is a real ``WriterState`` attribute/method (e.g. ``opened``,
-    ``protocol_state``) raises :class:`ValueError`.
-    """
+    ``state.<attr>`` for each of *legacy_attrs* routes to ``state.protocol_state(name).<attr>``.
+    Re-registering *name* replaces its factory. Claiming an attribute another
+    namespace owns, a ``_``-name or a real ``WriterState`` attribute raises :class:`ValueError`.
+"""
     legacy_attrs = tuple(legacy_attrs)
     for attr in legacy_attrs:
         if attr.startswith("_"):
@@ -333,13 +272,7 @@ def register_protocol_state(name: str, factory: Callable[[], object],
 
 
 def protocol_state_of(state, name: str):
-    """The *name* protocol-state namespace of *state*.
-
-    A real :class:`WriterState` (anything whose TYPE defines ``protocol_state``)
-    returns its lazily created namespace; a minimal writer-state stand-in
-    resolves to itself, so code written against the namespace keeps working on
-    stand-ins that carry the attributes directly.
-    """
+    """The *name* protocol-state namespace of *state*; a minimal stand-in carrying the attributes directly resolves to itself."""
     accessor = getattr(type(state), "protocol_state", None)
     if accessor is None:
         return state
@@ -349,14 +282,9 @@ def protocol_state_of(state, name: str):
 class WriterState:
     """Lazily open the TapWriter on first use, embedding the keylog once.
 
-    Offline reconstruction may produce no events at all; opening lazily lets
-    the caller still emit a valid empty .tap via :meth:`ensure_open` while
-    avoiding writing a file before we know there is data.
-
-    Protocol-specific per-conversion state lives in registered namespaces (see
-    :func:`register_protocol_state` / :meth:`protocol_state`); the legacy
-    attribute names a namespace claims are routed to it transparently.
-    """
+    A run with no events still yields a valid empty .tap via :meth:`ensure_open`.
+    Protocol state lives in namespaces (:func:`register_protocol_state`).
+"""
 
     def __init__(self, writer: TapWriter, tap_path: str, target: str,
                  keylog_path: str | None) -> None:
@@ -366,12 +294,9 @@ class WriterState:
         self._target = target
         self._keylog_path = keylog_path
         self.opened = False
-        # Side-channel for a TLS-riding decryptor's parsed inner metadata that
-        # DatalogEvent cannot carry, keyed by canonical_4tuple; consumed by
-        # _attach_transport_metadata_layers.
+        # Parsed inner metadata a TLS-riding decryptor cannot put in a DatalogEvent, keyed by canonical_4tuple; consumed by transport_layers._attach_transport_metadata_layers.
         self.inner_meta: dict = {}
-        # Per-frame provenance of the single-pass TLS plaintext, keyed by
-        # canonical_4tuple then direction (see friTap.offline.tls_spans).
+        # Per-frame provenance of the single-pass TLS plaintext (friTap.offline.tls_spans).
         self.tls_spans: dict = {}
 
     def protocol_state(self, name: str):
@@ -413,9 +338,8 @@ class WriterState:
     def note_capture_time(self, ts: float) -> None:
         """Open the writer at *ts* (if needed) and lower the header start to it.
 
-        *ts* is a real pcap capture time (epoch seconds); non-positive values
-        mean "unknown" and only ensure the writer is open.
-        """
+        Non-positive *ts* means "unknown": only ensures the writer is open.
+"""
         self.ensure_open(ts if ts > 0 else 0.0)
         self._writer.update_capture_start(ts)
 
@@ -424,16 +348,9 @@ def protocol_session_id(proto: str, src_addr: str, src_port: int,
                         dst_addr: str, dst_port: int) -> str:
     """Per-connection session token ``<proto>:<canonical 4-tuple>``.
 
-    No longer needed to keep a TLS-riding protocol's events (RC4, Signal, ...)
-    apart from the outer TLS flow of the same connection: the collector's
-    ``net:`` tier is itself protocol-scoped (``net:<proto>:<canonical 4-tuple>``
-    for every non-TLS ``DatalogEvent.protocol``, see
-    :func:`~friTap.connection_index.resolve_connection_key`), so the built-in
-    decryptors emit no session token. Kept as a public helper for plugins that
-    want an explicit per-connection token (it lands in the ``sid:`` tier).
-    Perspective- and spelling-independent via
-    :func:`~friTap.connection_index.canonical_4tuple`.
-    """
+    For plugins wanting an explicit ``sid:`` tier token (the ``net:`` tier is already
+    protocol-scoped, so built-ins emit none); perspective-independent.
+"""
     return f"{proto}:" + canonical_4tuple(src_addr, src_port, dst_addr, dst_port)
 
 
@@ -443,11 +360,7 @@ def event_ts_kwargs(ts: float) -> dict:
 
 
 def open_at_capture_time(state, ts: float) -> None:
-    """Open *state*'s writer and lower its header start to capture time *ts*.
-
-    Falls back to a plain ``ensure_open`` for minimal writer-state stand-ins
-    that do not implement ``note_capture_time``.
-    """
+    """Open *state*'s writer and lower its header start to *ts*; plain ``ensure_open`` for stand-ins without ``note_capture_time``."""
     note = getattr(state, "note_capture_time", None)
     if note is not None:
         note(ts)
@@ -468,19 +381,13 @@ def unique_keylog_paths(keylog: str, keylogs: Sequence[str] = ()) -> list:
             paths.append(path)
     return paths
 
-# ---------------------------------------------------------------------------
-# Per-flow message scoping
-# ---------------------------------------------------------------------------
 
 def chunk_key(direction: str, data: bytes) -> str:
-    """Identity of one flow chunk: its direction plus a short SHA-1 of its bytes.
+    """Identity of one flow chunk: direction plus a short SHA-1 of its bytes.
 
-    Each offline MTProto/E2E ``DatalogEvent`` carries exactly one decrypted
-    record, which the collector stores verbatim as one ``FlowChunk`` (same
-    ``"write"``/``"read"`` direction naming). Tagging the parsed messages of a
-    record with this key lets :func:`scope_messages_to_flow` hand each flow only
-    the messages whose record actually landed in it.
-    """
+    Each offline MTProto/E2E DatalogEvent is one verbatim ``FlowChunk``;
+    :func:`scope_messages_to_flow` matches on this key.
+"""
     import hashlib
 
     return f"{direction}:{hashlib.sha1(bytes(data or b'')).hexdigest()[:16]}"
@@ -500,15 +407,10 @@ def _strip_private_keys(item: dict) -> dict:
 
 
 def scope_messages_to_flow(flow, messages) -> list:
-    """Keep only the side-channel *messages* whose record landed in *flow*.
+    """Keep only the side-channel *messages* whose record landed in *flow* (``_chunk_key`` matches one of its chunks).
 
-    Side-channel entries are accumulated per connection (cloud) or per chat
-    (E2E), but the collector splits them into several exchange flows. A message
-    is kept when its ``_chunk_key`` matches one of *flow*'s chunks. Messages from
-    a path that never tagged keys (no dict has one) pass through unchanged.
-    Returned dicts are copies with ``_chunk_key`` stripped, so it never reaches
-    the .tap.
-    """
+    Untagged lists pass through. Returns copies with ``_chunk_key`` stripped.
+"""
     messages = list(messages or [])
     if not any("_chunk_key" in item for item in messages):
         return [_strip_private_keys(item) for item in messages]
@@ -518,9 +420,6 @@ def scope_messages_to_flow(flow, messages) -> list:
         if item.get("_chunk_key") in keys
     ]
 
-# ---------------------------------------------------------------------------
-# TLS single pass (decrypted application data via one `-T ek` run)
-# ---------------------------------------------------------------------------
 
 def tls_packet_to_events(
     pkt: dict,
@@ -529,15 +428,10 @@ def tls_packet_to_events(
 ) -> list[DatalogEvent]:
     """Translate one TLS `-T ek` packet dict into DatalogEvents.
 
-    Mirrors :func:`~friTap.offline.pcap_to_tap._quic_packet_to_events` but for TLS-over-TCP: the decrypted
-    application bytes arrive in ``data.data`` (the HTTP subdissectors are
-    disabled in :func:`~friTap.offline.tshark.build_tls_command` so plaintext
-    surfaces there). A single frame may carry several TLS records, so
-    ``data.data`` can be a parallel list — we concatenate the records in order
-    into one event, preserving per-direction byte order for the parsers. The
-    stream is keyed by ``tcp.stream`` and direction comes from *tracker* (seeded
-    with the TLS server ports), exactly as the follow path's direction did.
-    """
+    Plaintext arrives in ``data.data`` (HTTP subdissectors disabled in
+    :func:`~friTap.offline.tshark.build_tls_command`); several records in one frame
+    join into one event. Keyed by ``tcp.stream``; direction from *tracker*.
+"""
     layers = pkt.get("layers") or {}
 
     timestamp = coerce_float(ek_first(ek_field(layers, "frame.time_epoch")))
@@ -577,15 +471,11 @@ def emit_tls_session_event(
     endpoints: tuple[str, int, str, int],
     meta: dict,
 ) -> None:
-    """Emit a SESSION_STARTED carrying handshake metadata for one TLS stream.
+    """Emit a SESSION_STARTED with handshake metadata for one TLS stream.
 
-    Emitted on the SAME bus and BEFORE the stream's DatalogEvents so the
-    collector caches it (``_stamp_tls_metadata``) and backfills the flow's TLS
-    layer when the data events create it. The ``connection_id`` is computed with
-    ``protocol="tls"`` to match the key ``on_data`` derives for the offline
-    DatalogEvents (which default to the "tls" protocol), i.e. the unscoped
-    ``net:<4tuple>`` endpoint key.
-    """
+    Must precede the stream's DatalogEvents on the same bus so the collector stamps
+    the flow's TLS layer. ``connection_id`` uses ``protocol="tls"`` to match the key ``on_data`` derives.
+"""
     c_addr, c_port, s_addr, s_port = endpoints
     if not c_addr and not s_addr:
         return  # no resolvable endpoints — nothing to key the metadata to
@@ -598,6 +488,7 @@ def emit_tls_session_event(
         protocol_version=meta.get("version", ""),
         alpn=meta.get("alpn", ""),
         cipher_suite=meta.get("cipher", ""),
+        client_random=meta.get("client_random", ""),
         src_addr=c_addr,
         src_port=c_port,
         dst_addr=s_addr,
@@ -608,12 +499,11 @@ def emit_tls_session_event(
 
 @dataclass
 class _AnnouncedStream:
-    """A TLS stream whose first data event was emitted (its metadata was looked up).
+    """A TLS stream whose first data event was emitted.
 
-    *emitted* is a snapshot of the metadata last sent as a SessionEvent
-    (``None`` while none was sent), so a late handshake row re-announces only
-    a real change.
-    """
+    *emitted* snapshots the metadata last sent as a SessionEvent (``None`` if none),
+    so a late handshake row re-announces only a real change.
+"""
 
     tls_stream: int | None
     tcp_stream: int
@@ -624,19 +514,13 @@ class _AnnouncedStream:
 class TlsSinglePass:
     """Emit decrypted TLS application data from `-T ek` rows, one row at a time.
 
-    The per-row core of the combined pass: :meth:`feed` folds the handshake
-    rows into the metadata as they stream by and emits the app-data rows.
-
-    Per stream the handshake-metadata :class:`SessionEvent` is emitted lazily,
-    once, right before the stream's first DatalogEvent, so the collector caches
-    it and stamps the flow's TLS layer when the data creates the flow. When a
-    handshake row arrives AFTER that (metadata not known yet at the first data
-    event, e.g. 0-RTT), the changed metadata is announced again; the collector
-    fills only the still-empty fields.
-
-    *packet_to_events* defaults to :func:`tls_packet_to_events`;
-    *app_data_marker* is the field :meth:`feed` gates app data on.
-    """
+    The per-row core of the combined pass: :meth:`feed` folds handshake rows into
+    metadata and emits app-data rows. The handshake :class:`SessionEvent` is emitted
+    once, lazily, before a stream's first DatalogEvent; a handshake row arriving
+    AFTER that (e.g. 0-RTT) re-announces the changed metadata and the collector
+    fills only still-empty fields. *packet_to_events* defaults to
+    :func:`tls_packet_to_events`; *app_data_marker* gates app data in :meth:`feed`.
+"""
 
     def __init__(
         self,
@@ -667,11 +551,9 @@ class TlsSinglePass:
     def feed(self, pkt: dict) -> None:
         """Consume one combined-pass row: handshake metadata first, then app data.
 
-        The handshake goes first because one frame can carry both (e.g. a
-        server's last handshake message and its first application data).
-        Handshake rows never reach *packet_to_events*: it seeds the stream's
-        direction, which a ServerHello must not do.
-        """
+        Handshake first because one frame can carry both. Handshake rows never reach
+        *packet_to_events*, which seeds the stream direction (a ServerHello must not).
+"""
         layers = pkt.get("layers") or {}
         if is_tls_handshake_row(layers):
             self._fold_handshake(layers)
@@ -704,10 +586,7 @@ class TlsSinglePass:
         layers = pkt.get("layers") or {}
         tcp_stream = coerce_int(ek_first(ek_field(layers, "tcp.stream")), default=None)
         self._state.ensure_open()
-        # Look the stream's metadata up ONCE, before its first data event. The
-        # conn_id resolve_connection_key derives is perspective-independent for
-        # the net: tier, so the raw packet endpoints key it identically to the
-        # data events the collector sees.
+        # Look metadata up once before the first data event; the net: key is perspective-independent.
         if tcp_stream is not None and tcp_stream not in self._announced:
             ev0 = events[0]
             self._first_sight(layers, tcp_stream,
@@ -760,13 +639,10 @@ def run_tls_combined_pass(
     packet_to_events: Callable[..., list[DatalogEvent]] | None = None,
     app_data_marker: str | None = None,
 ) -> dict[int, dict]:
-    """Decrypt TLS with ONE tshark run: handshake metadata and app data together.
+    """Decrypt TLS with ONE tshark run: the TLS-only form of the combined pass.
 
-    The TLS-only form of the combined pass (:func:`~friTap.offline.tshark.
-    build_combined_command` without the QUIC and SSH sections). Returns the
-    final ``{tls_stream: metadata}``. *app_data_marker* defaults to the one
-    for this tshark's version.
-    """
+    Returns the final ``{tls_stream: metadata}``; *app_data_marker* defaults to the one for this tshark's version.
+"""
     packet_source = packet_source or stream_packets
     marker = app_data_marker or tls_app_data_marker(tshark_version(tshark_bin))
     cmd = build_combined_command(
@@ -786,13 +662,7 @@ def run_tls_combined_pass(
 
 @contextlib.contextmanager
 def _closing_packets(packets: Iterable[dict]):
-    """Yield *packets*, then close them (when they can be) however the block exits.
-
-    :func:`stream_packets` is a generator owning a tshark process; closing it
-    terminates and reaps tshark at once when a consumer raises mid-iteration,
-    instead of whenever the abandoned generator is garbage-collected. Plain
-    iterables (test fakes) have no ``close`` and are yielded unchanged.
-    """
+    """Yield *packets*, then close them (if closable) however the block exits, so a raising consumer reaps tshark at once."""
     try:
         yield packets
     finally:
@@ -802,12 +672,11 @@ def _closing_packets(packets: Iterable[dict]):
 
 
 def _tls_meta_lookup(tls_meta_by_stream: dict, tls_stream, tcp_stream):
-    """Metadata under *tls_stream* when present, else under *tcp_stream*.
+    """Metadata under *tls_stream* when present, else *tcp_stream*.
 
-    The handshake metadata is keyed by ``tls.stream``, which differs from
-    ``tcp.stream`` whenever non-TLS TCP streams precede the TLS one;
-    ``tcp.stream`` is the fallback for exports without ``tls.stream``.
-    """
+    Metadata is keyed by ``tls.stream``, which differs from ``tcp.stream`` when
+    non-TLS TCP streams precede; ``tcp.stream`` is the fallback for exports without it.
+"""
     if tls_stream is not None and tls_stream in tls_meta_by_stream:
         return tls_meta_by_stream[tls_stream]
     return tls_meta_by_stream.get(tcp_stream)

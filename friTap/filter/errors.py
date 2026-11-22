@@ -6,12 +6,10 @@ from dataclasses import dataclass
 
 
 class FilterSyntaxError(Exception):
-    """Raised when a filter expression has invalid syntax.
+    """Raised for invalid filter syntax.
 
-    Attributes:
-        position: Offset of the offending token (-1 when unknown).
-        hint: Optional next step for the user, e.g. an operator
-            did-you-mean (``did you mean: contains``); not part of ``str()``.
+    ``position`` is the offending token's offset (-1 when unknown); ``hint`` is an optional
+    next step (e.g. ``did you mean: contains``), not part of ``str()``.
     """
 
     def __init__(self, message: str, position: int = -1, hint: str | None = None) -> None:
@@ -31,13 +29,9 @@ FIELD_REPLACEMENT = "field_replacement"
 class Suggestion:
     """One ready-to-apply fix for an unknown field.
 
-    Attributes:
-        expression: The whole input rewritten with the fix applied.
-        kind: ``"protocol_search"``, ``"method_search"``, ``"frame_search"``
-            (generic searches for a bare unknown word) or
-            ``"field_replacement"`` (a did-you-mean name spliced in).
-        label: Short text naming the fix (``protocol contains "TELE"``,
-            ``mtproto.dc_id``).
+    ``expression`` is the whole input with the fix applied; ``kind`` is ``"protocol_search"``,
+    ``"method_search"``, ``"frame_search"`` (bare-word searches) or ``"field_replacement"``
+    (did-you-mean name spliced in); ``label`` names the fix (``protocol contains "TELE"``).
     """
 
     expression: str
@@ -48,23 +42,19 @@ class Suggestion:
 class UnknownFieldError(FilterSyntaxError):
     """Raised when a filter expression references an unknown field.
 
-    ``str(error)`` stays the short one-liner (``Unknown field 'TELE' (at
-    position 0)``); the extra attributes carry the hints for the UI.
+    ``str(error)`` stays a one-liner (``Unknown field 'TELE' (at position 0)``); the
+    attributes carry UI hints.
 
     Attributes:
         name: The unknown token as typed.
-        position: Offset of the token in the (stripped) expression.
+        position: Offset in the (stripped) expression.
         did_you_mean: Close valid field/protocol names, best first.
-        actions: Ready-to-apply fixes, in display order. For a bare unknown
-            word: the generic searches (``protocol contains "X"``,
-            ``method contains "X"``, ``frame contains "X"``) followed by the
-            first did-you-mean replacement, if any. When the token is used as
-            a field (followed by an operator, ``foo == 3``) a generic search
-            would not parse, so the actions are the did-you-mean field
-            replacements only (possibly none).
-        suggestions: The ``expression`` of each generic search (bare word)
-            or field replacement (operator case) -- kept for API
-            compatibility; excludes the bare-word did-you-mean action.
+        actions: Fixes in display order. A bare unknown word gets the generic searches
+            (``protocol/method/frame contains "X"``) then the first did-you-mean
+            replacement; a token used as a field (``foo == 3``) gets only did-you-mean
+            replacements, since a search would not parse.
+        suggestions: ``expression`` of each generic search or field replacement, excluding
+            the bare-word did-you-mean action (API compatibility).
         followed_by_operator: True when the token is used as a field.
     """
 

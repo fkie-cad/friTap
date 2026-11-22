@@ -1,0 +1,7 @@
+[
+  {"build_id": "deadbeef0011", "size": 1048576, "arch": "arm64", "key": "deadbeef0011|1048576|arm64"},
+  {"build_id": "3f2a9c1e7b4d5f60a1b2c3d4e5f60718293a4b5c", "size": 98304512, "arch": "arm64", "key": "3f2a9c1e7b4d5f60a1b2c3d4e5f60718293a4b5c|98304512|arm64"},
+  {"build_id": "0a1b2c3d4e5f6071", "size": 12582912, "arch": "x64", "key": "0a1b2c3d4e5f6071|12582912|x64"},
+  {"build_id": "c0ffee00", "size": 4096, "arch": "ia32", "key": "c0ffee00|4096|ia32"},
+  {"build_id": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5", "size": 7340032, "arch": "arm", "key": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5|7340032|arm"}
+]

@@ -133,11 +133,13 @@ sudo fritap -s -k keys.log curl https://httpbin.org/get
 sudo fritap -s -k keys.log python3 my_script.py
 ```
 
-friTap follows the target across `exec()`, in spawn and attach mode: a launcher
-such as Homebrew's `python3`, which `exec()`s the real interpreter, or a running
-process that `exec()`s `curl`, is captured without extra flags. For fork-heavy
-targets that do not `exec()`, `--no-follow-exec` skips the child gating this
-needs (see [`--no-follow-exec`](../api/cli.md#-no-follow-exec)).
+friTap does **not** follow the target across `exec()` by default (Frida's child
+gating triggers a fork-child crash in Frida 17.24.3-17.27.x). Pass `--follow-exec`
+to opt in, in spawn and attach mode: a launcher such as Homebrew's `python3`,
+which `exec()`s the real interpreter, or a running process that `exec()`s
+`curl`, is then captured across the exec. Without it, such a target ends the
+capture as "target detached" (see
+[`--follow-exec`](../api/cli.md#-follow-exec-no-follow-exec)).
 
 TLS done by a child process -- `git clone https://...` hands the transfer to
 `git-remote-https` -- needs `--enable_child_gating`, which instruments the
@@ -441,6 +443,67 @@ fritap -s -k go_keys.log -p go_plain.pcap -ed -- ./my_go_client https://example.
   `-ldflags="-s -w"` yields keys only.
 - Go x86-64 binaries running under Rosetta 2 on Apple silicon cannot be instrumented (Frida
   cannot attach to translated processes); use a native arm64 build.
+
+### Chrome and Electron
+
+Google Chrome and Electron apps (Obsidian, Slack, Discord, VS Code, ...) link
+BoringSSL and Google QUICHE statically into one framework binary,
+`Google Chrome Framework` or `Electron Framework`. It exports none of the
+BoringSSL API and has no symbols, so friTap finds the functions it needs by
+scanning the code. This works on Apple silicon (arm64) only, and needs no root.
+
+**Attach to the network-service process.** Chrome and Electron do their TLS
+and QUIC in a separate helper process, not in the main app:
+
+```bash
+# Chrome (the network helper is "Google Chrome Helper", or
+# "Google Chrome Helper (Aperitif)" on Chrome 157 and later)
+pgrep -fl 'utility-sub-type=network.mojom.NetworkService'
+
+fritap -k keys.log --tap chrome.tap <network-helper-pid>
+```
+
+Electron apps work the same way: attach to the `<App> Helper` process whose
+command line has `--utility-sub-type=network.mojom.NetworkService`.
+
+To keep Chrome's network service inside the browser process, start a separate
+Chrome instance with its own profile and attach to the browser PID:
+
+```bash
+open -na "Google Chrome" --args --user-data-dir=/tmp/fritap-chrome \
+    --enable-features=NetworkServiceInProcess2 --no-first-run about:blank
+pgrep -f 'MacOS/Google Chrome --user-data-dir=/tmp/fritap-chrome'
+fritap -k keys.log --tap chrome.tap <browser-pid>
+```
+
+Spawning the browser with `-s --enable_child_gating` also reaches the
+network helper, but Chrome starts many helpers, so attaching is simpler.
+Connections opened before friTap attached produce no keys. Their records are
+still captured but cannot be matched to a handshake.
+
+What friTap captures from these frameworks:
+
+| Data | How | Notes |
+|------|-----|-------|
+| TLS keys (TCP and QUIC) | `ssl_log_secret` found from its keylog-label strings (anchor locator, tier 4) | TLS 1.3 and TLS 1.2 key lines in the `-k` file |
+| TCP TLS plaintext (`-p`, `--tap`) | `SSL_write`/`SSL_read` found from the `ssl_lib.cc` error sites | Electron: both directions. Chrome: outgoing data only, see below. The real TCP 4-tuple comes from the socket calls made inside `SSL_write` |
+| HTTP/3 over QUIC (`-p`, `--tap`) | QUICHE STREAM-frame hooks | Requests (including request headers), responses and control streams. The flows have placeholder addresses unless the UDP `connect()` was seen |
+
+!!! note "Chrome: inbound TCP plaintext is not captured"
+    Chrome 157 inlines `SSL_read` into `SSLClientSocketImpl::DoPayloadRead`. The
+    framework also has an out-of-line `SSL_read`, which friTap hooks, but Chrome
+    never calls it. No other function reads TLS data with the `(SSL *, buf, num)`
+    arguments of `SSL_read`, so responses over TCP are missing from `-p`/`--tap`.
+    To get them, write the keys with `-k`, record the traffic with `-f` (or any
+    packet capture) and decrypt it with the keylog, e.g.
+    `fritap --from-pcap capture.pcapng --keylog keys.log --tap out.tap`. Responses
+    sent over QUIC (HTTP/3) are captured directly.
+
+The first attach scans the framework, which takes about 6 to 7 s on an M-series
+Mac. The results go into the [learned offset cache](../libraries/boringssl.md#learned-offset-cache),
+keyed by the framework's Mach-O `LC_UUID`. The next attach on the same build
+installs the keylog and QUIC hooks in about 2 s without scanning. A Chrome or
+Electron update changes the UUID, so the scan runs again once.
 
 ### Pattern-based Hooking
 

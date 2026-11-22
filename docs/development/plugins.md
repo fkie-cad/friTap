@@ -364,40 +364,55 @@ resolves to `None`.
 
 ---
 
-## Experimental: TUI columns & tabs
+## Viewer extensions: TUI columns & tabs
 
-!!! warning "Experimental"
-    The TUI provider hooks below are experimental; their protocols and
-    registration signatures may change.
+!!! warning "Provisional"
+    The viewer extension API (`friTap.ui` / `friTap.extensions`) is
+    provisional; spec fields and registration signatures may change.
 
-A host plugin can add columns to the flow-list table and tabs to the flow-detail
-view by implementing the `ColumnProvider` / `TabProvider` protocols (defined in
-`friTap/plugins/base.py`) and registering them via `session.register_column()`
-and `session.register_tab()`:
+A `FriTapPlugin` **cannot** add columns or tabs. `Session` has no
+`register_column()` or `register_tab()` method, and the `ColumnProvider` /
+`TabProvider` protocols in `friTap/plugins/base.py` are not wired to any plugin
+hook. Viewer extensions are separate from capture plugins. They are registered
+with the `register_*` functions of `friTap.ui.extensions` (the same objects as
+in `friTap.extensions`) and discovered through the `fritap.ui_extensions`
+entry-point group:
+
+| Capability | Registration function | Spec |
+|---|---|---|
+| Flow-list column | `register_flow_column` | `FlowColumnSpec(key, label, width, value)` |
+| Flow-detail tab | `register_detail_tab` | `DetailTabSpec(id, label, render)` |
+| Body decoder | `register_body_decoder` | `BodyDecoderSpec(name, label, decode)` |
+| Display-filter field | `register_filter_field` | `LayerFieldSpec` (`friTap.filter.layer_fields`) |
+
+Each entry-point target is a zero-argument callable that calls these functions:
 
 ```python
-class LatencyColumn:                 # implements ColumnProvider
-    name = "Latency"
-    key = "latency"
-    width = 8
-
-    def value(self, flow) -> str:
-        return f"{flow.duration_ms:.0f}ms"
-
-    def style(self, flow) -> str:
-        return ""
+from friTap.ui.extensions import FlowColumnSpec, register_flow_column
 
 
-class Plugin(FriTapPlugin):
-    name = "latency-col"
-    version = "1.0.0"
-
-    def on_load(self, session) -> None:
-        session.register_column(LatencyColumn())
+def register() -> None:
+    register_flow_column(FlowColumnSpec(
+        key="dst",
+        label="Dst",
+        width=0,                      # 0 = auto width
+        value=lambda row: f"{row.dst_addr}:{row.dst_port}",
+    ))
 ```
 
-`ColumnProvider.value()` is called on **every** flow update — keep it cheap
-(cache derived values, avoid I/O). See the
+```toml
+[project.entry-points."fritap.ui_extensions"]
+my-ext = "my_pkg.fritap_ext:register"
+```
+
+`value()` receives the `FlowSummary` the flow list shows (not the raw `Flow`)
+and runs on every flow update, so keep it cheap (no I/O; the row is frozen, so compute from its fields).
+`DetailTabSpec.render(flow)` returns a renderable, a string, or `None` (hides
+the tab). Specs are validated when registered (`TypeError` / `ValueError`).
+
+For all specs, discovery (`load_extensions()`), the
+`FRITAP_DISABLE_UI_EXTENSIONS` switch and embedding the viewer in your own
+Textual app, see [Embedding the TAP viewer](../api/embedding.md). See the
 [TUI guide](../getting-started/tui.md) for the interactive interface itself.
 
 ---

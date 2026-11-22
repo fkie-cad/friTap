@@ -30,12 +30,7 @@ class ParseResult:
     is_control_frame: bool = False  # HTTP/2 connection-level control frame
 
     def to_dict(self, include_body: bool = False) -> dict:
-        """Return a JSON-safe dict view of this parse result.
-
-        The raw byte buffers (``body``/``raw``) are omitted by default so the
-        result is cheap and JSON-serializable for web/API consumers; pass
-        ``include_body=True`` to include ``body`` hex-encoded.
-        """
+        """JSON-safe dict view; raw buffers are omitted, ``include_body=True`` adds ``body`` hex-encoded."""
         result = {
             "protocol": self.protocol,
             "method": self.method,
@@ -78,12 +73,10 @@ def _header_joiner(name: str) -> str:
 
 
 def merge_header_value(headers: dict, name: str, value: str) -> None:
-    """Add *name*: *value* to *headers*, joining instead of overwriting repeats.
+    """Add *name*: *value* to *headers*, joining repeats instead of overwriting.
 
-    Callers normalize the name case before calling (HTTP/1 Title-Cases,
-    HTTP/2 and HTTP/3 are lowercase on the wire), so an exact key lookup is
-    a case-insensitive match and the first-seen key is kept. The dict stays
-    ``str -> str`` so existing consumers keep working.
+    Callers normalize name case first (HTTP/1 Title-Case, HTTP/2 and 3 lowercase), so
+    exact lookup is case-insensitive and the first-seen key is kept; the dict stays ``str -> str``.
     """
     existing = headers.get(name)
     if existing is None:
@@ -93,12 +86,10 @@ def merge_header_value(headers: dict, name: str, value: str) -> None:
 
 
 def parse_ascii_uint(value) -> Optional[int]:
-    """Parse a non-negative decimal integer made of ASCII digits only.
+    """Parse a non-negative decimal made of ASCII digits only; None if invalid.
 
-    Surrounding whitespace is stripped; signs, underscores, inner spaces and
-    non-ASCII digits are rejected (``int()`` accepts ``"-1"``, ``"+5"`` and
-    ``"1_0"``, which an attacker can use to fake message boundaries).
-    Returns None when *value* is not a valid unsigned integer.
+    Whitespace is stripped; signs, underscores, inner spaces and non-ASCII digits are
+    rejected (``int()`` accepts ``"-1"``, ``"1_0"``, which can fake message boundaries).
     """
     if isinstance(value, bytes):
         value = value.decode("latin-1")
@@ -116,12 +107,7 @@ def parse_content_length(value) -> Optional[int]:
 
 
 def apply_http2_headers(stream, headers: list[tuple[str, str]]) -> None:
-    """Apply decoded HTTP/2 or HTTP/3 headers to a stream state object.
-
-    Expects stream to have: headers, method, url, host, status_code,
-    is_request, content_encoding, content_type attributes.
-    Headers should be a list of (name, value) string tuples.
-    """
+    """Apply decoded HTTP/2 or HTTP/3 ``(name, value)`` headers to a stream state object (needs headers, method, url, host, status_code, is_request, content_encoding, content_type)."""
     for name, value in headers:
         if name.startswith(":"):
             # Pseudo-headers keep last-wins semantics (e.g. a 1xx HEADERS
@@ -178,12 +164,9 @@ class BaseParser(ABC):
     @abstractmethod
     def feed(self, data: bytes, direction: str,
              stream_id: int | None = None) -> list[ParseResult]:
-        """Feed data to parser, return any completed results.
+        """Feed data, return completed results.
 
-        ``stream_id`` is the transport-level stream identifier (e.g. a QUIC
-        stream id) when the caller knows it. Parsers that derive their own
-        stream id from the wire (HTTP/2) or do not multiplex (HTTP/1,
-        websocket, hexdump) ignore it; HTTP/3 uses it for multiplexing.
+        ``stream_id`` is the transport stream id (e.g. QUIC) when known; only HTTP/3 uses it, others derive or ignore it.
         """
         ...
 
@@ -198,12 +181,9 @@ class BaseParser(ABC):
         ...
 
     def recognized_any(self) -> bool:
-        """Whether the fed bytes were actually recognized as this protocol.
+        """Whether the fed bytes were recognized as this protocol.
 
-        The collector stamps ``Flow.detected_protocol`` only when this is
-        True. Default True: a parser may legitimately recognize its protocol
-        without emitting a ParseResult (e.g. an HTTP/2 SETTINGS-only prelude).
-        Parsers whose detection is weak override it.
+        The collector stamps ``Flow.detected_protocol`` only when True. Default True (a parser may recognize without emitting a result, e.g. an HTTP/2 SETTINGS-only prelude); weak detectors override.
         """
         return True
 
@@ -227,37 +207,18 @@ MAX_PARSER_RESETS = 3
 
 
 class SafeParserAdapter(BaseParser):
-    """Wraps a concrete BaseParser and contains all parser-level exceptions.
+    """Wraps a parser and contains all parser-level exceptions.
 
-    A single uncaught streaming-parser error (h11.RemoteProtocolError,
-    hpack/hyperframe errors, malformed websocket frames, struct.error from
-    truncated buffers, etc.) used to crash the FlowCollector callback that
-    feeds it. This adapter:
+    On any exception from feed/flush it logs, calls ``on_failure(ParserFailure)``,
+    drops the offending chunk (never re-fed, so a poison chunk cannot loop) and
+    replaces *inner* with a fresh ``parser_factory()`` instance (default
+    ``type(inner)``). After ``MAX_PARSER_RESETS`` resets the next exception disables
+    the adapter and calls return []. A fresh parser has no stream state: HTTP/2
+    re-attaches mid-connection, HTTP/1 resyncs at the next message, WebSocket resumes
+    only by luck. Raw bytes still accumulate in the FlowCollector.
 
-      * delegates feed/flush/can_parse to *inner* on the happy path,
-      * catches **any** exception from feed/flush, logs it, invokes
-        ``on_failure(ParserFailure)``, drops the offending chunk (it is
-        never re-fed, so a poison chunk cannot loop) and replaces *inner*
-        with a fresh instance from ``parser_factory`` (default
-        ``type(inner)``), so one transient error does not hide the rest of
-        the connection,
-      * after ``MAX_PARSER_RESETS`` resets, the next exception disables the
-        adapter: later calls short-circuit to return [].
-
-    A fresh parser starts without the old one's stream state: HTTP/2
-    re-attaches mid-connection, HTTP/1 resyncs on the next message start,
-    and WebSocket resumes at a frame boundary only by luck (it reports a
-    bad frame header as trailing data rather than raising).
-
-    Raw bytes still accumulate at the FlowCollector layer because empty
-    parser results are handled there. ``failed`` is True while the adapter
-    is disabled and right after a call whose chunk was dropped (until the
-    next call succeeds); ``disabled`` and ``reset_count`` expose the
-    recovery state. Attribute reads/writes for any name that is not part
-    of the adapter's own state are transparently forwarded to the inner
-    parser, so callers that access protocol-specific attributes (e.g.
-    ``trailing_data``, ``upgrade_protocol``) keep working without
-    unwrapping.
+    ``failed`` is True while disabled and after a dropped chunk until the next call
+    succeeds. Non-adapter attributes (e.g. ``trailing_data``) proxy to the inner parser.
     """
 
     # Names that live on the adapter itself; everything else proxies to inner.
@@ -432,12 +393,7 @@ class SafeParserAdapter(BaseParser):
 
 
 def unwrap_parser(parser):
-    """Return the underlying parser if *parser* is a SafeParserAdapter, else *parser*.
-
-    Useful for ``isinstance(unwrap_parser(p), Http2Parser)`` style checks
-    where the caller cares about the concrete protocol class rather than
-    whether containment is in place.
-    """
+    """Return the inner parser of a SafeParserAdapter, else *parser* (for ``isinstance(unwrap_parser(p), Http2Parser)``)."""
     if isinstance(parser, SafeParserAdapter):
         return parser.inner
     return parser

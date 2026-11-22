@@ -1,18 +1,8 @@
 """BodyProcessor integration for protobuf decoding.
 
-Implements the :class:`~friTap.parsers.body_processors.BodyProcessor` protocol
-so protobuf decoding can be chained in a :class:`~friTap.parsers.body_processors.BodyPipeline`.
-
-Usage::
-
-    from friTap.parsers.body_processors import BodyPipeline, DecompressProcessor
-    from friTap.parsers.protobuf.processor import ProtobufProcessor
-
-    pipeline = BodyPipeline()
-    pipeline.add(DecompressProcessor())
-    pipeline.add(ProtobufProcessor(force=True))
-
-    body, ct, err = pipeline.process(raw_body, "application/grpc", "gzip")
+:class:`ProtobufProcessor` implements the ``BodyProcessor`` protocol so decoding
+chains in a ``BodyPipeline`` (e.g. ``add(DecompressProcessor())`` then
+``add(ProtobufProcessor(force=True))``).
 """
 
 from __future__ import annotations
@@ -28,17 +18,9 @@ _log = logging.getLogger(__name__)
 
 
 class ProtobufProcessor:
-    """BodyProcessor that decodes protobuf/gRPC bodies.
+    """Decodes protobuf/gRPC bodies for protobuf content types; ``force=True`` also tries octet-stream and other binary types.
 
-    Activates for protobuf-related content types. When ``force=True``,
-    also attempts decoding for ``application/octet-stream`` and other
-    binary types.
-
-    Args:
-        schema_path: Optional ``.proto`` source (compiled with ``protoc``)
-            or compiled ``.desc`` descriptor set for schema-based decoding.
-        message_type: Protobuf message type name (required if schema_path is set).
-        force: If ``True``, attempt decoding regardless of content type.
+    ``schema_path`` is a ``.proto`` (compiled with protoc) or ``.desc``; ``message_type`` is required with it.
     """
 
     def __init__(
@@ -64,7 +46,6 @@ class ProtobufProcessor:
                 _log.warning("Failed to load protobuf schema: %s", exc)
 
     def _should_activate(self, content_type: str) -> bool:
-        """Check if this processor should activate for the given content type."""
         if self._force:
             return True
         if not content_type:
@@ -74,11 +55,7 @@ class ProtobufProcessor:
     def process(
         self, body: bytes, content_type: str, encoding: str
     ) -> tuple[bytes, str, str]:
-        """Decode protobuf body if content type matches.
-
-        Returns:
-            Tuple of (decoded_body_as_text_bytes, updated_content_type, error).
-        """
+        """Decode the body if the content type matches; returns ``(text_bytes, updated_content_type, error)``."""
         if not body or not self._should_activate(content_type):
             return body, content_type, ""
 

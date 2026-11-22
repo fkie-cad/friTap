@@ -358,7 +358,7 @@ Chromium-based stacks (Cronet, GMS Cronet, HttpEngine, WebView) send every reque
 fritap -m -p out.pcap --attribute-sdk --tap out.tap com.example.app
 ```
 
-These hooks are installed only with `-p`. They are not installed with `-f` (full capture has no plaintext hooks), `--pairip-safe` or `--quic-only`. Supported stacks, the matching rules and known limits are in [docs/platforms/android.md](docs/platforms/android.md#per-request-sdk-attribution-java-request-context).
+These hooks are installed with `-p`, or with `-f -k` (full capture plus keylog): there the contexts go to `<pcap>.request_contexts.jsonl` and the flows are attributed when the `.tap` is built. They are not installed with `-f` alone, `--pairip-safe` or `--quic-only`. Supported stacks, the matching rules and known limits are in [docs/platforms/android.md](docs/platforms/android.md#per-request-sdk-attribution-java-request-context).
 
 A flow can get more than one claim (from its native stack, its connection, a request context). A claim replaces the current one only when it ranks strictly higher: confidence first, then the source.
 

@@ -1,20 +1,16 @@
 """Bounded, escaped shapes of a ``caller_stack`` backtrace.
 
-Every frame string, thread name and module name of a caller stack comes from
-the target process, so it is untrusted (AGENTS.md): it is escaped with
-:func:`~friTap.text_safety.safe_terminal_text` and length-capped before it
-leaves the host. Two shapes exist:
+Every frame, thread and module name comes from the target (untrusted, AGENTS.md):
+it is escaped with :func:`~friTap.text_safety.safe_terminal_text` and length-capped
+before leaving the host. Two shapes:
 
-* :func:`untrusted_caller_stack` -- the router's ``CallerStackEvent.untrusted``
-  dict: frames only (16 per kind, 120 characters per string); the thread and
-  module names travel as the event's own capped top-level fields.
-* :func:`compact_caller_stack` -- the collector's per-flow ``flow.caller_stack``
-  (8 frames per kind, 80 characters per string), small enough to repeat on
-  every HTTP/2 stream flow of a connection.
+* :func:`untrusted_caller_stack`: the router's ``CallerStackEvent.untrusted`` dict
+  (frames only; 16 per kind, 120 characters per string).
+* :func:`compact_caller_stack`: the per-flow ``flow.caller_stack`` (8 frames per kind,
+  80 characters), small enough to repeat on every HTTP/2 stream flow.
 
-:func:`sanitize_caller_stack` re-applies the compact bounds to a value read
-back from a ``.tap`` file, which may be hand-crafted.
-:func:`caller_stack_lookup_keys` extracts the raw (unescaped) classifier keys.
+:func:`sanitize_caller_stack` re-bounds a value read from a (possibly hand-crafted)
+``.tap``; :func:`caller_stack_lookup_keys` extracts the raw classifier keys.
 """
 
 from __future__ import annotations
@@ -39,8 +35,7 @@ REQUEST_CONTEXT_URL_LIMIT = 2048
 REQUEST_CONTEXT_FRAME_LIMIT = 32
 #: Per-frame cap of a ``request_context`` Java frame.
 REQUEST_CONTEXT_FRAME_TEXT_LIMIT = UNTRUSTED_TEXT_LIMIT
-#: Per-field caps of a ``request_context``'s text fields (``RequestContextEvent``
-#: names), shared by the router and the ``.tap`` record so both cut the same way.
+#: Per-field caps of a ``request_context``'s text fields, shared by the router and the ``.tap`` record.
 REQUEST_CONTEXT_TEXT_LIMITS = {
     "req_id": COMPACT_TEXT_LIMIT,
     "url": REQUEST_CONTEXT_URL_LIMIT,
@@ -114,11 +109,7 @@ def _native_frames(frames: Any, frame_limit: int, text_limit: int) -> list[dict]
 
 
 def bounded_strings(values: Any, max_entries: int, text_limit: int) -> list[str]:
-    """The first *max_entries* string entries of *values*, escaped and capped.
-
-    Non-string entries are skipped; a non-list *values* gives ``[]``. Entries
-    are cut to *max_entries* before any escaping work.
-    """
+    """The first *max_entries* string entries of *values*, escaped and capped (non-strings skipped; non-list gives ``[]``)."""
     return [capped_text(value, text_limit)
             for value in _entries_of_type(values, str, max_entries)]
 
@@ -136,8 +127,7 @@ def untrusted_caller_stack(payload: dict) -> dict:
 def caller_stack_lookup_keys(payload: dict) -> tuple[list[str], list[str]]:
     """``(java_frames, native_modules)`` of a raw payload: the SDK classifier's keys.
 
-    Unescaped and unbounded on purpose: they are only matched against the
-    bundled signature table, never echoed.
+    Unescaped and unbounded on purpose: only matched against the signature table, never echoed.
     """
     java_frames = [f for f in (payload.get("java_frames") or []) if isinstance(f, str)]
     native_modules = [

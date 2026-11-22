@@ -239,6 +239,52 @@ def test_bound_evicts_least_recently_seen():
     assert store.match(KEY, 3.0, "f").context.req_id == "b"
 
 
+def test_reserve_raises_the_bound_and_counts_evictions():
+    store = RequestContextStore(_fake_classify, max_contexts=2)
+    store.reserve(1)  # never lowers it
+    for i, req_id in enumerate("abc"):
+        store.ingest(_start(req_id, float(i)), float(i))
+    assert store.evicted == 1
+    store.reserve(4)
+    for i, req_id in enumerate("def"):
+        store.ingest(_start(req_id, 10.0 + i), 10.0 + i)
+    assert len(store) == 4 and store.evicted == 2
+
+
+def test_offline_replay_keeps_every_context_past_the_live_bound(monkeypatch):
+    import logging
+    from types import SimpleNamespace
+
+    from friTap.offline import pcap_to_tap, request_contexts
+
+    count = 10
+    events = [_real_start(f"r{i}", 100.0 + i, FB_FRAMES,
+                          url=f"https://example.com/api?x={i}") for i in range(count)]
+    monkeypatch.setattr(request_contexts, "load_request_contexts", lambda path: events)
+    collector = FlowCollector()
+    collector._request_contexts._max_contexts = 4
+    ctx = SimpleNamespace(
+        request_contexts="sidecar.jsonl", collector=collector,
+        state=SimpleNamespace(ensure_open=lambda: None),
+        writer=SimpleNamespace(write_request_context=lambda record: None))
+    records = []
+    handler = logging.Handler()
+    handler.emit = records.append
+    pcap_to_tap.logger.addHandler(handler)
+    try:
+        pcap_to_tap._run_request_context_stage(ctx)
+    finally:
+        pcap_to_tap.logger.removeHandler(handler)
+
+    for i in range(count):
+        collector.on_data(_request_event(100.2 + i, path=f"/api?x={i}", src_port=51000 + i))
+    flows = collector.get_flows()
+    assert len(flows) == count
+    assert all(flow.attribution["source"] == "java-request" for flow in flows)
+    assert collector.evicted_request_contexts == 0
+    assert not [r for r in records if r.levelno >= logging.WARNING]
+
+
 def test_cache_bucket_record_when_cached_and_unmatched():
     store = _store(_start("r1", 100.0),
                    _ctx("response", "r1", 100.1, status=200, cached=True,
@@ -372,17 +418,37 @@ def test_collector_expires_ended_contexts_to_the_sink(monkeypatch):
     """Expiry runs in the periodic sweep (not per RequestContextEvent)."""
     monkeypatch.setattr(collector_module, "_SWEEP_INTERVAL", 1)
     collector = FlowCollector()
-    collector.use_event_clock(True)
+    late = 101.0 + join.ENDED_CONTEXT_TTL + 1
+    monkeypatch.setattr(collector, "_now", lambda: late)
     seen = []
     collector.set_request_context_sink(seen.append)
     collector.on_request_context(_real_start("r1", 100.0, FB_FRAMES))
     collector.on_request_context(_ctx("end", "r1", 101.0))
-    late = 101.0 + join.ENDED_CONTEXT_TTL + 1
     collector.on_request_context(_real_start("r2", late, FB_FRAMES))
     assert seen == []  # no per-event expiry
     collector.on_data(_request_event(late, path="/other"))
     assert [record["req_id"] for record in seen] == ["r1"]
     assert len(collector._request_contexts) == 1
+
+
+def test_collector_keeps_contexts_past_their_ttl_under_the_event_clock(monkeypatch):
+    """Offline replay sends QUIC data last, so the event clock may pass a context's
+    TTL before its flow arrives; the context must still match and reach the sink."""
+    monkeypatch.setattr(collector_module, "_SWEEP_INTERVAL", 1)
+    collector = FlowCollector()
+    collector.use_event_clock(True)
+    seen = []
+    collector.set_request_context_sink(seen.append)
+    collector.on_request_context(_real_start("r1", 100.0, FB_FRAMES))
+    collector.on_request_context(_ctx("end", "r1", 101.0))
+    late = 101.0 + join.IDLE_CONTEXT_TTL + 1
+    collector.on_data(_request_event(late, path="/other", src_port=52000))
+    assert seen == [] and len(collector._request_contexts) == 1
+    collector.on_data(_request_event(100.2))
+    matched = [f for f in collector.get_flows() if f.src_port == 51000]
+    assert matched[0].attribution["originator"]["sdk"] == "Facebook SDK"
+    collector.flush()
+    assert [record["req_id"] for record in seen] == ["r1"]
 
 
 def test_collector_join_is_lazy_until_the_first_context():

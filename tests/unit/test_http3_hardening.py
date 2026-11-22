@@ -243,6 +243,18 @@ class TestQpackBomb:
         assert ctx.decode(4, block) == FALLBACK_MARK
         assert ctx.take_error(4) == ERROR_HEADER_LIST_TOO_LARGE
 
+    def test_list_within_caps_survives_rfc_field_section_overhead(self):
+        # 500 x 503 B fits the count/byte caps, but plus RFC 9114's 32 B per
+        # field it exceeds 256 KiB: pylsqpack >= 1.0 must not reject it.
+        fields = [(b"x-a", b"%03d" % i + b"v" * 497) for i in range(500)]
+        assert not header_list_too_large(fields)
+        assert sum(len(n) + len(v) + 32 for n, v in fields) > 256 * 1024
+        # hand-built: pylsqpack 0.3's Encoder refuses a section this large
+        block = b"\x00\x00" + b"".join(_literal_field(n, v) for n, v in fields)
+        ctx = _ctx()
+        assert ctx.decode(0, block) == fields
+        assert ctx.take_error(0) == ""
+
     def test_block_over_absolute_cap_rejected(self):
         block = b"\x00\x00" + _literal_field(b"a", b"v" * MAX_HEADER_BLOCK_SIZE)
         assert check_block(block, 0) == ERROR_HEADER_BLOCK_TOO_LARGE

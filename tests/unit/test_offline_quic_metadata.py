@@ -33,17 +33,18 @@ def _fold_quic_rows(output: str) -> dict:
 
 def _quic_row(stream, ip_src="", ipv6_src="", ip_dst="", ipv6_dst="",
               srcport="", dstport="", version="", hs_type="",
-              cipher="", alpn="", sni=""):
+              cipher="", alpn="", sni="", random=""):
     """Build one tab-separated QUIC-metadata row in the canonical column order.
 
     Column order mirrors :data:`tshark._QUIC_META_FIELDS`: udp.stream, ip.src,
     ipv6.src, ip.dst, ipv6.dst, udp.srcport, udp.dstport, quic.version,
     tls.handshake.type, tls.handshake.ciphersuite,
-    tls.handshake.extensions_alpn_str, tls.handshake.extensions_server_name.
+    tls.handshake.extensions_alpn_str, tls.handshake.extensions_server_name,
+    tls.handshake.random.
     """
     return "\t".join([
         str(stream), ip_src, ipv6_src, ip_dst, ipv6_dst,
-        str(srcport), str(dstport), version, hs_type, cipher, alpn, sni,
+        str(srcport), str(dstport), version, hs_type, cipher, alpn, sni, random,
     ])
 
 
@@ -62,7 +63,18 @@ def test_quic_metadata_accumulator_serverhello_row():
         "sni": "",
         "alpn": "h3",
         "cipher": "TLS_AES_128_GCM_SHA256",
+        "client_random": "",
     }}
+
+
+def test_quic_client_random_from_clienthello_not_serverhello():
+    output = "\n".join([
+        _quic_row(0, ip_src="2.2.2.2", ip_dst="10.0.0.1", srcport=443, dstport=50000,
+                  version="0x00000001", hs_type="2", cipher="0x1301", random="ee" * 32),
+        _quic_row(0, version="0x00000001", hs_type="1", sni="example.com",
+                  random="0A:1B" + ":2c" * 30 + ",ff" * 32),
+    ])
+    assert _fold_quic_rows(output)[0]["client_random"] == "0a1b" + "2c" * 30
 
 
 def test_quic_metadata_accumulator_sni_from_clienthello():
@@ -165,6 +177,26 @@ def test_quic_metadata_accumulator_empty_output():
 # ---------------------------------------------------------------------------
 # Wiring: QUIC SessionEvent stamps flow.quic onto the flow
 # ---------------------------------------------------------------------------
+
+def test_quic_session_event_stamps_client_random_on_flow_quic_layer():
+    meta = {"src_addr": "10.0.0.1", "src_port": 50001, "dst_addr": "2.2.2.2",
+            "dst_port": 443, "version": "1", "sni": "example.com", "alpn": "h3",
+            "cipher": "", "client_random": "ab" * 32}
+    bus = EventBus()
+    collector = FlowCollector(event_bus=bus)
+    bus.subscribe(DatalogEvent, collector.on_data)
+    bus.subscribe(SessionEvent, collector.on_session_event)
+    p2t._emit_quic_session_event(bus, meta)
+    bus.emit(DatalogEvent(
+        timestamp=1.0, data=b"payload bytes for the quic stream", function="tshark_offline",
+        direction="write", src_addr=meta["src_addr"], src_port=meta["src_port"],
+        dst_addr=meta["dst_addr"], dst_port=meta["dst_port"], transport="udp",
+        protocol="quic", stream_id=0))
+    collector.flush()
+    flow = next(f for f in collector.get_flows() if f.transport == "quic")
+    assert flow.quic.client_random == "ab" * 32
+    assert flow.connection_id.startswith("net:quic:")
+
 
 def test_quic_session_event_stamps_flow_quic_layer():
     """The QUIC SessionEvent path stamps version/alpn/cipher onto flow.quic.

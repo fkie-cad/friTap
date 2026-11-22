@@ -13,7 +13,7 @@
 // existing NSS hooks capture QUIC TLS keys automatically.
 
 import { HookDefinition, ExtraHookDef } from "../../core/hook_definition.js";
-import { sendQuicDatalog, sendConnectionLifecycle } from "../../shared/shared_structures.js";
+import { sendQuicDatalog, sendQuicConnectionLifecycle } from "../../shared/shared_structures.js";
 import { log, devlog } from "../../util/log.js";
 import { pcap_enabled } from "../../fritap_agent.js";
 import { quicConnectionTracker, buildQuicMessage, QuicConnectionInfo } from "../shared/quic_connection_tracker.js";
@@ -225,7 +225,7 @@ function createNeqoConnNewHook(): ExtraHookDef {
                             dcid: "",
                         };
                         quicConnectionTracker.register(connKey, info);
-                        sendConnectionLifecycle("created", buildQuicMessage(info, connKey, "neqo_http3conn_new"));
+                        sendQuicConnectionLifecycle("created", buildQuicMessage(info, connKey, "neqo_http3conn_new"));
                     } catch (e) {
                         devlog("[neqo] failed to register connection: " + e);
                     }
@@ -284,7 +284,7 @@ function createNeqoReadResponseHook(): ExtraHookDef {
                         // Check fin flag (Rust bool is 1 byte)
                         if (this.finPtr && !this.finPtr.isNull()) {
                             if (this.finPtr.readU8() !== 0) {
-                                sendConnectionLifecycle("stream_fin", {
+                                sendQuicConnectionLifecycle("stream_fin", {
                                     ...message,
                                     stream_id: this.streamId,
                                 });
@@ -401,7 +401,7 @@ function createNeqoCloseHook(): ExtraHookDef {
                     const connKey = args[0].toString();
                     const info = quicConnectionTracker.remove(connKey);
                     if (info) {
-                        sendConnectionLifecycle("destroyed", buildQuicMessage(info, connKey, "neqo_http3conn_close"));
+                        sendQuicConnectionLifecycle("destroyed", buildQuicMessage(info, connKey, "neqo_http3conn_close"));
                     }
                 },
             });

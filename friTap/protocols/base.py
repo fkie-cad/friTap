@@ -19,10 +19,7 @@ class BackendSupport:
 
 
 class ProtocolHandler(ABC):
-    """
-    Python-side protocol handler. Processes events from the agent
-    and routes them to appropriate output handlers.
-    """
+    """Python-side protocol handler: processes agent events and routes them to output handlers."""
 
     library_patterns: List[str] = []
 
@@ -40,40 +37,23 @@ class ProtocolHandler(ABC):
 
     @property
     def upcoming(self) -> bool:
-        """Whether this protocol is an *upcoming* (code-only) feature.
-
-        ``False`` (default) → the protocol is surfaced in user-facing menus
-        (the TUI protocol picker). ``True`` → it is implemented and still
-        selectable via the ``--protocol`` CLI, but kept OUT of the TUI until it
-        is announced. This is the single, protocol-owned visibility knob: a unit
-        flips it to ``False`` to surface itself. (The public build additionally
-        never ships a private protocol's handler at all, so an upcoming protocol
-        is hidden in the full build and simply absent in the public one.)
-        """
+        """True keeps the protocol out of the TUI picker; ``--protocol`` still selects it."""
         return False
 
     @property
     def category(self) -> str:
-        """Which family this handler belongs to.
+        """``"protocol"`` (default) or ``"custom_cipher"``.
 
-        ``"protocol"`` (default) → a standalone protocol (TLS, SSH, ...) listed
-        on its own in the protocol pickers. ``"custom_cipher"`` → a custom
-        encryption routine (RC4, ...) that is grouped under the ``custom`` meta
-        selection (``--protocol custom`` / the TUI "Custom Encryption" entry)
-        and may be combined with any protocol. A new cipher only needs to
-        return ``"custom_cipher"`` here to join the group.
-
-        Keylog naming contract: a ``"custom_cipher"`` handler must return a
-        :meth:`keylog_formatter` whose ``protocol`` equals the handler's
-        ``name``, so a multi-protocol run splits ``-k keys.log`` into
-        ``keys.<cipher>.log`` (e.g. ``keys.rc4.log``, ``keys.aes.log``).
-        Enforced by ``tests/unit/test_custom_cipher_keylog_split.py``.
+        A custom cipher (RC4, ...) joins the ``custom`` selection and combines with any
+        protocol. Its :meth:`keylog_formatter` ``protocol`` must equal the handler's
+        ``name`` so ``-k keys.log`` splits into ``keys.<cipher>.log``
+        (``tests/unit/test_custom_cipher_keylog_split.py``).
         """
         return "protocol"
 
     @property
     def description(self) -> str:
-        """Optional one-line description used as menu label text (``""`` = none)."""
+        """Optional one-line menu label (``""`` = none)."""
         return ""
 
     @abstractmethod
@@ -86,14 +66,7 @@ class ProtocolHandler(ABC):
         return key_data
 
     def keylog_formatter(self) -> "Optional[KeylogFormatter]":
-        """Return this protocol's :class:`KeylogFormatter`, or ``None``.
-
-        A non-``None`` return signals to the output factory that this
-        protocol emits keylog material that should be wired to a
-        :class:`KeylogOutputHandler` instance. Return ``None`` for
-        protocols (e.g. IPsec scaffolding) that do not currently produce
-        keylog events.
-        """
+        """Return this protocol's :class:`KeylogFormatter`, or ``None`` if it emits no keylog."""
         return None
 
     @abstractmethod
@@ -110,14 +83,7 @@ class ProtocolHandler(ABC):
         return ""
 
     def validate_cli_intent(self, parsed, parser, logger) -> None:
-        """Validate/adjust parsed CLI arguments for this protocol.
-
-        Default: no-op. A protocol that requires a specific capture intent
-        overrides this; it may mutate *parsed* or call
-        ``parser.error(...)`` (which exits) to reject an invalid combination.
-        Keeps protocol-specific CLI rules with the handler instead of hardcoded
-        in the generic argument parser.
-        """
+        """Validate or adjust parsed CLI args; may mutate *parsed* or call ``parser.error``."""
         return None
 
     def matches_libraries(self, detected_libraries: List[str]) -> bool:
@@ -143,12 +109,7 @@ class ProtocolHandler(ABC):
 
 
 class BaseKeyProcessor:
-    """Base class for protocol-specific key processors.
-
-    Provides shared constructor, extracted-keys storage, and
-    ``format_keylog()`` template.  Subclasses override
-    ``process_key_event()`` and optionally ``format_keylog()``.
-    """
+    """Shared constructor, extracted-keys storage and ``format_keylog()`` template; subclasses override ``process_key_event()``."""
 
     def __init__(self, event_bus: Any = None) -> None:
         self._event_bus = event_bus

@@ -25,7 +25,7 @@
 import { _isShuttingDownNow } from "../util/log.js";
 import { toHexPattern } from "../util/hex.js";
 import {
-    AnchorSpec, FunctionBoundsSource, ScanRange, XREF_SCAN_CHUNK_BYTES, XrefScanAborted,
+    AnchorSpec, FunctionBoundsSource, ScanRange, ScanStatus, XREF_SCAN_CHUNK_BYTES, XrefScanAborted,
     findStringLoadSitesAsync, literalStart, scanRangesChunked, yieldToEventLoop,
 } from "./arm64_xref.js";
 import { findRipLeaRefs } from "./x64_xref.js";
@@ -85,7 +85,7 @@ function codeRanges(mod: Module): ScanRange[] {
  * that have no data hit (builds without -z separate-code keep .rodata in the r-x segment).
  */
 export async function findLiteralOccurrences(
-    mod: Module, texts: string[], chunkBytes: number, yieldFn: () => Promise<void>,
+    mod: Module, texts: string[], chunkBytes: number, yieldFn: () => Promise<void>, status?: ScanStatus,
 ): Promise<NativePointer[][]> {
     const found: NativePointer[][] = texts.map(() => []);
     for (const ranges of [dataRanges(mod), codeRanges(mod)]) {
@@ -95,7 +95,7 @@ export async function findLiteralOccurrences(
             pattern: toHexPattern(texts[i] + "\u0000"),
             onMatch: (a: NativePointer) => { if (found[i].length < MAX_LITERAL_OCCURRENCES) found[i].push(a); },
         }));
-        await scanRangesChunked(ranges, jobs, chunkBytes, yieldFn);
+        await scanRangesChunked(ranges, jobs, chunkBytes, yieldFn, status);
     }
     return found;
 }
@@ -111,9 +111,11 @@ export function anchorTargets(spec: AnchorSpec, occurrences: NativePointer[]): N
 /**
  * x86-64: for each target set (index-aligned), the `lea reg, [rip+disp32]` sites in the
  * module's code that load one of its addresses. One chunked pass serves every set.
+ * An unreadable chunk clears `status.complete` (its misses then prove nothing).
  */
 export async function findRipLeaSitesAsync(
     mod: Module, targetSets: NativePointer[][], chunkBytes: number, yieldFn: () => Promise<void>,
+    status?: ScanStatus,
 ): Promise<NativePointer[][]> {
     const owner = new Map<number, number[]>(); // target address -> indices of the sets holding it
     targetSets.forEach((set, i) => set.forEach((t) => {
@@ -133,6 +135,7 @@ export async function findRipLeaSitesAsync(
                 const bytes = at.readByteArray(Math.min(own + LEA_RIP_OVERLAP, range.size - off));
                 code = bytes ? new Uint8Array(bytes) : null;
             } catch (_e) { code = null; /* unreadable slice */ }
+            if (code === null && status) status.complete = false;
             if (code !== null) {
                 for (const ref of findRipLeaRefs(code, Number(at.toString()), targets, own)) {
                     for (const i of owner.get(ref.target) ?? []) sites[i].push(at.add(ref.site - Number(at.toString())));
@@ -144,16 +147,19 @@ export async function findRipLeaSitesAsync(
     return sites;
 }
 
-/** Load sites of every target set, for the running architecture ([] where unsupported). */
-async function loadSitesFor(
+/**
+ * Load sites of every target set (index-aligned), for the running architecture ([] where
+ * unsupported). A scan part that could not run clears `status.complete`.
+ */
+export async function loadSitesFor(
     mod: Module, targetSets: NativePointer[][], maxSites: number,
-    chunkBytes: number, yieldFn: () => Promise<void>,
+    chunkBytes: number, yieldFn: () => Promise<void>, status?: ScanStatus,
 ): Promise<NativePointer[][]> {
-    if (Process.arch === "x64") return findRipLeaSitesAsync(mod, targetSets, chunkBytes, yieldFn);
+    if (Process.arch === "x64") return findRipLeaSitesAsync(mod, targetSets, chunkBytes, yieldFn, status);
     if (Process.arch !== "arm64") return targetSets.map(() => []);
     const flat = targetSets.flat();
     if (flat.length === 0) return targetSets.map(() => []);
-    const perTarget = await findStringLoadSitesAsync(mod, flat, chunkBytes, yieldFn, maxSites);
+    const perTarget = await findStringLoadSitesAsync(mod, flat, chunkBytes, yieldFn, maxSites, status);
     let k = 0;
     return targetSets.map((set) => set.flatMap(() => perTarget[k++]));
 }

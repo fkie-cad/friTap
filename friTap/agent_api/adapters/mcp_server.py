@@ -1,10 +1,8 @@
-"""
-MCP adapter: exposes the tool registry over the Model Context Protocol.
+"""MCP adapter: exposes the tool registry over the Model Context Protocol.
 
-Transports: stdio (default) and streamable HTTP (``serve_http``). The ``mcp``
-package is an optional extra (``pip install 'fritap[mcp]'``) and is imported
-only inside this module. With stdio, stdout belongs to the protocol: logging
-goes to stderr and stray ``print`` calls are redirected there too.
+Transports: stdio (default) and streamable HTTP (``serve_http``). The ``mcp`` package is an optional
+extra (``pip install 'fritap[mcp]'``) imported only inside this module. With stdio, stdout belongs to
+the protocol: logging and stray ``print`` calls go to stderr.
 """
 
 from __future__ import annotations
@@ -67,10 +65,8 @@ def tool_definition(spec: ToolSpec):
 def call_tool_result(registry: Registry, context: ToolContext, name: str, arguments: dict | None):
     """Run a tool synchronously and wrap the outcome in ``CallToolResult``.
 
-    The MCP spec (2025-06-18, "Structured Content") says a tool returning
-    ``structuredContent`` SHOULD also return the serialized JSON in a text
-    block for clients without structured-output support, so both are sent;
-    the text is the compact JSON the size cap already produced (encoded once).
+    MCP spec 2025-06-18 ("Structured Content"): a tool returning ``structuredContent`` SHOULD also send the
+    serialized JSON as a text block, so both are sent (the text is the compact JSON, encoded once).
     """
     from mcp import types
 

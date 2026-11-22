@@ -1,26 +1,16 @@
 """Flat, schema-less protobuf field reader (top-level fields only).
 
-A SMALL self-contained reader (varint + length-delimited + fixed32/64) with no
-protobuf dependency, originally written for an offline protocol decryptor
-(which still re-exports it from its transport module).
+A small self-contained reader (varint, length-delimited, fixed32/64) with no
+protobuf dependency. Deliberately separate from :mod:`friTap.parsers.protobuf.wire`:
 
-How it differs from :mod:`friTap.parsers.protobuf.wire` (deliberately kept
-separate -- the two must NOT be merged):
-
-* **flat**: only the top level of *buf* is walked; length-delimited values stay
-  opaque ``bytes`` (callers re-parse nested messages themselves). ``wire``
-  builds a :class:`~.wire.ProtobufMessage` tree, guessing sub-messages,
-  strings and packed varints.
-* **varint errors**: :func:`read_varint` accepts and rejects exactly the same
-  inputs as ``wire.decode_varint`` (at most 10 bytes, no 64-bit value clamp),
-  but raises with the bare messages ``"truncated varint"`` / ``"varint too
-  long"`` (no offset), which callers and tests match on -- so it is kept as
-  its own function rather than aliased.
-* **groups**: wire types 3/4 (and the invalid 6/7) raise ``ValueError``;
-  ``wire`` parses groups.
-* **errors**: :func:`proto_to_dict` returns ``{}`` on ANY decode error, dropping
-  the fields decoded before it; :func:`iter_proto_fields` yields fields until
-  the malformed one, then raises.
+* flat: only the top level; length-delimited values stay opaque ``bytes``.
+  ``wire`` builds a tree, guessing sub-messages, strings and packed varints.
+* varint errors: :func:`read_varint` accepts the same inputs as ``wire.decode_varint``
+  but raises the bare ``"truncated varint"`` / ``"varint too long"`` that callers
+  and tests match on, so it is not aliased.
+* groups: wire types 3/4 (and invalid 6/7) raise ``ValueError``; ``wire`` parses groups.
+* errors: :func:`proto_to_dict` returns ``{}`` on ANY decode error;
+  :func:`iter_proto_fields` yields fields until the malformed one, then raises.
 """
 
 from __future__ import annotations
@@ -44,6 +34,7 @@ class ProtoField(NamedTuple):
 
 def read_varint(buf: bytes, pos: int) -> Tuple[int, int]:
     """Read a base-128 varint starting at *pos*; return ``(value, new_pos)``."""
+    # Same 10-byte limit as wire.decode_varint, but tests pin these bare error messages.
     result = 0
     shift = 0
     while True:
@@ -61,12 +52,7 @@ def read_varint(buf: bytes, pos: int) -> Tuple[int, int]:
 
 
 def iter_proto_fields(buf: bytes) -> Iterator[ProtoField]:
-    """Yield every top-level protobuf field in *buf*.
-
-    Tolerant of trailing garbage only in the sense that a malformed tail raises
-    ``ValueError``; callers that scan optimistically should guard for it. Group
-    wire types (3/4, deprecated) are not supported and raise.
-    """
+    """Yield every top-level field in *buf*; a malformed tail or a group wire type raises ``ValueError`` (guard when scanning optimistically)."""
     pos = 0
     n = len(buf)
     while pos < n:
@@ -97,11 +83,7 @@ def iter_proto_fields(buf: bytes) -> Iterator[ProtoField]:
 
 
 def proto_to_dict(buf: bytes) -> Dict[int, List[object]]:
-    """Parse *buf* into ``{field_number: [values...]}`` (repeated-safe).
-
-    Returns an empty dict on any decode failure (defensive — optimistically
-    scanned data with a malformed blob should be skipped, not crash).
-    """
+    """Parse *buf* into ``{field_number: [values...]}``; ``{}`` on any decode failure so optimistic scans skip bad blobs."""
     out: Dict[int, List[object]] = {}
     try:
         for field in iter_proto_fields(buf):

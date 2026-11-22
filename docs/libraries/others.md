@@ -205,6 +205,110 @@ sudo fritap --patterns rusttls_patterns.json -k keys.log target
 sudo fritap -do -v rust_application 2>&1 | grep -i rust
 ```
 
+### Fizz (Meta)
+
+**Meta's TLS 1.3 Stack (also used by mvfst QUIC)**
+
+[Fizz](https://github.com/facebookincubator/fizz) is Meta's C++ TLS 1.3
+implementation. Meta's QUIC stack, mvfst, uses it for its handshake, so one set
+of hooks covers both TLS-over-TCP and QUIC. friTap supports it on
+**Android arm64** in the Meta apps — Facebook (`com.facebook.katana`) and
+Instagram (`com.instagram.android`). **Keys only.**
+
+#### Where it lives
+
+Fizz is statically linked into arbitrarily named, stripped Meta libraries
+(Facebook `libcoldstart.so`; Instagram `libstartup.so`, `libscrollmerged.so`,
+`libstreamingmerged.so`). Most of them ship compressed in the APK and are
+unpacked into the app's private directory (`/data/data/<pkg>/lib-compressed/`)
+on first run, then loaded with `dlopen()`. The library name therefore cannot
+identify Fizz. friTap decides in two steps. The registry's content filter runs on
+the `dlopen()` path, so it uses cheap criteria only and never scans memory:
+
+1. arm64 only; system and APEX paths (`/system/`, `/apex/`, `/vendor/`, ...) are rejected;
+2. a module that itself defines Meta's keylog probe `fizz_probe_secret_available` (an address inside the module, not one `dlsym` resolves from a dependency) is accepted at once;
+3. an app-private library (`/data/data/<pkg>/...`, `/data/user/<n>/<pkg>/...`) or one
+   of the known Meta host names above is accepted by its path or name alone;
+4. any other app library is accepted only with its own probe export.
+
+The verdict is cached per library path, so a repeated `dlopen()` costs a map lookup.
+An accepted library is then confirmed by the installer, asynchronously and off the
+loader's path: by its own probe export, or by the RTTI name
+`N4fizz17KeyDerivationImplE` in its non-writable ranges, read-only (`r--`) ranges
+first, then `r-x` (Meta builds without `-z separate-code` keep `.rodata` in the
+executable segment). A library without Fizz resolves quietly with nothing hooked.
+
+Libraries loaded later through `dlopen()` are picked up as they appear.
+
+#### How it is located
+
+No symbols and no hard-coded offsets, the same principle as the BoringSSL and NSS
+keylog locators:
+
+- **L1 label vote.** Every load site of the TLS 1.3 labels `"c hs traffic"`,
+  `"s hs traffic"`, `"c ap traffic"`, `"s ap traffic"`, `"exp master"` and
+  `"c e traffic"` is followed by the relative-vtable call that consumes the label
+  (in `x5`). The vtable slot is accepted only when **at least two labels agree**
+  on it and no other slot ties; otherwise friTap fails closed and installs nothing.
+- **L2 target.** The RTTI name `N4fizz17KeyDerivationImplE` leads to the typeinfo,
+  then to the relative vtable, and the voted slot gives `deriveSecret`. Its body is
+  validated: it must call HKDF-Expand-Label (a function loading the `"tls13 "` literal).
+- **L3 transcript.** The same RTTI walk on `HandshakeContextImpl` gives
+  `appendToTranscript`.
+
+The client_random is bound **exactly**: the message hash passed to every TLS 1.3
+secret derivation is `Hash(transcript prefix)`, so the handshake context whose
+transcript hash matches owns the secret, and its ClientHello random is the
+client_random. This works for TLS and QUIC alike; a secret that cannot be matched
+stays pending and is never guessed. Where present, Meta's exported
+`fizz_probe_secret_available` serves as an optional fast path (TCP only;
+duplicates are dropped).
+
+The located offsets are stored in the learned cache per library build-id, with
+revalidation on reuse and miss markers for libraries that turned out not to
+carry Fizz, so the first scan (a few seconds per library: Facebook ~5–7 s,
+Instagram ~2–3 s) is not repeated. A runtime label self-check rejects a wrong
+hook. All hooks are **read-only** — friTap never writes target memory. The default
+(legacy) and the `--modern` hook tree register the same Android row with the same
+executor (`agent/shared/fizz_install.ts`), for libraries present at attach and for
+late `dlopen()` loads alike, so Fizz behaves identically in both.
+
+Extracted keys are written as NSS keylog lines:
+`CLIENT_HANDSHAKE_TRAFFIC_SECRET`, `SERVER_HANDSHAKE_TRAFFIC_SECRET`,
+`CLIENT_TRAFFIC_SECRET_0`, `SERVER_TRAFFIC_SECRET_0`, `EXPORTER_SECRET`,
+`CLIENT_EARLY_TRAFFIC_SECRET` and `EARLY_EXPORTER_SECRET`.
+
+#### Usage with friTap
+
+There are no plaintext hooks, so pair `-k` with a full packet capture and decrypt
+in Wireshark:
+
+```bash
+# Attach to a running Facebook app (by PID), keys + full capture
+fritap -m -k fizz_keys.log -f -p fizz_capture.pcap $(adb shell pidof com.facebook.katana)
+
+# Instagram
+fritap -m -k fizz_keys.log -f -p fizz_capture.pcap $(adb shell pidof com.instagram.android)
+
+# Debug Fizz detection and location
+fritap -m -do -v -k fizz_keys.log $(adb shell pidof com.facebook.katana) 2>&1 | grep -i fizz
+
+# Decrypt (Facebook's QUIC version 0xfaceb002 is decoded by Wireshark/tshark 4.6+)
+tshark -r fizz_capture.pcap -o tls.keylog_file:fizz_keys.log -Y "tls || quic"
+```
+
+Tested with Facebook 588.0.0.42.55 and Instagram 456.1.0.56.78 on Android 14 (arm64).
+
+#### Limitations
+
+- **Keys only** — no plaintext (`writeAppData`) hooks; `-k` is required.
+- **Android arm64 only** — no `armeabi-v7a`, no other platforms.
+- The first locate scan takes a few seconds per library, then it is cached.
+- App-private libraries exist only after the app has unpacked them on its first
+  run; start the app once before attaching.
+- Cold-attach problems caused by `frida-java-bridge` are a separate issue,
+  unrelated to the Fizz hooks.
+
 ## Embedded and IoT Libraries
 
 ### Mbed TLS (ARM)

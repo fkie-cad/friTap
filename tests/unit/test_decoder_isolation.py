@@ -89,19 +89,9 @@ def own_supervisor(quarantine_dir):
 
 
 @pytest.fixture
-def error_log():
+def error_log(fritap_log_records):
     """Records logged by friTap.decoder_isolation (independent of propagation)."""
-    records: list[logging.LogRecord] = []
-
-    class _Collect(logging.Handler):
-        def emit(self, record):
-            records.append(record)
-
-    logger = logging.getLogger("friTap.decoder_isolation")
-    handler = _Collect(level=logging.DEBUG)
-    logger.addHandler(handler)
-    yield records
-    logger.removeHandler(handler)
+    return fritap_log_records("friTap.decoder_isolation")
 
 
 @pytest.fixture(autouse=True)

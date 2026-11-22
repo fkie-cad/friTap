@@ -12,13 +12,18 @@ Returns a BodyProcessingResult on Apply, or None on Cancel/ESC.
 
 from __future__ import annotations
 
+import logging
+import string
 from dataclasses import dataclass
 from typing import Callable, Optional
+
+from friTap.tui.widgets.wire_text import safe_wire_text
 
 try:
     from textual.app import ComposeResult
     from textual.binding import Binding
     from textual.containers import Horizontal, Vertical
+    from textual.content import Content
     from textual.widgets import (
         Button,
         Input,
@@ -35,6 +40,9 @@ except ImportError:
 
 
 # ── Data classes (always available) ──────────────────────────────
+
+
+_log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -92,9 +100,7 @@ def _key_label(key: str) -> str:
 
 def _escape_markup(text: object) -> str:
     """Escape an interpolated value so it is rendered literally in markup."""
-    from rich.markup import escape
-
-    return escape(str(text))
+    return safe_wire_text(text)
 
 
 # ── Modals (only when Textual is available) ──────────────────────
@@ -407,6 +413,34 @@ if TEXTUAL_AVAILABLE:
         digit_range = [f"{digits[0]}-{digits[-1]}"] if digits else []
         return "/".join(digit_range + letters)
 
+    def _extension_decoder_options() -> list[tuple[str | None, str, str, bool]]:
+        """One ``(key, id, label, False)`` per registered extension body decoder.
+
+        Appended after the built-ins. Shortcut keys come only from letters not
+        already used by the modal; once none are free the entry has no key.
+        The registry is keyed by name, so only built-in collisions are skipped.
+        """
+        try:
+            from friTap.extensions import get_body_decoders
+            specs = get_body_decoders()
+        except Exception:
+            _log.exception("body processing: reading extension decoders failed")
+            return []
+        builtin_ids = ({o[1] for o in _DECODER_OPTIONS}
+                       | {o[1] for o in _DECOMPRESS_OPTIONS} | {"reset"})
+        used = {o[0] for o in _DECOMPRESS_OPTIONS + _DECODER_OPTIONS} | {"0"}
+        free = [k for k in string.ascii_lowercase if k not in used]
+        options = []
+        for spec in specs:
+            if spec.name in builtin_ids:
+                _log.warning(
+                    "body processing: extension decoder %r skipped, its name "
+                    "collides with a built-in option", spec.name)
+                continue
+            key = free.pop(0) if free else None
+            options.append((key, spec.name, str(spec.label), False))
+        return options
+
     class BodyProcessingModal(FriTapModal[Optional[BodyProcessingResult]]):
         """Modal for configuring body processing pipeline (decompression + decode)."""
 
@@ -490,6 +524,11 @@ if TEXTUAL_AVAILABLE:
             self._content_type = content_type
             self._on_change = on_change
             self._segment_count = segment_count
+            self._ext_options = _extension_decoder_options()
+            self._all_decoder_options = _DECODER_OPTIONS + self._ext_options
+            self._ext_dom_ids = {
+                opt[1]: f"opt-ext-{i}" for i, opt in enumerate(self._ext_options)
+            }
             # Restore state from previous result
             if current is not None:
                 self._decompression: str | None = current.decompression
@@ -541,6 +580,14 @@ if TEXTUAL_AVAILABLE:
                             id=f"opt-{opt_id}",
                             classes="option-btn",
                         )
+                for key, opt_id, label, _ in self._ext_options:
+                    prefix = f"[{key}] " if key else ""
+                    with Horizontal(classes="option-row"):
+                        yield Button(
+                            Content(f"{prefix}{label}"),  # literal, never markup
+                            id=self._decoder_dom_id(opt_id),
+                            classes="option-btn",
+                        )
 
                 # Reset
                 with Horizontal(id="reset-row"):
@@ -552,12 +599,17 @@ if TEXTUAL_AVAILABLE:
 
                 seg_hint = _segment_hint(self._segment_count)
                 yield Static(
-                    f"[{c('text-muted')}]{_toggle_keys_hint()}: Toggle  |  0: Reset  |  Arrows/Tab: Navigate{seg_hint}  |  Enter: Select/Apply  |  Esc: Cancel[/]",
+                    f"[{c('text-muted')}]{self._toggle_keys_hint_text()}: Toggle  |  0: Reset  |  Arrows/Tab: Navigate{seg_hint}  |  Enter: Select/Apply  |  Esc: Cancel[/]",
                     classes="key-hints",
                 )
                 with Horizontal(classes="button-row"):
                     yield Button("Apply", id="btn-apply", variant="primary")
                     yield Button("Cancel", id="btn-cancel", variant="default")
+
+        def _toggle_keys_hint_text(self) -> str:
+            """Built-in toggle keys plus any extension decoder shortcut keys."""
+            ext_keys = [k for k, _, _, _ in self._ext_options if k]
+            return "/".join([_toggle_keys_hint()] + ext_keys)
 
         _PRIORITY_KEYS = frozenset(
             b.key for b in BINDINGS if getattr(b, "priority", False)
@@ -608,6 +660,13 @@ if TEXTUAL_AVAILABLE:
                 event.prevent_default()
             elif event.key in self._PRIORITY_KEYS:
                 event.stop()
+            elif any(event.key == k for k, _, _, _ in self._ext_options):
+                self._toggle_by_key(event.key)
+                event.stop()
+
+        def _decoder_dom_id(self, opt_id: str) -> str:
+            """Button DOM id of a decoder: index-based for extensions (unique)."""
+            return self._ext_dom_ids.get(opt_id, f"opt-{opt_id}")
 
         def on_mount(self) -> None:
             """Restore previous selection state and update active line."""
@@ -621,7 +680,7 @@ if TEXTUAL_AVAILABLE:
             # Mark decoder button as active
             if self._decoder:
                 try:
-                    btn = self.query_one(f"#opt-{self._decoder}", Button)
+                    btn = self.query_one(f"#{self._decoder_dom_id(self._decoder)}", Button)
                     btn.add_class("active")
                 except Exception:
                     pass
@@ -653,10 +712,12 @@ if TEXTUAL_AVAILABLE:
             try:
                 active_static = self.query_one("#active-line", Static)
                 if parts:
-                    chain = " -> ".join(parts)
-                    active_static.update(
-                        f"[{c('text-secondary')}]Active: {chain}[/]"
-                    )
+                    # $chain is substituted literally: an extension decoder
+                    # name like "X[RC4]y" must not be parsed as markup.
+                    active_static.update(Content.from_markup(
+                        f"[{c('text-secondary')}]Active: $chain[/]",
+                        chain=" -> ".join(parts),
+                    ))
                 else:
                     active_static.update(
                         f"[{c('text-muted')}]Active: (none)[/]"
@@ -741,7 +802,7 @@ if TEXTUAL_AVAILABLE:
                 if opt_id == "protobuf":
                     self._protobuf_config = None
                 try:
-                    self.query_one(f"#opt-{opt_id}", Button).remove_class("active")
+                    self.query_one(f"#{self._decoder_dom_id(opt_id)}", Button).remove_class("active")
                 except Exception:
                     pass
                 self._update_active_line()
@@ -751,7 +812,7 @@ if TEXTUAL_AVAILABLE:
                 if self._decoder:
                     try:
                         self.query_one(
-                            f"#opt-{self._decoder}", Button
+                            f"#{self._decoder_dom_id(self._decoder)}", Button
                         ).remove_class("active")
                     except Exception:
                         pass
@@ -763,7 +824,7 @@ if TEXTUAL_AVAILABLE:
                     self._decoder = opt_id
                     self._protobuf_config = None
                     try:
-                        self.query_one(f"#opt-{opt_id}", Button).add_class("active")
+                        self.query_one(f"#{self._decoder_dom_id(opt_id)}", Button).add_class("active")
                     except Exception:
                         pass
                     self._update_active_line()
@@ -825,7 +886,7 @@ if TEXTUAL_AVAILABLE:
             if self._decoder:
                 try:
                     self.query_one(
-                        f"#opt-{self._decoder}", Button
+                        f"#{self._decoder_dom_id(self._decoder)}", Button
                     ).remove_class("active")
                 except Exception:
                     pass
@@ -848,7 +909,7 @@ if TEXTUAL_AVAILABLE:
                     self._toggle_decompression(opt_id)
                     self._focus_apply()
                     return
-            for opt_key, opt_id, _, opens_sub_modal in _DECODER_OPTIONS:
+            for opt_key, opt_id, _, opens_sub_modal in self._all_decoder_options:
                 if opt_key == key:
                     opening_sub_modal = opens_sub_modal and self._decoder != opt_id
                     self._toggle_decoder(opt_id)
@@ -913,8 +974,8 @@ if TEXTUAL_AVAILABLE:
                     return
 
             # Check decoder buttons
-            for key, opt_id, _, _ in _DECODER_OPTIONS:
-                if btn_id == f"opt-{opt_id}":
+            for key, opt_id, _, _ in self._all_decoder_options:
+                if btn_id == self._decoder_dom_id(opt_id):
                     self._toggle_decoder(opt_id)
                     return
 

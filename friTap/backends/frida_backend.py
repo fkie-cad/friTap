@@ -1,11 +1,6 @@
 #!/usr/bin/env python3
 
-"""
-Frida instrumentation backend.
-
-Wraps all ``frida.*`` API calls so that the rest of friTap never
-imports or references Frida directly.
-"""
+"""Frida instrumentation backend; wraps all ``frida.*`` calls."""
 
 from __future__ import annotations
 
@@ -16,6 +11,7 @@ import subprocess
 import sys
 import threading
 import time
+import weakref
 from typing import Any, Callable, Optional
 
 import frida
@@ -36,8 +32,8 @@ from .base import (
     ProcessInfo,
     ThreadInfo,
 )
+from .frida_chunked_loader import ChunkedLoadScript, needs_chunked_load
 
-# Mapping from frida exception types to backend exception types
 _EXCEPTION_MAP = {
     frida.ServerNotRunningError: BackendNotRunningError,
     frida.InvalidArgumentError: BackendInvalidArgumentError,
@@ -49,13 +45,12 @@ _EXCEPTION_MAP = {
     frida.InvalidOperationError: BackendInvalidOperationError,
 }
 
-# Pre-computed tuple of exception types for the except clause (avoids rebuilding per call)
+# Prebuilt once for the except clause.
 _FRIDA_EXCEPTION_TYPES = tuple(_EXCEPTION_MAP.keys())
 
-# Every other frida.* error class (ExecutableNotFoundError, NotSupportedError,
-# ...) is an ordinary "frida said no", not a friTap bug: it keeps its message
-# verbatim and the generic BackendError type. getattr: the set differs between
-# frida versions.
+# Other frida.* errors are an ordinary "frida said no", not a friTap bug: they
+# keep their message and the generic BackendError. getattr: the set differs
+# between frida versions.
 _OTHER_FRIDA_ERROR_CATEGORIES = {
     "ExecutableNotFoundError": "frida_executable_not_found",
     "ExecutableNotSupportedError": "frida_executable_not_supported",
@@ -69,8 +64,7 @@ _OTHER_FRIDA_EXCEPTION_TYPES = tuple(
     if isinstance(getattr(frida, name, None), type)
 )
 
-# Stable category tags surfaced via BackendError.category. Used by the TUI
-# to render a meaningful diagnostic instead of just the message string.
+# Stable BackendError.category tags, rendered by the TUI.
 _FRIDA_CATEGORY = {
     frida.ServerNotRunningError:    "frida_server_down",
     frida.InvalidArgumentError:     "frida_invalid_arg",
@@ -84,10 +78,9 @@ _FRIDA_CATEGORY = {
 
 
 def _probe_hardened_runtime(path: str) -> Optional[bool]:
-    """Return True if the binary at ``path`` has the hardened-runtime flag.
+    """True if the binary at ``path`` has the hardened-runtime flag.
 
-    ``codesign --display --verbose=2`` writes a 'flags=...(runtime)' line
-    to stderr on success.
+    ``codesign --display --verbose=2`` prints 'flags=...(runtime)' on stderr.
     """
     try:
         r = subprocess.run(
@@ -120,10 +113,9 @@ def _probe_entitlements(path: str) -> tuple[Optional[bool], Optional[bool]]:
 def _macos_target_probes(pid: int, ctx: BackendErrorContext) -> None:
     """Populate ctx.target_path and codesign-derived flags for ``pid``.
 
-    Hardened-runtime + library-validation are the prime remaining culprits
-    when a macOS attach fails even with root and SIP off, so we report them
-    explicitly. The two ``codesign`` calls run concurrently because each
-    takes up to 2 s and they share no state beyond the target path.
+    Hardened runtime and library validation are the prime culprits when a
+    macOS attach fails despite root and SIP off. The two ``codesign`` calls
+    run concurrently because each can take 2 s.
     """
     try:
         r = subprocess.run(
@@ -150,11 +142,9 @@ def _macos_target_probes(pid: int, ctx: BackendErrorContext) -> None:
 
 
 def _collect_context(device: Any = None, target: Any = None) -> BackendErrorContext:
-    """Sample cheap diagnostic state. Runs only on the error path.
+    """Sample cheap diagnostic state on the error path; never raises.
 
-    All probes have safe fallbacks: if ``csrutil`` is missing, the target
-    is a name not a PID, or frida-server is unreachable, the corresponding
-    field stays ``None``. The function is intentionally non-raising.
+    A probe that cannot run leaves its field ``None``.
     """
     ctx = BackendErrorContext(
         euid=os.geteuid() if hasattr(os, "geteuid") else -1,
@@ -193,11 +183,10 @@ def _collect_context(device: Any = None, target: Any = None) -> BackendErrorCont
 def _probe_server(device, ctx: BackendErrorContext) -> None:
     """Fill ``server_reachable``/``server_access`` from the device.
 
-    frida 17's USB device answers ``query_system_parameters()`` even with no
-    frida-server running (ADB-only fallback, ``access='jailed'``), so a mere
-    successful call does not prove a server is up. Only ``access == 'full'``
-    counts as reachable; when frida reports no ``access`` at all, keep the
-    old "answered == reachable" verdict.
+    frida 17's USB device answers ``query_system_parameters()`` with no
+    frida-server running (ADB-only fallback, ``access='jailed'``), so only
+    ``access == 'full'`` counts as reachable. With no ``access`` reported,
+    an answer counts as reachable.
     """
     try:
         params = device.query_system_parameters()
@@ -217,23 +206,16 @@ def _wrap_frida_errors(
     *,
     first_arg_is_device: bool = True,
 ) -> Callable:
-    """Two-tier wrapper: translates frida.* errors with rich context, and
-    re-tags any other exception as a ``backend_bug`` so the TUI can clearly
-    say "this is friTap's fault, not yours".
+    """Translate frida.* errors with context; re-tag any other exception as ``backend_bug``.
 
-    Usable bare (``@_wrap_frida_errors``) or parameterised
-    (``@_wrap_frida_errors(first_arg_is_device=False)``).
+    Usable bare or as ``@_wrap_frida_errors(first_arg_is_device=False)``.
 
-    ``first_arg_is_device`` declares the decorated method's shape, because
-    only the method itself knows it: device-first methods (``attach``,
-    ``spawn``, ``query_system_parameters``, ...) take ``(device, target)`` as
-    their first two positionals and can therefore contribute device/target
-    diagnostics. Script-first methods (``create_script``, ``load_script``)
-    take a Script/Session instead — probing it as a device would wrongly
-    report ``server_reachable=False``, and for ``create_script`` the second
-    positional is the entire agent source, which must never be stringified
-    into the diagnostic context. Those declare ``first_arg_is_device=False``
-    and leave both fields unsampled (``None`` == "unknown").
+    Device-first methods (``attach``, ``spawn``, ...) take ``(device, target)``
+    and contribute device/target diagnostics. Script-first methods
+    (``create_script``, ``load_script``) must pass ``False``: probing a
+    Script/Session as a device would report ``server_reachable=False``, and
+    ``create_script``'s second positional is the whole agent source, which
+    must never be stringified into the context.
     """
     def decorate(target_func: Callable) -> Callable:
         @functools.wraps(target_func)
@@ -243,8 +225,6 @@ def _wrap_frida_errors(
             except _FRIDA_EXCEPTION_TYPES as exc:
                 backend_exc_type = _EXCEPTION_MAP[type(exc)]
                 if first_arg_is_device:
-                    # Best-effort context — we never call methods on stale args
-                    # beyond the single non-raising probe in _collect_context.
                     device = args[0] if args else None
                     target = args[1] if len(args) > 1 else None
                 else:
@@ -256,7 +236,7 @@ def _wrap_frida_errors(
                     context=_collect_context(device, target),
                 ) from exc
             except BackendError:
-                # Already enriched by an inner wrapped call; let it propagate.
+                # Already enriched by an inner wrapped call.
                 raise
             except _OTHER_FRIDA_EXCEPTION_TYPES as exc:
                 raise BackendError(
@@ -284,13 +264,11 @@ def _wrap_frida_errors(
 def _off_frida_main_loop(callback: Callable, thread_name: str) -> Callable:
     """Wrap a Frida signal handler so it runs on its own daemon thread.
 
-    Frida delivers signals such as ``detached`` on its main-loop thread, and
-    every synchronous Frida call (``query_system_parameters``, script unload,
-    ``detach``) waits for that same loop to deliver its reply. A handler that
-    makes such a call inline therefore deadlocks Frida forever: the target-death
-    teardown (crash report, pcap finalize, device tcpdump stop) never runs and
-    friTap hangs until Ctrl+C. Handing the work to a thread lets the loop keep
-    running while the handler does its blocking work.
+    Frida delivers ``detached`` on its main-loop thread, and every synchronous
+    Frida call (``query_system_parameters``, unload, ``detach``) waits on that
+    same loop. A handler making such a call inline deadlocks: the target-death
+    teardown (crash report, pcap finalize, tcpdump stop) never runs and friTap
+    hangs until Ctrl+C.
     """
     @functools.wraps(callback)
     def handler(*args: Any) -> None:
@@ -299,12 +277,11 @@ def _off_frida_main_loop(callback: Callable, thread_name: str) -> Callable:
 
 
 def _is_transient_attach_error(exc: BaseException) -> bool:
-    """Return True if ``exc`` is a transient Frida attach failure worth retrying.
+    """True for a transient attach failure worth retrying.
 
-    Covers two observed races: the agent-injection handshake stalling on a
-    freshly-launched / multi-process target (ProcessNotRespondingError) and
-    the transport closing mid-handshake (TransportError with an
-    "unexpected early end-of-stream" message).
+    Two races: the injection handshake stalling on a fresh or multi-process
+    target (ProcessNotRespondingError), and the transport closing mid-handshake
+    ("unexpected early end-of-stream" TransportError).
     """
     if isinstance(exc, frida.ProcessNotRespondingError):
         return True
@@ -316,24 +293,20 @@ def _is_transient_attach_error(exc: BaseException) -> bool:
 class FridaBackend(Backend):
     """Concrete backend using Frida for dynamic instrumentation."""
 
-    # Frida major this friTap release was tested against. Bumped in lockstep
-    # with the `frida>=N,<N+1` constraint in requirements.txt — see RELEASING.md
-    # and scripts/check_compat.py (CI version-guard).
+    # Bumped with the `frida>=N,<N+1` pin in requirements.txt (RELEASING.md,
+    # scripts/check_compat.py).
     SUPPORTED_FRIDA_MAJOR = 17
 
     def __init__(self) -> None:
         self._logger = logging.getLogger("friTap.backend.frida")
+        # Remote (-H) sessions: large scripts are chunk-loaded there
+        # (see frida_chunked_loader).
+        self._remote_sessions: "weakref.WeakSet[Any]" = weakref.WeakSet()
         self._check_frida_compat()
 
     def _check_frida_compat(self) -> None:
-        """Warn (or fail) when the installed frida major doesn't match the
-        version this friTap release was tested against.
-
-        Suppressing the warning: leave ``FRITAP_STRICT_FRIDA`` unset and the
-        message goes through the standard logger (warning level).
-        Making it fatal: ``FRITAP_STRICT_FRIDA=1`` raises
-        ``BackendInvalidArgumentError`` from the constructor.
-        """
+        """Warn on a frida major mismatch; ``FRITAP_STRICT_FRIDA=1`` raises
+        ``BackendInvalidArgumentError`` instead."""
         try:
             major = int(frida.__version__.split(".")[0])
         except (AttributeError, ValueError):
@@ -348,10 +321,6 @@ class FridaBackend(Backend):
         if os.environ.get("FRITAP_STRICT_FRIDA") == "1":
             raise BackendInvalidArgumentError(msg)
         self._logger.warning(msg)
-
-    # ------------------------------------------------------------------
-    # Device
-    # ------------------------------------------------------------------
 
     # Not device-first: the first positional is the *selector* (a bool or a
     # device id), not a device object — there is nothing to probe yet.
@@ -370,20 +339,17 @@ class FridaBackend(Backend):
             return frida.get_device_manager().add_remote_device(host)
         return frida.get_local_device()
 
-    # ------------------------------------------------------------------
-    # Process attach / spawn
-    # ------------------------------------------------------------------
-
     def _attach_with_retry(self, device: Any, target: Any) -> Any:
-        """Call ``device.attach(target)`` with up to 3 attempts on transient frida errors.
+        """``device.attach(target)`` with up to 3 attempts (0.5 s, 1.0 s backoff).
 
-        Backoff is 0.5s then 1.0s. Non-transient frida exceptions propagate
-        immediately so the caller's wrapper can translate them.
+        Non-transient errors propagate for the caller's wrapper to translate.
         """
         max_attempts = 3
         for attempt in range(1, max_attempts + 1):
             try:
-                return device.attach(target)
+                session = device.attach(target)
+                self._remember_remote_session(device, session)
+                return session
             except (frida.ProcessNotRespondingError, frida.TransportError) as exc:
                 if not _is_transient_attach_error(exc) or attempt == max_attempts:
                     raise
@@ -393,6 +359,16 @@ class FridaBackend(Backend):
                     attempt, max_attempts, exc, delay,
                 )
                 time.sleep(delay)
+
+    def _remember_remote_session(self, device: Any, session: Any) -> None:
+        if getattr(device, "type", None) == "remote":
+            self.__dict__.setdefault("_remote_sessions", weakref.WeakSet()).add(session)
+
+    def _is_remote_session(self, session: Any) -> bool:
+        try:
+            return session in getattr(self, "_remote_sessions", ())
+        except TypeError:  # not weak-referenceable: never ours
+            return False
 
     @_wrap_frida_errors
     def attach(self, device: Any, target: str) -> Any:
@@ -407,8 +383,7 @@ class FridaBackend(Backend):
         try:
             pid = device.spawn(target)
         except frida.InvalidArgumentError as inner_exc:
-            # Retry treating ``target`` as a tokenised command line. Preserve
-            # the chain so a follow-up failure still names the original cause.
+            # Retry with ``target`` as a tokenised command line, keeping the cause chain.
             try:
                 pid = device.spawn(target.split(" "), env=env)
             except Exception as retry_exc:
@@ -441,29 +416,30 @@ class FridaBackend(Backend):
         except Exception:
             self._logger.debug("off_process_crashed cleanup error", exc_info=True)
 
-    # ------------------------------------------------------------------
-    # Script management
-    # ------------------------------------------------------------------
-
     # Not device-first: (session, agent source) — probing either as a device
     # would fabricate a server_reachable=False verdict.
     @_wrap_frida_errors(first_arg_is_device=False)
     def create_script(self, process: Any, script_source: str, runtime: str = "qjs") -> Any:
+        # Remote frida-server drops the connection on a message above ~128 KiB:
+        # stage a large script through a bootstrap script.
+        if self._is_remote_session(process) and needs_chunked_load(script_source):
+            self._logger.debug(
+                "remote session: chunk-loading a %d-byte script", len(script_source.encode("utf-8")),
+            )
+            return ChunkedLoadScript.create(process, script_source, runtime=runtime)
         return process.create_script(script_source, runtime=runtime)
 
     # Not device-first: the first positional is a frida Script.
     @_wrap_frida_errors(first_arg_is_device=False)
     def load_script(self, script: Any, *, timeout: float | None = None) -> None:
         if not timeout:
-            # Unbounded default: load inline so the common path stays free of
-            # any thread hand-off (and keeps frida errors on this stack).
+            # Unbounded: load inline, no thread hand-off.
             script.load()
             return
 
-        # script.load() blocks until the agent's top-level code returns, and a
-        # wedged agent never returns — so bound it on a worker thread. The
-        # worker's exception is re-raised HERE, inside the @_wrap_frida_errors
-        # frame, so frida errors still get mapped to Backend* exceptions.
+        # A wedged agent never returns from script.load(), so bound it on a
+        # worker thread. Its exception is re-raised here, inside the
+        # @_wrap_frida_errors frame, so frida errors still map to Backend*.
         captured: list[BaseException] = []
 
         def _load() -> None:
@@ -472,9 +448,8 @@ class FridaBackend(Backend):
             except BaseException as exc:  # re-raised on the calling thread
                 captured.append(exc)
 
-        # daemon=True: script.load() is NOT cancellable. When the bound expires
-        # the worker is deliberately abandoned mid-load; only a daemon thread
-        # lets the host process exit without joining it.
+        # script.load() is not cancellable: on timeout the worker is abandoned,
+        # and only a daemon thread lets the process exit without joining it.
         started = time.monotonic()
         loader = threading.Thread(target=_load, daemon=True, name="fritap-script-load")
         loader.start()
@@ -491,8 +466,7 @@ class FridaBackend(Backend):
             raise captured[0]
 
     def unload_script(self, script: Any) -> None:
-        # Cleanup is best-effort (the process may already be gone). Log so
-        # latent backend bugs are still visible instead of silently dropped.
+        # Best-effort (the process may be gone); logged so bugs stay findable.
         try:
             script.unload()
         except Exception:
@@ -504,14 +478,8 @@ class FridaBackend(Backend):
     def post_message(self, script: Any, msg_type: str, payload: Any) -> None:
         script.post({"type": msg_type, "payload": payload})
 
-    # ------------------------------------------------------------------
-    # Process lifecycle
-    # ------------------------------------------------------------------
-
     def detach(self, process: Any) -> None:
-        # Detach often races with the target exiting; treat as best-effort.
-        # Include the exception type so a real backend bug is still findable
-        # in the debug log even though we don't propagate it.
+        # Detach races with the target exiting; the type is logged for real bugs.
         try:
             process.detach()
         except Exception as e:
@@ -531,19 +499,11 @@ class FridaBackend(Backend):
     def on_spawn_added(self, device: Any, callback: Callable) -> None:
         device.on("spawn_added", callback)
 
-    # ------------------------------------------------------------------
-    # Debugging
-    # ------------------------------------------------------------------
-
     def enable_debugger(self, script: Any, port: int) -> None:
         if self.version_at_least(16):
             script.enable_debugger(port)
         else:
             self._logger.warning("Script-level debugger requires Frida >= 16")
-
-    # ------------------------------------------------------------------
-    # Thread management
-    # ------------------------------------------------------------------
 
     def enumerate_threads(self, process: Any) -> list[ThreadInfo]:
         return [
@@ -562,10 +522,6 @@ class FridaBackend(Backend):
 
     def resume_thread(self, process: Any, thread_id: int) -> None:
         process.resume(thread_id)
-
-    # ------------------------------------------------------------------
-    # Device management
-    # ------------------------------------------------------------------
 
     @_wrap_frida_errors
     def enumerate_devices(self) -> list:
@@ -592,10 +548,9 @@ class FridaBackend(Backend):
     def process_name(self, device: Any, pid: int) -> str | None:
         """Resolve *pid* to a package id or process name (see Backend.process_name).
 
-        ``scope="metadata"`` filtered to one pid is cheap and is the only scope
-        that carries Android's ``applications`` list: in ``minimal`` scope an
-        app process is named by its label ("Chrome"), not its package id
-        ("com.android.chrome"), which the transport classifier needs.
+        Only ``scope="metadata"`` carries Android's ``applications`` list; in
+        ``minimal`` scope an app is named by its label ("Chrome"), not its
+        package id ("com.android.chrome"), which the transport classifier needs.
         """
         try:
             for process in device.enumerate_processes(pids=[pid], scope="metadata"):
@@ -632,10 +587,6 @@ class FridaBackend(Backend):
     @_wrap_frida_errors
     def get_usb_device(self) -> Any:
         return frida.get_usb_device()
-
-    # ------------------------------------------------------------------
-    # Metadata
-    # ------------------------------------------------------------------
 
     @property
     def name(self) -> str:

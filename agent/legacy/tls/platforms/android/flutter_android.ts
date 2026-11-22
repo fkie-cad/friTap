@@ -2,9 +2,11 @@
 import { Flutter } from "../../../tls/libs/flutter.js";
 import { socket_library } from "../../../../platforms/android.js";
 import {PatternBasedHooking, get_CPU_specific_pattern, hasUsablePatternsFor } from "../../../tls/shared/pattern_based_hooking.js";
-import { patterns, isPatternReplaced } from "../../../../fritap_agent.js"
+import { patterns, isPatternReplaced, pairip_safe } from "../../../../fritap_agent.js"
 import { devlog, devlog_debug, devlog_error } from "../../../../util/log.js";
-import { installBoringSSLSymbolHook } from "../../../../shared/boringssl_symbol_hook.js";
+import { installBoringSSLSymbolHook, scheduleBoringSSLSymbolFallback, type DumpKeysCb } from "../../../../shared/boringssl_symbol_hook.js";
+import { guardKeylogDumpKeys } from "../../../../shared/boringssl_keylog_outcome.js";
+import { lenArg } from "../../../../shared/keylog_length.js";
 
 
 export class Flutter_Android extends Flutter {
@@ -40,18 +42,22 @@ export class Flutter_Android extends Flutter {
         const flutterModule = Process.findModuleByName(this.module_name);
         if (flutterModule === null) return null;
         const hooker = new PatternBasedHooking(flutterModule);
+        // Guarded: the symbol tier or tier 4 may hook the same ssl_log_secret
+        // while this scan still runs; only the first tier to deliver emits.
+        const patternDumpKeys = guardKeylogDumpKeys(this.module_name, "pattern",
+            (label, ssl, data, len) => this.dumpKeys(label, ssl, data, len));
 
         if (isPatternReplaced() && hasUsablePatternsFor(patterns, this.module_name, "libflutter.so", "Dump-Keys")){
             devlog("Hooking libflutter functions by patterns from JSON file");
             hooker.hook_DumpKeys(this.module_name,"libflutter.so",patterns,(args: any[]) => {
-                this.dumpKeys(args[1], args[0], args[2]);  // Unpack args into dumpKeys
+                patternDumpKeys(args[1], args[0], args[2], lenArg(args[3]));  // Unpack args into dumpKeys
             });
         }else{
             // This are the default patterns for hooking ssl_log_secret in BoringSSL inside Flutter
             hooker.hookModuleByPattern(
                 get_CPU_specific_pattern(this.default_pattern),
                 (args) => {
-                    this.dumpKeys(args[1], args[0], args[2]);  // Hook args passed to dumpKeys
+                    patternDumpKeys(args[1], args[0], args[2], lenArg(args[3]));  // Hook args passed to dumpKeys
                 }
             );
         }
@@ -62,6 +68,35 @@ export class Flutter_Android extends Flutter {
         return this.install_key_extraction_hook();
     }
 
+}
+
+
+/**
+ * Symbol tier, then tier 4 (the anchor locator), once the byte patterns had a
+ * settle window to match. Release engines often match neither the bundled
+ * patterns nor a symbol, so a miss must reach tier 4 like the Cronet rows do;
+ * a pattern that matched first keeps the module (no second hook).
+ * --pairip-safe keeps the symbol tier only: tier 4 is a memory scan.
+ */
+export function scheduleFlutterKeylogFallback(
+    moduleName: string,
+    hooker: PatternBasedHooking | null,
+    dumpKeys: DumpKeysCb,
+    pairipSafe: boolean = pairip_safe,
+): void {
+    if (!pairipSafe) {
+        scheduleBoringSSLSymbolFallback(moduleName, hooker, () => installBoringSSLSymbolHook(moduleName, dumpKeys), dumpKeys);
+        return;
+    }
+    setTimeout(() => {
+        try {
+            if (hooker !== null && !hooker.no_hooking_success) return;
+            devlog_debug("Trying symbol-based ssl_log_secret hook on " + moduleName);
+            installBoringSSLSymbolHook(moduleName, dumpKeys);
+        } catch (e) {
+            devlog_error("flutter_execute symbol fallback error: " + e);
+        }
+    }, 1000);
 }
 
 
@@ -79,22 +114,11 @@ export function flutter_execute(moduleName:string, is_base_hook: boolean){
     // execute_hooks() threw before the hooker was ever assigned, hence the
     // `hooker === null` arm). Only on the base hook to avoid one timer per
     // dlopen of the same lib.
-    // The 4th `len` arg from the symbol hook is dropped because Flutter.dumpKeys
-    // derives length via its own heuristic and is signature-incompatible with
-    // the 4-arg form Cronet uses.
+    // The 4th `len` arg is passed through so SHA-384 secrets (48 bytes) are
+    // not truncated to 32.
     if (is_base_hook) {
-        setTimeout(() => {
-            try {
-                if (hooker !== null && !hooker.no_hooking_success) return;
-                devlog_debug("Trying symbol-based ssl_log_secret hook on " + moduleName);
-                installBoringSSLSymbolHook(
-                    moduleName,
-                    (label, ssl, data, _len) => flutter.dumpKeys(label, ssl, data)
-                );
-            } catch (e) {
-                devlog_error("flutter_execute symbol fallback error: " + e);
-            }
-        }, 1000);
+        scheduleFlutterKeylogFallback(moduleName, hooker,
+            (label, ssl, data, len) => flutter.dumpKeys(label, ssl, data, len));
     }
 
     if (is_base_hook) {

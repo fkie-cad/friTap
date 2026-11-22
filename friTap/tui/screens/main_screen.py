@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 try:
     from textual.app import ComposeResult
-    from textual.binding import Binding  # noqa: F401
+    from textual.binding import Binding
     from textual.containers import Horizontal, Vertical
     from textual.screen import Screen
     from textual.widgets import Footer, Header, Static
@@ -27,18 +27,10 @@ except ImportError:
     TEXTUAL_AVAILABLE = False
 
 if TEXTUAL_AVAILABLE:
-    from friTap.analysis import Finding, Severity  # noqa: F401
-    from friTap.analysis.filtering import FindingFilter, summarize
-    from friTap.analysis.registry import available_analyzers, resolve_analyzers
-    from friTap.constants import PROTOCOL_MTPROTO, PROTOCOL_TELEGRAM_E2E
-    from friTap.flow.display import is_message_transport
-    from friTap.flow.layer_pipeline import MESSAGE_TRANSPORTS
+    from friTap.flow.replay_rows import iter_replay_rows
 
     from ..capture_controller import CaptureController
-    from ..modals.decrypt_progress_modal import DecryptProgressModal
     from ..modals.device_modal import DeviceSelectModal
-    from ..modals.filter_modal import FilterModal, FilterResult
-    from ..modals.findings_filter_modal import FindingsFilterModal
     from ..modals.help_modal import HelpScreen
     from ..modals.process_modal import ProcessSelectModal
     from ..modals.spawn_modal import SpawnInputModal
@@ -55,68 +47,21 @@ if TEXTUAL_AVAILABLE:
     from ..widgets.menu_panel import MenuPanel
     from ..widgets.status_bar import StatusBar
     from ..wizard import CaptureWizard, PcapToTapWizard
+    from .viewer_mixins import (
+        AnalyzerMixin,
+        ConversationSiblingsMixin,
+        DecryptMixin,
+        ExportMixin,
+        FilterMixin,
+        FindingsMixin,
+        FlowNavigationMixin,
+        ViewerHostDefaults,
+    )
 
-    # Decrypted-TL transports whose flows must be parsed by their pinned TL
-    # parser (see ParserRegistry.pin_transport), and the protocols it yields.
-    _TL_PINNED_TRANSPORTS = MESSAGE_TRANSPORTS
-    _TL_PINNED_PROTOCOLS = frozenset({PROTOCOL_MTPROTO, PROTOCOL_TELEGRAM_E2E})
-
-    def _is_tl_pinned_flow(flow) -> bool:
-        """True for a flow riding a decrypted-TL (pinned-parser) transport."""
-        return is_message_transport(flow)
-
-    def _is_received_message_summary(flow, summary) -> bool:
-        """True for a one-packet message-stream row that was *received*.
-
-        Such a .tap summary records only a response side (``has_response``
-        without ``has_request``). The synthetic replay flow must then carry a
-        response stub rather than a request stub, or the Status column would
-        report every received MTProto / Secret-Chat packet as ``sent``.
-        Legacy paired taps (both sides) keep the request-first behaviour.
-        """
-        return (is_message_transport(flow)
-                and bool(getattr(summary, "has_response", False))
-                and not getattr(summary, "has_request", False))
-
-    def _needs_tl_reparse(flow) -> bool:
-        """A TL-transport flow whose stored parse came from blind byte sniffing."""
-        if not _is_tl_pinned_flow(flow):
-            return False
-        parsed = [r for r in (flow.request, flow.response) if r is not None]
-        if not parsed:
-            return True
-        return any(r.protocol not in _TL_PINNED_PROTOCOLS for r in parsed)
-
-    def _needs_reparse(flow, summary) -> bool:
-        """Check if a flow should be re-parsed with current parser code.
-
-        Triggers re-parse for:
-        - Unknown protocol (legacy .tap files without proper detection)
-        - HTTP/2 ghost flows (old code skipped SETTINGS-only control frames)
-        - WebSocket TEXT flows (old code missed permessage-deflate decompression)
-        - MTProto / Telegram-E2E flows not parsed by their pinned TL parser
-          (old code sniffed e.g. a decryptedMessageLayer as a WebSocket PING)
-        """
-        if _needs_tl_reparse(flow):
-            return True
-        proto = flow.display_protocol
-        if proto == "unknown":
-            return True
-        # HTTP/2 ghost flows: protocol detected but no request (SETTINGS-only)
-        if "HTTP/2" in proto and flow.request is None:
-            return True
-        # HTTP/2 control frames from old .tap files: method matches but is_control_frame not set
-        if "HTTP/2" in proto and flow.request is not None:
-            if flow.request.method in ("SETTINGS", "PING", "GOAWAY", "WINDOW_UPDATE"):
-                if not flow.request.is_control_frame:
-                    return True
-        # WebSocket TEXT: always re-parse to apply decompression + content detection
-        # (Old .tap files stored compressed body; new parser decompresses + detects JSON)
-        if proto == "WebSocket" and summary.method == "TEXT":
-            return True
-        return False
-
-    class MainScreen(Screen):
+    class MainScreen(
+        DecryptMixin, FindingsMixin, AnalyzerMixin, FilterMixin, FlowNavigationMixin,
+        ExportMixin, ConversationSiblingsMixin, ViewerHostDefaults, Screen
+    ):
         """Single-screen split-pane layout for friTap TUI."""
 
         BINDINGS = [
@@ -138,6 +83,12 @@ if TEXTUAL_AVAILABLE:
             pcap_to_tap_file: str | None = None,
             **kwargs,
         ) -> None:
+            # Flow-list columns / detail tabs are read from the extension
+            # registry in compose(), which runs before on_mount/reload_replay;
+            # load_extensions() is idempotent and logs+skips failing plugins.
+            from friTap.extensions import load_extensions
+
+            load_extensions(offline_decryptors=False)
             super().__init__(**kwargs)
             self._replay_file = replay_file
             self._pcap_to_tap_file = pcap_to_tap_file
@@ -150,6 +101,8 @@ if TEXTUAL_AVAILABLE:
             # Where a flow-detail view was opened from: "flow" (flow list) or
             # "finding" (analyzer finding-detail) — drives Esc back-navigation.
             self._detail_origin = "flow"
+            # Live flows changed while the flow list was hidden; applied when it is shown.
+            self._hidden_flow_updates: dict = {}
             self._wizard = CaptureWizard(self)
             self._capture = CaptureController(self)
             self._mode_ctrl = ModeController(self)
@@ -240,37 +193,23 @@ if TEXTUAL_AVAILABLE:
 
             Reusable entry point: used both for the initial replay launch and
             to swap in a freshly decrypted .tap produced from a capture.
+            The new file is opened first: if that fails only an alert is
+            shown and the file, flows and controller shown stay untouched.
             """
             from pathlib import Path
 
-            from friTap.flow.models import Flow, FlowState, FlowSummary
+            from ..widgets.wire_text import safe_static_text
 
-            from ..replay_controller import ReplayController
-
-            self._replay_file = path
-            filename = Path(path).name
-            self._replay_filename = filename
-
-            # Clear any previously loaded flows (table + backing store) so a
-            # reload replaces rather than appends.
-            try:
-                self.query_one("#flow-list", FlowListWidget).clear_flows()
-            except Exception:
-                pass
-
-            try:
-                self._replay_ctrl = ReplayController(path)
-                self._replay_ctrl.load()
-            except Exception as e:
-                from ..modals.alert_modal import AlertModal
-                self.app.push_screen(
-                    AlertModal(
-                        message=f"Failed to open {filename}:\n\n{e}",
-                        title="Replay Error",
-                        severity="error",
-                    )
-                )
+            filename = safe_static_text(Path(path).name)
+            ctrl = self._open_source_or_alert(path, filename)
+            if ctrl is None:
                 return
+            self._replay_file = path
+            self._replay_filename = filename
+            # Forget the previous file's rows/findings/analyzer run, swap in
+            # the new controller, then close the previous one (MainScreen
+            # always opened its controller itself).
+            self._swap_in_source(ctrl, close_previous=True)
 
             # Activate flow view immediately (hides left panel + activity log)
             self._activate_flow_view()
@@ -280,1012 +219,148 @@ if TEXTUAL_AVAILABLE:
             try:
                 title = self.query_one("#activity-title", Static)
                 title.update(
-                    f"[bold {c('primary')}]friTap Replay[/]  "
-                    f"[dim]{filename} ({count} flow{'s' if count != 1 else ''})"
-                    f" | Enter: details | /: filter | a: analyzers | w: export | r: restart wizard | q: quit[/]"
+                    self._replay_banner_markup(filename, count, self._replay_banner_hints())
                 )
             except Exception:
                 pass
             self._update_capture_indicator()
 
             # Populate flow list from summaries
-            from friTap.flow.reparse import reparse_flow
-            from friTap.parsers.base import ParseResult
             flow_list = self.query_one("#flow-list", FlowListWidget)
-            for summary in self._replay_ctrl.get_summaries():
-                flow = Flow(
-                    flow_id=summary.flow_id,
-                    connection_id=summary.connection_id,
-                    src_addr=summary.src_addr,
-                    src_port=summary.src_port,
-                    dst_addr=summary.dst_addr,
-                    dst_port=summary.dst_port,
-                    ssl_session_id=summary.ssl_session_id,
-                    state=FlowState.COMPLETE,
-                    started=summary.started,
-                    ended=summary.ended,
-                    transport=getattr(summary, "transport", "tls") or "tls",
-                )
-                has_parsed_request = (
-                    summary.method or summary.url or summary.host
-                    or summary.protocol not in ("unknown", "")
-                )
-                received_message = _is_received_message_summary(flow, summary)
-                if has_parsed_request and not received_message:
-                    flow.request = ParseResult(
-                        protocol=summary.protocol,
-                        method=summary.method,
-                        url=summary.url,
-                        host=summary.host,
-                        is_request=True,
-                        is_complete=True,
-                        is_control_frame=summary.is_control_frame,
-                    )
-                if summary.status_code > 0:
-                    flow.response = ParseResult(
-                        status_code=summary.status_code,
-                        status_text=summary.status_text,
-                        body_size=summary.body_size,
-                        is_request=False,
-                        is_complete=True,
-                    )
-                elif received_message:
-                    flow.response = ParseResult(
-                        protocol=summary.protocol,
-                        method=summary.method,
-                        url=summary.url,
-                        host=summary.host,
-                        is_request=False,
-                        is_complete=True,
-                    )
-                # Re-parse flows that can benefit from updated parsers:
-                # - Unknown protocol (legacy .tap files)
-                # - HTTP/2 ghost flows (old code skipped control frames)
-                # - WebSocket with non-UTF-8 TEXT body (old code missed decompression)
-                if summary.total_size > 0 and _needs_reparse(flow, summary):
-                    full_flow = self._replay_ctrl.get_flow(summary.flow_id)
-                    if full_flow is not None and reparse_flow(full_flow):
-                        flow.request = full_flow.request
-                        flow.response = full_flow.response
-                        self._replay_ctrl.store_reparse(
-                            summary.flow_id, full_flow.request, full_flow.response,
-                            clear_trailing=_is_tl_pinned_flow(full_flow),
-                        )
-
-                flow._total_bytes = summary.total_size
-                # Carry the layered protocol-display scalars onto the synthetic
-                # (layerless) flow so FlowSummary.from_flow can recover them: the
-                # synthetic flow has no layer stack, so layered_scalars_from_flow
-                # would otherwise return "" and the list would show ???/—.
-                flow.outer_app_protocol = summary.outer_app_protocol
-                flow.inner_e2e_protocol = summary.inner_e2e_protocol
-                flow.inner_summary = summary.inner_summary
-                # Same rationale for the derived TL Method scalar.
-                flow.flow_method = getattr(summary, "flow_method", "") or (
-                    summary.method if received_message else "")
-                # Display-filter inputs (mtproto.method, protocol names, ohttp)
-                # come straight from the decoded tap summary, so filtering
-                # matches live capture despite the synthetic flow's missing layers.
-                flow_list.add_or_update_flow(
-                    flow, summary=FlowSummary.from_tap_summary(summary, flow))
+            for flow, row in iter_replay_rows(self._replay_ctrl):
+                flow_list.add_or_update_flow(flow, summary=row)
 
         # ----------------------------------------------------------
-        # Offline decrypt -> flow view
+        # Host hooks — the only capture/replay branches viewer logic uses.
+        # Each one is an override point for the replay-only viewer
+        # (TapViewerScreen: no wizard, no capture controller, no AppState).
+        # The replay-only defaults live in viewer_mixins.host_defaults
+        # .ViewerHostDefaults; the capture-aware variants below win via the MRO.
         # ----------------------------------------------------------
 
-        def start_decrypt_to_flow(
-            self, pcap: str, keylog: str, protocol: str = "tls"
-        ) -> None:
-            """Decrypt *pcap* with the captured *keylog* into the flow view.
+        def _live_flow_collector(self):
+            """The live-capture FlowCollector, or None when there is none.
 
-            Builds per-protocol keylog arguments from the offline-decryptor
-            registry (each protocol's keylog is a ``split_keylog_path`` sibling
-            of the TLS keylog, passed only when it exists), then runs the
-            conversion in a thread worker and reloads the resulting .tap.
+            Override point for the replay-only viewer (returns None there).
             """
-            args = self._build_convert_args(
-                pcap=pcap, keylog=keylog, proto_keylog="",
-                protocol=protocol, tap="",
-            )
-            if args is None:
-                return
-            self._launch_decrypt_worker(args)
+            return self._capture.flow_collector
 
-        def start_decrypt_to_flow_multi(
-            self, pcap: str, keylog_files: dict, tap: str = ""
-        ) -> None:
-            """Decrypt *pcap* using an already-resolved per-protocol keylog map.
+        def _has_flows(self) -> bool:
+            """True when there is at least one flow to export.
 
-            The post-capture decrypt offer passes the authoritative
-            ``{protocol: keylog_path}`` map (resolved by ``active_keylog_paths``,
-            the same source the Capture Results modal uses), so the single-keylog
-            candidate resolution in :meth:`_build_convert_args` is bypassed. This is
-            critical for multi-protocol captures (e.g. Signal, which splits the -k
-            keylog into ``.tls.log`` + ``.signal.log``): re-resolving from one base
-            path can misroute a protocol's keylog to the TLS log and decrypt 0
-            messages.
-            """
-            keylog_files = keylog_files or {}
-            tls_keylog = keylog_files.get("tls", "")
-            protocol_keylogs = {
-                proto: path for proto, path in keylog_files.items() if proto != "tls"
-            }
-            args = self._build_convert_args_multi(
-                pcap=pcap, tls_keylog=tls_keylog,
-                protocol_keylogs=protocol_keylogs, tap=tap,
-            )
-            if args is None:
-                return
-            self._launch_decrypt_worker(args)
-
-        def action_open_pcap(self) -> None:
-            """Prompt for a pcap + keylogs and decrypt them into the flow view."""
-            from ..modals.open_pcap_modal import OpenPcapModal
-
-            def _on_result(result) -> None:
-                if not result:
-                    return
-                args = self._build_convert_args(
-                    pcap=result.get("pcap", ""),
-                    keylog=result.get("keylog", ""),
-                    proto_keylog=result.get("proto_keylog", ""),
-                    protocol=result.get("protocol", "tls") or "tls",
-                    tap=result.get("tap", ""),
-                )
-                if args is None:
-                    return
-                self._launch_decrypt_worker(args)
-
-            self.app.push_screen(OpenPcapModal(), callback=_on_result)
-
-        def _build_convert_args(
-            self,
-            pcap: str,
-            keylog: str,
-            proto_keylog: str,
-            protocol: str,
-            tap: str,
-            resync_search_depth: Optional[int] = None,
-        ) -> dict | None:
-            """Assemble keyword args for ``convert_pcap_to_tap``.
-
-            ``resync_search_depth`` bounds mid-stream re-alignment search;
-            ``None`` (the default) lets each offline decryptor apply its own
-            default (MTProto:
-            :data:`~friTap.offline.mtproto.transport.DEFAULT_OBF_MAX_BLOCKS`)
-            unless the caller supplies an advanced override.
-
-            Returns ``None`` (after showing an alert modal) when the pcap is missing.
-            """
-            import os
-
-            from friTap.output.keylog_paths import split_keylog_path
-
-            if not pcap or not os.path.isfile(pcap):
-                self._alert(
-                    f"PCAP not found: {pcap or '(empty)'}",
-                    title="PCAP Not Found",
-                    severity="error",
-                )
-                return None
-
-            # TLS keylog: prefer the per-TLS split sibling if it exists.
-            tls_keylog = None
-            if keylog:
-                tls_split = split_keylog_path(keylog, "tls")
-                if os.path.isfile(tls_split):
-                    tls_keylog = tls_split
-                elif os.path.isfile(keylog):
-                    tls_keylog = keylog
-
-            protocol_keylogs: dict[str, str] = {}
-
-            try:
-                from friTap.offline.registry import get_offline_decryptor_registry
-                entries = get_offline_decryptor_registry().list()
-            except Exception:
-                entries = []
-
-            for entry in entries:
-                name = entry.protocol_name
-                # Resolve this protocol's keylog: an explicit per-protocol path
-                # (when the chosen protocol matches), else the UNSPLIT base keylog
-                # when the chosen protocol matches (a single-protocol capture, e.g.
-                # --protocol mtproto, writes its keys straight to the base path with
-                # no `<base>.<proto>.log` sibling), else the split sibling of the
-                # base TLS keylog (multi-protocol captures). Without the base-keylog
-                # candidate an MTProto/Signal-only capture resolves to None and the
-                # protocol decryptor is silently skipped (-> 0 flows).
-                candidates = []
-                if proto_keylog and protocol == name:
-                    candidates.append(proto_keylog)
-                if protocol == name and keylog:
-                    candidates.append(keylog)
-                if keylog:
-                    candidates.append(split_keylog_path(keylog, name))
-                resolved = next(
-                    (p for p in candidates if p and os.path.isfile(p)), None
-                )
-                if resolved is None:
-                    continue
-                self._warn_if_backend_missing(name)
-                protocol_keylogs[name] = resolved
-
-            tap_path = tap.strip() if tap else ""
-            if not tap_path:
-                tap_path = os.path.splitext(pcap)[0] + ".tap"
-
-            # signal_keylog/mtproto_keylog are convert_pcap_to_tap's back-compat
-            # named args, derived from the generic map (mirrors cli.merge_manifest).
-            return {
-                "pcap_path": pcap,
-                "keylog_path": tls_keylog,
-                "tap_path": tap_path,
-                "signal_keylog": protocol_keylogs.get("signal"),
-                "mtproto_keylog": protocol_keylogs.get("mtproto"),
-                "protocol_keylogs": protocol_keylogs or None,
-                "resync_search_depth": resync_search_depth,
-                "tshark_path": None,
-            }
-
-        def _build_convert_args_multi(
-            self,
-            pcap: str,
-            tls_keylog: str,
-            protocol_keylogs: dict[str, str],
-            tap: str,
-            resync_search_depth: Optional[int] = None,
-        ) -> dict | None:
-            """Assemble ``convert_pcap_to_tap`` kwargs from a pcap plus an explicit
-            TLS keylog and a map of per-protocol (layered) keylogs.
-
-            Unlike :meth:`_build_convert_args` (which resolves a *single* protocol
-            keylog from split siblings of one base keylog), this variant takes the
-            already-collected ``{protocol_name: keylog_path}`` map produced by the
-            pcap-to-tap wizard, so several layered keylogs (e.g. Signal AND
-            Telegram) can be supplied at once. Only entries pointing at an existing
-            file are kept; a missing backend is surfaced (non-blocking) for each.
-
-            Returns ``None`` (after showing an alert modal) when the pcap is missing.
-            """
-            import os
-
-            if not pcap or not os.path.isfile(pcap):
-                self._alert(
-                    f"PCAP not found: {pcap or '(empty)'}",
-                    title="PCAP Not Found",
-                    severity="error",
-                )
-                return None
-
-            tls_path = tls_keylog.strip() if tls_keylog else ""
-            resolved_tls = tls_path if (tls_path and os.path.isfile(tls_path)) else None
-
-            resolved_protocols: dict[str, str] = {}
-            for name, path in (protocol_keylogs or {}).items():
-                candidate = (path or "").strip()
-                if candidate and os.path.isfile(candidate):
-                    self._warn_if_backend_missing(name)
-                    resolved_protocols[name] = candidate
-
-            tap_path = tap.strip() if tap else ""
-            if not tap_path:
-                tap_path = os.path.splitext(pcap)[0] + ".tap"
-
-            # signal_keylog/mtproto_keylog are convert_pcap_to_tap's back-compat
-            # named args, derived from the generic map (mirrors _build_convert_args).
-            return {
-                "pcap_path": pcap,
-                "keylog_path": resolved_tls,
-                "tap_path": tap_path,
-                "signal_keylog": resolved_protocols.get("signal"),
-                "mtproto_keylog": resolved_protocols.get("mtproto"),
-                "protocol_keylogs": resolved_protocols or None,
-                "resync_search_depth": resync_search_depth,
-                "tshark_path": None,
-            }
-
-        def _warn_if_backend_missing(self, protocol: str) -> None:
-            """Notify (non-blocking) if a protocol's decrypt backend is absent."""
-            try:
-                if protocol == "signal":
-                    from friTap.offline.signal import (
-                        SIGNAL_DEPENDENCY_HINT,
-                        signal_backend_available,
-                    )
-                    if not signal_backend_available():
-                        self._alert(
-                            SIGNAL_DEPENDENCY_HINT,
-                            title="Signal Backend Missing",
-                            severity="warning",
-                        )
-                elif protocol == "mtproto":
-                    from friTap.offline.mtproto import (
-                        MTPROTO_DEPENDENCY_HINT,
-                        mtproto_backend_available,
-                    )
-                    if not mtproto_backend_available():
-                        self._alert(
-                            MTPROTO_DEPENDENCY_HINT,
-                            title="MTProto Backend Missing",
-                            severity="warning",
-                        )
-            except Exception:
-                pass
-
-        def _launch_decrypt_worker(self, args: dict) -> None:
-            """Run the offline conversion in a thread worker."""
-            # Pre-flight: the offline pipeline needs tshark. Fail fast with a modal
-            # (not a transient toast) before showing "Decrypting..." so the install
-            # instructions are readable and the worker never starts. A tshark call
-            # from deep inside a decryptor is still caught in _decrypt_worker.
-            from friTap.offline.tshark import TsharkNotFoundError, find_tshark
-            try:
-                find_tshark(args.get("tshark_path"))
-            except TsharkNotFoundError:
-                self._show_tshark_missing_modal()
-                return
-            # A spinner modal (not a transient toast) so a long decrypt never
-            # looks hung; the worker updates its status and dismisses it.
-            progress = DecryptProgressModal()
-            self._decrypt_progress = progress
-            self.app.push_screen(progress)
-            self.run_worker(
-                lambda: self._decrypt_worker(args, progress),
-                thread=True,
-                exclusive=True,
-                group="decrypt",
-            )
-
-        def _on_decrypt_progress(self, message: str) -> None:
-            """UI-thread handler: update the decrypt spinner's status line."""
-            modal = getattr(self, "_decrypt_progress", None)
-            if modal is not None:
-                modal.update_status(message)
-
-        def _dismiss_decrypt_progress(self, modal=None) -> None:
-            """UI-thread handler: close the decrypt spinner if still shown.
-
-            *modal* names a specific spinner (a cancelled worker closing its
-            own); by default the current one. ``finish()`` never closes a
-            screen stacked above the spinner (see DecryptProgressModal).
-            """
-            current = getattr(self, "_decrypt_progress", None)
-            if modal is None:
-                modal = current
-            if modal is current:
-                self._decrypt_progress = None
-            if modal is not None:
-                try:
-                    modal.finish()
-                except Exception:
-                    pass
-
-        def _decrypt_worker(self, args: dict, progress=None) -> None:
-            """Worker body: convert the pcap, then return to the UI thread.
-
-            *progress* is this run's spinner; a cancelled run closes it (and
-            only it, so a newer run's spinner stays up).
-            """
-            from textual.worker import get_current_worker
-
-            from friTap.offline.pcap_to_tap import pcap_to_tap
-            from friTap.offline.tshark import TsharkNotFoundError
-
-            worker = get_current_worker()
-
-            def _report(message: str) -> None:
-                if not worker.is_cancelled:
-                    self.app.call_from_thread(self._on_decrypt_progress, message)
-
-            try:
-                # Manifest-aware wrapper: a ``<pcap>.fritap.json`` sidecar fills
-                # only values the caller did NOT pass (ports, gap keylogs), the
-                # same precedence the ``--from-pcap`` CLI uses. Explicit wizard/
-                # open-pcap args always win.
-                result = pcap_to_tap(**args, use_manifest=True, progress=_report)
-            except TsharkNotFoundError:  # tshark invoked by a decryptor but missing
-                if not worker.is_cancelled:
-                    self.app.call_from_thread(self._dismiss_decrypt_progress)
-                    self.app.call_from_thread(self._show_tshark_missing_modal)
-                else:
-                    self._close_cancelled_spinner(progress)
-                return
-            except Exception as e:  # conversion failed
-                if not worker.is_cancelled:
-                    self.app.call_from_thread(self._on_decrypt_error, str(e))
-                else:
-                    self._close_cancelled_spinner(progress)
-                return
-            if worker.is_cancelled:
-                self._close_cancelled_spinner(progress)
-                return
-            coverage = self._zero_flow_coverage(args, result)
-            self.app.call_from_thread(
-                self._on_decrypt_done, args["tap_path"], result, coverage
-            )
-
-        def _close_cancelled_spinner(self, progress) -> None:
-            """Worker thread: a cancelled run still closes its own spinner.
-
-            Best effort — during app shutdown the UI loop may already be gone.
-            """
-            if progress is None:
-                return
-            try:
-                self.app.call_from_thread(self._dismiss_decrypt_progress, progress)
-            except Exception:
-                pass
-
-        @staticmethod
-        def _zero_flow_coverage(args: dict, result):
-            """``(severity, lines)`` explaining a 0-flow TLS conversion, else ``None``.
-
-            Runs in the decrypt worker thread (one tshark pass), only when the
-            conversion produced no flows and a TLS keylog was used. Advisory:
-            any failure yields ``None``.
-            """
-            keylog = args.get("keylog_path")
-            if getattr(result, "flow_count", 0) > 0 or not keylog:
-                return None
-            try:
-                from friTap.offline.keylog_coverage import (
-                    check_keylog_coverage,
-                    describe,
-                )
-                from friTap.offline.tshark import find_tshark
-                tshark = find_tshark(args.get("tshark_path"))
-                return describe(check_keylog_coverage(tshark, args["pcap_path"], keylog))
-            except Exception:
-                return None
-
-        @staticmethod
-        def _protocol_counter(result, prefix: str, key: str) -> int:
-            """``result.per_protocol[prefix][key]`` (see ``ConvertResult.record_protocol``), else 0."""
-            per_protocol = getattr(result, "per_protocol", None) or {}
-            return (per_protocol.get(prefix) or {}).get(key, 0)
-
-        @staticmethod
-        def _messaging_counter(result, key: str) -> int:
-            """Sum ``per_protocol[<messaging prefix>][key]`` across all prefixes.
-
-            Also adds a frozen v1 flat counter (``V1_FLAT_COUNTERS``) mapped to
-            *key*, but ONLY when its ``per_protocol`` bucket is absent (e.g. a
-            ``SimpleNamespace`` result in tests that sets just the flat field). On a
-            real ``ConvertResult`` the flat counter is a view of that bucket, so it
-            is never counted twice.
-            """
-            from friTap.offline.pcap_to_tap import messaging_buckets
-            from friTap.offline.result_schema import V1_FLAT_COUNTERS
-            total = sum(counts.get(key, 0) for _prefix, counts in messaging_buckets(result))
-            per_protocol = getattr(result, "per_protocol", None) or {}
-            for flat_name, prefix, bucket_key in V1_FLAT_COUNTERS:
-                if bucket_key == key and prefix not in per_protocol:
-                    total += getattr(result, flat_name, 0)
-            return total
-
-        @classmethod
-        def _degraded_stream_count(cls, result) -> int:
-            """Streams skipped because capture began mid-connection (all messaging protos).
-
-            Reads ``per_protocol[*]["degraded"]`` generically so MTProto, Telegram AND
-            Signal are all counted; short/unsupported-framing streams are deliberately
-            NOT included here (they are not "started mid-connection").
-            """
-            return cls._messaging_counter(result, "degraded")
-
-        @classmethod
-        def _recovered_via_obf_count(cls, result) -> int:
-            """Mid-stream streams re-derived from memory-scanned obfuscation keys.
-
-            A positive outcome (Workstream F): a capture that began mid-connection
-            was still opened because its obfuscation key was recovered from memory.
-            Counted generically across all messaging protocols.
-            """
-            return cls._messaging_counter(result, "recovered_via_obf")
-
-        @classmethod
-        def _degraded_unrecovered_count(cls, result) -> int:
-            """Streams where obfuscation-key recovery was attempted but no key aligned.
-
-            Distinct from plain ``degraded``: a recovery pass ran but could not line
-            up a key, so the honest fix is to capture the keys concurrently or widen
-            the search rather than simply re-capturing in spawn mode.
-            """
-            return cls._messaging_counter(result, "degraded_unrecovered")
-
-        @classmethod
-        def _short_stream_count(cls, result) -> int:
-            """Streams too short to open (a start gap / too little client data).
-
-            NOT counted as ``degraded`` (they are not "started mid-connection"), so
-            they are surfaced on their own line.
-            """
-            return cls._messaging_counter(result, "short")
-
-        @classmethod
-        def _undecryptable_record_count(cls, result) -> int:
-            """Records with no matching key in the keylog (all messaging protos)."""
-            return cls._messaging_counter(result, "undecryptable")
-
-        @staticmethod
-        def _e2e_only_no_transport(result) -> bool:
-            """True if an E2E key was present but no transport auth key (any messaging proto).
-
-            In that case the transport envelope never decrypted, so the E2E
-            (secret-chat) blobs inside it were never reached — a distinct, honest
-            explanation for a 0-flow result.
-            """
-            from friTap.offline.pcap_to_tap import messaging_buckets
-            return any(bool(counts.get("e2e_only")) for _prefix, counts in messaging_buckets(result))
-
-        @staticmethod
-        def _unknown_key_ids(result) -> list:
-            """Sorted hex auth_key_ids seen on the wire with no matching key.
-
-            These travel in the clear, so surfacing them tells the user exactly which
-            transport keys to go capture.
-            """
-            from friTap.offline.pcap_to_tap import messaging_buckets
-            ids: set = set()
-            for _prefix, counts in messaging_buckets(result):
-                ids.update(counts.get("unknown_key_ids") or {})
-            return sorted(ids)
-
-        @staticmethod
-        def _coverage_message(coverage) -> Optional[str]:
-            """0-flow explanation from a keylog-coverage ``(severity, lines)``."""
-            if not coverage or not coverage[1]:
-                return None
-            severity, lines = coverage
-            prefix = "Decryption produced no flows" if severity == "ok" else "Decrypted 0 flows"
-            return f"{prefix}: " + " ".join(lines)
-
-        def _on_decrypt_done(self, tap_path: str, result, coverage=None) -> None:
-            """UI-thread handler: load the produced .tap into the flow view.
-
-            *coverage* is the worker-computed TLS keylog coverage
-            ``(severity, lines)`` used to explain a 0-flow result.
-            """
-            import os
-            self._dismiss_decrypt_progress()
-            flow_count = getattr(result, "flow_count", 0)
-            if flow_count > 0:
-                self.reload_replay(tap_path)
-                self.app.notify(
-                    f"Decrypted {flow_count} flow"
-                    f"{'s' if flow_count != 1 else ''} -> {os.path.basename(tap_path)}",
-                    severity="information",
-                )
-                # A successful decrypt can still be PARTIAL: streams whose
-                # connection-start bytes were missed (capture began after the
-                # connection opened) are silently skipped for obfuscated
-                # transports (MTProto/Signal). Warn so the user knows messages on
-                # those streams are absent and how to recover them — otherwise the
-                # "Decrypted N flows" success message hides the gap.
-                # Report EVERY per-stream outcome bucket the decryptor produced, not
-                # just the mid-connection one — mirroring the CLI summary in
-                # friTap/offline/cli.py so the TUI no longer hides both the
-                # memory-key successes and the true reason a stream failed.
-                degraded = self._degraded_stream_count(result)
-                recovered = self._recovered_via_obf_count(result)
-                degraded_unrecovered = self._degraded_unrecovered_count(result)
-                short = self._short_stream_count(result)
-                positive_notes: list = []
-                warning_notes: list = []
-                if recovered > 0:
-                    positive_notes.append(
-                        f"{recovered} mid-stream Telegram stream"
-                        f"{'s' if recovered != 1 else ''} recovered from "
-                        f"memory-scanned obfuscation key"
-                        f"{'s' if recovered != 1 else ''}."
-                    )
-                if degraded > 0:
-                    warning_notes.append(
-                        f"{degraded} stream{'s' if degraded != 1 else ''} started "
-                        "mid-connection and could not be decrypted — messages on "
-                        f"{'those' if degraded != 1 else 'that'} stream"
-                        f"{'s' if degraded != 1 else ''} are missing. Re-capture from "
-                        "connection start (spawn mode) to recover them."
-                    )
-                if degraded_unrecovered > 0:
-                    warning_notes.append(
-                        f"{degraded_unrecovered} stream"
-                        f"{'s' if degraded_unrecovered != 1 else ''}: obfuscation-key "
-                        "recovery attempted but no key aligned (capture the keys "
-                        "concurrently / widen the search)."
-                    )
-                if short > 0:
-                    warning_notes.append(
-                        f"{short} short stream{'s' if short != 1 else ''} "
-                        "(start gap / too little data)."
-                    )
-                notes = positive_notes + warning_notes
-                if notes:
-                    if warning_notes:
-                        title, severity = "Partial Decryption", "warning"
-                    else:
-                        title, severity = "Decryption Note", "information"
-                    self._alert("\n".join(notes), title=title, severity=severity)
-                return
-
-            # 0 flows: explain *why* instead of a bare message. Report the causes
-            # MOST-SPECIFIC-FIRST so the true one is not masked by a vaguer fallback:
-            #   1. E2E-only  -- an E2E key but no transport auth key: the envelope
-            #      can't be opened, so the messages inside can't be reached.
-            #   2. undecryptable -- records named a key the keylog did not hold.
-            #   3. degraded  -- streams that genuinely started mid-connection.
-            #   4. coverage / bare fallback.
-            # (Previously "degraded" was checked first and masked the real cause; a
-            # short/lossy or unsupported-framing stream no longer counts as degraded.)
-            e2e_only = self._e2e_only_no_transport(result)
-            degraded = self._degraded_stream_count(result)
-            undecryptable = self._undecryptable_record_count(result)
-            unknown_key_ids = self._unknown_key_ids(result)
-            coverage_message = self._coverage_message(coverage)
-            if e2e_only:
-                message = (
-                    "Decrypted 0 flows: the keylog has a secret-chat (E2E) key but no "
-                    "MTProto transport auth key — the transport envelope can't be "
-                    "decrypted, so the messages inside can't be reached. Capture "
-                    "transport auth keys with a spawn `-k` run or `-ms` memory-scan."
-                )
-            elif undecryptable > 0:
-                message = (
-                    f"Decrypted 0 flows: {undecryptable} record"
-                    f"{'s' if undecryptable != 1 else ''} had no matching key in the "
-                    "keylog (key not captured this session)."
-                )
-            elif degraded > 0:
-                message = (
-                    f"Decrypted 0 flows: {degraded} stream"
-                    f"{'s' if degraded != 1 else ''} started mid-connection "
-                    "(capture began after the connection opened). Re-capture from "
-                    "connection start — open chats/scroll to force new connections, "
-                    "or use spawn mode."
-                )
-            elif coverage_message:
-                message = coverage_message
-            else:
-                message = "Decryption produced no flows."
-
-            # The unknown auth_key_id(s) travel in the clear, so name them: they are
-            # the exact search terms for a follow-up key hunt / memory scan.
-            if unknown_key_ids:
-                shown = ", ".join(unknown_key_ids[:8])
-                if len(unknown_key_ids) > 8:
-                    shown += f", … (+{len(unknown_key_ids) - 8} more)"
-                message += (
-                    f" Unknown auth_key_id{'s' if len(unknown_key_ids) != 1 else ''} "
-                    f"seen on the wire (capture these keys): {shown}."
-                )
-
-            # Still load the (empty) tap if one was written, to keep the view consistent.
-            if os.path.isfile(tap_path):
-                self.reload_replay(tap_path)
-            # The 0-flow explanation is several sentences (coverage/degraded/
-            # undecryptable): show a dismissible modal, not a transient toast, so
-            # it stays readable until the user acknowledges it.
-            self._alert(message, title="No Flows Decrypted", severity="warning")
-
-        def _on_decrypt_error(self, message: str) -> None:
-            """UI-thread handler: report a conversion failure."""
-            self._dismiss_decrypt_progress()
-            self._alert(
-                f"Decrypt failed: {message}",
-                title="Decrypt Failed",
-                severity="error",
-            )
-
-        def _show_tshark_missing_modal(self) -> None:
-            """UI-thread handler: show the single-source 'install tshark' modal.
-
-            The install instructions are multi-line, so a dismissible modal (not a
-            transient toast) is used; the message text comes from the one source in
-            friTap.offline.tshark so the TUI and CLI stay in sync.
-            """
-            from friTap.offline.tshark import TSHARK_INSTALL_MESSAGE
-
-            from ..modals.alert_modal import AlertModal
-            self.app.push_screen(
-                AlertModal(
-                    message=TSHARK_INSTALL_MESSAGE,
-                    title="tshark not found",
-                    severity="error",
-                )
-            )
-            self._get_activity_log().log_warning(
-                "tshark not found — offline decryption unavailable"
-            )
-
-        @staticmethod
-        def _signal_server_endpoint(flow):
-            """The (addr, port) of the service side — the lower port (e.g. 443)."""
-            if flow.src_port <= flow.dst_port:
-                return (flow.src_addr, flow.src_port)
-            return (flow.dst_addr, flow.dst_port)
-
-        def _signal_conversation_siblings(self, flow) -> list:
-            """Signal flows of this session sharing the same chat-server endpoint.
-
-            Signal splits one logical conversation across several TCP connections
-            (outbound vs inbound, plus metadata fetches, on different local ports to
-            the same chat server). One websocket multiplexes all conversations, so
-            grouping by the service endpoint alone reunites them — the Message tab
-            then renders one merged, time-ordered transcript. (chat_type is NOT part
-            of the key: a single connection carries both 1:1 and group messages, and
-            metadata-only connections have an empty chat_type.)
-            """
-            if getattr(flow, "transport", "") != "signal":
-                return []
-            key = self._signal_server_endpoint(flow)
-            # Identify siblings from the cheap in-memory summaries, then load
-            # only the matches as full Flows (on-demand, LRU-cached). This avoids
-            # decoding EVERY flow in the .tap (chunks + bodies + layers) on every
-            # detail-open just to test transport == "signal".
-            if self._replay_ctrl is not None:
-                sibling_ids = [
-                    s.flow_id
-                    for s in self._replay_ctrl.get_summaries()
-                    if getattr(s, "transport", "") == "signal"
-                    and self._signal_server_endpoint(s) == key
-                ]
-                siblings = [self._replay_ctrl.get_flow(fid) for fid in sibling_ids]
-                return [f for f in siblings if f is not None]
-            # Live mode: flows are already fully materialized in the collector,
-            # so iterating them in memory is cheap (no disk re-read).
-            collector = self._capture.flow_collector
-            flows = collector.get_flows() if collector else []
-            return [
-                f for f in flows
-                if getattr(f, "transport", "") == "signal"
-                and self._signal_server_endpoint(f) == key
-            ]
-
-        def _telegram_e2e_conversation_siblings(self, flow) -> list:
-            """Secret-Chat flows sharing *flow*'s chat key (same ``ssl_session_id``).
-
-            A Secret Chat's messages can land in several flows (one per packet
-            pair); the shared ``telegram_e2e:<fingerprint>`` session id reunites
-            them so the Message tab renders one deduped, time-ordered transcript.
-            """
-            if getattr(flow, "transport", "") != "telegram_e2e":
-                return []
-            session_id = getattr(flow, "ssl_session_id", "") or ""
-            if not session_id:
-                return []
-
-            def matches(candidate) -> bool:
-                return (getattr(candidate, "transport", "") == "telegram_e2e"
-                        and getattr(candidate, "ssl_session_id", "") == session_id)
-
-            return self._sibling_flows_matching(matches)
-
-        def _sibling_flows_matching(self, matches) -> list:
-            """Full Flows whose summary (replay) or live flow satisfies *matches*.
-
-            Replay filters the cheap summaries first and loads only the hits
-            (on-demand, LRU-cached); live mode filters the collector's flows.
+            Override point for the replay-only viewer. Replay counts the .tap's
+            flows; live capture counts the collector's flows.
             """
             if self._replay_ctrl is not None:
-                sibling_ids = [s.flow_id for s in self._replay_ctrl.get_summaries()
-                               if matches(s)]
-                siblings = [self._replay_ctrl.get_flow(fid) for fid in sibling_ids]
-                return [f for f in siblings if f is not None]
-            collector = self._capture.flow_collector
-            flows = collector.get_flows() if collector else []
-            return [f for f in flows if matches(f)]
+                return self._replay_ctrl.flow_count > 0
+            collector = self._live_flow_collector()
+            return collector is not None and len(collector.get_flows()) > 0
 
-        def _mtproto_conversation_siblings(self, flow) -> list:
-            """Cloud-chat flows carrying text for the same peer as *flow*.
+        def _divert_analyzer_key(self) -> bool:
+            """Give 'a' its host meaning when no flows are loaded; True if diverted.
 
-            Every MTProto packet is its own flow, so a cloud chat spreads over
-            many rows. Candidates are pre-filtered on the cheap chat-ranked
-            Method scalar, then loaded and kept when one of their chat-text
-            entries shares a conversation key with *flow*'s.
+            Override point for the replay-only viewer (never diverts there).
+            MainScreen: outside replay and with no captured flows, 'a' attaches.
             """
-            from friTap.flow import telegram_conversation as tconv
-            if getattr(flow, "transport", "") != "mtproto":
-                return []
-            self_id = self._telegram_self_id(flow)
-            keys = tconv.conversation_keys_of(flow, self_id)
-            if not keys:
-                return []
+            if self._replay_ctrl is None and not self._has_capture_flows():
+                self.action_attach()
+                return True
+            return False
 
-            def matches(candidate) -> bool:
-                return (getattr(candidate, "transport", "") == "mtproto"
-                        and tconv.flow_has_chat_text(candidate))
+        def _analyzer_flow_ids_and_getter(self):
+            """``(flow_ids, get_flow)`` for an analyzer run over the loaded flows.
 
-            return [f for f in self._sibling_flows_matching(matches)
-                    if tconv.conversation_keys_of(f, self_id) & keys]
+            Override point for the replay-only viewer. Replay loads full flows
+            (with bodies) from disk on demand; capture keeps them in the collector.
+            """
+            if self._replay_ctrl is not None:
+                flow_ids = [s.flow_id for s in self._replay_ctrl.get_summaries()]
+                return flow_ids, self._replay_ctrl.get_flow
+            collector = self._live_flow_collector()
+            flows = list(collector.get_flows()) if collector else []
+            flow_map = {f.flow_id: f for f in flows}
+            return list(flow_map), flow_map.get
 
-        @staticmethod
-        def _telegram_self_id(flow) -> int:
-            """The capturing account's user id from *flow*'s structured users (0 if unknown)."""
-            try:
-                layer = flow.layer(getattr(flow, "transport", ""))
-            except Exception:
-                layer = None
-            for user in getattr(layer, "users", None) or []:
-                if isinstance(user, dict) and "self" in (user.get("flags") or []):
-                    return int(user.get("id") or 0)
-            return 0
+        def _is_capturing(self) -> bool:
+            """True while a live capture's SSL logger is running.
 
-        def _conversation_siblings(self, flow) -> list:
-            """Dispatch to the per-protocol conversation-sibling lookup."""
-            if getattr(flow, "transport", "") == "telegram_e2e":
-                return self._telegram_e2e_conversation_siblings(flow)
-            if getattr(flow, "transport", "") == "mtproto":
-                return self._mtproto_conversation_siblings(flow)
-            return self._signal_conversation_siblings(flow)
+            Override point for the replay-only viewer (always False there).
+            """
+            return bool(self._ssl_logger and self._ssl_logger.running)
 
-        def _flow_row_resolver(self):
-            """``flow_id -> row number`` of the flow list, for ``#N`` cross-references."""
-            try:
-                return self.query_one("#flow-list", FlowListWidget).row_number_of
-            except Exception:
-                return None
+        def _escape_running_capture(self) -> None:
+            """Esc while capturing: let the capture controller stop the capture.
 
-        def _present_flow_detail(self, flow) -> None:
-            """Show the flow detail widget for a given Flow object."""
-            self.query_one("#flow-list").display = False
+            Override point for the replay-only viewer (never capturing there).
+            """
+            self._capture.action_escape_action()
+
+        def _request_close(self) -> None:
+            """Esc at the top level: leave the screen.
+
+            Override point for the replay-only viewer, which dismisses itself
+            instead. MainScreen asks the app to quit (with confirmation).
+            """
+            self.app.action_quit()
+
+        def _start_live_tap_recording(self, path: str) -> None:
+            """Save a live capture's flows to *path* (.tap) via the collector.
+
+            Override point for the replay-only viewer (never live there).
+            """
+            self._capture.start_tap_recording(path)
+
+        def _hide_host_panels(self) -> None:
+            """Hide host chrome (console log, left menu/status panel) for flow views.
+
+            Override point for the replay-only viewer, which has no such panels.
+            """
+            self.query_one("#activity-log").display = False
             self.query_one("#left-panel").display = False
-            self._hide_findings_widgets()
-            detail = self.query_one("#flow-detail", FlowDetailWidget)
-            # Reunite the Signal conversation's per-connection flows (empty for
-            # non-Signal flows -> single-flow behavior) before rendering.
-            try:
-                detail.set_conversation_siblings(
-                    self._conversation_siblings(flow)
-                )
-            except Exception:
-                detail.set_conversation_siblings([])
-            detail.set_row_resolver(self._flow_row_resolver())
-            detail.show_flow(flow)
-            detail.display = True
-            self._update_detail_title()
+            self.query_one("#right-panel").add_class("flow-mode")
 
-            def _focus_tabs():
-                try:
-                    inner_tabs = detail.query_one("#flow-tabs Tabs")
-                    inner_tabs.focus()
-                except Exception:
-                    detail.focus()
-                detail.scroll_to_top()
+        def _flow_title_hints(self) -> list:
+            """Host-specific hints appended after "w: save .tap" in the flow title.
 
-            self.call_after_refresh(_focus_tabs)
-
-        def action_save_tap(self) -> None:
-            """Show save dialog for .tap file export."""
-            # In replay mode, re-export is available too
-            if self._replay_ctrl is not None:
-                collector_has_flows = self._replay_ctrl.flow_count > 0
-            else:
-                collector_has_flows = (
-                    self._capture.flow_collector is not None
-                    and len(self._capture.flow_collector.get_flows()) > 0
-                )
-
-            if not collector_has_flows:
-                from ..modals.alert_modal import AlertModal
-                self.app.push_screen(
-                    AlertModal(
-                        message="No flows to save.\nStart a capture with flow view first.",
-                        title="Save Capture",
-                        severity="warning",
-                    )
-                )
-                return
-
-            from ..modals.save_tap_modal import SaveTapModal
-            self.app.push_screen(SaveTapModal(), callback=self._on_save_tap_result)
-
-        def _on_save_tap_result(self, path: str | None) -> None:
-            """Handle the result from SaveTapModal."""
-            if path is None:
-                return
-
-            if self._replay_ctrl is not None:
-                # Re-export from replay: write all flows to new file
-                self._export_replay_to_tap(path)
-            else:
-                # Live capture: wire the TapWriter to the FlowCollector
-                self._capture.start_tap_recording(path)
-
-        def _export_replay_to_tap(self, path: str) -> None:
-            """Export all replay flows to a new .tap file."""
-            from friTap.flow.tap_writer import TapWriter
-
-            try:
-                writer = TapWriter()
-                header = self._replay_ctrl.header
-                target = header.capture_target if header else ""
-                writer.open(path, target=target)
-
-                # Findings to persist: the .tap's original stored findings
-                # UNIONED with anything computed this session (deduped), grouped
-                # by flow. Merging — rather than writing only the session cache —
-                # means re-saving never drops findings the .tap already carried.
-                findings_by_flow = self._collect_export_findings()
-
-                written_ids: set[str] = set()
-                for flow in self._replay_ctrl.get_flows():
-                    writer.write_flow(flow)
-                    written_ids.add(flow.flow_id)
-                    flow_findings = findings_by_flow.get(flow.flow_id)
-                    if flow_findings:
-                        writer.write_findings(flow.flow_id, flow_findings)
-
-                # Preserve findings whose flow_id isn't among the written flows
-                # (e.g. cross-flow findings with an empty flow_id).
-                for fid, flow_findings in findings_by_flow.items():
-                    if fid not in written_ids and flow_findings:
-                        writer.write_findings(fid, flow_findings)
-
-                # Carry the Java request contexts (--attribute-sdk) over too.
-                for record in self._replay_ctrl.read_request_contexts():
-                    writer.write_request_context(record)
-
-                writer.close()
-
-                from ..modals.alert_modal import AlertModal
-                self.app.push_screen(
-                    AlertModal(
-                        message=f"Exported {writer.flow_count} flows to:\n[bold]{path}[/]",
-                        title="Export Complete",
-                        severity="info",
-                    )
-                )
-            except Exception as e:
-                from ..modals.alert_modal import AlertModal
-                self.app.push_screen(
-                    AlertModal(
-                        message=f"Export failed:\n{e}",
-                        title="Export Error",
-                        severity="error",
-                    )
-                )
-
-        def _collect_export_findings(self) -> "dict[str, list]":
-            """Findings to persist on export, grouped by flow_id.
-
-            Unions the .tap's original stored findings (read straight from the
-            controller, independent of the session cache) with this session's
-            analyzer results, deduplicated. This keeps re-saving non-destructive
-            even though the in-session view uses a replace-per-run cache.
+            Override point for the replay-only viewer.
             """
-            seen: set = set()
-            by_flow: dict[str, list] = {}
+            hints = ["[dim]r: restart wizard[/]"]
+            if self._replay_ctrl is None:
+                hints.append("[dim]f: console view[/]")
+            if self._is_capturing():
+                hints.append(f"[bold {c('success')}]Esc: stop capture[/]")
+            return hints
 
-            def add(item) -> None:
-                finding = item
-                if isinstance(item, dict):
-                    try:
-                        finding = Finding.from_dict(item)
-                    except Exception:
-                        return
-                sev = getattr(finding, "severity", None)
-                severity = getattr(sev, "value", sev)
-                key = (
-                    getattr(finding, "flow_id", ""),
-                    getattr(finding, "source", ""),
-                    severity,
-                    getattr(finding, "title", ""),
-                    getattr(finding, "description", ""),
-                )
-                if key in seen:
-                    return
-                seen.add(key)
-                by_flow.setdefault(getattr(finding, "flow_id", ""), []).append(finding)
+        def _replay_banner_hints(self) -> str:
+            """Key hints closing the initial replay banner (inside its ``[dim]``).
 
+            Override point for the replay-only viewer.
+            """
+            return (" | Enter: details | /: filter | a: analyzers | w: export"
+                    " | r: restart wizard | q: quit")
+
+        def _no_flows_to_save_message(self) -> str:
+            """Capture-aware hint (override of the replay-only default)."""
+            return "No flows to save.\nStart a capture with flow view first."
+
+        def _update_capture_indicator(self) -> None:
+            """Refresh the left-pinned indicator: ▣ TAP / ● CAPTURING / ■ stopped.
+
+            Override point for the replay-only viewer.
+            """
             try:
-                for item in self._replay_ctrl.read_all_findings():
-                    add(item)
+                ind = self.query_one("#capture-indicator", Static)
             except Exception:
-                pass
-            for finding in (self._findings_cache or []):
-                add(finding)
-            return by_flow
+                return
+
+            if self._replay_ctrl is not None:
+                ind.update(self._tap_indicator_markup(self._replay_filename))
+                return
+
+            if self._is_capturing():
+                ind.update(f"[bold {c('error')}]● CAPTURING[/]")
+            else:
+                ind.update("[dim]■ stopped[/]")
 
         # ----------------------------------------------------------
         # State helpers
@@ -1303,19 +378,6 @@ if TEXTUAL_AVAILABLE:
 
         def _get_menu_panel(self) -> MenuPanel:
             return self.query_one("#menu-panel", MenuPanel)
-
-        def _alert(
-            self, message: str, title: str = "", severity: str = "warning",
-        ) -> None:
-            """Push a dismissible AlertModal for an error/warning.
-
-            Used instead of a transient ``notify`` toast so multi-line
-            explanations stay on screen until the user dismisses them.
-            """
-            from ..modals.alert_modal import AlertModal
-            self.app.push_screen(
-                AlertModal(message=message, title=title, severity=severity)
-            )
 
         # ----------------------------------------------------------
         # Background checks
@@ -1458,32 +520,6 @@ if TEXTUAL_AVAILABLE:
             except Exception:
                 pass
             self._start_wizard()
-
-        def action_escape_action(self) -> None:
-            # Analyzer finding-detail → back to the findings list (filter kept).
-            if self.query_one("#finding-detail").display:
-                self._back_to_findings_list()
-                return
-            flow_detail = self.query_one("#flow-detail")
-            if flow_detail.display:
-                if self._detail_origin == "finding":
-                    self._restore_finding_detail()
-                else:
-                    self._back_to_flow_list()
-                return
-            # Findings list → step up the hierarchy: a filtered (category) view
-            # clears back to all findings, then all findings backs to the flows.
-            if self._findings_list_displayed():
-                if self.query_one("#findings-list", FindingsListWidget).has_filter:
-                    self.action_clear_filter()
-                else:
-                    self._activate_flow_view()
-                return
-            if self._ssl_logger and self._ssl_logger.running:
-                self._capture.action_escape_action()
-                return
-            # Not capturing → trigger quit confirmation
-            self.app.action_quit()
 
         # ----------------------------------------------------------
         # Device selection
@@ -1804,87 +840,7 @@ if TEXTUAL_AVAILABLE:
         # Flow view management
         # ----------------------------------------------------------
 
-        def _activate_flow_view(self) -> None:
-            """Switch right panel to full-screen flow list view."""
-            self.query_one("#activity-log").display = False
-            self.query_one("#flow-detail").display = False
-            self._hide_findings_widgets()
-            self.query_one("#flow-list").display = True
-            self.query_one("#filter-bar").display = True
-            self.query_one("#left-panel").display = False
-            self.query_one("#right-panel").add_class("flow-mode")
-            self.query_one("#flow-list").focus()
-            self._update_flow_title()
-
-        @property
-        def _mode_label(self) -> str:
-            return "friTap Replay" if self._replay_ctrl else "friTap Flow View"
-
-        def _set_title_hints(self, hint_str: str) -> None:
-            """Update the activity title bar with the given hint text.
-
-            The caller is responsible for any inline markup (e.g. [dim]).
-            """
-            try:
-                title = self.query_one("#activity-title", Static)
-                title.update(
-                    f"[bold {c('primary')}]{self._mode_label}[/]  {hint_str}"
-                )
-            except Exception:
-                pass
-
-        def _update_flow_title(self) -> None:
-            """Update the flow view title bar based on current state."""
-            capturing = self._ssl_logger and self._ssl_logger.running
-            hints: list[str] = [
-                "[dim]Enter: flow details[/]",
-                "[dim]/: filter[/]",
-            ]
-            try:
-                filter_bar = self.query_one("#filter-bar", FilterBar)
-                if filter_bar.has_active_filter:
-                    hints.append("[dim]Shift+Esc: clear filter[/]")
-            except Exception:
-                pass
-            hints.append("[dim]a: analyzers[/]")
-            hints.append("[dim]w: save .tap[/]")
-            hints.append("[dim]r: restart wizard[/]")
-            if self._replay_ctrl is None:
-                hints.append("[dim]f: console view[/]")
-            if capturing:
-                hints.append(f"[bold {c('success')}]Esc: stop capture[/]")
-            self._set_title_hints(" [dim]|[/] ".join(hints))
-            self._update_capture_indicator()
-
-        def _update_capture_indicator(self) -> None:
-            """Refresh the left-pinned indicator: ▣ TAP / ● CAPTURING / ■ stopped."""
-            try:
-                ind = self.query_one("#capture-indicator", Static)
-            except Exception:
-                return
-
-            if self._replay_ctrl is not None:
-                ind.update(f"[bold {c('info')}]▣ TAP: {self._replay_filename or 'tap'}[/]")
-                return
-
-            capturing = self._ssl_logger and self._ssl_logger.running
-            if capturing:
-                ind.update(f"[bold {c('error')}]● CAPTURING[/]")
-            else:
-                ind.update("[dim]■ stopped[/]")
-
-        def _clear_title_indicators(self) -> None:
-            """Blank the left indicator and right spacer (used outside flow view)."""
-            try:
-                self.query_one("#capture-indicator", Static).update("")
-                self.query_one("#title-spacer", Static).update("")
-            except Exception:
-                pass
-
-        def _update_detail_title(self) -> None:
-            """Update the title bar with detail-view hints."""
-            self._clear_title_indicators()
-            self._set_title_hints("[dim]Esc: back | Tab: switch tabs | p: parse | s: save body[/]")
+        # _update_capture_indicator is a host hook (see "Host hooks" above).
 
         def _activate_legacy_view(self) -> None:
             """Switch right panel to legacy activity log view."""
@@ -1898,560 +854,11 @@ if TEXTUAL_AVAILABLE:
             self._clear_title_indicators()
             try:
                 title = self.query_one("#activity-title", Static)
-                capturing = self._ssl_logger and self._ssl_logger.running
+                capturing = self._is_capturing()
                 suffix = f"  [bold {c('success')} on {c('bg-capture')}] CAPTURING [/]" if capturing else ""
                 title.update(f"[bold {c('success')}]friTap Console[/]{suffix}  [dim]press f to toggle[/]")
             except Exception:
                 pass
-
-        def _lookup_flow(self, flow_id: str):
-            """Load a full Flow by id from the replay controller or live collector."""
-            if self._replay_ctrl is not None:
-                return self._replay_ctrl.get_flow(flow_id)
-            collector = self._capture.flow_collector
-            return collector.get_flow(flow_id) if collector else None
-
-        def _show_flow_detail(self, flow_id: str) -> None:
-            """Show the regular flow-detail view for a specific flow (from the flow list)."""
-            flow = self._lookup_flow(flow_id)
-            if not flow:
-                return
-            self._detail_origin = "flow"
-            self._present_flow_detail(flow)
-
-        def _back_to_flow_list(self) -> None:
-            """Return from detail view to flow list."""
-            self.query_one("#flow-detail").display = False
-            self.query_one("#flow-list").display = True
-            self.query_one("#flow-list").focus()
-            self._update_flow_title()
-
-        def on_flow_list_widget_flow_selected(self, event: FlowListWidget.FlowSelected) -> None:
-            """Handle flow selection from the flow list."""
-            self._show_flow_detail(event.flow_id)
-
-        def on_flow_detail_widget_back_requested(self, event: FlowDetailWidget.BackRequested) -> None:
-            """Handle back request from flow detail.
-
-            If the flow detail was opened from a finding (via ``d``), step back
-            to the analyzer finding-detail view; otherwise to the flow list.
-            """
-            if self._detail_origin == "finding":
-                self._restore_finding_detail()
-            else:
-                self._back_to_flow_list()
-
-        def _restore_finding_detail(self) -> None:
-            """Return from the regular flow detail to the analyzer finding detail."""
-            self._detail_origin = "finding"
-            self.query_one("#flow-detail").display = False
-            detail = self.query_one("#finding-detail", AnalyzerFindingDetailWidget)
-            detail.display = True
-            self._update_finding_detail_title()
-            detail.focus()
-
-        # ----------------------------------------------------------
-        # Findings view management
-        # ----------------------------------------------------------
-
-        def _findings_list_displayed(self) -> bool:
-            """Return True if the findings list is currently displayed."""
-            try:
-                return bool(self.query_one("#findings-list").display)
-            except Exception:
-                return False
-
-        def _hide_findings_widgets(self) -> None:
-            """Hide the findings list, filter bar + finding detail (no-op if not yet composed)."""
-            try:
-                self.query_one("#findings-list").display = False
-                self.query_one("#findings-filter-bar").display = False
-                self.query_one("#finding-detail").display = False
-            except Exception:
-                pass
-
-        def _load_findings(self) -> list:
-            """Lazily load and cache findings as Finding objects.
-
-            Sources findings from the replay controller (offline .tap) via the
-            presentation-agnostic ``read_all_findings`` passthrough.
-            """
-            if self._findings_cache is not None:
-                return self._findings_cache
-
-            findings: list = []
-            if self._replay_ctrl is not None:
-                try:
-                    for item in self._replay_ctrl.read_all_findings():
-                        try:
-                            # read_findings() reconstructs Finding objects, but
-                            # accept plain dicts too for forward-compatibility.
-                            if isinstance(item, Finding):
-                                findings.append(item)
-                            elif isinstance(item, dict):
-                                findings.append(Finding.from_dict(item))
-                        except Exception:
-                            continue
-                except Exception:
-                    findings = []
-
-            self._findings_cache = findings
-            return findings
-
-        def _activate_findings_view(self) -> None:
-            """Switch right panel to full-screen findings list view."""
-            findings = self._load_findings()
-
-            findings_list = self.query_one("#findings-list", FindingsListWidget)
-            if findings_list.total_count == 0 and findings:
-                findings_list.add_findings(findings)
-
-            # Hide other right-panel views and the left panel.
-            self.query_one("#activity-log").display = False
-            self.query_one("#flow-list").display = False
-            self.query_one("#flow-detail").display = False
-            self.query_one("#finding-detail").display = False
-            self.query_one("#filter-bar").display = False
-            self.query_one("#analyzer-panel").display = False
-            self.query_one("#left-panel").display = False
-            self.query_one("#right-panel").add_class("flow-mode")
-
-            # Show findings widgets.
-            self.query_one("#findings-filter-bar").display = True
-            findings_list.display = True
-
-            self._update_findings_title()
-            findings_list.focus()
-
-        def _update_findings_title(self) -> None:
-            """Update the title bar with findings-view hints."""
-            try:
-                findings_list = self.query_one("#findings-list", FindingsListWidget)
-                total = findings_list.total_count
-            except Exception:
-                total = 0
-
-            if total == 0:
-                hint = "[dim]No findings — re-run with --scan[/]"
-            else:
-                hints = [
-                    f"[dim]{total} finding{'s' if total != 1 else ''}[/]",
-                    "[dim]Enter: open[/]",
-                    "[dim]/: filter[/]",
-                    "[dim]c: creds  p: pii  1: critical[/]",
-                    "[dim]Esc: back[/]",
-                    "[dim]w: save[/]",
-                    "[dim]shift+f: flows[/]",
-                ]
-                hint = " [dim]|[/] ".join(hints)
-            self._set_title_hints(hint)
-            self._update_capture_indicator()
-
-        def action_toggle_findings_view(self) -> None:
-            """Toggle the findings view (Shift+F)."""
-            if self._findings_list_displayed():
-                self._activate_flow_view()
-            else:
-                self._activate_findings_view()
-
-        def _apply_findings_filter(self, flt: "FindingFilter", label: str) -> None:
-            """Apply a findings filter via the findings filter bar."""
-            try:
-                bar = self.query_one("#findings-filter-bar", FindingsFilterBar)
-                bar.apply_filter(flt, label)
-            except Exception:
-                pass
-
-        def action_findings_quick_creds(self) -> None:
-            """Quick filter to credential findings (c key, findings view only)."""
-            if not self._findings_list_displayed():
-                return
-            self._apply_findings_filter(
-                FindingFilter(sources=frozenset({"credentials"})), "credentials"
-            )
-
-        def action_findings_quick_pii(self) -> None:
-            """Quick filter to PII findings (p key, findings view only)."""
-            if not self._findings_list_displayed():
-                return
-            self._apply_findings_filter(
-                FindingFilter(categories=frozenset({"pii"})), "pii"
-            )
-
-        def action_findings_quick_critical(self) -> None:
-            """Quick filter to critical findings (1 key, findings view only)."""
-            if not self._findings_list_displayed():
-                return
-            self._apply_findings_filter(
-                FindingFilter(min_severity="critical"), "critical"
-            )
-
-        def on_findings_filter_bar_findings_filter_changed(
-            self, event: "FindingsFilterBar.FindingsFilterChanged"
-        ) -> None:
-            """Apply the filter from the findings filter bar to the list."""
-            try:
-                findings_list = self.query_one("#findings-list", FindingsListWidget)
-                findings_list.set_filter(event.flt)
-            except Exception:
-                pass
-
-        def on_findings_list_widget_finding_selected(
-            self, event: "FindingsListWidget.FindingSelected"
-        ) -> None:
-            """When a finding is selected, open the analyzer finding-detail view."""
-            findings_list = self.query_one("#findings-list", FindingsListWidget)
-            finding = findings_list.finding_at(event.index)
-            if finding is None:
-                return
-            flow = self._lookup_flow(event.flow_id) if event.flow_id else None
-            self._present_finding_detail(finding, flow)
-
-        # ----------------------------------------------------------
-        # Analyzer finding-detail view (finding-centric, with base64 decode)
-        # ----------------------------------------------------------
-
-        def _present_finding_detail(self, finding, flow) -> None:
-            """Show the finding-centric detail view for a selected finding."""
-            self._detail_origin = "finding"
-            self.query_one("#findings-list").display = False
-            self.query_one("#findings-filter-bar").display = False
-            self.query_one("#flow-detail").display = False
-            self.query_one("#left-panel").display = False
-            self.query_one("#right-panel").add_class("flow-mode")
-            detail = self.query_one("#finding-detail", AnalyzerFindingDetailWidget)
-            detail.show_finding(finding, flow)
-            detail.display = True
-            self._update_finding_detail_title()
-
-            def _focus():
-                detail.focus()
-                detail.scroll_to_top()
-            self.call_after_refresh(_focus)
-
-        def _back_to_findings_list(self) -> None:
-            """Return from the finding detail to the findings list (filter preserved)."""
-            self.query_one("#finding-detail").display = False
-            self.query_one("#flow-detail").display = False
-            self._activate_findings_view()
-
-        def _update_finding_detail_title(self) -> None:
-            """Title-bar hints for the analyzer finding-detail view."""
-            self._clear_title_indicators()
-            self._set_title_hints(
-                "[dim]Esc: back to findings | d: full flow detail | b: base64 decode[/]"
-            )
-
-        def on_analyzer_finding_detail_widget_back_requested(
-            self, event: "AnalyzerFindingDetailWidget.BackRequested"
-        ) -> None:
-            """Esc in the finding detail → back to the findings list."""
-            self._back_to_findings_list()
-
-        def on_analyzer_finding_detail_widget_full_detail_requested(
-            self, event: "AnalyzerFindingDetailWidget.FullDetailRequested"
-        ) -> None:
-            """'d' in the finding detail → switch to the regular flow-detail view."""
-            flow = self._lookup_flow(event.flow_id) if event.flow_id else None
-            if flow is None:
-                return
-            self.query_one("#finding-detail").display = False
-            self._detail_origin = "finding"
-            self._present_flow_detail(flow)
-
-        # ----------------------------------------------------------
-        # Analyzer panel (run analyzers interactively over loaded flows)
-        # ----------------------------------------------------------
-
-        def _has_capture_flows(self) -> bool:
-            """True when a live-capture flow collector holds at least one flow."""
-            try:
-                collector = self._capture.flow_collector
-                return bool(collector and collector.get_flows())
-            except Exception:
-                return False
-
-        def _analyzer_panel(self) -> "AnalyzerPanel":
-            return self.query_one("#analyzer-panel", AnalyzerPanel)
-
-        def action_analyzer_panel(self) -> None:
-            """Toggle the analyzer panel ('a').
-
-            Only meaningful when flows are loaded (replay, or a live capture with
-            flows). Outside that context 'a' keeps its capture meaning (attach).
-            """
-            if self._replay_ctrl is None and not self._has_capture_flows():
-                self.action_attach()
-                return
-
-            panel = self._analyzer_panel()
-            if panel.display:
-                panel.display = False
-                try:
-                    self.query_one("#flow-list").focus()
-                except Exception:
-                    pass
-                return
-
-            # The panel docks above the flow list; if we're currently in the
-            # findings view, return to the flow view first so the panel isn't
-            # stacked on top of the findings list.
-            if self._findings_list_displayed():
-                self._activate_flow_view()
-
-            panel.set_available(available_analyzers())
-            panel.reset()
-            panel.display = True
-            panel.focus()
-
-        def action_report_digest(self) -> None:
-            """Show the ``fritap report`` digest for the capture ('R').
-
-            Opens a scrollable Report modal (hosts/endpoints/findings grouped
-            per protocol, with MASVS tags and a cyclable all/security/privacy
-            focus). Works for a replay (reads the ``.tap``) and for a live
-            capture (digests the in-memory flows via ``scan_flows`` — no save
-            required).
-            """
-            from friTap.analysis.digest import (
-                FlowSelector,
-                build_digest,
-                builtin_analyzers,
-                scan_flows,
-            )
-            from friTap.analysis.digest_render import render_markdown
-            from friTap.tui.modals.report_modal import ReportModal
-
-            replay_path = self._replay_file
-            flows = None
-            if not replay_path:
-                if self._has_capture_flows():
-                    try:
-                        flows = self._capture.flow_collector.get_flows()
-                    except Exception:
-                        flows = None
-                if not flows:
-                    self.notify("Nothing to report yet — capture or open a .tap first.",
-                                severity="warning")
-                    return
-
-            def make_markdown(focus: str) -> str:
-                if replay_path:
-                    digest = build_digest(replay_path, focus=focus, masvs=True,
-                                          budget_tokens=6000)
-                else:
-                    scan = scan_flows(flows, FlowSelector(),
-                                      builtin_analyzers(False, focus))
-                    digest = build_digest("(live capture)", focus=focus, masvs=True,
-                                          budget_tokens=6000, scan=scan)
-                return render_markdown(digest)
-
-            self.app.push_screen(ReportModal(make_markdown, initial="all"))
-
-        def on_analyzer_panel_run_requested(
-            self, event: "AnalyzerPanel.RunRequested"
-        ) -> None:
-            """Run the selected analyzers over the loaded flows in a worker."""
-            if not event.analyzer_names:
-                self._analyzer_panel().set_progress(0, 0, label="select at least one analyzer")
-                return
-            names = list(event.analyzer_names)
-            path = event.analyzer_path
-            # Bump the run token so any in-flight worker's late completion is
-            # recognised as stale and ignored.
-            self._analyzer_run_id += 1
-            run_id = self._analyzer_run_id
-            # Dedicated group so exclusive=True only cancels a prior analyzer
-            # run — NOT unrelated default-group workers (the live capture
-            # session, server checks/installs).
-            self.run_worker(
-                lambda: self._run_analyzers_worker(names, path, run_id),
-                thread=True,
-                exclusive=True,
-                group="analyzer",
-            )
-
-        def _run_analyzers_worker(self, names: list, analyzer_path, run_id: int) -> None:
-            """Worker body: resolve analyzers, run them over flows, collect findings.
-
-            Runs in a thread. Because thread workers cannot be force-killed, we
-            poll the worker's cancellation flag and tag the result with *run_id*
-            so a superseded run never overwrites a newer one's state.
-            """
-            from textual.worker import get_current_worker
-
-            worker = get_current_worker()
-            panel = self._analyzer_panel()
-            try:
-                analyzers = resolve_analyzers(",".join(names), analyzer_path=analyzer_path)
-            except Exception as e:  # bad spec / unloadable plugin path
-                if not worker.is_cancelled:
-                    self.app.call_from_thread(panel.set_progress, 0, 0, f"error: {e}")
-                return
-
-            # Resolve the flow source. Replay loads full flows (with bodies) from
-            # disk on demand; capture keeps them in the collector.
-            if self._replay_ctrl is not None:
-                flow_ids = [s.flow_id for s in self._replay_ctrl.get_summaries()]
-                get_flow = self._replay_ctrl.get_flow
-            else:
-                collector = self._capture.flow_collector
-                flows = list(collector.get_flows()) if collector else []
-                flow_map = {f.flow_id: f for f in flows}
-                flow_ids = list(flow_map)
-                get_flow = flow_map.get
-
-            total = len(flow_ids)
-            findings: list = []
-            for i, fid in enumerate(flow_ids, 1):
-                if worker.is_cancelled:
-                    return  # superseded by a newer run — drop this work
-                try:
-                    flow = get_flow(fid)
-                except Exception:
-                    flow = None
-                if flow is not None:
-                    for analyzer in analyzers:
-                        try:
-                            findings.extend(analyzer.analyze_flow(flow))
-                        except Exception:
-                            continue
-                if i % 5 == 0 or i == total:
-                    self.app.call_from_thread(panel.set_progress, i, total)
-
-            if worker.is_cancelled:
-                return
-            self.app.call_from_thread(self._on_analyzers_complete, findings, run_id)
-
-        def _on_analyzers_complete(self, findings: list, run_id: int) -> None:
-            """Replace the session findings with this run's results and show counts.
-
-            Ignores results from a stale run (one that was superseded by a newer
-            run or invalidated by a Clear) so the latest action always wins.
-            """
-            if run_id != self._analyzer_run_id:
-                return
-            try:
-                findings_list = self.query_one("#findings-list", FindingsListWidget)
-                findings_list.clear_findings()
-                findings_list.add_findings(findings)
-            except Exception:
-                pass
-            # Replace-per-run: the findings cache mirrors exactly this run so a
-            # later shift+f and the dashboard counts always agree.
-            self._findings_cache = list(findings)
-            try:
-                self._analyzer_panel().show_dashboard(summarize(findings))
-            except Exception:
-                pass
-
-        def on_analyzer_panel_chip_selected(
-            self, event: "AnalyzerPanel.ChipSelected"
-        ) -> None:
-            """A dashboard chip drops into the findings view, pre-filtered."""
-            self._analyzer_panel().display = False
-            self._activate_findings_view()
-            self._apply_findings_filter(event.flt, event.label)
-
-        def on_analyzer_panel_clear_requested(
-            self, event: "AnalyzerPanel.ClearRequested"
-        ) -> None:
-            """Clear analyzer results for this session."""
-            # Invalidate any in-flight run so its late completion can't resurrect
-            # cleared results, and cancel its worker to stop wasted work.
-            self._analyzer_run_id += 1
-            try:
-                self.workers.cancel_group(self, "analyzer")
-            except Exception:
-                pass
-            try:
-                self.query_one("#findings-list", FindingsListWidget).clear_findings()
-            except Exception:
-                pass
-            self._findings_cache = []
-            self._analyzer_panel().reset()
-
-        def on_analyzer_panel_close_requested(
-            self, event: "AnalyzerPanel.CloseRequested"
-        ) -> None:
-            """Close the analyzer panel and return focus to the flow list."""
-            self._analyzer_panel().display = False
-            try:
-                self.query_one("#flow-list").focus()
-            except Exception:
-                pass
-
-        def action_focus_filter(self) -> None:
-            """Open the filter modal (/ key)."""
-            # Findings view has its own filter modal.
-            if self._findings_list_displayed():
-                def _on_result(result) -> None:
-                    if result is None:
-                        return
-                    self._apply_findings_filter(result.flt, result.label)
-                try:
-                    self.app.push_screen(FindingsFilterModal(), callback=_on_result)
-                except Exception:
-                    pass
-                return
-            try:
-                filter_bar = self.query_one("#filter-bar", FilterBar)
-                if not filter_bar.display:
-                    return
-                flow_list = self.query_one("#flow-list", FlowListWidget)
-                self.app.push_screen(
-                    FilterModal(
-                        current_text=filter_bar.filter_text,
-                        active_toggles=filter_bar.active_toggles,
-                        match_counter=flow_list.count_matches,
-                        row_count=lambda: flow_list.total_count,
-                    ),
-                    callback=self._on_filter_result,
-                )
-            except Exception:
-                pass
-
-        def action_clear_filter(self) -> None:
-            """Clear the active filter (Shift+Esc)."""
-            # Findings view: clear the findings filter bar.
-            if self._findings_list_displayed():
-                try:
-                    bar = self.query_one("#findings-filter-bar", FindingsFilterBar)
-                    bar.clear_filter()
-                except Exception:
-                    pass
-                return
-            try:
-                filter_bar = self.query_one("#filter-bar", FilterBar)
-                if not filter_bar.display:
-                    return
-                filter_bar.clear_filter()
-            except Exception:
-                pass
-
-        def _on_filter_result(self, result: FilterResult | None) -> None:
-            """Handle the result from the FilterModal."""
-            if result is None:
-                return
-            try:
-                filter_bar = self.query_one("#filter-bar", FilterBar)
-                filter_bar.apply_result(
-                    text=result.text,
-                    text_engine=result.text_engine,
-                    toggle_engine=result.toggle_engine,
-                    active_toggles=result.active_toggles,
-                )
-            except Exception:
-                pass
-
-        def on_filter_bar_filter_changed(self, event: FilterBar.FilterChanged) -> None:
-            """Handle filter changes from the filter bar."""
-            try:
-                flow_list = self.query_one("#flow-list", FlowListWidget)
-                flow_list.set_filter(event.engine, event.toggle_engine)
-            except Exception:
-                pass
-            self._update_flow_title()
 
         def action_toggle_view(self) -> None:
             """Toggle between legacy and flow views."""
@@ -2477,6 +884,8 @@ if TEXTUAL_AVAILABLE:
                 flow_list = self.query_one("#flow-list", FlowListWidget)
                 if flow_list.display:
                     flow_list.add_or_update_flow(flow)
+                else:
+                    self._hidden_flow_updates[flow.flow_id] = flow
                 flow_detail = self.query_one("#flow-detail", FlowDetailWidget)
                 if flow_detail.display:
                     flow_detail.refresh_flow(flow)

@@ -24,6 +24,7 @@ friTap supports a wide range of SSL/TLS libraries across different platforms. Th
 | **MatrixSSL** | ✓ Full | TBI | TBI | TBI | TBI | Commercial SSL |
 | **BouncyCastle** | TBA | TBA | TBA | ✓ Full | TBA | Java crypto |
 | **metaRTC** | TBI | TBI | TBI | ✓ Full | TBI | WebRTC stack (`libstartup`) |
+| **Fizz** | TBI | TBI | TBI | Keys | TBI | Meta's TLS 1.3 stack, also mvfst QUIC (Facebook, Instagram); arm64 only, located without symbols. See [Fizz (Meta)](others.md#fizz-meta). |
 
 **Legend:**
 - ✓ **Full**: Complete support (keys + traffic decryption)
@@ -112,6 +113,7 @@ fritap --list-libraries target_app
 **Specialized Libraries**
 - **RustTLS**: Memory-safe Rust implementation
 - **Conscrypt**: Android's OpenSSL-based provider
+- **Fizz**: Meta's TLS 1.3 stack (also mvfst QUIC), statically linked into Facebook/Instagram libraries — keys only, Android arm64
 
 ## Platform-Specific Considerations
 
@@ -149,6 +151,9 @@ fritap -m -k keys.log com.example.app
 
 # OkHttp (HTTP client library)
 fritap -m -k keys.log com.okhttp.app
+
+# Fizz (Meta apps, keys only, arm64) — pair with a full capture
+fritap -m -k keys.log -f -p capture.pcap $(adb shell pidof com.facebook.katana)
 ```
 
 ### iOS
@@ -190,6 +195,9 @@ fritap --patterns boringssl.json -k keys.log chrome
 - Used by Firefox, Thunderbird
 - Certificate store integration
 - PKCS#11 support
+- Keys: the default (legacy) and the `--modern` path share one installer, with the
+  same tier order on every platform: the read-only keylog-writer hook first, then
+  the `SSL_SecretCallback` API, then a read-only struct table (NSS < 3.115 only)
 
 ```bash
 # NSS analysis
@@ -351,6 +359,7 @@ For detailed information about specific libraries, refer to the support matrix a
 - **NSS**: Mozilla's implementation - works well with Firefox and similar applications  
 - **GnuTLS**: GNU TLS library - supported with read/write hooks
 - **WolfSSL**: Embedded SSL solution - full support on Android, patterns needed elsewhere
+- **Fizz (Meta)**: Facebook/Instagram TLS 1.3 and QUIC keys on Android arm64 - see [Fizz (Meta)](others.md#fizz-meta)
 - **Other Libraries**: See [Other Libraries](others.md) for additional implementations
 
 ## Contributing Library Support

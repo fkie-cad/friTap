@@ -231,7 +231,6 @@ class CrossRefIndex:
     _carries: Dict[int, List[int]] = field(default_factory=dict)
     _dirty: bool = False
 
-    # -- building -------------------------------------------------------------- #
     def add(self, ref: RecordRef) -> None:
         """Index *ref*: its own msg_id and every container child's msg_id."""
         self._refs[ref.record_seq] = ref
@@ -246,7 +245,6 @@ class CrossRefIndex:
         self._carried_in[record_seq] = (carrier_auth_key_id or "", int(carrier_msg_id or 0))
         self._dirty = True
 
-    # -- lookups --------------------------------------------------------------- #
     def lookup(self, auth_key_id: str, msg_id: int) -> Optional[_Target]:
         """The record holding *msg_id* (top level or container child), or None."""
         return self._by_msg.get((auth_key_id, msg_id))
@@ -294,7 +292,6 @@ class CrossRefIndex:
         """Build the reverse maps now (``resolve`` otherwise does it lazily)."""
         self._reverse_maps()
 
-    # -- resolution ------------------------------------------------------------ #
     def resolve(self, record_seq: int) -> dict:
         """The JSON-native ``refs`` dict of *record_seq* (see module docstring)."""
         if self._dirty:

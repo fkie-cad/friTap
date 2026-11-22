@@ -1,23 +1,9 @@
 """Protobuf wire format decoder and gRPC framing support.
 
-Provides schema-less decoding (zero external dependencies) and optional
-schema-based decoding (requires ``google-protobuf``).
-
-Usage::
-
-    from friTap.parsers.protobuf import decode_raw, format_message
-
-    msg = decode_raw(b"\\x08\\x96\\x01")
-    print(format_message(msg))
-    # 1: 150
-
-    from friTap.parsers.protobuf import strip_grpc_frame
-    frames = strip_grpc_frame(grpc_body)
-
-    # One decode for every viewer: validated gRPC framing, decompression,
-    # optional schema / blackboxprotobuf backend, plain-text output.
-    from friTap.parsers.protobuf import decode_protobuf_view
-    print(decode_protobuf_view(grpc_body, content_type="application/grpc").text())
+Schema-less decoding (no dependencies) and optional schema-based decoding
+(``google-protobuf``). Entry points: ``decode_raw``, ``format_message``,
+``strip_grpc_frame`` and ``decode_protobuf_view`` (one decode for every viewer:
+gRPC framing, decompression, optional schema/blackboxprotobuf, text output).
 """
 
 from .grpc import (

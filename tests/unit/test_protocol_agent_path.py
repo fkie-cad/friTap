@@ -43,7 +43,7 @@ class _FakeSSLLogger:
     def pcap_cleanup(self, *_args):
         pass
 
-    def cleanup(self, *_args):
+    def cleanup(self, *_args, **_kwargs):
         pass
 
 

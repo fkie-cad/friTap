@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -15,6 +16,9 @@ try:
 except ImportError:
     TEXTUAL_AVAILABLE = False
 
+from rich.markup import escape
+
+from friTap import extensions as _extensions
 from friTap.constants import (
     PROTOCOL_HTTP1,
     PROTOCOL_HTTP2,
@@ -29,6 +33,8 @@ from friTap.filter.layer_fields import filter_attrs_key
 from friTap.tui.themes import c
 from friTap.tui.widgets.wire_text import safe_wire_text
 
+logger = logging.getLogger(__name__)
+
 
 def layer_signature(flow: object) -> tuple:
     """Cheap fingerprint of a flow's layer-derived, byte-independent state.
@@ -36,8 +42,8 @@ def layer_signature(flow: object) -> tuple:
     Captures what can change without the byte count moving (a reparse, late
     TLS metadata, MTProto messages or dc_id/auth_key_id set after the fact):
     the detected protocol, the process name, the TLS session id (it adds the
-    ``tls`` protocol) and, as the LAST element, :func:`filter_attrs_key` --
-    per layer its name, message count and every scalar a display-filter field
+    ``tls`` protocol), the ``stream_id`` filter scalar and, as the LAST element,
+    :func:`filter_attrs_key` -- per layer its name, message count and every scalar a display-filter field
     reads (TLS SNI/ALPN/version/cipher, MTProto dc_id/envelope ...), so a
     filterable attribute can never change without a summary rebuild.
     Iterates ``flow.layers`` directly and never reads ``flow.<layer name>``,
@@ -46,6 +52,7 @@ def layer_signature(flow: object) -> tuple:
     return (getattr(flow, "detected_protocol", "") or "",
             getattr(flow, "process_name", "") or "",
             getattr(flow, "ssl_session_id", "") or "",
+            getattr(flow, "stream_id", None),
             filter_attrs_key(flow))
 
 
@@ -79,6 +86,7 @@ if TEXTUAL_AVAILABLE:
             self.cursor_type = "row"
             self.zebra_stripes = True
             self._extra_columns: list = []  # ColumnProvider instances
+            self._ext_columns: list = []  # extensions.FlowColumnSpec (read in on_mount)
             # Filter state — preserves insertion order (Python 3.7+)
             self._all_flow_data: dict[str, "FlowSummary"] = {}
             # flow_id -> layer_signature() the stored summary was built from.
@@ -136,6 +144,33 @@ if TEXTUAL_AVAILABLE:
             self.add_column("Duration", width=10)
             for col_provider in self._extra_columns:
                 self.add_column(col_provider.name)
+            self._add_extension_columns()
+
+        def _add_extension_columns(self) -> None:
+            """Append one column per registered ``FlowColumnSpec`` (after the
+            built-in and plugin columns, so default order is unchanged)."""
+            self._ext_columns = list(_extensions.get_flow_columns())
+            for spec in self._ext_columns:
+                self.add_column(escape(str(spec.label)), width=spec.width or None)
+
+        def _extension_cell(self, spec, flow: "FlowSummary") -> str:
+            """Cell text for an extension column; '' if the callback raises."""
+            try:
+                return escape(str(spec.value(flow)))
+            except Exception:
+                logger.warning("flow column %r value() failed", spec.key,
+                               exc_info=True)
+                return ""
+
+        def _update_extension_cell(self, row_key, col_key, spec, flow) -> None:
+            """update_cell for an extension column only when the text changed."""
+            new = self._extension_cell(spec, flow)
+            try:
+                if self.get_cell(row_key, col_key) == new:
+                    return
+            except Exception:
+                pass
+            self.update_cell(row_key, col_key, new)
 
         def on_resize(self, event) -> None:
             """Reflow Proto/Method/Connection widths when the terminal resizes."""
@@ -395,6 +430,9 @@ if TEXTUAL_AVAILABLE:
                 except Exception:
                     values.append("-")
 
+            values.extend(self._extension_cell(spec, flow)
+                          for spec in self._ext_columns)
+
             row_key = self.add_row(*values, key=flow.flow_id)
             self._flow_row_keys[flow.flow_id] = row_key
 
@@ -439,6 +477,13 @@ if TEXTUAL_AVAILABLE:
                             self.update_cell(row_key, cols[col_idx], col_provider.value(flow))
                         except Exception:
                             pass
+
+                # Update extension columns
+                base = 8 + len(self._extra_columns)
+                for j, spec in enumerate(self._ext_columns):
+                    if base + j < len(cols):
+                        self._update_extension_cell(
+                            row_key, cols[base + j], spec, flow)
             except Exception:
                 pass
 

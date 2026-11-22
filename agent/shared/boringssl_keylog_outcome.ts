@@ -14,11 +14,15 @@
 // verbosity banner ("[*] <module>: keylog hooks installed via callback|symbol|
 // pattern (...)"), so a second success line would only duplicate it.
 //
-// Kept free of Frida-API and fritap_agent imports so it can be unit tested
-// under Node (see boringssl_keylog_outcome.test.ts).
+// Kept free of fritap_agent imports, and Frida APIs are only touched when a
+// hook is attached, so it can be unit tested under Node (see
+// boringssl_keylog_outcome.test.ts).
 
-import { devlog, log } from "../util/log.js";
+import { devlog, devlog_error, log } from "../util/log.js";
 import type { DumpKeysCb } from "./boringssl_symbol_hook.js";
+import { callAbiForModule, readSslLogSecretCall, type CallAbi } from "./call_abi.js";
+import { attachGoFunctionEntry } from "./go_attach.js";
+import { mappingAddressKey } from "./module_mapping.js";
 
 export const ALL_KEYLOG_TIERS_MISSED_MSG = (moduleName: string, detail?: string): string =>
     `[!] ${moduleName}: no BoringSSL keylog hook could be installed ` +
@@ -69,6 +73,90 @@ export function claimKeylogHook(moduleName: string, tier: KeylogHookTier): boole
         log(`[*] ${moduleName}: the ${tier} tier installed a keylog hook after all (supersedes the earlier "no BoringSSL keylog hook" warning)`);
     }
     return true;
+}
+
+// ssl_log_secret entries that already carry a keylog hook, by mappingAddressKey,
+// with the tier whose (guarded) interceptor sits there.
+const hookedSslLogSecrets = new Map<string, KeylogHookTier>();
+
+export function isSslLogSecretHooked(address: NativePointer): boolean {
+    return hookedSslLogSecrets.has(mappingAddressKey(address));
+}
+
+/** The tier whose keylog hook is live at `address`, if any. */
+export function sslLogSecretHookTier(address: NativePointer): KeylogHookTier | undefined {
+    return hookedSslLogSecrets.get(mappingAddressKey(address));
+}
+
+/**
+ * Run `attach` for `tier` unless `address` already carries a keylog hook; every
+ * tier's ssl_log_secret attach goes through here. True iff a hook is live there
+ * afterwards, which may be another tier's (see sslLogSecretHookTier): only that
+ * tier's dumpKeys guard emits, so a caller must not claim the module for itself.
+ */
+export function attachSslLogSecretOnce(address: NativePointer, tier: KeylogHookTier, attach: () => boolean): boolean {
+    const key = mappingAddressKey(address);
+    if (hookedSslLogSecrets.has(key)) return true;
+    if (!attach()) return false;
+    hookedSslLogSecrets.set(key, tier);
+    return true;
+}
+
+/**
+ * Claim `moduleName` for the tier whose hook is live at `address` (`fallback`
+ * when none is recorded). A tier that found its target already hooked by
+ * another tier must not take ownership: that tier's guard would then drop
+ * every secret while its own callback was never attached.
+ */
+export function claimForLiveSslLogSecretHook(moduleName: string, address: NativePointer,
+                                             fallback: KeylogHookTier): boolean {
+    return claimKeylogHook(moduleName, sslLogSecretHookTier(address) ?? fallback);
+}
+
+/** Interceptor.attach that reports a failure (under `tag`) instead of throwing. */
+export function tryAttach(tag: string, address: NativePointer, callbacks: InvocationListenerCallbacks): boolean {
+    try {
+        Interceptor.attach(address, callbacks);
+        return true;
+    } catch (e) {
+        devlog_error(`${tag} Interceptor.attach @ ${address} failed: ${e}`);
+        return false;
+    }
+}
+
+/**
+ * Hook bssl::ssl_log_secret(SSL const*, char const*, Span<u8 const>) at `addr`
+ * for `tier` and hand every secret to `cb`. The Span is (data, size) in registers on
+ * SysV/AAPCS64 but passed by reference on Win64 (see call_abi.ts), so it is
+ * read under `abi`, by default the module's.
+ */
+export function attachSslLogSecretHook(addr: NativePointer, tier: KeylogHookTier, cb: DumpKeysCb, moduleName: string = "",
+                                       abi: CallAbi | null = callAbiForModule(moduleName)): boolean {
+    return attachSslLogSecretOnce(addr, tier, () => tryAttach(`[bssl-keylog] ${moduleName}:`, addr, {
+        onEnter(args) {
+            const c = readSslLogSecretCall(args, this.context, abi);
+            cb(c.label, c.ssl, c.data, c.len);
+        },
+    }));
+}
+
+/**
+ * Hook a pattern-matched function entry. A Go arm64 entry (stack-guard
+ * prologue) is hooked after its stack check (go_attach.ts); the
+ * InvocationContext is forwarded as `this` for ABI-aware callbacks
+ * (call_abi.ts). A Dump-Keys entry gets one interceptor per mapping across all
+ * keylog tiers; other entries attach as is. True iff a hook of this kind is
+ * live at `address` afterwards.
+ */
+export function attachPatternEntryHook(address: NativePointer, onMatchCallback: (args: any[]) => void,
+                                       dumpKeysEntry: boolean): boolean {
+    const attach = (): boolean => {
+        attachGoFunctionEntry(address, {
+            onEnter: function (args) { onMatchCallback.call(this, args); },
+        });
+        return true;
+    };
+    return dumpKeysEntry ? attachSslLogSecretOnce(address, "pattern", attach) : attach();
 }
 
 /**
@@ -295,6 +383,7 @@ export function runForcedAnchorTier(
 /** Test-only: forget which modules were reported / owned and drop the tier-4 runner. */
 export function _resetKeylogOutcomeReportsForTests(): void {
     reportedModules.clear();
+    hookedSslLogSecrets.clear();
     warnedModules.clear();
     keylogHookOwners.clear();
     tier4Runs.clear();

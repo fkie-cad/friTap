@@ -2,15 +2,12 @@
 
 """Wireshark IPsec decryption-table writer.
 
-IPsec is the one protocol whose Wireshark-loadable output is NOT an NSS-style
-keylog file but two CSV UAT tables, ``ikev2_decryption_table`` and ``esp_sa``
-(Wireshark's canonical file names). This handler receives the structured
-``KeylogEvent``s the :class:`~friTap.message_router.MessageRouter` builds for
-IPsec, asks the :class:`~friTap.protocols.ipsec_handler.IPsecKeylogFormatter`
-for the row(s), de-duplicates identical rows (an SA may be reported more than
-once) and appends them to the two files in the directory of the ``-k`` keylog
-path. Rows are written exactly as strongSwan's save-keys plugin writes them so
-tshark loads them unchanged.
+IPsec's Wireshark output is not an NSS keylog but two CSV UAT tables,
+``ikev2_decryption_table`` and ``esp_sa``. This handler turns the structured
+``KeylogEvent``s from :class:`~friTap.message_router.MessageRouter` into rows via
+:class:`~friTap.protocols.ipsec_handler.IPsecKeylogFormatter`, de-duplicates them
+(an SA may be reported more than once) and appends them to the files in the ``-k``
+directory, in strongSwan's save-keys format so tshark loads them unchanged.
 """
 
 from __future__ import annotations
@@ -28,20 +25,15 @@ if TYPE_CHECKING:
 
 
 class IPsecDecryptionTableHandler(OutputHandler):
-    """Writes the ``ikev2_decryption_table`` / ``esp_sa`` Wireshark UAT files.
+    """Writes the ``ikev2_decryption_table`` / ``esp_sa`` UAT files, one instance per run.
 
-    One instance per run. Files are opened lazily on the first matching row, so
-    an IKE-only capture never leaves an empty ``esp_sa`` behind (and vice versa).
-    Each file is truncated on first write — a fresh capture starts fresh tables,
-    matching friTap's keylog convention — and rows are appended and flushed as
-    SAs are discovered. Row de-duplication is per-table and in-memory.
+    Files open lazily on the first matching row (an IKE-only capture leaves no empty
+    ``esp_sa``), are truncated on first write, then appended and flushed. De-duplication is per table, in memory.
     """
 
     def __init__(self, keylog_path: str, formatter: KeylogFormatter) -> None:
         self._formatter = formatter
-        # Co-locate the UAT files with the -k keylog: given ``/p/keys.log`` the
-        # tables land at ``/p/ikev2_decryption_table`` and ``/p/esp_sa``. A bare
-        # filename (no directory) writes them to the current directory.
+        # Tables sit next to the -k keylog (``/p/keys.log`` -> ``/p/esp_sa``); a bare filename uses the cwd.
         self._dir = os.path.dirname(keylog_path) or "."
         self._files: Dict[str, IO] = {}
         self._seen: Dict[str, Set[str]] = {}
@@ -55,8 +47,7 @@ class IPsecDecryptionTableHandler(OutputHandler):
 
     def setup(self, event_bus: "EventBus") -> None:
         from ..events import KeylogEvent
-        # priority=10 matches KeylogOutputHandler so the "opened" log line
-        # precedes any verbose console echo of the same key.
+        # priority=10 as KeylogOutputHandler: the "opened" log precedes any verbose console echo.
         event_bus.subscribe(KeylogEvent, self.on_keylog, priority=10)
 
     def on_keylog(self, event: "KeylogEvent") -> None:
@@ -66,9 +57,7 @@ class IPsecDecryptionTableHandler(OutputHandler):
             self._write_row(table_name, row)
 
     def _write_row(self, table_name: str, row: str) -> None:
-        # The row is built from untrusted agent data; the formatter already vets
-        # every field, but this is the last line of defence against a row that
-        # could inject a second line into the UAT file.
+        # Built from untrusted agent data: the last defence against a row injecting a second UAT line.
         if not is_safe_keylog_line(row):
             return
         with self._lock:

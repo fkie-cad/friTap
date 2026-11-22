@@ -97,9 +97,6 @@ export function firstCallAfter(
     return null;
 }
 
-/** Register numbers (x86-64 encoding order). */
-export const X64_REG = { rax: 0, rcx: 1, rdx: 2, rbx: 3, rsp: 4, rbp: 5, rsi: 6, rdi: 7 } as const;
-
 // ssl->ctx sits early in SSL; keylog_callback deep in SSL_CTX. Observed:
 // ctx 0x68, keylog_callback 0x1f0 (Chromium 120) / 0x238 (Chromium 156).
 const MIN_FIELD_OFFSET = 0x8;

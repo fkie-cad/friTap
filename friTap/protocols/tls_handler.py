@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 TLS_LIBRARY_PATTERNS = [
     "libssl", "libcrypto", "libgnutls", "libwolfssl", "libmbedtls",
     "libnss", "boringssl", "schannel", "secur32", "conscrypt",
-    "cronet", "flutter", "monotls",
+    "cronet", "flutter", "monotls", "fizz",
 ]
 
 
@@ -75,12 +75,9 @@ def covered_by_sibling(
     detected_libraries: List[Dict],
     force_scan_modules: Sequence[str] = (),
 ) -> Dict[str, Dict[str, str]]:
-    """Compute the set of modules that should be skipped because a sibling
-    library already covers their BoringSSL surface.
+    """Modules to skip because a sibling library already covers their BoringSSL surface.
 
-    Returns a mapping ``module_name -> {"sibling": str, "reason": str}``
-    for every entry that has a confirmed sibling in the same scan. Returns
-    ``{}`` when there is nothing to suppress.
+    Returns ``{module_name: {"sibling": str, "reason": str}}`` for entries with a confirmed sibling in this scan; ``{}`` if none.
     """
     if not detected_libraries:
         return {}
@@ -126,12 +123,7 @@ def _find_sibling(
     sibling_regexes: List[Pattern[str]],
     detected_libraries: List[Dict],
 ) -> Optional[str]:
-    """Return the name of a trusted sibling matching any of ``sibling_regexes``.
-
-    A trusted sibling is another entry in ``detected_libraries`` with the same
-    ``library_type`` and a different name.  Returns ``None`` if no sibling
-    qualifies.
-    """
+    """Name of a trusted sibling matching any of ``sibling_regexes`` (same ``library_type``, different name), or ``None``."""
     for other in detected_libraries:
         other_name = other.get("name")
         other_type = other.get("library_type")
@@ -150,12 +142,9 @@ def strip_covered_modules(
     covered: Dict[str, Dict[str, str]],
     force_scan_modules: Sequence[str] = (),
 ) -> Optional[Dict]:
-    """Remove covered-by-sibling module entries from a pattern.json structure.
+    """Remove covered-by-sibling entries from a pattern.json structure.
 
-    Pattern keys are coarse (``libmainlinecronet.so``) while runtime module
-    names are versioned (``libmainlinecronet.141.0.7340.3.so``), so matching
-    is done by stem prefix. Entries marked ``"_force_scan": true`` are kept
-    regardless of the sibling check.
+    Pattern keys are coarse (``libmainlinecronet.so``), runtime names versioned, so matching is by stem prefix. ``"_force_scan": true`` entries are kept.
     """
     if not pattern_data or not isinstance(pattern_data, dict) or not covered:
         return pattern_data
@@ -189,14 +178,7 @@ def strip_covered_modules(
 
 
 def _module_stem(name: str) -> str:
-    """Reduce a module filename to its prefix up to the first digit-version run.
-
-    Examples:
-        libmainlinecronet.141.0.7340.3.so -> libmainlinecronet
-        libmainlinecronet.so              -> libmainlinecronet
-        stable_cronet_libssl.so           -> stable_cronet_libssl
-        libcronet.107.0.5304.105.so       -> libcronet
-    """
+    """Module filename up to the first digit-version run (``libcronet.107.0.5304.105.so`` -> ``libcronet``)."""
     stem = name
     if stem.endswith(".so"):
         stem = stem[:-3]
@@ -211,17 +193,10 @@ def _module_stem(name: str) -> str:
 
 
 class TlsKeylogFormatter(KeylogFormatter):
-    """NSS SSLKEYLOGFILE-style passthrough.
+    """NSS SSLKEYLOGFILE passthrough: agents emit ``key_data`` pre-formatted, so only the dedup key is overridden.
 
-    TLS agents already emit ``KeylogEvent.key_data`` pre-formatted as
-    ``CLIENT_RANDOM <hex> <hex>`` / ``EXPORTER-* <…>`` / etc., so the
-    base :meth:`KeylogFormatter.format` default already does the right
-    thing; only the dedup key needs a cheaper override.
-
-    The agent string is untrusted, so :meth:`format` only passes through a
-    well-formed NSS line (``LABEL <hex|???> <hex> ...``, see
-    :func:`~friTap.output.keylog_format.is_nss_keylog_line`); anything else is
-    dropped with a rate-limited warning.
+    The agent string is untrusted: :meth:`format` passes only well-formed NSS lines
+    (:func:`~friTap.output.keylog_format.is_nss_keylog_line`) and drops others with a rate-limited warning.
     """
 
     @property

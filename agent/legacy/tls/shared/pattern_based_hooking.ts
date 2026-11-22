@@ -1,7 +1,7 @@
 import { devlog, devlog_error, devlog_debug, log, devlog_info, hookBreadcrumb } from "../../../util/log.js";
 import { currentPlatformKey, normalizeArchKey } from "../../../util/process_infos.js"
 import { matchNonTLSLibrary } from "../../../util/non_tls_libs.js"
-import { attachGoFunctionEntry } from "../../../shared/go_attach.js";
+import { attachPatternEntryHook } from "../../../shared/boringssl_keylog_outcome.js";
 
 type Pattern = {
     primary: string;
@@ -62,9 +62,17 @@ export class PatternBasedHooking {
     // hook_tls_keylog_callback, the per-JSON-module loop).
     public cascadeCompleted = false;
     private activeCascades = 0;
+    // Entry address of the hooked match, so callers can cache it.
+    matchedAddress: NativePointer | null = null;
     module: Module;
     private patterns: any = {};
     private rescannedRanges: Set<string> = new Set(); // Set to keep track of memory ranges that have been rescanned
+
+    private recordMatch(address: NativePointer): void {
+        this.found_ssl_log_secret = true;
+        this.no_hooking_success = false;
+        this.matchedAddress = address;
+    }
 
     constructor(module: Module) {
         this.found_ssl_log_secret = false;
@@ -124,8 +132,7 @@ export class PatternBasedHooking {
 
         Memory.scan(moduleBase, moduleSize, pattern, {
             onMatch: (address) => {
-                this.found_ssl_log_secret = true;
-                this.no_hooking_success = false;
+                this.recordMatch(address);
                 var module_by_address = Process.findModuleByAddress(address);
 
                 devlog_info(`Pattern found at (${pattern_name}) address: ${address} in module ${module_by_address.name}`);
@@ -348,6 +355,7 @@ export class PatternBasedHooking {
         patterns: { primary: string; fallback: string; second_fallback?: string },
         pattern_name: string,
         onMatchCallback: (args: any[]) => void,
+        dumpKeysEntry: boolean,
         onCompleteCallback: (found: boolean) => void
     ): void {
         const moduleName = this.module?.name;
@@ -380,15 +388,16 @@ export class PatternBasedHooking {
         // scan + churned-range fault cascade that stalls the pattern tier.
         if (moduleSize >= LARGE_MODULE_SCAN_BYTES) {
             devlog(`[pattern-scan] ${moduleName ?? "<unknown>"}: large module (${Math.floor(moduleSize / 1048576)} MiB) — scanning executable (r-x) ranges only for ${pattern_name}, skipping whole-module scan`);
-            this.hookByPatternOnlyReadableParts(patterns, pattern_name, onMatchCallback, onCompleteCallback);
+            this.hookByPatternOnlyReadableParts(patterns, pattern_name, onMatchCallback, dumpKeysEntry, onCompleteCallback);
             return;
         }
 
         Memory.scan(moduleBase, moduleSize, pattern, {
             onMatch: (address) => {
-                this.found_ssl_log_secret = true;
-                this.no_hooking_success = false;
-                
+                // Record/log only a live hook of this kind at this mapping + address.
+                if (!attachPatternEntryHook(address, onMatchCallback, dumpKeysEntry)) return;
+                this.recordMatch(address);
+
                 if (moduleName) {
                     devlog_info(`Pattern found at (${pattern_name}) address: ${address} for module ${moduleName}`);
                 }else{
@@ -396,17 +405,6 @@ export class PatternBasedHooking {
                 }
 
                 log(`[*] ${moduleName ?? "<unknown>"}: keylog hooks installed via pattern (${pattern_name} @ ${address})`);
-
-                // Attach the hook using the provided onMatchCallback. A Go arm64 entry
-                // (stack-guard prologue) is hooked after its stack check; any other
-                // match exactly at `address` (shared/go_attach.ts).
-                attachGoFunctionEntry(address, {
-                    onEnter: function (args) {
-                        // Forward the InvocationContext as `this` so ABI-aware
-                        // callbacks can read registers (see shared/call_abi.ts).
-                        onMatchCallback.call(this, args);
-                    },
-                });
             },
             onError: (reason) => {
                 if (this.found_ssl_log_secret) return;
@@ -416,13 +414,13 @@ export class PatternBasedHooking {
                 // onComplete still fires), so the hooker must not settle until
                 // this rescan has terminated too.
                 this.beginCascade();
-                this.hookByPatternOnlyReadableParts(patterns, pattern_name, onMatchCallback, (primary_success) => {
+                this.hookByPatternOnlyReadableParts(patterns, pattern_name, onMatchCallback, dumpKeysEntry, (primary_success) => {
                     if (this.found_ssl_log_secret || primary_success) return this.endCascade();
                     devlog(`Primary pattern failed, trying fallback pattern on ${moduleName}`);
-                    this.hookByPatternOnlyReadableParts(patterns, "fallback_pattern", onMatchCallback, (fallback_success) => {
+                    this.hookByPatternOnlyReadableParts(patterns, "fallback_pattern", onMatchCallback, dumpKeysEntry, (fallback_success) => {
                         if (this.found_ssl_log_secret || fallback_success) return this.endCascade();
                         devlog(`Fallback pattern failed, trying second fallback pattern on ${moduleName}`);
-                        this.hookByPatternOnlyReadableParts(patterns, "second_fallback_pattern", onMatchCallback, (second_fallback_success) => {
+                        this.hookByPatternOnlyReadableParts(patterns, "second_fallback_pattern", onMatchCallback, dumpKeysEntry, (second_fallback_success) => {
                             if (this.found_ssl_log_secret) return this.endCascade();
                             if (!second_fallback_success) {
                                 this.no_hooking_success = true;
@@ -445,6 +443,7 @@ export class PatternBasedHooking {
         patterns: { primary: string; fallback: string; second_fallback?: string },
         pattern_name: string,
         onMatchCallback: (args: any[]) => void,
+        dumpKeysEntry: boolean,
         onCompleteCallback: (found: boolean) => void
         ): void {
         if (this.found_ssl_log_secret) {
@@ -519,18 +518,17 @@ export class PatternBasedHooking {
                 onMatch: (address: NativePointer, _size: number) => {
                 if (patternFound || callbackDone) return "stop";
                 patternFound = true;
-                this.found_ssl_log_secret = true;
-                this.no_hooking_success = false;
 
-                devlog_info(`Pattern found at (${pattern_name}) address: ${address} on ${moduleName}`);
-                log(`[*] ${moduleName ?? "<unknown>"}: keylog hooks installed via pattern (${pattern_name}, readable-ranges @ ${address})`);
-
+                let attached = false;
                 try {
-                    attachGoFunctionEntry(address, {
-                    onEnter: function (args) { onMatchCallback.call(this, args); },
-                    });
+                    attached = attachPatternEntryHook(address, onMatchCallback, dumpKeysEntry);
                 } catch (e) {
                     devlog_error(`Interceptor.attach failed at ${address}: ${e}`);
+                }
+                if (attached) {
+                    this.recordMatch(address);
+                    devlog_info(`Pattern found at (${pattern_name}) address: ${address} on ${moduleName}`);
+                    log(`[*] ${moduleName ?? "<unknown>"}: keylog hooks installed via pattern (${pattern_name}, readable-ranges @ ${address})`);
                 }
 
                 executeOnce(true);
@@ -650,8 +648,7 @@ export class PatternBasedHooking {
                 onMatch: (address: NativePointer) => {
                 if (patternFound || callbackDone) return "stop";
                 patternFound = true;
-                this.found_ssl_log_secret = true;
-                this.no_hooking_success = false;
+                this.recordMatch(address);
 
                 const m = Process.findModuleByAddress(address);
                 if (m) {
@@ -737,9 +734,12 @@ export class PatternBasedHooking {
     }
 
     // Method to hook the module with patterns provided as arguments
+    // Direct callers hook a keylog (ssl_log_secret) function; action-driven
+    // callers pass whether their action is Dump-Keys.
     hookModuleByPattern(
         patterns: { primary: string; fallback: string; second_fallback?: string } | null | undefined,
-        onMatchCallback: (args: any[]) => void
+        onMatchCallback: (args: any[]) => void,
+        dumpKeysEntry: boolean = true
     ): void {
         if (!patterns || (!patterns.primary && !patterns.fallback)) {
             // No usable pattern (missing-arch shipped pattern, or empty JSON entry).
@@ -762,13 +762,13 @@ export class PatternBasedHooking {
         // fallback miss without second_fallback, second_fallback done), once
         // no other cascade on this instance is still running.
         this.beginCascade();
-        this.hookByPattern(patterns, "primary_pattern", onMatchCallback, (primary_success) => {
+        this.hookByPattern(patterns, "primary_pattern", onMatchCallback, dumpKeysEntry, (primary_success) => {
             if (primary_success) return this.endCascade();
             devlog("Primary pattern failed, trying fallback pattern...");
-            this.hookByPattern(patterns, "fallback_pattern", onMatchCallback, (fallback_success) => {
+            this.hookByPattern(patterns, "fallback_pattern", onMatchCallback, dumpKeysEntry, (fallback_success) => {
                 if (!fallback_success && patterns.second_fallback) {
                     devlog("Fallback pattern failed, trying second fallback pattern...");
-                    this.hookByPattern(patterns, "second_fallback_pattern", onMatchCallback, (second_fallback_success) => {
+                    this.hookByPattern(patterns, "second_fallback_pattern", onMatchCallback, dumpKeysEntry, (second_fallback_success) => {
                         if (!second_fallback_success) {
                             devlog_debug(`None of the patterns worked. You may need to adjust the patterns for ${moduleName}`);
                             this.no_hooking_success = true;
@@ -801,7 +801,7 @@ export class PatternBasedHooking {
         var action_specific_patterns = this.get_action_specific_pattern(module_name, platform, arch,action);
 
         devlog(`Using ${action} patterns for ${platform} on ${arch}`);
-        this.hookModuleByPattern(action_specific_patterns, hookCallback);
+        this.hookModuleByPattern(action_specific_patterns, hookCallback, action === "Dump-Keys");
     }
 
      // Function to retrieve patterns based on the current CPU architecture and action

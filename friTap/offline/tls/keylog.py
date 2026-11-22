@@ -21,13 +21,16 @@ import re
 from dataclasses import dataclass
 from typing import Callable, Optional
 
+from friTap.tls_keylog_labels import TLS_KEYLOG_LABELS  # re-exported (see __all__)
+
 _HEX = re.compile(r"^[0-9a-fA-F]+$")
 UNKNOWN_CLIENT_RANDOM = "???"
 NSS_CLIENT_RANDOM_HEX_LEN = 64  # 32 bytes
 NSS_SECRET_HEX_LENS = (64, 96)  # 32/48 bytes: TLS 1.3 secrets, TLS 1.2 master secret
 
-# TLS 1.3 NSS keylog labels. Every secret of one connection shares that
-# connection's ONE client_random. EXPORTER_SECRET protects no records.
+
+# TLS 1.3 NSS keylog labels. All secrets of one connection share its client_random.
+# EXPORTER_SECRET protects no records.
 TLS13_LABELS = (
     "CLIENT_HANDSHAKE_TRAFFIC_SECRET",
     "SERVER_HANDSHAKE_TRAFFIC_SECRET",
@@ -87,6 +90,7 @@ __all__ = [
     "NSS_SECRET_HEX_LENS",
     "NssEntry",
     "TLS13_LABELS",
+    "TLS_KEYLOG_LABELS",
     "TLS13_TRIAL_LABELS",
     "UNKNOWN_CLIENT_RANDOM",
     "parse_strict_nss_line",

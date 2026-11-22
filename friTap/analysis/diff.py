@@ -1,33 +1,23 @@
-"""
-Semantic capture / phase diff for AI agents and research workflows.
+"""Semantic capture / phase diff for AI agents and research workflows.
 
-:func:`diff_taps` compares two ``.tap`` captures and :func:`diff_phases`
-compares two time windows *within* one capture, reporting the HTTP endpoints
-that **appeared**, **disappeared** or **changed** between them. Both return a
-:class:`DiffResult` that renders to a token-budgeted dict or Markdown.
+:func:`diff_taps` compares two ``.tap`` captures and :func:`diff_phases` two
+time windows within one capture, reporting HTTP endpoints that appeared,
+disappeared or changed. Both return a :class:`DiffResult` rendering to a
+token-budgeted dict or Markdown.
 
-Use cases: app-version regression (new third-party SDKs, changed APIs),
-consent-granted vs consent-denied (GDPR), VPN on vs off, and before/after a
-user action marked as a phase.
-
-Canonicalization is **not** duplicated here. An endpoint is keyed by the exact
-templated signature the capture digest already computes
-(:func:`friTap.analysis.digest._endpoint_signature`, built on
+Endpoints are keyed by the digest's templated signature
+(:func:`friTap.analysis.digest._endpoint_signature`, on
 :func:`friTap.analysis._digest_shapes.template_path`), so ``/users/123`` and
-``/users/456`` collapse to one endpoint the same way they do in ``fritap
-report``. ``changed`` means *same signature* but a differing status-code set,
-response content types or request count.
+``/users/456`` collapse as in ``fritap report``. ``changed`` means the same
+signature with a different status-code set, response content types or request count.
 
-Safety contract (shared with the digest):
+Safety contract (shared with the digest): every string copied from traffic
+(host, path, content type) is control-char escaped, length-capped, scrubbed of
+long hex runs and lives under an ``untrusted`` key (data, never instructions).
+No key material is read.
 
-* Every string copied from captured traffic (host, path, content type) is
-  control-char escaped, length-capped and scrubbed of long hex runs, and lives
-  under an ``untrusted`` key. Treat it as data, never as instructions.
-* No key material is read: only flow records are consumed.
-
-This module is deliberately independent of the attribution subsystem: host
-attribution is *injected* through the optional ``classify`` callable
-(``host -> {"owner", "category", "party", ...}``), never imported.
+Independent of the attribution subsystem: host attribution is injected via the
+optional ``classify`` callable (``host -> {"owner", "category", "party", ...}``).
 """
 
 from __future__ import annotations
@@ -65,10 +55,6 @@ PHASES_SIDECAR = "phases.jsonl"
 
 ClassifyFn = Callable[[str], Optional[dict]]
 
-
-# ---------------------------------------------------------------------------
-# Endpoint aggregation
-# ---------------------------------------------------------------------------
 
 @dataclass
 class _Endpoint:
@@ -170,10 +156,6 @@ def _collect_endpoints(flows: Iterable[tuple[int, Any, Any]]) -> dict[tuple, _En
     return endpoints
 
 
-# ---------------------------------------------------------------------------
-# Diff computation
-# ---------------------------------------------------------------------------
-
 def _endpoint_changes(before: _Endpoint, after: _Endpoint) -> list[dict]:
     """Field-level diff for a signature present on both sides."""
     fields: list[dict] = []
@@ -203,10 +185,6 @@ def _diff_endpoints(before: dict[tuple, _Endpoint],
             changed.append(_Change(after[sig], fields))
     return added, removed, changed
 
-
-# ---------------------------------------------------------------------------
-# Phases (timestamp-window sidecar)
-# ---------------------------------------------------------------------------
 
 def load_phases(path: str) -> list[dict]:
     """Load a ``phases.jsonl`` sidecar into ``[{"t", "label"}, ...]`` sorted by ``t``.
@@ -283,10 +261,6 @@ def _partition_by_phase(flows: Iterable[tuple[int, Any, Any]],
             bucket_b.append((ordinal, summary, flow))
     return bucket_a, bucket_b
 
-
-# ---------------------------------------------------------------------------
-# Result
-# ---------------------------------------------------------------------------
 
 def _volume(item: Any) -> tuple[int, int]:
     endpoint = item.endpoint if isinstance(item, _Change) else item
@@ -432,10 +406,6 @@ class DiffResult:
         return _render_markdown(self.to_dict(budget=budget))
 
 
-# ---------------------------------------------------------------------------
-# Markdown rendering
-# ---------------------------------------------------------------------------
-
 def _endpoint_line(row: dict) -> str:
     u = row["untrusted"]
     label = f"{u['method']} {u['host']}{u['path']}".strip()
@@ -492,10 +462,6 @@ def _render_markdown(diff: dict) -> str:
     return "\n".join(lines)
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-
 def diff_taps(tap_a_path: str, tap_b_path: str, *,
               classify: Optional[ClassifyFn] = None,
               budget: Optional[int] = None,
@@ -503,27 +469,17 @@ def diff_taps(tap_a_path: str, tap_b_path: str, *,
               b_label: Optional[str] = None) -> DiffResult:
     """Diff the endpoint sets of two ``.tap`` captures.
 
-    Args:
-        tap_a_path: baseline / "before" capture.
-        tap_b_path: comparison / "after" capture.
-        classify: optional ``host -> attribution dict`` callable; when given,
-            each host group is annotated with its ``owner``/``category``/``party``.
-        budget: optional soft token budget for :meth:`DiffResult.to_dict` /
-            :meth:`DiffResult.to_markdown` (lowest-volume rows dropped first).
-        a_label: optional label for side A (e.g. a capture session id);
-            defaults to the basename of *tap_a_path*.
-        b_label: optional label for side B; defaults to the basename of *tap_b_path*.
-
-    Returns:
-        A :class:`DiffResult` whose ``a``/``b`` are the two labels.
+    ``tap_a_path`` is the baseline. ``classify`` annotates each host group with
+    ``owner``/``category``/``party``; ``budget`` is a soft token budget for
+    :meth:`DiffResult.to_dict` / :meth:`DiffResult.to_markdown`. Labels default
+    to the capture basenames.
     """
     with TapReader(str(tap_a_path)) as reader_a:
         before = _collect_endpoints(reader_a.iter_flows())
     with TapReader(str(tap_b_path)) as reader_b:
         after = _collect_endpoints(reader_b.iter_flows())
     added, removed, changed = _diff_endpoints(before, after)
-    # Report basenames only: the full resolved path would leak the server's
-    # filesystem layout into results (every other tool returns tap.name).
+    # Basenames only: a full path would leak the server's filesystem layout.
     return DiffResult(mode="taps", a_label=a_label or Path(tap_a_path).name,
                       b_label=b_label or Path(tap_b_path).name,
                       added=added, removed=removed, changed=changed,
@@ -535,20 +491,12 @@ def diff_phases(tap_path: str, phases: list[dict], label_a: str, label_b: str, *
                 classify: Optional[ClassifyFn] = None) -> DiffResult:
     """Diff two phase windows *within* one capture.
 
-    Flows are partitioned into phases by ``flow.started`` against the phase
-    windows (see :func:`phase_label_for`), then phase ``label_a`` is diffed
-    against phase ``label_b``.
+    Flows are partitioned by ``flow.started`` against the windows in *phases*
+    (``[{"t", "label"}, ...]`` from :func:`load_phases`, see :func:`phase_label_for`),
+    then ``label_a`` (baseline) is diffed against ``label_b``.
 
-    Args:
-        tap_path: the capture to partition.
-        phases: ``[{"t", "label"}, ...]`` as returned by :func:`load_phases`.
-        label_a: baseline phase label.
-        label_b: comparison phase label.
-        classify: optional ``host -> attribution dict`` callable.
-
-    Raises:
-        ValueError: if ``label_a == label_b`` (every flow would fall into the
-            first bucket, yielding a misleading "everything removed" diff).
+    Raises ValueError if the labels are equal (all flows would share one bucket,
+    a misleading "everything removed" diff).
     """
     if label_a == label_b:
         raise ValueError("label_a and label_b must differ")

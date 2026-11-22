@@ -1,4 +1,4 @@
-// Unit tests for buildQuicMessage 4-tuple orientation.
+// Unit tests for buildQuicMessage 4-tuple orientation and its synthetic flag.
 //
 // Run: npm run test:agent
 //
@@ -9,7 +9,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildQuicMessage, QuicConnectionInfo } from "./quic_connection_tracker.js";
+import { buildQuicMessage, QuicConnectionInfo, QuicConnectionTracker } from "./quic_connection_tracker.js";
 
 const INFO: QuicConnectionInfo = {
     serverName: "", scid: "", dcid: "", ssFamily: "AF_INET",
@@ -36,4 +36,27 @@ test("QUIC records carry their direction and producing library explicitly", () =
     assert.equal(read.library, "libmonochrome_64.so");
     assert.equal(write.direction, "write");
     assert.equal("library" in write, false);
+});
+
+test("only a synthesized tuple is flagged endpoints_synthetic", () => {
+    const tracker = new QuicConnectionTracker();
+    const synthesized = buildQuicMessage(tracker.synthesizeInfo("0xabc"), "0xabc", "QuicSession_WriteStreamData", "write");
+    assert.equal(synthesized.endpoints_synthetic, true);
+    const real = buildQuicMessage(INFO, "0x1", "QuicSession_WriteStreamData", "write");
+    assert.equal("endpoints_synthetic" in real, false);
+});
+
+test("a linked tuple is flagged only while its local side is guessed", () => {
+    const tracker = new QuicConnectionTracker();
+    const peer = { family: "AF_INET", addr: 0x8EFB9B77, port: 443 };
+    const self = { family: "AF_INET", addr: 0xC0A80102, port: 51000 };
+    const flag = (c: { info: QuicConnectionInfo; connKey: string }) =>
+        buildQuicMessage(c.info, c.connKey, "f", "write").endpoints_synthetic;
+    assert.equal(flag(tracker.resolveLinked("0x10", null, null)), true);
+    const halfGuessed = tracker.resolveLinked("0x10", null, peer);
+    assert.equal(flag(halfGuessed), true);
+    const upgraded = tracker.resolveLinked("0x10", self, peer);
+    assert.equal(upgraded.connKey, halfGuessed.connKey);
+    assert.equal(flag(upgraded), undefined);
+    assert.equal(flag(tracker.resolveLinked("0x20", self, peer)), undefined);
 });

@@ -118,10 +118,6 @@ class CustomProtocolPlugin(ScriptPlugin):
         self._hook_defs: List[HookDefinition] = []
         self._session: Optional["Session"] = None
 
-    # ------------------------------------------------------------------
-    # ScriptPlugin overrides
-    # ------------------------------------------------------------------
-
     @property
     def supported_backends(self) -> List[str]:
         return ["frida"]
@@ -129,10 +125,6 @@ class CustomProtocolPlugin(ScriptPlugin):
     @property
     def description(self) -> str:
         return f"Custom protocol plugin: {self.display_name}"
-
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
 
     def on_load(self, session: "Session") -> None:
         """Auto-register protocol handler in the ProtocolRegistry."""
@@ -197,10 +189,6 @@ class CustomProtocolPlugin(ScriptPlugin):
         elif content_type == "devlog":
             logger.debug("Plugin %s [devlog]: %s", self.name, payload.get("message", ""))
 
-    # ------------------------------------------------------------------
-    # Abstract: user defines hooks here
-    # ------------------------------------------------------------------
-
     @abstractmethod
     def setup_hooks(self) -> None:
         """Define hooks by calling hook_*() utility methods.
@@ -215,10 +203,6 @@ class CustomProtocolPlugin(ScriptPlugin):
                 )
         """
         ...
-
-    # ------------------------------------------------------------------
-    # Hook definition utility methods
-    # ------------------------------------------------------------------
 
     def hook_key_on_enter(
         self,
@@ -313,10 +297,6 @@ class CustomProtocolPlugin(ScriptPlugin):
             on_enter_js=on_enter_js, on_leave_js=on_leave_js,
         ))
 
-    # ------------------------------------------------------------------
-    # Python-side convenience methods
-    # ------------------------------------------------------------------
-
     def emit_key(self, label: str, key_hex: str) -> None:
         """Manually emit a KeylogEvent.
 
@@ -371,10 +351,6 @@ class CustomProtocolPlugin(ScriptPlugin):
             protocol=self.name,
         ))
 
-    # ------------------------------------------------------------------
-    # Protocol handler auto-registration
-    # ------------------------------------------------------------------
-
     def _register_protocol_handler(self) -> None:
         """Create and register a TemplateProtocolHandler in the global registry."""
         try:
@@ -425,10 +401,6 @@ class CustomProtocolPlugin(ScriptPlugin):
         """Return the auto-generated protocol handler, if available."""
         return getattr(self, "_protocol_handler", None)
 
-    # ------------------------------------------------------------------
-    # Private hook accumulation helpers
-    # ------------------------------------------------------------------
-
     def _add_key_hook(
         self, phase: str, **kwargs: Any,
     ) -> None:
@@ -445,10 +417,6 @@ class CustomProtocolPlugin(ScriptPlugin):
         self._hook_defs.append(HookDefinition(
             f"data_{direction}", direction=direction, **kwargs,
         ))
-
-    # ------------------------------------------------------------------
-    # Validation helpers
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _validate_hook_target(
@@ -467,10 +435,6 @@ class CustomProtocolPlugin(ScriptPlugin):
         """Ensure size is within bounds."""
         if size <= 0 or size > 4096:
             raise ValueError(f"size must be between 1 and 4096, got {size}")
-
-    # ------------------------------------------------------------------
-    # Internal
-    # ------------------------------------------------------------------
 
     def _emit_error(self, description: str, stack: str = "") -> None:
         """Emit an ErrorEvent."""

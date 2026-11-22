@@ -13,7 +13,7 @@
         "build:memscan": "frida-compile agent/memory_scan_agent.ts -o friTap/fritap_memscan.js",
         "build:full": "./dev/compile_agent.sh full",
         "watch": "frida-compile agent/fritap_agent.ts -o friTap/_fritap_agent.js -w",
-        "test:agent": "node --import tsx --test \"agent/**/*.test.ts\"",
+        "test:agent": "node --import tsx --test \"agent/**/*.test.ts\" \"tests/agent/**/*.test.ts\"",
         "test:memscan-agent": "node tests/agent/mtproto_agent_harness.mjs"
     },
     "keywords": [
@@ -34,7 +34,7 @@
     },
     "dependencies": {
         "frida": "^17.8.0",
-        "frida-java-bridge": "git+https://github.com/frida/frida-java-bridge.git#b38a5b647d3e6b72aa19bcf8eb5e41c550a0e622",
+        "frida-java-bridge": "7.1.0",
         "frida-objc-bridge": "^8.0.6",
         "util": "^0.12.5"
     }

@@ -1,8 +1,7 @@
 """Canonical event types for the friTap pipeline output.
 
-These frozen dataclasses represent the processed, immutable events that
-sinks receive after pipeline processing. They are separate from the raw
-agent messages emitted by Frida scripts.
+Frozen events that sinks receive after pipeline processing, separate from
+the raw agent messages.
 """
 
 from __future__ import annotations
@@ -36,11 +35,7 @@ class Endpoint(NamedTuple):
 
 @dataclass(frozen=True)
 class KeylogCanonical:
-    """Processed key material event.
-
-    Carries TLS/SSH/IPSec key-log lines ready for writing to a
-    SSLKEYLOGFILE-compatible sink.
-    """
+    """Key-log lines (TLS/SSH/IPSec) ready for a SSLKEYLOGFILE-compatible sink."""
 
     key_data: str
     protocol: str = "tls"
@@ -50,12 +45,7 @@ class KeylogCanonical:
 
 @dataclass(frozen=True)
 class DataCanonical:
-    """Processed decrypted data event.
-
-    Represents a single chunk of decrypted payload captured from the
-    target process, tagged with connection metadata for PCAP generation
-    and downstream analysis.
-    """
+    """One chunk of decrypted payload with connection metadata for PCAP generation."""
 
     data: bytes
     direction: Direction
@@ -65,6 +55,8 @@ class DataCanonical:
     ssl_session_id: str = ""
     protocol: str = "tls"
     timestamp: float = field(default_factory=time.time)
+    # Arrival time when ``timestamp`` is back-dated (held record); packet writers use it.
+    received_at: float | None = None
     connection_id: str = ""
     client_random: str = ""
     # Raw address values for PCAP writing
@@ -78,11 +70,7 @@ class DataCanonical:
 
 @dataclass(frozen=True)
 class MetaCanonical:
-    """Processed metadata event.
-
-    Covers auxiliary information such as library detection notifications,
-    console output, session lifecycle, and error reports.
-    """
+    """Auxiliary event: library detection, console output, session lifecycle, errors."""
 
     event_type: str  # "library_detected", "console", "session", "error"
     message: str = ""

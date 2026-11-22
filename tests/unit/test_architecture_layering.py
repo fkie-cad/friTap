@@ -37,6 +37,14 @@ R11 R1/R2 modules must not name an offline protocol package in a string
    literal (importlib-style string imports; recorded as "string:<literal>")
 R12 no module outside an offline protocol package may import a private name
    from inside that package (recorded as "module:_name"; superset of R6)
+R13 the embeddable viewer (friTap.ui.*, tui.viewer_app, tui.screens.tap_viewer,
+   tui.screens.viewer_mixins) -/-> capture code (frida, tui.capture_controller,
+   tui.wizard, tui.screens.main_screen, friTap.friTap, friTap.ssl_logger,
+   friTap.legacy); the core extension registry friTap.extensions (and its
+   friTap.ui.extensions re-export) -/-> textual
+R14 core never imports the UI: no module outside friTap.tui / friTap.ui may
+   import friTap.tui or friTap.ui (module- or function-level), so the UI can
+   ship as its own distribution
 """
 
 from __future__ import annotations
@@ -73,10 +81,36 @@ GENERIC_CORE_MODULES = (
     "friTap.connection_index",
     "friTap.filter",
     "friTap.flow.collector",
+    # FlowCollector's state module and mixins.
+    "friTap.flow.collector_state",
+    "friTap.flow.caller_stack_flow",
+    "friTap.flow.connection_lifecycle",
+    "friTap.flow.flow_metadata",
+    "friTap.flow.orphan_flow",
+    "friTap.flow.parser_flow",
+    "friTap.flow.request_join_flow",
+    "friTap.flow.signal_flow",
     "friTap.flow.models",
     "friTap.flow.layer_pipeline",
     "friTap.message_router",
     "friTap.events",
+)
+
+# R13: the embeddable viewer stays separable from capture code.
+VIEWER_MODULES = (
+    "friTap.ui",
+    "friTap.tui.viewer_app",
+    "friTap.tui.screens.tap_viewer",
+    "friTap.tui.screens.viewer_mixins",
+)
+CAPTURE_MODULES = (
+    "frida",
+    "friTap.tui.capture_controller",
+    "friTap.tui.wizard",
+    "friTap.tui.screens.main_screen",
+    "friTap.friTap",
+    "friTap.ssl_logger",
+    "friTap.legacy",
 )
 
 # (importer prefixes, forbidden imported prefixes) per module-dependency rule.
@@ -87,7 +121,12 @@ MODULE_RULES: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "R3b": ((f"{OFFLINE}.tls_midstream", f"{OFFLINE}.schannel"), (f"{OFFLINE}.rc4",)),
     "R4": (("friTap.protocols",), (OFFLINE,)),
     "R10": (PARSERS, ("rich", "textual")),
+    "R13a": (VIEWER_MODULES, CAPTURE_MODULES),
+    "R13b": (("friTap.extensions", "friTap.ui.extensions"), ("textual",)),
 }
+
+# R14: UI packages; everything else is core and must not import them.
+UI_PACKAGES = ("friTap.tui", "friTap.ui")
 
 # R7: modules that must import nothing at all / nothing from friTap.
 IMPORT_FREE_MODULES = (f"{OFFLINE}.result_schema",)
@@ -107,11 +146,43 @@ ALLOWED_INTERNAL_IMPORTS: dict[str, tuple[str, ...]] = {
     # tls12 reuses the tls13 AEAD helpers and the records constants.
     f"{OFFLINE}.tls.tls12": (f"{OFFLINE}.tls.tls13", f"{OFFLINE}.tls.records"),
     f"{OFFLINE}.tls.tls13": (),
-    f"{OFFLINE}.tls.keylog": (),
+    # The canonical label set is a dependency-free leaf, re-exported here.
+    f"{OFFLINE}.tls.keylog": ("friTap.tls_keylog_labels",),
+    "friTap.tls_keylog_labels": (),
     f"{OFFLINE}.tls.stream": (f"{OFFLINE}.tls.tls13", f"{OFFLINE}.tls.records"),
     # The tshark driver and the decryptor registry are protocol-neutral leaves.
-    f"{OFFLINE}.tshark": (),
+    # tshark itself only re-exports from its split-out siblings (client_random and
+    # _warn_once are used by tshark_meta / tshark_env, which carry their own entries).
+    # capture_validation supplies the shared pcapng block walker (capture_has_dsb).
+    f"{OFFLINE}.tshark": (
+        f"{OFFLINE}.tshark_commands", f"{OFFLINE}.tshark_env", f"{OFFLINE}.tshark_meta",
+        f"{OFFLINE}.net.capture_validation",
+    ),
+    # Pure tshark helpers split out of the driver: stdlib + the same leaves only.
+    f"{OFFLINE}.tshark_meta": ("friTap.client_random",),
+    f"{OFFLINE}.tshark_commands": (f"{OFFLINE}.tshark_meta",),
+    f"{OFFLINE}.tshark_env": ("friTap._warn_once",),
+    "friTap.client_random": (),
+    "friTap._warn_once": (),
+    # Cache-file helpers (cache dir, atomic write) are a stdlib-only leaf;
+    # the learned plaintext-RVA cache uses only them.
+    "friTap.cache_files": (),
+    "friTap.learned_offsets": ("friTap.cache_files",),
     f"{OFFLINE}.registry": (),
+    # Row-to-event helpers split out of pcap_to_tap: they must never import it
+    # back (the orchestrator imports them at module level).
+    f"{OFFLINE}.quic_reassembly": (),
+    f"{OFFLINE}.quic_events": (
+        "friTap.connection_index", "friTap.events", f"{OFFLINE}.pipeline_api",
+        f"{OFFLINE}.quic_reassembly", f"{OFFLINE}.tshark",
+    ),
+    f"{OFFLINE}.plaintext_events": (
+        "friTap.events", f"{OFFLINE}.pipeline_api", f"{OFFLINE}.tshark",
+    ),
+    f"{OFFLINE}.transport_layers": (
+        "friTap.connection_index", "friTap.constants", "friTap.flow.layers",
+        f"{OFFLINE}.registry",
+    ),
     # Schannel: the sidecar reader is a leaf; the Python record oracle only
     # needs the generic TLS record layer and TCP reassembly.
     f"{OFFLINE}.schannel.unpaired": (),
@@ -179,9 +250,7 @@ KNOWN_VIOLATIONS: frozenset[tuple[str, str]] = frozenset({
     # (none today)
 
     # --- R9: TUI -> private names of parsers / offline / flow -----------------
-    # Pre-existing reach-ins; remove once flow exposes public names for them.
-    ("friTap.tui.replay_controller", "friTap.flow.replay:_LRUCache"),
-    ("friTap.tui.widgets.flow_detail", "friTap.flow.display:_layer_display_name"),
+    # (none today)
 
     # --- R10: parsers -> rich / textual ---------------------------------------
     # (none today)
@@ -194,6 +263,12 @@ KNOWN_VIOLATIONS: frozenset[tuple[str, str]] = frozenset({
     # the TL parsers, resolved on first lookup (see the R1 shim above).
     ("friTap.parsers.registry", "string:friTap.offline.mtproto.tl_parser:MtprotoParser"),
     ("friTap.parsers.registry", "string:friTap.offline.mtproto.tl_parser:TelegramE2EParser"),
+
+    # --- R14: core -> UI (friTap.tui / friTap.ui) ------------------------------
+    # friTap/friTap.py main(): the three function-local
+    # ``from .tui.app import run_tui`` launches (pcap-wizard, ``-r`` replay,
+    # no-argument TUI). Lazy entry-point dispatch, not a core dependency.
+    ("friTap.friTap", "friTap.tui.app"),
 })
 
 
@@ -325,6 +400,12 @@ def leaf_module_violations(importer: str, record: ImportRecord) -> Iterator[tupl
         yield importer, record.module
 
 
+def core_imports_ui_violations(importer: str, record: ImportRecord) -> Iterator[tuple[str, str]]:
+    """R14: modules outside the UI packages never import them (incl. lazy)."""
+    if not under(importer, UI_PACKAGES) and under(record.module, UI_PACKAGES):
+        yield importer, record.module
+
+
 def is_covered_by_submodule_record(record: ImportRecord) -> bool:
     """``from pkg import mod`` is judged by its ``pkg.mod`` companion record."""
     return record.name not in (None, "*") and is_module_on_disk(f"{record.module}.{record.name}")
@@ -361,6 +442,7 @@ RECORD_RULES = (
     leaf_module_violations,
     internal_allowlist_violations,
     eager_cycle_edge_violations,
+    core_imports_ui_violations,
 )
 
 
@@ -384,7 +466,7 @@ def test_no_new_layering_violations():
     new = violations() - KNOWN_VIOLATIONS
     assert not new, (
         "New architecture-layering violations (fix the import, do not just "
-        "allowlist it; rules R1-R12 are listed in this module's docstring; "
+        "allowlist it; rules R1-R14 are listed in this module's docstring; "
         "'module:_name' = private-name import, 'string:...' = importlib string):"
         f"\n{_format(new)}"
     )
@@ -448,3 +530,18 @@ def test_protocol_string_import_pattern_ignores_prose():
     assert PROTOCOL_STRING_IMPORT.fullmatch("friTap.offline.signal")
     assert not PROTOCOL_STRING_IMPORT.fullmatch("see friTap.offline.signal for details")
     assert not PROTOCOL_STRING_IMPORT.fullmatch("friTap.offline.signals")
+
+
+def test_r14_flags_core_importing_ui_but_not_ui_internal_imports():
+    assert list(core_imports_ui_violations(
+        "friTap.filter", ImportRecord("friTap.ui", None, lazy=True))) == [
+        ("friTap.filter", "friTap.ui")]
+    assert list(core_imports_ui_violations(
+        "friTap.flow.models", ImportRecord("friTap.tui.app", "run_tui"))) == [
+        ("friTap.flow.models", "friTap.tui.app")]
+    assert not list(core_imports_ui_violations(
+        "friTap.ui", ImportRecord("friTap.tui.viewer_app", "open_tap")))
+    assert not list(core_imports_ui_violations(
+        "friTap.tui.app", ImportRecord("friTap.ui.extensions", None)))
+    assert not list(core_imports_ui_violations(
+        "friTap.filter", ImportRecord("friTap.extensions", None)))

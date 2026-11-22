@@ -2,28 +2,21 @@
 
 """Process-wide shared handles for capture output files (pcap, pcapng, json, jsonl).
 
-On Windows the main SSL_Logger and the LSASS SSL_Logger (``hook_lsass`` in
-friTap.py) are configured with the SAME ``-p`` and ``--json`` paths. If each
-session opened those paths itself, the second ``open(path, "w"/"wb")`` would
-truncate the first session's output and the two independent file offsets
-would then overwrite each other's records.
+On Windows the main SSL_Logger and the LSASS SSL_Logger use the SAME ``-p`` and
+``--json`` paths; a second ``open(path, "w")`` would truncate the first session's
+output and the two file offsets would overwrite each other.
 
-This module keeps exactly one open handle per normalized path, following the
-keylog precedent (:mod:`friTap.output.shared_keylog_writer`):
+One open handle is kept per normalized path (like
+:mod:`friTap.output.shared_keylog_writer`):
 
-* the FIRST acquirer opens (truncates) the file and runs the optional
-  *initializer* on it, under the registry lock, so a format header (pcap
-  global header, pcapng SHB+IDB) is written exactly once and before any
-  record; the initializer's return value is kept as :attr:`SharedOutputFile.state`
-  (e.g. an in-memory JSON document that all acquirers fill);
-* every later acquirer shares the same handle and state;
-* :meth:`SharedOutputFile.write` is atomic w.r.t. the other acquirers, so a
-  record passed in one call is never interleaved with another session's;
-* :func:`release_shared_output_file` flushes, drops one reference and closes
-  the file once the last reference is gone.
+* the first acquirer opens (truncates) the file and runs the optional *initializer*
+  under the registry lock, so a format header (pcap global header, pcapng SHB+IDB) is
+  written once before any record; its return value is :attr:`SharedOutputFile.state`;
+* later acquirers share the handle and state;
+* :meth:`SharedOutputFile.write` is atomic w.r.t. other acquirers;
+* :func:`release_shared_output_file` flushes, drops a reference, closes on the last.
 
-With a single acquirer (every non-LSASS run) the file sees exactly the bytes a
-private ``open()`` would have produced.
+With a single acquirer the bytes match a private ``open()``.
 """
 
 from __future__ import annotations
@@ -54,11 +47,7 @@ class SharedOutputFile:
         return self._file is None
 
     def write(self, data) -> bool:
-        """Write *data* in one call, atomically w.r.t. other writers.
-
-        Returns ``False`` (writing nothing) once the file is closed.
-        Raises ``OSError`` on I/O errors.
-        """
+        """Write *data* atomically w.r.t. other writers; ``False`` once closed. Raises ``OSError``."""
         with self.lock:
             if self._file is None:
                 return False
@@ -71,10 +60,7 @@ class SharedOutputFile:
                 self._file.flush()
 
     def rewrite(self, data) -> bool:
-        """Replace the whole file content with *data* (whole-document formats).
-
-        Raises ``OSError`` on I/O errors.
-        """
+        """Replace the whole file content with *data* (whole-document formats). Raises ``OSError``."""
         with self.lock:
             if self._file is None:
                 return False
@@ -96,11 +82,9 @@ class SharedOutputFile:
 
 
 class SharedOutputFileHandle:
-    """File-like view of a :class:`SharedOutputFile` owned by ONE acquirer.
+    """File-like view (``write``/``flush``/``close``) of a :class:`SharedOutputFile` owned by ONE acquirer.
 
-    ``close()`` releases this acquirer's reference exactly once, so handler code
-    written against a private file object (``write``/``flush``/``close``) works
-    unchanged on a shared one.
+    ``close()`` releases its reference exactly once.
     """
 
     def __init__(self, shared: SharedOutputFile) -> None:
@@ -141,13 +125,11 @@ def acquire_shared_output_file(
     buffering: int = -1,
     initializer: Optional[Callable[[IO], Any]] = None,
 ) -> Tuple[SharedOutputFile, bool]:
-    """Take a reference on the shared output file for *path*.
+    """Take a reference on the shared file for *path*; returns ``(shared, created)``.
 
-    Returns ``(shared, created)``. ``created`` is ``True`` when this call opened
-    (truncated) the file and ran *initializer* on the raw handle; its return
-    value becomes ``shared.state``. *mode* and *buffering* only apply to the
-    first acquirer. Raises ``OSError`` when the file cannot be opened; a failing
-    initializer closes the file again and re-raises.
+    ``created`` means this call opened (truncated) the file and ran *initializer*
+    (its result becomes ``shared.state``). *mode*/*buffering* apply to the first acquirer
+    only. Raises ``OSError`` if it cannot open; a failing initializer closes the file and re-raises.
     """
     key = normalize_keylog_path(path)
     with _registry_lock:
@@ -176,12 +158,10 @@ def open_shared_output_file(path: str, mode: str = "wb", buffering: int = -1,
 
 
 def release_shared_output_file(shared: SharedOutputFile) -> bool:
-    """Flush, drop one reference on *shared*, close it when the last one is gone.
+    """Flush, drop one reference on *shared*, close on the last; returns True when it closed.
 
-    The flush happens on every release so a writer that is never released
-    (e.g. a session killed by ``os._exit``) cannot hold back buffered records
-    of the writers that were. Returns ``True`` when this call closed the file.
-    Idempotent past zero; never raises.
+    Flushing on every release keeps a never-released writer (``os._exit``) from holding
+    back the others' buffered records. Idempotent past zero; never raises.
     """
     with _registry_lock:
         if shared._refcount <= 0:

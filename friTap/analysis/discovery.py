@@ -1,30 +1,21 @@
 """Zero-config discovery of external (user-provided) analyzers.
 
-This module makes custom analyzers discoverable *everywhere* — the Python API,
-the CLI (live ``--scan`` and offline ``analyze``) and the TUI — without the user
-having to re-pass ``--analyzer-path`` each time. It mirrors the discovery
-patterns already used for full plugins in :mod:`friTap.plugins.loader`, but is
-deliberately **Session-independent**: analyzers must be enumerable *before* any
-capture starts (for ``--list-analyzers``, the offline analyze path and the TUI
-analyzer panel at config time), so we do not route them through
+Makes custom analyzers available in the Python API, CLI and TUI without
+re-passing ``--analyzer-path``. Mirrors :mod:`friTap.plugins.loader` but is
+Session-independent: analyzers must be enumerable before any capture starts
+(``--list-analyzers``, offline analyze, TUI config), so they bypass
 ``FriTapPlugin.on_load(session)``.
 
-Three discovery sources are scanned:
+Sources:
 
-1. A drop-in directory — ``<user-data>/friTap/analyzers/*.py`` (plus the legacy
-   ``~/.fritap/analyzers/``). Classes that set ``is_fritap_analyzer = True`` are
-   instantiated and registered by their ``.name``.
-2. A setuptools entry-points group ``fritap.analyzers`` — third-party packages
-   can ship analyzers that appear automatically once installed.
-3. A bridge for existing :class:`~friTap.plugins.base.FriTapPlugin` authors:
-   any plugin exposing the optional ``register_analyzers()`` hook contributes
-   its analyzers here (called without a Session).
+1. Drop-in directory ``<user-data>/friTap/analyzers/*.py`` (and the legacy
+   ``~/.fritap/analyzers/``): classes with ``is_fritap_analyzer = True``.
+2. Entry-points group ``fritap.analyzers``.
+3. ``FriTapPlugin.register_analyzers()``, called without a Session.
 
-Security note — loading a ``.py`` file or an entry point *executes that code* at
-import time, exactly like the existing plugin loader. Set
-``FRITAP_DISABLE_ANALYZER_DISCOVERY=1`` to disable ambient discovery entirely
-(restores the pre-discovery behaviour: built-ins + explicit ``--analyzer-path``
-only).
+Security: loading a ``.py`` file or entry point executes that code at import,
+like the plugin loader. ``FRITAP_DISABLE_ANALYZER_DISCOVERY=1`` disables ambient
+discovery (built-ins and explicit ``--analyzer-path`` only).
 """
 
 from __future__ import annotations
@@ -59,15 +50,11 @@ def discovery_disabled() -> bool:
     return discovery_base.discovery_disabled(_DISABLE_ENV)
 
 
-# ----------------------------------------------------------------------------
-# Directory resolution
-# ----------------------------------------------------------------------------
-
 _ANALYZER_DIR: Optional[Path] = None
 
 
 def _get_analyzer_dir() -> Path:
-    """Return the resolved analyzers directory, lazily initializing on first call."""
+    """The analyzers directory, resolved lazily."""
     global _ANALYZER_DIR
     if _ANALYZER_DIR is None:
         _ANALYZER_DIR = discovery_base.resolve_dropin_dir(
@@ -76,13 +63,9 @@ def _get_analyzer_dir() -> Path:
 
 
 def _get_analyzer_entry_points(**kwargs: str) -> list:
-    """Return ``fritap.analyzers`` entry points, compatible with Python 3.9+."""
+    """``fritap.analyzers`` entry points (Python 3.9+ compatible)."""
     return discovery_base.get_entry_points(ANALYZER_ENTRY_POINT_GROUP, **kwargs)
 
-
-# ----------------------------------------------------------------------------
-# Per-source loaders
-# ----------------------------------------------------------------------------
 
 def _coerce_instance(obj: object) -> "BaseAnalyzer | None":
     """Turn a class/factory/instance into a validated BaseAnalyzer, else None."""
@@ -95,9 +78,8 @@ def _coerce_instance(obj: object) -> "BaseAnalyzer | None":
         return None
     if not isinstance(instance, BaseAnalyzer):
         return None
-    # A non-empty string name is required: discovered names are sorted and used
-    # as dict keys, so a None/empty name would poison enumeration (e.g. crash
-    # available_analyzers()/--list-analyzers) for every analyzer.
+    # A non-string/empty name would break sorting and dict keys in
+    # available_analyzers()/--list-analyzers for every analyzer.
     name = getattr(instance, "name", None)
     if not isinstance(name, str) or not name:
         logger.warning("Discovered analyzer has invalid name %r; skipping", name)
@@ -141,12 +123,7 @@ def _load_entrypoint_analyzers(found: Dict[str, DiscoveredAnalyzer]) -> None:
 
 
 def _load_plugin_bridge_analyzers(found: Dict[str, DiscoveredAnalyzer]) -> None:
-    """Collect analyzers exposed by FriTapPlugin authors via register_analyzers().
-
-    This is Session-free: we instantiate plugin classes and call the optional
-    ``register_analyzers()`` hook only. Plugins without the hook (the default)
-    contribute nothing here.
-    """
+    """Collect analyzers from FriTapPlugin.register_analyzers(); Session-free, hook only."""
     try:
         from friTap.plugins.base import FriTapPlugin
         from friTap.plugins.loader import PluginLoader, _get_plugin_dir
@@ -155,7 +132,6 @@ def _load_plugin_bridge_analyzers(found: Dict[str, DiscoveredAnalyzer]) -> None:
 
     plugin_classes: list[type] = []
 
-    # Entry-point plugins
     try:
         for ep in PluginLoader._get_fritap_entry_points():
             try:
@@ -167,7 +143,7 @@ def _load_plugin_bridge_analyzers(found: Dict[str, DiscoveredAnalyzer]) -> None:
     except Exception:  # noqa: BLE001
         pass
 
-    # File-based plugins (look for a top-level ``Plugin`` class, per loader convention)
+    # File-based plugins: top-level ``Plugin`` class, per loader convention
     try:
         for _item, mod in discovery_base.iter_dropin_modules(
             _get_plugin_dir(), "fritap_plugin_", logger, label="plugin",
@@ -192,25 +168,15 @@ def _load_plugin_bridge_analyzers(found: Dict[str, DiscoveredAnalyzer]) -> None:
                 found[instance.name] = DiscoveredAnalyzer(instance, source)
 
 
-# ----------------------------------------------------------------------------
-# Public API
-# ----------------------------------------------------------------------------
-
 _CACHE: Optional[Dict[str, DiscoveredAnalyzer]] = None
 _CACHE_LOCK = threading.Lock()
 
 
 def discover_external_analyzers(*, force: bool = False) -> Dict[str, DiscoveredAnalyzer]:
-    """Discover external analyzers from all sources.
+    """Discover external analyzers from all sources: ``.name`` -> :class:`DiscoveredAnalyzer`.
 
-    Results are cached after the first call; pass ``force=True`` to re-scan
-    (e.g. for a TUI "reload analyzers" action). Returns a mapping of analyzer
-    ``.name`` -> :class:`DiscoveredAnalyzer`. Returns an empty mapping when
-    discovery is disabled via ``FRITAP_DISABLE_ANALYZER_DISCOVERY``.
-
-    Thread-safe: the scan + cache publish happen under a lock and the cache is
-    only published once fully populated, so a concurrent caller never observes
-    a partial result.
+    Cached after the first call (``force=True`` re-scans); empty when discovery
+    is disabled. Thread-safe: the cache is published only once fully populated.
     """
     global _CACHE
     if discovery_disabled():
@@ -230,5 +196,5 @@ def discover_external_analyzers(*, force: bool = False) -> Dict[str, DiscoveredA
 
 
 def discovered_analyzer_names() -> list[str]:
-    """Return the sorted names of all discovered external analyzers."""
+    """Sorted names of discovered external analyzers."""
     return sorted(discover_external_analyzers())

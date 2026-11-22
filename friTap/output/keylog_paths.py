@@ -10,9 +10,7 @@ import os
 def split_keylog_path(base_path: str, protocol: str) -> str:
     """Insert ``.<protocol>`` before the final extension of *base_path*.
 
-    Used by the output factory when more than one protocol is active in
-    a single ``friTap`` run, so each protocol's Wireshark-loadable
-    keylog format lands in its own file:
+    Used when several protocols are active, so each gets its own keylog file:
 
     >>> split_keylog_path("mykeys.log", "ssh")
     'mykeys.ssh.log'
@@ -27,8 +25,7 @@ def split_keylog_path(base_path: str, protocol: str) -> str:
     >>> split_keylog_path("", "ssh")
     '.ssh'
 
-    The directory component is preserved untouched; only the basename
-    is rewritten.
+    Only the basename is rewritten.
     """
     if not base_path:
         return f".{protocol}"

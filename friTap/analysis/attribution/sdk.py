@@ -1,40 +1,28 @@
 """Offline SDK attribution: map a captured call stack to its owning SDK.
 
 :class:`SdkResolver` answers "which SDK emitted this request" by matching the
-class/package names (Java/ObjC) and native module names found in a captured
-backtrace against a bundled, offline signature table
-(``data/sdk_signatures.json``). It is the call-stack counterpart to the
-host-based :class:`~friTap.analysis.attribution.resolver.TrackerResolver`:
+class/package names (Java/ObjC) and native module names in a captured
+backtrace against the bundled ``data/sdk_signatures.json``. It is the
+call-stack counterpart to the host-based
+:class:`~friTap.analysis.attribution.resolver.TrackerResolver`.
 
-* ``classify_package`` resolves a single fully-qualified class/package name by
-  **longest matching dotted prefix** (so ``com.google.firebase.crashlytics.X``
-  resolves to Crashlytics rather than the broader Firebase entry).
-* ``classify_frames`` scans a whole backtrace top-down and returns the SDK of
-  the first frame that matches a signature. Native modules whose signature
-  carries a ``transport_kind`` (Cronet, Chrome/WebView, Flutter, ...) are the
-  *transport* that carried the flow, not its *originator*, so they are skipped
-  there (the deny-list).
-* ``classify_transport`` answers the other half: which transport module carried
-  the flow (``{"module", "kind"}``), matched on the module basename.
+* ``classify_package``: longest matching dotted prefix (``com.google.firebase.crashlytics.X``
+  resolves to Crashlytics, not Firebase).
+* ``classify_frames``: SDK of the first top-down frame matching a signature.
+  Native modules with a ``transport_kind`` (Cronet, Chrome/WebView, Flutter)
+  carried the flow but did not originate it, so they are skipped.
+* ``classify_transport``: the transport module (``{"module", "kind"}``) by basename.
 
-Extra signature files can be layered over the bundled table, either via the
-``extra_paths`` constructor argument or, for the module-level singleton, via
-the ``FRITAP_SDK_SIGNATURES`` environment variable (``os.pathsep``-separated).
-An overlay's ``chromium_browser_packages`` and ``chromium_internal_hosts``
-lists are unioned with the bundled ones.
+Extra signature files overlay the bundled table via ``extra_paths`` or, for the
+singleton, ``FRITAP_SDK_SIGNATURES`` (``os.pathsep``-separated); their
+``chromium_browser_packages`` and ``chromium_internal_hosts`` lists are unioned.
+:func:`is_chromium_internal_host` feeds the ``chromium-internal`` bucket.
 
-:func:`is_chromium_internal_host` answers whether a host is a Chromium/WebView/
-Cronet background service (Safe Browsing, component updater, variations, ...)
-listed under ``chromium_internal_hosts``: the ``chromium-internal`` bucket.
+No network and no I/O at import; the bundled file is read lazily on first build.
 
-The resolver performs **no network and no I/O at import time**. The bundled
-signature file is read once, lazily, when a :class:`SdkResolver` is built.
-
-Trust model: the ``sdk``/``vendor``/``category`` strings come from the bundled
-table and are therefore *trusted* — they are safe to surface directly and must
-**not** be wrapped in an ``untrusted`` envelope. Only the frame strings handed
-in by callers are untrusted input; this module never echoes them back — it
-returns only the trusted signature metadata, or ``None``.
+Trust model: ``sdk``/``vendor``/``category`` come from the bundled table and are
+trusted (no ``untrusted`` envelope). Caller-supplied frame strings are untrusted
+and never echoed back; only trusted metadata or ``None`` is returned.
 """
 
 from __future__ import annotations
@@ -55,34 +43,27 @@ logger = logging.getLogger(__name__)
 _DATA_DIR = Path(__file__).resolve().parent / "data"
 DEFAULT_SDK_SIGNATURES_PATH = _DATA_DIR / "sdk_signatures.json"
 
-#: Environment variable naming extra signature overlay files
-#: (``os.pathsep``-separated), merged over the bundled table by the singleton.
+#: Env var naming extra overlay files (``os.pathsep``-separated) for the singleton.
 SDK_SIGNATURES_ENV = "FRITAP_SDK_SIGNATURES"
 
 #: ``transport_kind`` sentinel for libraries shared by Chrome and WebView
 #: (libmonochrome, libchrome); resolved per process by :func:`_resolve_kind`.
 CHROME_OR_WEBVIEW = "chrome-or-webview"
 
-#: Top-level signature-file key listing the Chromium-based browsers whose own
-#: network stack a ``chrome-or-webview`` module is (kind ``chrome``); any other
-#: process loading that module is a WebView host (kind ``webview``).
+#: Signature-file key listing Chromium browsers (kind ``chrome``); any other
+#: process loading a ``chrome-or-webview`` module is a WebView host.
 CHROMIUM_BROWSER_PACKAGES_KEY = "chromium_browser_packages"
 
-#: Top-level signature-file key listing the hosts of Chromium's own background
-#: services (exact ``host`` or ``*.suffix`` patterns): an unattributed
-#: Chromium-family flow to one of them gets ``attribution.bucket =
-#: "chromium-internal"`` (see :func:`is_chromium_internal_host`).
+#: Signature-file key listing Chromium background-service hosts (``host`` or
+#: ``*.suffix``): unattributed Chromium flows to them get bucket ``chromium-internal``.
 CHROMIUM_INTERNAL_HOSTS_KEY = "chromium_internal_hosts"
 
-#: Fallback internal-host patterns, used only when the bundled signature file
-#: has no :data:`CHROMIUM_INTERNAL_HOSTS_KEY` list: none (no bucket is filled).
+#: Fallback when the signature file lacks the internal-hosts list: none.
 DEFAULT_CHROMIUM_INTERNAL_HOSTS: Tuple[str, ...] = ()
 
-#: Fallback browser patterns, used only when the bundled signature file has no
-#: :data:`CHROMIUM_BROWSER_PACKAGES_KEY` list. Exact names, or a ``prefix*``
-#: pattern; matched case-insensitively. Keep in sync with
-#: ``_CHROME_FAMILY_TARGETS`` in ``friTap/friTap.py`` (the CLI's Chrome
-#: subprocess hint), which also lists the Frida friendly name ``Chrome``.
+#: Fallback when the signature file lacks the browsers list: exact names or
+#: ``prefix*``, case-insensitive. Keep in sync with ``_CHROME_FAMILY_TARGETS`` in
+#: ``friTap/friTap.py``.
 DEFAULT_CHROMIUM_BROWSER_PACKAGES = (
     "com.android.chrome",
     "com.google.android.apps.chrome",
@@ -97,8 +78,7 @@ _GMS_PATH_MARKERS = ("com.google.android.gms", "/dynamite")
 #: Characters allowed directly after a transport key in a module basename.
 _TRANSPORT_KEY_BOUNDARY = frozenset(("", ".", "_", "-"))
 
-#: Allowed SDK category slugs. A signature's category is normalised to one of
-#: these; anything unexpected is surfaced verbatim from the trusted table.
+#: SDK category slugs; an unexpected category is surfaced verbatim (trusted table).
 SDK_CATEGORIES = (
     "advertising",
     "analytics",
@@ -114,10 +94,8 @@ SDK_CATEGORIES = (
     "other",
 )
 
-#: Package/module prefixes that are platform runtime or generic transport noise
-#: — never an SDK identity on their own. Used ONLY to skip non-matching frames
-#: while scanning a backtrace; a frame is always tested against the SDK
-#: signatures first, so a real SDK frame is never skipped by this set.
+#: Platform runtime / generic transport prefixes: skipped only after a frame
+#: fails the SDK signatures, so a real SDK frame is never skipped.
 _IGNORED_PREFIXES = frozenset(
     {
         "java.",
@@ -138,11 +116,7 @@ _IGNORED_PREFIXES = frozenset(
 
 @dataclass(frozen=True)
 class ChromiumBrowserPackages:
-    """Matcher for the package/process names of Chromium-based browsers.
-
-    :param exact: lower-cased exact names.
-    :param prefixes: lower-cased prefixes (from ``prefix*`` patterns).
-    """
+    """Matcher for Chromium browser package/process names (lower-cased exact names and ``prefix*`` prefixes)."""
 
     exact: FrozenSet[str] = frozenset()
     prefixes: Tuple[str, ...] = ()
@@ -166,11 +140,10 @@ class ChromiumBrowserPackages:
 
 @dataclass(frozen=True)
 class ChromiumInternalHosts:
-    """Matcher for the hosts of Chromium's own background services.
+    """Matcher for Chromium background-service hosts.
 
-    :param exact: lower-cased exact hosts.
-    :param suffixes: lower-cased ``.suffix`` strings (from ``*.suffix``
-        patterns); ``*.gvt1.com`` matches ``a.gvt1.com`` but not ``gvt1.com``.
+    ``suffixes`` come from ``*.suffix`` patterns: ``*.gvt1.com`` matches
+    ``a.gvt1.com`` but not ``gvt1.com``.
     """
 
     exact: FrozenSet[str] = frozenset()

@@ -1,15 +1,11 @@
 #!/usr/bin/env python3
 
-"""
-LLDB instrumentation backend for friTap.
+"""LLDB instrumentation backend: breakpoint-based key extraction, mainly on
+macOS (Xcode) and for SSH/IPSec keys.
 
-Uses LLDB's Python API for breakpoint-based key extraction.
-Particularly useful on macOS where LLDB is readily available via Xcode,
-and for SSH/IPSec key extraction via the keys-in-flux approach.
-
-The ``lldb`` Python module is NOT a pip dependency. It ships with
-LLDB itself (Xcode on macOS, ``apt install python3-lldb`` on Linux).
-If unavailable, all methods raise BackendError with installation instructions.
+The ``lldb`` module is not a pip dependency; it ships with LLDB (Xcode, or
+``apt install python3-lldb``). Without it, methods raise BackendError with
+install instructions.
 """
 
 from __future__ import annotations
@@ -25,7 +21,7 @@ from .base import (
 )
 from .debugger_script import DebuggerScript
 
-# Optional import — LLDB is not a pip package
+# lldb is not a pip package.
 try:
     import lldb as _lldb_module
 except ImportError:
@@ -41,12 +37,7 @@ _INSTALL_HINT = (
 
 
 class LLDBScript(DebuggerScript):
-    """Frida-style script using LLDB breakpoints.
-
-    Each 'function name' in the script source is translated to a
-    breakpoint. When hit, the registered callback is invoked with
-    a Frida-compatible message dict.
-    """
+    """Frida-style script: one LLDB breakpoint per function name."""
 
     def __init__(self, target, function_names: list[str], message_callback: Callable | None = None):
         super().__init__(function_names, message_callback)
@@ -81,13 +72,7 @@ class LLDBScript(DebuggerScript):
 
 
 class LLDBBackend(Backend):
-    """
-    LLDB-based backend using breakpoints for function hooking.
-
-    Translates the Frida-centric Backend interface into LLDB Python
-    API calls. Useful for debugger-based key extraction (SSH, IPSec)
-    where Frida cannot be used.
-    """
+    """Breakpoint-based backend for debugger key extraction (SSH, IPSec)."""
 
     def __init__(self) -> None:
         self._logger = logging.getLogger("friTap.backend.lldb")
@@ -107,10 +92,6 @@ class LLDBBackend(Backend):
         if self._lldb is None:
             raise BackendError(_INSTALL_HINT)
 
-    # ------------------------------------------------------------------
-    # Device
-    # ------------------------------------------------------------------
-
     def get_device(self, mobile: bool | str = False, host: str | None = None) -> Any:
         if mobile:
             raise NotImplementedError(
@@ -123,10 +104,6 @@ class LLDBBackend(Backend):
                 "Use 'lldb-server' for remote debugging separately."
             )
         return "local"
-
-    # ------------------------------------------------------------------
-    # Attach / Spawn
-    # ------------------------------------------------------------------
 
     def attach(self, device: Any, target: str) -> Any:
         self._require_lldb()
@@ -185,8 +162,7 @@ class LLDBBackend(Backend):
 
     def spawn_raw(self, device: Any, target, env: dict | None = None,
                   aux: dict | None = None) -> int:
-        # aux (e.g. Android activity selection) is Frida-specific; not
-        # applicable when launching a local binary under lldb.
+        # aux (e.g. Android activity) is Frida-specific.
         self._require_lldb()
         if isinstance(target, list):
             exe = target[0]
@@ -216,7 +192,6 @@ class LLDBBackend(Backend):
 
     def resume(self, device: Any, pid: int) -> None:
         self._require_lldb()
-        # Find process by iterating targets
         for i in range(self._debugger.GetNumTargets()):
             target = self._debugger.GetTargetAtIndex(i)
             process = target.GetProcess()
@@ -227,10 +202,6 @@ class LLDBBackend(Backend):
                 return
         raise BackendProcessNotFoundError(f"No LLDB process with PID {pid}")
 
-    # ------------------------------------------------------------------
-    # Script
-    # ------------------------------------------------------------------
-
     def create_script(self, process: Any, script_source: str, runtime: str = "qjs") -> Any:
         self._require_lldb()
         fn_names = self._extract_function_names(script_source)
@@ -239,8 +210,7 @@ class LLDBBackend(Backend):
         return LLDBScript(target, fn_names)
 
     def load_script(self, script: Any, *, timeout: float | None = None) -> None:
-        # *timeout* is accepted for interface parity and ignored: an LLDB script
-        # load is synchronous and cheap, so it cannot wedge like a Frida agent.
+        # *timeout* is ignored: an LLDB script load is synchronous and cheap.
         if isinstance(script, LLDBScript):
             script.load()
 
@@ -256,13 +226,8 @@ class LLDBBackend(Backend):
             script.set_message_callback(callback)
 
     def post_message(self, script: Any, msg_type: str, payload: Any) -> None:
-        # LLDB scripts don't receive messages like Frida
-        # No-op: config handshake is Frida-specific
+        # No-op: the config handshake is Frida-specific.
         pass
-
-    # ------------------------------------------------------------------
-    # Process management
-    # ------------------------------------------------------------------
 
     def _get_process_pid(self, process: Any) -> int:
         """Extract PID from an LLDB process handle."""
@@ -286,16 +251,8 @@ class LLDBBackend(Backend):
         pid = self._get_process_pid(process)
         self._detach_callbacks.setdefault(pid, []).append(callback)
 
-    # ------------------------------------------------------------------
-    # Debugger
-    # ------------------------------------------------------------------
-
     def enable_debugger(self, script: Any, port: int) -> None:
         self._logger.info("LLDB is already a debugger — no separate debugger port needed")
-
-    # ------------------------------------------------------------------
-    # Threads
-    # ------------------------------------------------------------------
 
     def enumerate_threads(self, process: Any) -> list[ThreadInfo]:
         self._require_lldb()
@@ -325,19 +282,11 @@ class LLDBBackend(Backend):
         self._require_lldb()
         self._find_thread(process, thread_id).Resume()
 
-    # ------------------------------------------------------------------
-    # Device enumeration
-    # ------------------------------------------------------------------
-
     def enumerate_devices(self) -> list:
         return [{"id": "local", "name": "Local System", "type": "local"}]
 
     def get_local_device(self) -> Any:
         return "local"
-
-    # ------------------------------------------------------------------
-    # Properties
-    # ------------------------------------------------------------------
 
     @property
     def name(self) -> str:
@@ -354,10 +303,6 @@ class LLDBBackend(Backend):
             return version_string.split()[1]
         except (IndexError, AttributeError):
             return "0.0.0"
-
-    # ------------------------------------------------------------------
-    # Memory helpers (for SSH/IPSec key extraction)
-    # ------------------------------------------------------------------
 
     def read_memory(self, target, addr: int, size: int) -> bytes:
         """Read raw bytes from process memory."""

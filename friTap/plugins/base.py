@@ -1,14 +1,6 @@
 #!/usr/bin/env python3
 
-"""
-Base class for friTap plugins.
-
-Plugins extend friTap with custom functionality like:
-- Additional protocol handlers
-- Custom output formats
-- Integration bridges
-- Pattern generators
-"""
+"""Base class and viewer protocols for friTap plugins."""
 
 from __future__ import annotations
 
@@ -17,29 +9,27 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from ..events import FriTapEvent
-    from ..flow.models import Flow
+    from ..flow.models import Flow, FlowSummary
     from ..session import Session
 
 
 class FriTapPlugin(ABC):
-    """
-    Abstract base class for friTap plugins.
+    """Abstract base class for friTap plugins.
 
     Plugins are discovered from:
-    - Platform-native plugin directory (auto-created on first run):
+    - The platform plugin directory (created on first run):
         - Linux:   ~/.local/share/friTap/plugins/
         - macOS:   ~/Library/Application Support/friTap/plugins/
         - Windows: C:\\Users\\<user>\\AppData\\Local\\friTap\\plugins\\
-      Run ``python -c "from friTap.plugins.loader import PLUGIN_DIR; print(PLUGIN_DIR)"``
-      to find the actual path on your system.
-    - Legacy ~/.fritap/plugins/ directory (used if it exists and the native path doesn't)
+      ``python -c "from friTap.plugins.loader import _get_plugin_dir; print(_get_plugin_dir())"``
+      prints the actual path.
+    - ~/.fritap/plugins/ (used if it exists and the native path does not)
     - Python entry points (fritap.plugins group)
 
     Event cancellation
     ------------------
-    Plugins that want to take over display of SSL buffers (e.g. show
-    only ASCII, parse HTTP, decompress gzip) can *cancel* events so
-    that built-in console output is suppressed::
+    Plugins that take over display of SSL buffers can *cancel* events to
+    suppress built-in console output::
 
         from friTap.events import DatalogEvent, EventBus
 
@@ -56,13 +46,12 @@ class FriTapPlugin(ABC):
                 print(event.data.decode("utf-8", errors="replace"))
                 event.cancel()  # suppress default hexdump
 
-    Cancellation is advisory — file-based handlers (PCAP, keylog, JSON)
-    always record data regardless.
+    Cancellation is advisory: file-based handlers (PCAP, keylog, JSON) always
+    record data.
 
     Flow events
     -----------
-    Plugins can subscribe to FlowEvent to receive parsed HTTP flows
-    in both TUI and CLI modes::
+    Subscribe to FlowEvent to receive parsed HTTP flows (TUI and CLI)::
 
         from friTap.events import FlowEvent
 
@@ -82,8 +71,7 @@ class FriTapPlugin(ABC):
 
     Custom protocol parsers
     -----------------------
-    Plugins can register custom protocol parsers to extend flow detection
-    with additional protocols (e.g., gRPC, MQTT, custom binary protocols)::
+    Register parsers to extend flow detection (gRPC, MQTT, custom binary)::
 
         from friTap.parsers.base import BaseParser
 
@@ -132,11 +120,10 @@ class FriTapPlugin(ABC):
         pass
 
     def register_analyzers(self) -> list:
-        """Optional: return a list of BaseAnalyzer instances this plugin provides.
+        """Return the BaseAnalyzer instances this plugin provides (default: none).
 
-        Called by analyzer discovery independently of the on_load/Session
-        lifecycle, so analyzers are available offline, for --list-analyzers, and in
-        the TUI. Default returns an empty list (plugins expose no analyzers).
+        Called by analyzer discovery outside the on_load/Session lifecycle, so
+        analyzers work offline, for --list-analyzers, and in the TUI.
         """
         return []
 
@@ -145,24 +132,24 @@ class FriTapPlugin(ABC):
 class ColumnProvider(Protocol):
     """Plugin-provided column for FlowListWidget.
 
-    Plugins implement this protocol and register via session.register_column()
-    to add custom columns to the flow list table.
+    Internal to friTap's TUI (``FlowListWidget.register_column`` in
+    friTap/tui/widgets/flow_list.py); plugins are not wired to it.
+    Third-party code should use ``FlowColumnSpec`` / ``register_flow_column``
+    in ``friTap.ui.extensions`` (see docs/api/embedding.md).
     """
     name: str       # Column header text
     width: int      # Character width hint
     key: str        # Unique column key
 
-    def value(self, flow: "Flow") -> str:
-        """Return cell value for this flow.
+    def value(self, flow: "FlowSummary") -> str:
+        """Return cell value for this flow's summary row.
 
-        This method is called on every flow update in the TUI flow list.
-        Keep it lightweight — avoid expensive computation, network calls,
-        or heavy string formatting. Prefer caching derived values inside
-        the provider rather than recomputing on each call.
+        ``flow`` is the displayed ``FlowSummary`` (not the raw ``Flow``).
+        Called on every flow update: keep it cheap and cache derived values.
         """
         ...
 
-    def style(self, flow: "Flow") -> str:
+    def style(self, flow: "FlowSummary") -> str:
         """Return Rich style for this cell (optional, defaults to empty)."""
         ...
 
@@ -171,8 +158,11 @@ class ColumnProvider(Protocol):
 class TabProvider(Protocol):
     """Plugin-provided tab for FlowDetailWidget.
 
-    Plugins implement this protocol and register via session.register_tab()
-    to add custom tabs to the flow detail view.
+    Internal to friTap's TUI (``FlowDetailWidget.register_tab`` in the
+    friTap/tui/widgets/flow_detail/ package, e.g. the OHTTP tab in
+    friTap/tui/capture_controller.py); plugins are not wired to it.
+    Third-party code should use ``DetailTabSpec`` / ``register_detail_tab``
+    in ``friTap.ui.extensions`` (see docs/api/embedding.md).
     """
     title: str      # Tab title displayed in tab bar
     tab_id: str     # Unique tab identifier

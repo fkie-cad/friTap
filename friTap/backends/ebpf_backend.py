@@ -1,20 +1,10 @@
 #!/usr/bin/env python3
 
-"""
-eBPF instrumentation backend (stub).
+"""eBPF instrumentation backend (stub).
 
-Uses uprobes attached to TLS library functions for key/data extraction.
-Linux-only, kernel >= 4.18 (x86_64/ARM64).
-
-Advantages over Frida:
-- No code injection (works on hardened processes)
-- Lower overhead
-- Kernel-level visibility
-
-Limitations:
-- Read-only (cannot modify traffic)
-- No Java/ObjC hooking
-- Linux-only
+Plans to attach uprobes to TLS library functions (Linux only, kernel >= 4.18,
+x86_64/ARM64). Needs no code injection, so it suits hardened processes.
+Limitations: read-only, no Java/ObjC hooking.
 """
 
 from __future__ import annotations
@@ -26,12 +16,7 @@ from .base import Backend
 
 
 class EBPFBackend(Backend):
-    """
-    eBPF-based backend using uprobes for TLS function hooking.
-
-    This is a stub implementation. Full implementation requires BCC or
-    libbpf for attaching uprobes and reading perf buffers.
-    """
+    """Stub backend; a real one needs BCC or libbpf for uprobes and perf buffers."""
 
     def __init__(self) -> None:
         self._logger = logging.getLogger("friTap.backend.ebpf")
@@ -68,8 +53,7 @@ class EBPFBackend(Backend):
         self._not_implemented("create_script")
 
     def load_script(self, script: Any, *, timeout: float | None = None) -> None:
-        # *timeout* is accepted for interface parity and ignored: this backend
-        # never reaches a blocking load.
+        # *timeout* is ignored: this backend never reaches a blocking load.
         self._not_implemented("load_script")
 
     def unload_script(self, script: Any) -> None:

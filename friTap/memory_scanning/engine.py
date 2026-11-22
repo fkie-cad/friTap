@@ -1,29 +1,13 @@
 #!/usr/bin/env python3
 
-"""MemoryScanEngine — friTap's heap secret-scanner (the ``--memory-scan`` / ``-ms`` feature).
+"""MemoryScanEngine: friTap's heap secret-scanner (``--memory-scan`` / ``-ms``).
 
-This is a first-class friTap capability, **not** a plugin. It loads a separate,
-independently-injected Frida agent (``friTap/fritap_memscan.js``) that recovers
-TLS secrets by scanning the target's heap memory, instead of hooking the TLS
-library. The agent is *host-driven*: it exposes an RPC surface
-(``configure(profile)``, ``scanOnce()``, ``needle()``) and this engine owns the
-loop — it configures the agent once with a validated profile, then polls
-``scanOnce()`` on a background thread. Recovered NSS keylog lines arrive as
-``send({type:'keylog', line, ...})`` messages, which are republished on the
-EventBus as ``KeylogEvent(protocol="memscan")`` (mirroring the
-``--scan-keys-region`` path) so the shared keylog output handler, the JSON
-handler and the TUI pick them up regardless of whether ``-k`` was given.
-
-The engine is driven directly by the core (``SSL_Logger.instrument()`` calls
-:meth:`start` / :meth:`stop` / :meth:`close`), and it is self-contained: it owns
-its own script injection, message routing and teardown rather than inheriting
-them from the plugin base classes. It remains reachable *through* the plugin
-system via the thin :class:`friTap.memory_scanning.plugin.MemoryScanScriptPlugin`
-adapter, which simply delegates its lifecycle to a ``MemoryScanEngine``.
-
-This is complementary to friTap's normal capture: passed alone it is the only
-agent loaded (the main TLS-hooking agent is skipped by ``instrument()``);
-combined with ``-k``/``-p``/``-c`` it runs alongside them.
+Loads a separate Frida agent (``friTap/fritap_memscan.js``) that recovers secrets
+by scanning the target's heap instead of hooking the TLS library. The agent is
+host-driven: this engine calls ``configure(profile)`` once, then polls
+``scanOnce()`` on a background thread. Findings arrive as ``send({type:'keylog'})``
+messages and are republished as ``KeylogEvent(protocol="memscan")``.
+``SSL_Logger.instrument()`` drives :meth:`start` / :meth:`stop` / :meth:`close`.
 """
 
 from __future__ import annotations
@@ -41,54 +25,28 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("friTap.memory_scanning.engine")
 
-# Snapshot + exponential-backoff schedule for the scan poll loop. The first
-# passes run at the configured base interval so keys land fast; when a pass finds
-# nothing new the wait grows by MS_BACKOFF_FACTOR up to MS_BACKOFF_CAP_SECONDS,
-# then resets to the base the moment a pass emits again. This keeps steady-state
-# load off the target (the fixed 2s cadence over ~135 MB was ANR'ing Telegram)
-# without losing coverage of keys that rotate as messages are sent/received.
 MS_BACKOFF_FACTOR = 2.0
 MS_BACKOFF_CAP_SECONDS = 60.0
 
-# Granularity of the inter-scan wait. The wait between scans is served in slices
-# no longer than this, on the stop Event, rather than as a single blocking sleep.
-# Two reasons, both about staying responsive to Ctrl+C / stop:
-#   * a requested stop is observed within ~one slice regardless of how large the
-#     wait has grown via backoff (up to MS_BACKOFF_CAP_SECONDS);
-#   * each slice boundary RELEASES and re-acquires the GIL, so the main thread —
-#     which is the only thread CPython runs the SIGINT handler on — gets a fresh
-#     chance to win the GIL and service the pending signal every slice instead of
-#     just once per scan cycle. At small intervals the poll thread and Frida's
-#     message-dispatch thread otherwise saturate the GIL and starve it (device-
-#     confirmed: with --memory-scan-interval <= 0.3s friTap ignored 20+ SIGINTs).
+# The inter-scan wait is served in slices of at most this long on the stop Event.
+# A stop is seen within one slice, and each slice boundary releases the GIL so the
+# main thread (the only one that runs the SIGINT handler) can service Ctrl+C.
+# Without it, intervals <= 0.3s starved the main thread (20+ SIGINTs ignored).
 MS_STOP_POLL_SECONDS = 0.1
 
-# Guaranteed minimum yield between two scans. A very small configured interval
-# (or a backoff wait that has just reset to a tiny base) must never let scans run
-# effectively back-to-back with no GIL-releasing gap, or the signal/main thread
-# never runs. This floor is small enough not to change the intended cadence at
-# normal intervals yet always leaves one yield window per scan cycle.
 MS_MIN_YIELD_SECONDS = 0.05
 
-# The poll-thread name of the in-process ("self") scan session. Only this
-# session's unexpected termination ends a memory-scan-only capture (see
-# _poll_loop / set_scan_ended_callback); the lsass session is Windows-side and
-# must not tear down the main run.
+# Poll-thread name of the in-process ("self") session. Only its unexpected end
+# stops a memory-scan-only capture; the Windows lsass session must not.
 MS_SELF_POLL_NAME = "fritap-memscan"
 
-# Directory where the friTap package lives (for resolving the shipped bundle).
 _here = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
 
-# The compiled memory-scan agent bundle, shipped next to fritap_agent.js.
 _MEMSCAN_BUNDLE = os.path.join(_here, "fritap_memscan.js")
 
 
 def _sidecar_column(value) -> str:
-    """One whitespace-free sidecar column for *value*; ``-`` when absent.
-
-    A JSON ``null`` (``None``) or an empty value becomes ``-`` rather than the
-    literal string ``"None"``, which the offline parser would take as a real id.
-    """
+    """One whitespace-free sidecar column for *value*; ``-`` when absent (never the string "None", which offline would read as an id)."""
     if value is None:
         return "-"
     return "".join(str(value).split()) or "-"
@@ -105,17 +63,8 @@ def _kv_after(line: str, key: str) -> str:
 def _parse_keylog_columns(line: str, tier: str) -> dict:
     """Parse a memory-scan keylog line into its JSON-summary columns.
 
-    Two NSS line shapes flow through the scanner and need different columns:
-
-    * standard secrets — ``LABEL <client_random> <secret>`` (``CLIENT_RANDOM`` and
-      the ``*_TRAFFIC_SECRET_*`` family): populate label / client_random / secret;
-    * the Schannel session-cache line — ``RSA Session-ID:<sid> Master-Key:<master>``
-      (``tier == "schannel_session_cache"``): a positional split would mislabel the
-      ``Session-ID:`` token as the client_random and ``Master-Key:`` as the secret,
-      so parse the session id + master out of their ``key:value`` tokens instead.
-
-    Only the JSON summary columns are affected; the raw keylog line (``key_data``)
-    is emitted verbatim by the caller regardless of shape.
+    ``LABEL <client_random> <secret>`` is positional; ``RSA Session-ID:<sid> Master-Key:<master>``
+    is parsed by key. The caller emits the raw line verbatim.
     """
     if tier == "schannel_session_cache" or line.startswith("RSA Session-ID:"):
         return {
@@ -135,16 +84,8 @@ def _parse_keylog_columns(line: str, tier: str) -> dict:
 
 
 class MemoryScanEngine:
-    """Injects the heap secret-scanner and drives its scan loop.
+    """Injects the heap secret-scanner and drives its scan loop. Not a ``ScriptPlugin``: the core calls start/stop/close directly."""
 
-    A standalone, framework-agnostic engine — **not** a ``ScriptPlugin``. The
-    core constructs one and drives its :meth:`start` / :meth:`stop` /
-    :meth:`close` lifecycle directly. It owns its own script injection and
-    message routing (previously inherited from the plugin base classes).
-    """
-
-    # Backends this engine can inject into (empty list = all). The heap scanner
-    # is Frida-only, matching the historical plugin's ``supported_backends``.
     supported_backends: List[str] = ["frida"]
 
     def __init__(
@@ -162,27 +103,22 @@ class MemoryScanEngine:
         rc4_known_plaintext: Optional[str] = None,
         rc4_ciphertext: Optional[str] = None,
     ) -> None:
-        # Script bookkeeping + active context (previously provided by the
-        # ScriptPlugin base class; the engine now owns them itself).
         self._scripts: List[Any] = []
         self._context: Optional["ScriptContext"] = None
-        # ``patterns_path`` is the raw -ms value: a custom pattern FILE, or a
-        # targeted engine name / profile id. The resolver disambiguates it (an
-        # existing file wins, then a known engine/id), so it is carried verbatim.
+        # Raw -ms value: a pattern file, or an engine name / profile id. The
+        # resolver disambiguates (an existing file wins).
         self._patterns_path = patterns_path
         self._ms_arg = patterns_path
         self._interval = interval if interval and interval > 0 else 2.0
         self._profile_id = profile_id
-        # The selected --protocol set drives which engine(s) apply; default to
-        # TLS so a plugin built without an explicit set behaves as before.
+        # The --protocol set selects the engine(s); defaults to TLS.
         self._protocols: List[str] = list(protocols) if protocols else ["tls"]
-        # The protocol set actually used for profile selection: self._protocols
-        # plus registry implications (e.g. signal -> tls), filled in on start().
+        # _protocols plus registry implications (signal -> tls), set in start().
         self._scan_protocols: List[str] = list(self._protocols)
-        # Honour -nl/--no-lsass: when False, the separate lsass session is skipped.
+        # -nl/--no-lsass: when False the lsass session is skipped.
         self._install_lsass_hook = install_lsass_hook
         self._source_cache: Optional[str] = None
-        # The resolved profile list (F3) and its first element (back-compat).
+        # Resolved profile list and its first element.
         self._profiles: List[dict] = []
         self._profile: Optional[dict] = None
         self._stop = threading.Event()
@@ -190,84 +126,50 @@ class MemoryScanEngine:
         # A separate Frida session/script attached to lsass.exe (Windows only).
         self._lsass_session: Any = None
         self._lsass_script: Any = None
-        # Where Schannel UNPAIRED secrets (TLS 1.2 master / TLS 1.3 secrets with
-        # no memory-resident client_random) are written for the offline pcap
-        # correlator (Workstream 5). None -> derived from the target on first use.
+        # Sidecar for Schannel unpaired secrets (no memory-resident client_random),
+        # joined to the pcap offline. None -> default path on first use.
         self._unpaired_path = unpaired_path
         self._unpaired_file: Any = None
         self._unpaired_lock = threading.Lock()
-        # RC4 keys recovered by the heap scanner are tagged protocol="rc4" for
-        # JSON/consumers, but the keylog *file* must not depend on the user also
-        # selecting --protocol rc4 (a targeted `-ms rc4` run leaves the protocol
-        # set as ["tls"], so no rc4 keylog handler would exist). Mirroring the
-        # unpaired sidecar, the plugin always writes recovered RC4 keys to its
-        # own dedicated file so `-ms rc4` reliably produces output.
+        # RC4 keys always go to a dedicated sidecar: `-ms rc4` leaves the protocol
+        # set as ["tls"], so no rc4 keylog handler would exist otherwise.
         self._rc4_path = rc4_path
         self._rc4_file: Any = None
         self._rc4_lock = threading.Lock()
-        # MTProto (Telegram) keys recovered from the heap are tagged
-        # protocol="mtproto" for JSON/keylog consumers, but - mirroring the RC4
-        # sidecar - the engine ALWAYS writes them to its own dedicated
-        # <stem>.mtproto.keylog file so `-ms mtproto` reliably produces a keylog
-        # the offline MTProto decryptor can read, regardless of --protocol/-k.
+        # MTProto keys always go to a dedicated <stem>.mtproto.keylog, like RC4,
+        # regardless of --protocol/-k.
         self._mtproto_path = mtproto_path
         self._mtproto_file: Any = None
         self._mtproto_lock = threading.Lock()
-        # TLS mid-stream "secret bundle" sidecar. When the BoringSSL engine recovers
-        # a handshake-complete TLS 1.3 socket it can additionally send a
-        # ``tls_secret_bundle`` message carrying BOTH randoms plus the three
-        # application-epoch traffic secrets. We persist these as a leak-safe JSONL
-        # sidecar (one JSON object per line) so an offline mid-stream decrypter can
-        # decrypt flows that have NO ClientHello in the pcap (nothing to pair the
-        # ordinary NSS keylog line against). The NSS keylog line is written
-        # independently by the normal keylog path; this file is a pure supplement.
+        # JSONL sidecar of ``tls_secret_bundle`` messages (both randoms plus the
+        # application traffic secrets), so offline mid-stream decryption works for
+        # flows with no ClientHello in the pcap. Supplements the NSS keylog.
         self._tls_secret_bundle_path = tls_secret_bundle_path
         self._tls_secret_bundle_file: Any = None
         self._tls_secret_bundle_lock = threading.Lock()
-        # Dedup identical bundles (same client_random + the three secrets): the heap
-        # scanner re-reads the same pooled socket on every pass, so without this the
-        # sidecar would grow one duplicate record per scan.
+        # The heap scanner re-reads the same pooled socket every pass; dedup keeps
+        # one record per bundle.
         self._tls_secret_bundle_seen: set = set()
-        # Whether at least one bundle was actually written (files are created lazily),
-        # so the capture manifest only advertises a sidecar that exists.
+        # The file is created lazily; the manifest advertises it only once written.
         self._tls_secret_bundle_written = False
-        # E4: opt-in (--ms-emit-unconfirmed, default OFF). When True we (a) stamp
-        # ``emitUnconfirmed`` onto mtproto profiles so the agent emits heap key
-        # candidates the auth_key_id oracle could NOT confirm as real keylog lines,
-        # and (b) let _handle_unpaired persist any mtproto candidate it does see.
+        # --ms-emit-unconfirmed (default off): stamps ``emitUnconfirmed`` onto
+        # mtproto profiles and lets _handle_unpaired persist unconfirmed candidates.
         self._emit_unconfirmed = bool(emit_unconfirmed)
-        # RC4 oracles injected from the CLI (--ms-rc4-known-plaintext /
-        # --ms-rc4-ciphertext). There is no SSPI oracle on Android, so these are
-        # how a known-plaintext prefix (exact, zero-false-accept key test) and/or a
-        # ciphertext sample (trial-decrypt scoring) reach the rc4 profile's params.
-        # None (the default) leaves the profile untouched. Merged in _configure_rpc
-        # via loader.apply_rc4_param_overrides, only onto the rc4 engine's profile.
+        # RC4 oracles from --ms-rc4-known-plaintext / --ms-rc4-ciphertext (no SSPI
+        # oracle on Android). Merged onto the rc4 profile in _configure_rpc.
         self._rc4_known_plaintext = rc4_known_plaintext
         self._rc4_ciphertext = rc4_ciphertext
-        # Bottom-up "the scan ended on its own" callback. Invoked from the self
-        # session's poll thread if scanOnce() raises because the agent script was
-        # destroyed (e.g. the app was killed/ANR'd) WITHOUT us asking to stop.
-        # The core wires this so a memory-scan-only capture can leave the
-        # "capturing" state instead of hanging there forever. See _poll_loop.
+        # Fired from the self session's poll thread when scanOnce() raises because
+        # the agent script died (app killed/ANR'd) without a stop request.
         self._on_scan_ended: Optional[Callable[[], None]] = None
 
     def set_scan_ended_callback(self, callback: Optional[Callable[[], None]]) -> None:
-        """Register a callback fired when the in-process scan ends unexpectedly.
-
-        The callback runs on the scan poll thread, so it must be thread-safe and
-        return quickly (``SSL_Logger.request_stop`` satisfies both).
-        """
+        """Register a callback fired on the poll thread when the in-process scan ends unexpectedly; it must be thread-safe and quick."""
         self._on_scan_ended = callback
 
     @property
     def _e2e_requested(self) -> bool:
-        """Whether Secret-Chat (E2E) scanning was requested for this run.
-
-        E2E is the expensive MTProto tier (it sweeps the multi-GiB ART/Dalvik
-        heap). It is opt-in via the ``telegram`` protocol/engine — ``mtproto``
-        means normal traffic only (AUTH + OBF). ``--protocol telegram,mtproto`` is
-        therefore the same as ``telegram``. See :meth:`_apply_e2e_scope`.
-        """
+        """Whether Secret-Chat (E2E) scanning was requested (``telegram``, not ``mtproto``); opt-in because it sweeps the multi-GiB ART heap."""
         if "telegram" in (self._protocols or []):
             return True
         return self._ms_arg == "telegram"
@@ -289,10 +191,6 @@ class MemoryScanEngine:
         """Whether this engine can inject into *backend_name* (empty list = all)."""
         return not self.supported_backends or backend_name in self.supported_backends
 
-    # ------------------------------------------------------------------
-    # Script source
-    # ------------------------------------------------------------------
-
     def get_script_source(self, context: "ScriptContext") -> str:
         """Read the compiled memory-scan agent bundle (cached)."""
         if self._source_cache is not None:
@@ -309,29 +207,14 @@ class MemoryScanEngine:
             )
             return ""
 
-    # ------------------------------------------------------------------
-    # Instrumentation lifecycle
-    # ------------------------------------------------------------------
-
     def start(self, context: "ScriptContext") -> None:
-        """Resolve the engine(s), then run one scan session per scan_target.
-
-        F3: which engine(s) run is driven by the selected ``--protocol`` set, the
-        target platform and the optional ``-ms`` override, resolved from the
-        central pattern database. Resolved profiles are grouped by their
-        ``scan_target``: ``"self"`` profiles load into the injected target
-        process (the historical path), ``"lsass"`` profiles into a separate
-        Frida session attached to lsass.exe. Resolving BEFORE injecting anything
-        keeps a bad pattern file / unknown engine failing loudly.
-        """
+        """Resolve the engine(s) from the pattern database, then run one scan session per scan_target ("self" in the target, "lsass" in a separate session). Resolving first makes a bad pattern file fail loudly."""
         if not self.is_compatible_with(context.backend_name):
             logger.warning(
                 "memory-scan: backend %s not in %s — skipping heap scanner",
                 context.backend_name, self.supported_backends,
             )
             return
-        # Store the active context so message handlers / teardown can reach the
-        # backend and event bus (the ScriptPlugin base used to set this).
         self._context = context
         try:
             from ..protocols.registry import expand_protocols
@@ -342,13 +225,8 @@ class MemoryScanEngine:
             )
             os_name = self._detect_target_os(context)
             database = load_database(None)
-            # Expand protocol implications (e.g. signal -> tls) so a memory-scan
-            # profile registered for an IMPLIED protocol is still selected. Without
-            # this, `--protocol signal` reached select_profiles as {"signal"} only,
-            # and the tls-tagged BoringSSL profiles (including the libsignal-net
-            # scudo profile) were filtered out — "no scan engine for protocol(s)
-            # signal". Mirrors the main keylog path, which selects TLS hooks under
-            # signal via the same registry implication.
+            # Expand implications (signal -> tls) so tls-tagged profiles (e.g. the
+            # libsignal-net scudo one) are selected under `--protocol signal`.
             self._scan_protocols = sorted(expand_protocols(self._protocols))
             self._profiles = select_profiles(
                 database, self._scan_protocols, os_name, self._ms_arg
@@ -357,9 +235,8 @@ class MemoryScanEngine:
             logger.error("memory-scan: failed to resolve pattern profile(s): %s", exc)
             return
 
-        # No engine applies (e.g. `--protocol ssh -ms`, or a platform no profile
-        # targets): no-op gracefully rather than injecting a scanner with nothing
-        # to look for. INFO, not error — an empty result is a valid outcome.
+        # No engine applies (e.g. `--protocol ssh -ms`): skip rather than inject
+        # a scanner with nothing to look for.
         if not self._profiles:
             logger.info(
                 "memory-scan: no scan engine for protocol(s) %s on %s — "
@@ -368,18 +245,14 @@ class MemoryScanEngine:
             )
             return
 
-        self._profile = self._profiles[0]  # back-compat: first resolved profile
+        self._profile = self._profiles[0]
         grouped = group_profiles_by_scan_target(self._profiles)
         self._stop.clear()
 
-        # scan_target == "self": the historical in-process scan. On Linux/Android
-        # /macOS with the single shipped BoringSSL profile this is byte-for-byte
-        # the old behaviour — one profile in a one-element list to configure().
         self_profiles = grouped.get("self")
         if self_profiles:
             self._configure_self_session(context, self_profiles)
 
-        # scan_target == "lsass": a separate session attached to lsass.exe.
         lsass_profiles = grouped.get("lsass")
         if lsass_profiles:
             self._configure_lsass_session(context, lsass_profiles, os_name)
@@ -391,8 +264,6 @@ class MemoryScanEngine:
         source = self.get_script_source(context)
         if not source:
             return
-        # Create the script, wire _route_message, load it under the timeout bound
-        # (this is what the ScriptPlugin base used to do in on_instrument).
         script = context.backend.create_script(
             context.process, source, runtime=context.runtime)
         context.backend.on_message(script, self._route_message)
@@ -404,15 +275,7 @@ class MemoryScanEngine:
         self, script: Any, profiles: List[dict], where: str, poll_name: str,
         success_msg: Optional[str] = None,
     ) -> None:
-        """Shared session-drive tail: resolve the RPC surface, configure, poll.
-
-        Both the self and lsass paths end the same way once a script exists: get
-        the RPC surface (bail with an error if the agent exposes none), configure
-        it, and start polling on success. ``where`` names the session so the
-        rpc-None message reads exactly as before; ``success_msg``, when given, is
-        logged between a successful configure and the poll start (the lsass path's
-        extra confirmation).
-        """
+        """Resolve the RPC surface, configure the agent and start polling; ``success_msg`` is logged between configure and poll start."""
         rpc = self._rpc(script)
         if rpc is None:
             label = "LSASS agent" if where == "lsass" else "agent"
@@ -427,13 +290,7 @@ class MemoryScanEngine:
     def _configure_lsass_session(
         self, context: "ScriptContext", profiles: List[dict], os_name: Optional[str]
     ) -> None:
-        """Attach a separate Frida session to lsass.exe and drive the scan there.
-
-        Mirrors friTap's existing LSASS mechanism (``get_pid_of_lsass`` +
-        attach-a-second-session): the scanner bundle is loaded into lsass.exe
-        rather than the injected target, because Schannel's master/session keys
-        live in the LSA process, not the application. Honours ``-nl/--no-lsass``.
-        """
+        """Attach a second Frida session to lsass.exe (where Schannel keys live) and scan there; honours ``-nl/--no-lsass``."""
         if os_name != "windows":
             logger.warning(
                 "memory-scan: scan_target 'lsass' only applies on Windows; "
@@ -447,9 +304,7 @@ class MemoryScanEngine:
                 "skipping %d lsass profile(s)", len(profiles),
             )
             return
-        # Resolve per-arch Schannel offsets HERE, in Python, so the agent stays
-        # data-driven (it reads profile["resolved"], never branches on arch). The
-        # target arch is the frida-reported one for this device.
+        # Resolve per-arch offsets here so the agent only reads profile["resolved"].
         profiles = self._resolve_schannel_arch(context, profiles)
         try:
             from ..fritap_utility import get_pid_of_lsass
@@ -482,19 +337,10 @@ class MemoryScanEngine:
         )
 
     def _configure_rpc(self, rpc: Any, profiles: List[dict], where: str) -> bool:
-        """Configure one agent session with a profile list; return True on success.
-
-        F2's ``configure()`` accepts a single profile OR a list, so the resolved
-        per-scan_target list is passed straight through.
-        """
-        # E4: apply the emit-unconfirmed opt-in to mtproto profiles here so BOTH
-        # the self-session and the lsass-session paths get it uniformly.
+        """Configure one agent session with a profile list; return True on success."""
         profiles = self._apply_emit_unconfirmed(profiles)
-        # Scope MTProto to the requested key types: mtproto = AUTH+OBF only,
-        # telegram = AUTH+OBF+E2E. Disables the heavy E2E (Dalvik) tier otherwise.
+        # mtproto = AUTH+OBF, telegram = AUTH+OBF+E2E (the heavy Dalvik tier).
         profiles = self._apply_e2e_scope(profiles)
-        # Merge the CLI-injected RC4 oracles (known-plaintext / ciphertext) into the
-        # rc4 profile's params, only onto rc4 profiles, on a shallow copy.
         profiles = self._apply_rc4_overrides(profiles)
         if any(p.get("engine") == "mtproto" for p in profiles):
             logger.info(
@@ -506,7 +352,7 @@ class MemoryScanEngine:
             )
         try:
             result = rpc.configure(profiles)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - Frida RPC call
             logger.error("memory-scan: configure() [%s] failed: %s", where, exc)
             return False
         if isinstance(result, dict):
@@ -533,12 +379,7 @@ class MemoryScanEngine:
         thread.start()
 
     def _detect_target_arch(self, context: "ScriptContext") -> Optional[str]:
-        """Best-effort target CPU arch as frida reports it (``arm64``/``x64``/…).
-
-        Reads the same device system parameters :meth:`_detect_target_os` uses.
-        Any failure returns None, which leaves arch selection to the single-arch
-        fallback in :func:`select_schannel_offsets`.
-        """
+        """Best-effort target CPU arch as frida reports it, or None (falls back to the single-arch choice)."""
         try:
             params = context.backend.query_system_parameters(context.device)
         except Exception:  # noqa: BLE001
@@ -551,12 +392,7 @@ class MemoryScanEngine:
     def _resolve_schannel_arch(
         self, context: "ScriptContext", profiles: List[dict]
     ) -> List[dict]:
-        """Return the profiles with each schannel profile's arch offsets resolved.
-
-        Non-schannel profiles pass through untouched. A schannel profile is
-        replaced with a copy carrying its arch-appropriate offset set under
-        ``resolved`` (see :func:`memory_scanning.loader.resolve_schannel_arch`).
-        """
+        """Return *profiles* with each schannel profile resolved under ``resolved``; others pass through."""
         from .loader import resolve_schannel_arch
         arch = self._detect_target_arch(context)
         out: List[dict] = []
@@ -580,24 +416,13 @@ class MemoryScanEngine:
     def _map_engine(
         profiles: List[dict], engine: str, transform: Callable[[dict], dict],
     ) -> List[dict]:
-        """Return *profiles* with *transform* applied to each profile of *engine*.
-
-        Profiles of every other engine pass through untouched (same objects).
-        """
+        """Return *profiles* with *transform* applied to those of *engine*; others pass through untouched."""
         return [transform(p) if p.get("engine") == engine else p for p in profiles]
 
     def _apply_emit_unconfirmed(self, profiles: List[dict]) -> List[dict]:
-        """Stamp ``emitUnconfirmed=True`` onto MTProto profiles when opted in.
+        """Stamp ``emitUnconfirmed=True`` onto MTProto profile copies when opted in.
 
-        The agent's mtproto engine reads ``profile.emitUnconfirmed`` (default
-        False) to decide whether to emit heap key candidates the auth_key_id
-        oracle could NOT confirm. We only ever set it True, only on mtproto
-        profiles, and on a shallow COPY so the shared pattern-database objects are
-        never mutated. Non-mtproto profiles pass through untouched.
-
-        Safe as an opt-in because, offline, ``auth_key_id = SHA1(auth_key)`` low 8
-        bytes is computable: a wrong candidate simply matches no record (harmless)
-        while a real one recovers messages — the only cost is extra keylog noise.
+        Safe because offline ``auth_key_id`` (low 8 bytes of SHA1(auth_key)) rejects wrong candidates; the cost is keylog noise.
         """
         if not self._emit_unconfirmed:
             return profiles
@@ -605,20 +430,7 @@ class MemoryScanEngine:
             profiles, "mtproto", lambda p: {**p, "emitUnconfirmed": True})
 
     def _apply_rc4_overrides(self, profiles: List[dict]) -> List[dict]:
-        """Merge the CLI RC4 oracles into rc4 profiles' params, when provided.
-
-        Mirrors :meth:`_apply_emit_unconfirmed`: only ever touches the ``rc4``
-        engine, only when an override is actually set, and on a shallow COPY (with
-        a copied ``params`` dict) so the shared pattern-database objects are never
-        mutated. Non-rc4 profiles pass through untouched, and a run with neither
-        oracle set returns ``profiles`` unchanged (behaviour-preserving default).
-
-        There is no SSPI ciphertext oracle on Android, so this is how a known-
-        plaintext prefix (an exact, zero-false-accept key test) and/or a
-        ciphertext sample reach the agent — see
-        :func:`memory_scanning.loader.apply_rc4_param_overrides`, which normalises
-        each value to hex and re-validates the merged params.
-        """
+        """Merge the CLI RC4 oracles into copies of rc4 profiles (the shared database is never mutated)."""
         if self._rc4_known_plaintext is None and self._rc4_ciphertext is None:
             return profiles
         from .loader import apply_rc4_param_overrides
@@ -634,21 +446,9 @@ class MemoryScanEngine:
         return self._map_engine(profiles, "rc4", _override)
 
     def _apply_e2e_scope(self, profiles: List[dict]) -> List[dict]:
-        """Disable the MTProto E2E (Secret-Chat) tier unless E2E was requested.
+        """Disable the MTProto E2E tier (``C_art_secretchat_key``) in profile copies unless E2E was requested.
 
-        ``mtproto`` scans normal Telegram traffic (AUTH cloud-chat keys + OBF
-        transport keys); ``telegram`` adds Secret-Chat (E2E) keys. E2E is Tier C
-        (``C_art_secretchat_key``), which sweeps the multi-GiB ART/Dalvik heap and
-        is the dominant scan cost — leaving it on for an ``mtproto``-only run both
-        scanned keys the user did not ask for and drove the passes long enough to
-        ANR the app.
-
-        The agent already gates Tier C on ``profile.tiers.C_art_secretchat_key.enabled``
-        (it returns before enumerating the ART heap), so scoping is a pure
-        Python profile mutation: when E2E is NOT requested we hand the agent a copy
-        of each mtproto profile with that tier disabled. AUTH (Tiers A/B) and OBF
-        (Tier E) are untouched and run for both modes. The shared pattern database
-        is never mutated — the copy is deep enough to isolate the tier dict.
+        It sweeps the multi-GiB ART/Dalvik heap and ANR'd the app on ``mtproto``-only runs.
         """
         if self._e2e_requested:
             return profiles
@@ -665,13 +465,9 @@ class MemoryScanEngine:
         return self._map_engine(profiles, "mtproto", _disable_e2e_tier)
 
     def _detect_target_os(self, context: "ScriptContext") -> Optional[str]:
-        """Best-effort target OS as a friTap platform string, or None.
+        """Best-effort target OS (``windows|linux|android|macos|ios``) from frida, or None.
 
-        Reads the frida device's system parameters (the same source
-        ``android.py`` uses for arch) and normalises the reported os id /
-        platform onto ``windows | linux | android | macos | ios``. Any failure
-        returns None, which leaves ``["all"]`` profiles selectable while a
-        platform-pinned profile simply does not match.
+        None leaves ``["all"]`` profiles selectable; platform-pinned ones do not match.
         """
         from .loader import normalize_os_name
         try:
@@ -685,25 +481,13 @@ class MemoryScanEngine:
         return normalize_os_name(os_id or params.get("platform"))
 
     def _poll_loop(self, rpc: Any, name: str = MS_SELF_POLL_NAME) -> None:
-        """Call scanOnce() on a snapshot + exponential-backoff schedule.
+        """Call scanOnce() on an exponential-backoff schedule (base interval while passes emit, up to ``MS_BACKOFF_CAP_SECONDS`` otherwise).
 
-        The first passes run at the base interval so the first keys land fast;
-        while passes keep finding new keys the wait stays at the base, and once a
-        pass emits nothing it grows geometrically up to ``MS_BACKOFF_CAP_SECONDS``.
-        This keeps steady-state scan load off the target (the old fixed 2s cadence
-        over ~135 MB — with 5–22s passes — left the app no idle time and ANR'd it)
-        while still catching keys that rotate as messages flow.
-
-        On an UNEXPECTED end (scanOnce raises because the agent script was
-        destroyed — e.g. the app was killed/ANR'd — while ``_stop`` was NOT set),
-        the in-process session invokes ``_on_scan_ended`` so a memory-scan-only
-        capture can leave the "capturing" state instead of hanging forever.
+        If scanOnce raises while ``_stop`` is unset (agent destroyed), the self session calls ``_on_scan_ended``.
         """
         wait = self._interval
         while not self._stop.is_set():
-            # Re-check right before the (potentially long, non-cancellable) scan:
-            # a stop requested during the previous wait must skip this scan rather
-            # than block the teardown behind one more full pass.
+            # Scans are not cancellable; a stop during the last wait must skip this one.
             if self._stop.is_set():
                 return
             try:
@@ -714,17 +498,9 @@ class MemoryScanEngine:
                         "memory-scan: scan emitted=%s durationMs=%s",
                         stats.get("emitted"), stats.get("durationMs"),
                     )
-                    # Engines may return a rich per-scan funnel beyond the generic
-                    # emitted/durationMs (e.g. the mtproto engine's per-tier
-                    # state/candidates/confirmed, dataOffsetHits, roundTripByOffset).
-                    # Dump the full stats object so a silent zero-result run (e.g. an
-                    # uncalibrated build) is diagnosable for ANY engine, with no
-                    # per-engine branch.
+                    # Full stats (per-tier funnels) diagnose silent zero-result runs.
                     logger.debug("memory-scan: full stats %s", stats)
-                    # Concise Tier B0 funnel (BoringSSL anchor-locator) surfaced at
-                    # normal DEBUG so a run that finds candidates but emits nothing
-                    # is diagnosable without reading the full stats dump. Defensive:
-                    # stats may lack tierB0, or it may not be a dict.
+                    # Concise BoringSSL anchor-locator funnel.
                     tier_b0 = stats.get("tierB0") if isinstance(stats, dict) else None
                     if isinstance(tier_b0, dict):
                         logger.debug(
@@ -733,12 +509,7 @@ class MemoryScanEngine:
                             tier_b0.get("emitted"),
                         )
             except Exception as exc:  # noqa: BLE001 - target may have detached
-                # A method-not-found RPCException is not a detach: it means the loaded
-                # memory-scan bundle does not export scanOnce under a name the host can
-                # reach (a stale friTap/fritap_memscan.js — the agent must export
-                # `scanOnce`, and the current source does). Surface that as an actionable
-                # warning rather than a silent debug line, so it is not mistaken for the
-                # target simply going away.
+                # Method-not-found means a stale fritap_memscan.js, not a detach.
                 if "unable to find method" in str(exc).lower():
                     logger.warning(
                         "memory-scan: agent has no scanOnce export (%s) — the loaded "
@@ -750,27 +521,18 @@ class MemoryScanEngine:
                     logger.debug("memory-scan: scanOnce() ended: %s", exc)
                 self._notify_scan_ended(name)
                 return
-            # Snapshot + backoff: reset to base when a pass finds new keys,
-            # otherwise grow the wait geometrically up to the cap.
             if emitted:
                 wait = self._interval
             else:
                 wait = min(wait * MS_BACKOFF_FACTOR, MS_BACKOFF_CAP_SECONDS)
-            # Always leave one GIL-releasing gap per cycle (even for a sub-100ms
-            # interval), then serve the wait in short interruptible slices so stop
-            # is observed promptly and the main thread keeps getting the GIL.
+            # Always leave a GIL-releasing gap, served in interruptible slices.
             if self._wait_between_scans(max(wait, MS_MIN_YIELD_SECONDS)):
                 return
 
     def _wait_between_scans(self, seconds: float) -> bool:
-        """Wait up to *seconds* on the stop Event, in short interruptible slices.
+        """Wait up to *seconds* in ``MS_STOP_POLL_SECONDS`` slices on the stop Event.
 
-        Returns ``True`` as soon as a stop is requested (so the caller exits the
-        poll loop promptly), else ``False`` once the full wait has elapsed. Serving
-        the wait as slices of at most ``MS_STOP_POLL_SECONDS`` — instead of one
-        blocking sleep — bounds how long a stop / SIGINT goes unobserved and gives
-        the main thread a fresh GIL-acquisition window each slice, which is what
-        keeps Ctrl+C responsive at small scan intervals (see ``_poll_loop``).
+        Returns True as soon as a stop is requested, else False after the full wait.
         """
         remaining = seconds
         while remaining > 0:
@@ -780,12 +542,7 @@ class MemoryScanEngine:
         return self._stop.is_set()
 
     def _notify_scan_ended(self, name: str) -> None:
-        """Fire the scan-ended callback for an UNEXPECTED end of the self session.
-
-        Only the in-process ("self") session ending, and only when we did not ask
-        to stop (``_stop`` unset), should tear a capture down — the lsass session
-        is a Windows-side extra and a requested stop already drives teardown.
-        """
+        """Fire the scan-ended callback, only for an unrequested end of the self session."""
         if name != MS_SELF_POLL_NAME or self._stop.is_set():
             return
         callback = self._on_scan_ended
@@ -795,10 +552,6 @@ class MemoryScanEngine:
             callback()
         except Exception:  # noqa: BLE001 - a callback failure must not crash the thread
             logger.debug("memory-scan: scan-ended callback failed", exc_info=True)
-
-    # ------------------------------------------------------------------
-    # Messaging
-    # ------------------------------------------------------------------
 
     def on_script_message(self, message: dict, data: Any) -> None:
         """Translate agent messages into EventBus events / log lines."""
@@ -810,11 +563,7 @@ class MemoryScanEngine:
             return
         kind = payload.get("type")
         if kind == "keylog":
-            # MTProto keys arrive as keylog messages carrying a `label`
-            # (MTPROTO_AUTH_KEY / MTPROTO_E2E_KEY) and a fully-formed line; route
-            # them to the MTProto keylog the offline decryptor reads. Every other
-            # keylog message (boringssl secrets, schannel session-cache) has no
-            # MTProto label and takes the standard memscan path.
+            # MTPROTO_* labels go to the MTProto keylog; all others take the memscan path.
             if str(payload.get("label", "")).startswith("MTPROTO_"):
                 self._publish_mtproto_finding(payload)
             else:
@@ -830,9 +579,7 @@ class MemoryScanEngine:
         elif kind == "unpaired":
             self._handle_unpaired(payload)
         elif kind == "cachedump":
-            # Schannel session_cache tier in DUMP mode (session_id_at uncalibrated):
-            # the agent dumps cache-item bytes so an operator can calibrate the
-            # session-id offset offline. Surface where it landed, don't emit keys.
+            # Schannel session_cache DUMP mode (session_id_at uncalibrated): log only.
             logger.info(
                 "memory-scan: schannel cache-item dump (uncalibrated session_id) "
                 "at %s (master %s…)",
@@ -841,27 +588,13 @@ class MemoryScanEngine:
             )
 
     def _handle_unpaired(self, payload: dict) -> None:
-        """Route an ``unpaired`` secret by its ``kind``.
-
-        BoringSSL Tier C (``orphan_session``) has no client_random and no offline
-        correlator, so it is only logged. Schannel unpaired secrets
-        (``schannel_tls12_master`` / ``schannel_tls13_secret``) DO have an offline
-        correlator — Workstream 5 joins them to the pcap's client_random — so they
-        are written to a dedicated sidecar in a stable, machine-readable format.
-        """
+        """Route an ``unpaired`` secret by ``kind``: Schannel secrets go to the sidecar for the offline correlator; BoringSSL ``orphan_session`` is only logged."""
         kind = str(payload.get("kind", ""))
         if kind.startswith("schannel_"):
             self._write_unpaired(payload)
             return
-        # E4(b): MTProto unconfirmed candidates (auth_key / e2e keys the oracle
-        # could not close). The agent only sends these as ``unpaired`` when
-        # emitUnconfirmed is OFF (with it ON it emits full keylog lines instead,
-        # see _apply_emit_unconfirmed), but we still honour the same opt-in here so
-        # a candidate that does arrive is persisted for a follow-up key hunt rather
-        # than silently logged. The unpaired payload carries no key bytes, so we
-        # record it as a ``#`` comment candidate (auth_key_id + address) in the
-        # .mtproto.keylog — a comment the decryptor's parser ignores, harmless yet
-        # keeping the exact search term to feed the heap scanner next time.
+        # Unconfirmed MTProto candidates carry no key bytes, so they are recorded
+        # as ``#`` comments (auth_key_id + address) that the decryptor ignores.
         if kind in ("authkey_unconfirmed", "e2e_unconfirmed"):
             if self._emit_unconfirmed:
                 self._write_mtproto_candidate(payload)
@@ -879,13 +612,7 @@ class MemoryScanEngine:
         )
 
     def _write_mtproto_candidate(self, payload: dict) -> None:
-        """Record one UNCONFIRMED mtproto candidate as a comment in the sidecar.
-
-        The candidate has no key bytes (the oracle never closed it), so we write a
-        ``#``-prefixed line the keylog parser skips. It preserves the auth_key_id /
-        fingerprint and its heap address so a later targeted scan can go find the
-        real key. Only reached when ``--ms-emit-unconfirmed`` is set.
-        """
+        """Record an unconfirmed mtproto candidate as a ``#`` comment (auth_key_id + heap address); only with ``--ms-emit-unconfirmed``."""
         kind = str(payload.get("kind", "mtproto_unconfirmed"))
         key_id = str(payload.get("keyId", "")).strip() or "-"
         addr = str(payload.get("addr", "")).strip() or "-"
@@ -898,11 +625,7 @@ class MemoryScanEngine:
         line = payload.get("line", "")
         if not line or self._context is None:
             return
-        # Route through the shared keylog pipeline as a tagged KeylogEvent
-        # (protocol="memscan"), mirroring the --scan-keys-region path: the
-        # MemoryScanKeylogFormatter writes the line and the TUI/JSON handlers
-        # recognise the tag. The parsed parts ride in `payload` so consumers
-        # don't re-split the line.
+        # The parsed parts ride in `payload` so consumers don't re-split the line.
         from ..events import KeylogEvent
         tier = str(payload.get("tier", ""))
         parsed = _parse_keylog_columns(line, tier)
@@ -921,13 +644,7 @@ class MemoryScanEngine:
             logger.debug("memory-scan: failed to emit finding", exc_info=True)
 
     def _publish_rc4_key(self, payload: dict) -> None:
-        """Turn an ``rc4_key`` agent message into a ``KeylogEvent(protocol="rc4")``.
-
-        The RC4 memory-scan engine recovers a key (``memscan-trial``) or a post-KSA
-        S-box state (``memscan-sbox``). The line is built via the canonical
-        :func:`rc4_keylog_spec.format_line`, so it lands in the ``.rc4`` keylog file
-        through :class:`Rc4KeylogFormatter` exactly like a hooked RC4 key.
-        """
+        """Turn an ``rc4_key`` agent message into a ``KeylogEvent(protocol="rc4")`` via :func:`rc4_keylog_spec.format_line`."""
         if self._context is None:
             return
         from ..protocols import rc4_keylog_spec as spec
@@ -943,8 +660,7 @@ class MemoryScanEngine:
         if not line:
             logger.debug("memory-scan: dropping malformed rc4_key message: %s", payload)
             return
-        # Always write to the dedicated RC4 sidecar so the key is never lost when
-        # the run did not also select --protocol rc4 (see __init__ note).
+        # Always written to the sidecar, even without --protocol rc4.
         self._write_rc4_line(line)
         from ..events import KeylogEvent
         event = KeylogEvent(
@@ -963,16 +679,10 @@ class MemoryScanEngine:
         except Exception:  # noqa: BLE001
             logger.debug("memory-scan: failed to emit rc4 key", exc_info=True)
 
-    # ------------------------------------------------------------------
-    # Schannel unpaired sidecar (Workstream 5 consumes this)
-    # ------------------------------------------------------------------
-
     def _resolve_unpaired_path(self) -> str:
-        """Where Schannel unpaired secrets are written; derived once, then cached.
+        """Where Schannel unpaired secrets go (``<stem>.schannel.unpaired``), cached.
 
-        Prefers the path handed in at construction (co-located with the memory-scan
-        keylog as ``<stem>.schannel.unpaired``). Falls back to a file in the current
-        directory so the sidecar is always written even without other output flags.
+        Falls back to a file in the current directory.
         """
         if self._unpaired_path:
             return self._unpaired_path
@@ -980,21 +690,12 @@ class MemoryScanEngine:
         return self._unpaired_path
 
     def _write_unpaired(self, payload: dict) -> None:
-        """Append one unpaired Schannel secret to the sidecar, stable columns.
+        """Append one unpaired Schannel secret to the sidecar.
 
-        Format (single-space-separated, one record per line)::
-
-            <kind> <secret_hex> <session_id_or_dash> <ssl_version> <group_or_dash>
-
-        e.g. ``schannel_tls12_master aabb…(96 hex) - 771 -``. ``session_id`` is
-        always ``-`` for these (Schannel does not store the client_random near the
-        key struct). The optional 5th ``group`` column ties sibling secrets of one
-        connection together so the offline correlator can place an unlabeled
-        EXPORTER_SECRET by elimination; the agent emits a per-connection ``group``
-        id for TLS 1.3 secrets when the ``tls13_secret.group`` tier is enabled, and
-        it is ``-`` when absent (older bundles or a disabled tier), which the Python
-        side handles. The columns are fixed so the offline correlator can split each
-        line without ambiguity.
+        Columns: ``<kind> <secret_hex> <session_id_or_dash> <ssl_version> <group_or_dash>``.
+        session_id is ``-`` (Schannel keeps no client_random near the key struct);
+        ``group`` ties sibling TLS 1.3 secrets of one connection so the offline
+        correlator can place EXPORTER_SECRET by elimination.
         """
         secret = str(payload.get("secret", "")).strip().lower()
         if not secret:
@@ -1034,18 +735,8 @@ class MemoryScanEngine:
                                  exc_info=True)
                 self._unpaired_file = None
 
-    # ------------------------------------------------------------------
-    # RC4 memory-scan keylog sidecar
-    # ------------------------------------------------------------------
-
     def _resolve_rc4_path(self) -> str:
-        """Where RC4 keys recovered from the heap are written; cached on first use.
-
-        Prefers the path handed in at construction (co-located with the memory-scan
-        keylog as ``<stem>.rc4.keylog``); falls back to a file in the current
-        directory so `-ms rc4` always writes recovered keys regardless of
-        ``--protocol``/``-k``.
-        """
+        """Where RC4 keys go (``<stem>.rc4.keylog``), cached; falls back to the current directory."""
         if self._rc4_path:
             return self._rc4_path
         self._rc4_path = "rc4_memscan.rc4.keylog"
@@ -1078,20 +769,10 @@ class MemoryScanEngine:
                                  exc_info=True)
                 self._rc4_file = None
 
-    # ------------------------------------------------------------------
-    # Shutdown
-    # ------------------------------------------------------------------
-
     def _publish_mtproto_finding(self, payload: dict) -> None:
-        """Route an MTProto keylog message to the .mtproto.keylog sidecar + bus.
+        """Route an MTProto keylog message to the sidecar and the bus.
 
-        The agent sends the fully-formed keylog line plus its label; we re-render
-        it through :mod:`mtproto_keylog_spec` (canonical form + a last-chance
-        validation that drops a malformed line rather than poisoning the keylog),
-        write it to the dedicated sidecar so ``-ms mtproto`` always produces a
-        decryptable file, and emit a ``KeylogEvent(protocol="mtproto")`` so it also
-        lands in the split ``-k`` keylog / JSON when ``--protocol mtproto|telegram``
-        is selected.
+        The line is re-rendered through :mod:`mtproto_keylog_spec`, which drops malformed lines.
         """
         raw = str(payload.get("line", ""))
         if not raw:
@@ -1124,10 +805,7 @@ class MemoryScanEngine:
             logger.debug("memory-scan: dropping malformed mtproto keylog line: %s", raw)
             return
         self._write_mtproto_line(line)
-        # The sidecar write above is the always-on guarantee for `-ms mtproto`
-        # and needs no run context. The bus emit below (which feeds the split
-        # `-k` keylog / JSON output) does need the context, so gate only that —
-        # never the file write.
+        # Only the bus emit needs the context; the sidecar write never does.
         if self._context is None:
             return
         from ..events import KeylogEvent
@@ -1147,13 +825,7 @@ class MemoryScanEngine:
             logger.debug("memory-scan: failed to emit mtproto key", exc_info=True)
 
     def _resolve_mtproto_path(self) -> str:
-        """Where MTProto keys recovered from the heap are written; cached on first use.
-
-        Prefers the path handed in at construction (co-located with the memory-scan
-        keylog as ``<stem>.mtproto.keylog``); falls back to a file in the current
-        directory so ``-ms mtproto`` always writes recovered keys regardless of
-        ``--protocol``/``-k``.
-        """
+        """Where MTProto keys go (``<stem>.mtproto.keylog``), cached; falls back to the current directory."""
         if self._mtproto_path:
             return self._mtproto_path
         self._mtproto_path = "mtproto_memscan.mtproto.keylog"
@@ -1186,13 +858,8 @@ class MemoryScanEngine:
                                  exc_info=True)
                 self._mtproto_file = None
 
-    # ------------------------------------------------------------------
-    # TLS mid-stream secret-bundle sidecar (offline no-ClientHello decrypt)
-    # ------------------------------------------------------------------
-
-    # The bundle fields the offline mid-stream decrypter needs, in a stable order.
-    # All are lowercase hex strings; the two randoms are 32 bytes (64 hex chars) and
-    # each traffic secret is a 32- or 48-byte hash output (64 or 96 hex chars).
+    # Bundle fields in stable order, all lowercase hex: randoms are 64 chars,
+    # traffic secrets 64 or 96.
     _TLS_BUNDLE_FIELDS = (
         "client_random",
         "server_random",
@@ -1202,13 +869,7 @@ class MemoryScanEngine:
     )
 
     def _resolve_tls_secret_bundle_path(self) -> str:
-        """Where TLS mid-stream secret bundles are written; cached on first use.
-
-        Prefers the path handed in at construction (co-located with the memory-scan
-        keylog as ``<stem>.tls_midstream.secrets.jsonl``); falls back to a file in
-        the current directory so the bundle is always persisted regardless of
-        ``--protocol``/``-k``.
-        """
+        """Where bundles go (``<stem>.tls_midstream.secrets.jsonl``), cached; falls back to the current directory."""
         if self._tls_secret_bundle_path:
             return self._tls_secret_bundle_path
         self._tls_secret_bundle_path = "tls_midstream_memscan.tls_midstream.secrets.jsonl"
@@ -1230,20 +891,8 @@ class MemoryScanEngine:
     def _bundle_record(self, payload: dict) -> Optional[dict]:
         """Validate a ``tls_secret_bundle`` payload into a leak-safe record, or None.
 
-        REQUIRED: ``client_random`` plus at least one traffic secret
-        (``client_traffic_secret_0`` and/or ``server_traffic_secret_0``), each as
-        lowercase hex of the expected length. The offline mid-stream decrypter
-        binds a direction from a single traffic secret, so one is enough — and the
-        agent already scrubs ``server_random`` to ``''`` in some builds, which the
-        old all-or-nothing gate wrongly dropped.
-
-        OPTIONAL: ``server_random``, ``exporter_secret`` and whichever traffic
-        secret is absent are identification/exporter-only. They are included when
-        present and valid, otherwise stored as ``''`` — which the offline
-        ``load_secret_bundles``/``_valid_bundle`` consumer tolerates (it only
-        requires one traffic secret). A bundle missing the required fields is
-        dropped: it cannot decrypt anything and a half-written record would only
-        confuse the consumer.
+        Needs ``client_random`` plus one traffic secret (one binds a direction; some
+        builds scrub ``server_random``); other fields become ``''`` when absent or invalid.
         """
         def _valid_field(field: str) -> str:
             value = str(payload.get(field, "")).strip().lower()
@@ -1255,8 +904,6 @@ class MemoryScanEngine:
         server_secret = _valid_field("server_traffic_secret_0")
         if not client_random or not (client_secret or server_secret):
             return None
-        # Keep the stable field order (see _TLS_BUNDLE_FIELDS); optional fields
-        # that were absent/invalid are recorded as '' rather than omitted.
         return {
             "client_random": client_random,
             "server_random": _valid_field("server_random"),
@@ -1266,12 +913,7 @@ class MemoryScanEngine:
         }
 
     def _write_tls_secret_bundle(self, payload: dict) -> None:
-        """Append one validated, de-duplicated secret bundle to the JSONL sidecar.
-
-        Leak-safe: the record is written ONLY to the dedicated sidecar file (never to
-        stdout or an info log — only the path is logged), and it is machine-readable
-        JSON, so it can never masquerade as a forged ``RSA Session-ID:`` NSS line.
-        """
+        """Append one validated, de-duplicated bundle to the JSONL sidecar (secrets only there; the JSON form cannot forge an ``RSA Session-ID:`` NSS line)."""
         record = self._bundle_record(payload)
         if record is None:
             logger.debug("memory-scan: dropping malformed tls_secret_bundle: %s",
@@ -1313,33 +955,19 @@ class MemoryScanEngine:
                 self._tls_secret_bundle_file = None
 
     def tls_midstream_manifest_entry(self) -> dict:
-        """The capture-manifest entry for the mid-stream secret sidecar.
-
-        Returns ``{"tls_midstream_secrets": <path>}`` once at least one bundle has
-        actually been written (the file is created lazily), else ``{}`` — so the
-        manifest only ever advertises a sidecar that exists. The offline mid-stream
-        decrypter reads this key to find the no-ClientHello secrets.
-        """
+        """``{"tls_midstream_secrets": <path>}`` once a bundle was written (the file is lazy), else ``{}``."""
         if self._tls_secret_bundle_written and self._tls_secret_bundle_path:
             return {"tls_midstream_secrets": self._tls_secret_bundle_path}
         return {}
 
     def intended_tls_secret_bundle_path(self) -> str:
-        """The deterministic path this engine will write mid-stream bundles to.
-
-        Unlike :meth:`tls_midstream_manifest_entry` (which only reports a sidecar
-        that already exists), this returns the intended path — including the
-        current-directory literal fallback :meth:`_resolve_tls_secret_bundle_path`
-        caches when no memscan keylog stem was supplied. The reader advertises this
-        so writer path == reader path even before the first bundle is written.
-        """
+        """The deterministic bundle path, valid before the first write so the reader matches the writer."""
         return self._resolve_tls_secret_bundle_path()
 
     def stop(self, context: "ScriptContext") -> None:
         """Stop the scan loop and unload the self-session script(s).
 
-        Called by the core when the target process detaches. Mirrors the old
-        ``on_detach_process`` (which ended in ``ScriptPlugin`` unloading scripts).
+        Called by the core when the target process detaches.
         """
         self._stop.set()
         self._teardown_lsass_session(context)
@@ -1350,7 +978,7 @@ class MemoryScanEngine:
         self._unload_scripts(context)
 
     def close(self) -> None:
-        """Final teardown during core cleanup (mirrors the old ``on_unload``)."""
+        """Final teardown during core cleanup."""
         self._stop.set()
         self._teardown_lsass_session(self._context)
         self._close_unpaired()
@@ -1379,19 +1007,8 @@ class MemoryScanEngine:
                              exc_info=True)
         self._lsass_session = None
 
-    # ------------------------------------------------------------------
-    # Script injection helpers (owned by the engine; formerly ScriptPlugin's)
-    # ------------------------------------------------------------------
-
     def _load_script_bounded(self, context: "ScriptContext", script: Any) -> None:
-        """Load *script* under the timeout bound carried by *context*.
-
-        The scanner bundle's top-level code can wedge exactly like the main
-        agent's can, and Frida's ``script.load()`` is not cancellable. Without a
-        bound a bad bundle hangs friTap forever with no diagnostic; with one it
-        becomes a ``BackendScriptLoadTimeout`` carrying a breadcrumb naming the
-        engine, so the caller can log which script wedged.
-        """
+        """Load *script* under the context timeout (``script.load()`` is not cancellable); raises ``BackendScriptLoadTimeout``."""
         try:
             context.backend.load_script(script, timeout=context.script_load_timeout)
         except BackendScriptLoadTimeout as exc:
@@ -1400,7 +1017,7 @@ class MemoryScanEngine:
             raise
 
     def _route_message(self, message: dict, data: Any) -> None:
-        """Trampoline: route backend messages to on_script_message, guarded."""
+        """Route backend messages to on_script_message; never let it raise into Frida."""
         try:
             self.on_script_message(message, data)
         except Exception:  # noqa: BLE001
@@ -1418,16 +1035,7 @@ class MemoryScanEngine:
                 logger.debug("memory-scan: failed to unload script", exc_info=True)
         self._scripts.clear()
 
-    # ------------------------------------------------------------------
-    # Internal
-    # ------------------------------------------------------------------
-
     @staticmethod
     def _rpc(script: Any) -> Any:
-        """Return the script's RPC proxy, preferring the blocking variant.
-
-        Frida 17 splits the proxy into ``exports_sync`` (blocking) and
-        ``exports`` (async). We need blocking calls so ``configure`` and
-        ``scanOnce`` return real values rather than coroutines.
-        """
+        """Return the script RPC proxy, preferring the blocking ``exports_sync`` (Frida 17 splits it from async ``exports``)."""
         return getattr(script, "exports_sync", None) or getattr(script, "exports", None)

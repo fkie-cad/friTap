@@ -1,29 +1,21 @@
-"""Offline RC4 decryption support (PUBLIC).
+"""Offline RC4 decryption (PUBLIC).
 
-This package implements friTap's own offline RC4 decryptor. RC4 shows up in two
-shapes and this one package handles both:
+Handles two shapes: standalone RC4 over raw TCP, and nested RC4-in-TLS
+(plaintext -> RC4 -> TLS 1.3 -> socket; tshark strips TLS with ``--keylog``,
+then RC4 is stripped from the TLS plaintext).
 
-  * **standalone** — RC4 is the outer cipher directly over raw TCP; and
-  * **nested RC4-in-TLS** — plaintext -> RC4 -> TLS 1.3 -> socket, where tshark
-    (driven with the TLS ``--keylog``) strips the outer TLS layer first and RC4
-    is then stripped from the decrypted TLS plaintext.
+Keys come from an RC4 keylog (``RC4_KEY`` lines, parsed by
+:mod:`friTap.protocols.rc4_keylog_spec`); without one, trial-decrypt keeps the
+candidate whose output looks like plaintext.
 
-RC4 keys are read from a friTap RC4 keylog (``RC4_KEY`` lines, parsed by the
-shared :mod:`friTap.protocols.rc4_keylog_spec`); when no key is supplied the
-trial-decrypt path recovers one from candidate bytes by keeping the key whose
-output looks like plaintext.
-
-The RC4 core is pure Python (standalone RC4 works with no third-party backend).
-The optional ``cryptography`` package is needed only for the pure-Python TLS 1.3
-AEAD peeler (the tshark-driven nested path needs tshark, not ``cryptography``).
-Importing this package never requires either — like the Signal/MTProto packages,
-the entry self-registers and the emitter log-and-skips on a missing dependency.
+The RC4 core is pure Python. ``cryptography`` is needed only for the pure-Python
+TLS 1.3 AEAD peeler. Importing this package requires neither; the entry
+self-registers and the emitter log-and-skips on a missing dependency.
 """
 
 from __future__ import annotations
 
-# True if the optional AEAD backend (for the pure-Python TLS peel) is importable.
-# Never raises; standalone RC4 does not depend on it.
+# True if the optional AEAD backend (pure-Python TLS peel) is importable.
 from ..tls.backend import backend_available as rc4_backend_available  # noqa: F401
 
 
@@ -35,9 +27,7 @@ class Rc4DependencyError(Rc4Error):
     """Raised when an optional backend needed for a nested-TLS peel is absent."""
 
 
-# Single canonical, user-facing hint shown wherever the pure-Python TLS peel is
-# requested but the optional crypto backend is absent. The tshark-driven nested
-# path and standalone RC4 do NOT need it.
+# User-facing hint for a pure-Python TLS peel requested without the crypto backend.
 RC4_DEPENDENCY_HINT = (
     "The pure-Python TLS 1.3 peel for nested RC4-in-TLS needs the 'cryptography' "
     "backend, which is not installed. Install it with:  pip install cryptography  "
@@ -46,21 +36,17 @@ RC4_DEPENDENCY_HINT = (
 )
 
 
-# Module-level discovery marker: tells the offline-decryptor discovery scan
-# (:func:`friTap.offline.pcap_to_tap._discover_offline_decryptor_extensions`,
-# mirroring ``is_fritap_parser``/``is_fritap_analyzer``) that importing this
-# package self-registers an offline decryptor. RC4 is PUBLIC — this in-tree
-# subpackage of ``friTap.offline`` is discovered generically, exactly like the
-# Signal package, and the import below registers the entry.
+# Discovery marker for
+# :func:`friTap.offline.pcap_to_tap._discover_offline_decryptor_extensions`:
+# importing this package self-registers an offline decryptor.
 is_fritap_offline_decryptor = True
 
 
 def _register_rc4_offline_decryptor() -> None:
     """Register the RC4 offline decryptor into the process-global registry.
 
-    Lazy + fully guarded so importing this package can never raise: a missing
-    dependency or an import cycle during registration is logged at debug and
-    skipped. Re-registration of an identical entry is idempotent.
+    Guarded so importing this package never raises; failures are logged at
+    debug and skipped. Re-registration is idempotent.
     """
     from friTap.offline.registry import register_offline_decryptors_safely
 
@@ -70,12 +56,10 @@ def _register_rc4_offline_decryptor() -> None:
     )
 
 
-
 def _register_rc4_pipeline_state() -> None:
     """Register the RC4 per-conversion state namespace on the writer state.
 
-    Guarded like the decryptor self-registration below: importing this package
-    can never raise; a failure is logged at debug and skipped.
+    Guarded like the decryptor self-registration: never raises on import.
     """
     try:
         from .state import register_rc4_pipeline_state
@@ -93,19 +77,12 @@ _register_rc4_pipeline_state()
 _register_rc4_offline_decryptor()
 
 
-# --------------------------------------------------------------------------- #
-# Offline-CLI extension hooks (generic convention; mirrors friTap.offline.signal).
-#
-# A managed-RC4 key (a passphrase in the client's own byte arrays) is not on the
-# wire and not in an RC4 keylog unless the live agent recovered it. These extras
-# let the OFFLINE decryptor recover it too, at replay time, by mining candidate
-# keys from the client process's memory (a .dmp/.bin dump, or a live read-only
-# ReadProcessMemory by pid/name) and trial-decrypting them against the ciphertext.
-# The public CLI discovers these by convention and never names RC4.
-# --------------------------------------------------------------------------- #
+# Offline-CLI extension hooks (discovered by convention, like friTap.offline.signal).
+# A managed-RC4 key is neither on the wire nor in a keylog unless the live agent
+# recovered it, so these flags mine candidate keys from the client's memory
+# (.dmp/.bin dump, or a live read-only read by pid/name) at replay time.
 
-# Scan source stashed by handle_offline_cli_extras (parsed pre-conversion) and read
-# by the emitter (_emit_rc4_streams) in the same process. None = no memory source.
+# Stashed by handle_offline_cli_extras, read by _emit_rc4_streams. None = no source.
 _SCAN_SOURCE: dict | None = None
 
 
@@ -193,11 +170,8 @@ def handle_offline_cli_extras(args):
             name=getattr(args, "rc4_scan_name", None),
             all_pages=bool(getattr(args, "rc4_scan_all_pages", False)),
         )
-        # The RC4 offline entry only runs when it has a keylog path (that is how the
-        # generic driver decides a decryptor is "present"). When the user supplies a
-        # memory scan source but NO --rc4-keylog, synthesize a keyless placeholder
-        # keylog so the entry activates; the emitter then recovers the key from the
-        # scan source. Harmless: a keyless RC4 keylog contributes zero keylog keys.
+        # The driver treats a decryptor as present only with a keylog path, so a
+        # scan source without --rc4-keylog gets a keyless placeholder keylog.
         if get_rc4_scan_source() is not None and not getattr(args, "rc4_keylog", None):
             args.rc4_keylog = _write_placeholder_keylog()
     except Exception:  # noqa: BLE001 - a bad value must not crash the CLI

@@ -2,15 +2,12 @@
 
 """RC4 protocol handler.
 
-RC4 is a FIRST-CLASS, INDEPENDENT friTap protocol: ``--protocol rc4`` captures
-RC4 keys with no TLS hooks, and ``--protocol tls,rc4`` runs BOTH the TLS and the
-RC4 hooks (the nested plaintext→RC4→TLS case). RC4 does NOT imply TLS and TLS
-does not imply RC4 — the ``_ext/rc4.py`` registration passes no ``implies=``.
+RC4 is independent of TLS (``_ext/rc4.py`` passes no ``implies=``);
+``--protocol tls,rc4`` runs both hook sets for nested plaintext->RC4->TLS.
 
-The agent (agent/rc4/) hooks the RC4 key-setup functions across platforms and
-emits each recovered key on the generic private-key-material channel
-(``classifier="rc4"``); the router forwards those fields verbatim to
-:class:`Rc4KeylogFormatter`, which renders the ``RC4_KEY`` keylog line defined in
+The agent (agent/rc4/) emits each key on the private-key-material channel
+(``classifier="rc4"``); the router forwards the fields to
+:class:`Rc4KeylogFormatter`, which renders the ``RC4_KEY`` line from
 :mod:`friTap.protocols.rc4_keylog_spec`.
 """
 
@@ -39,9 +36,8 @@ RC4_LIBRARY_PATTERNS = [
 class Rc4KeylogFormatter(KeylogFormatter):
     """Formats recovered RC4 key material into the ``RC4_KEY`` keylog layout.
 
-    Consumes the structured :class:`KeylogEvent` payload emitted by the agent
-    (``key`` hex plus ``key_len``/``source``/``direction``/``assoc``) and renders
-    the line defined in :mod:`friTap.protocols.rc4_keylog_spec`.
+    Reads the payload fields ``key``, ``key_len``, ``source``, ``direction``,
+    ``assoc`` and renders the line from :mod:`friTap.protocols.rc4_keylog_spec`.
     """
 
     @property
@@ -49,8 +45,6 @@ class Rc4KeylogFormatter(KeylogFormatter):
         return "rc4"
 
     def header_comment(self) -> Optional[str]:
-        # friTap-owned format; the file is consumed by friTap's own offline RC4
-        # decrypt (a later workstream), whose parser skips ``#`` lines.
         return spec.HEADER_COMMENT
 
     def format(self, event: "KeylogEvent") -> List[str]:
@@ -66,9 +60,7 @@ class Rc4KeylogFormatter(KeylogFormatter):
 
     def dedup_key(self, event: "KeylogEvent") -> str:
         payload = event.payload or {}
-        # A key is uniquely identified for dedup by its bytes plus the direction
-        # and association hint (the same key may legitimately recur on distinct
-        # threads / directions).
+        # The same key bytes may recur on distinct directions/threads.
         return (
             f"{str(payload.get('key', '')).lower()}"
             f"|{payload.get('direction', '')}"
@@ -102,7 +94,7 @@ class RC4Handler(ProtocolHandler):
         return f"friTap RC4 Key Log Format v{spec.VERSION}"
 
     def get_wireshark_protocol_preference(self) -> str:
-        # No Wireshark preference path; RC4 keys drive friTap's own offline decrypt.
+        # No Wireshark preference; friTap's own offline decrypt reads RC4 keys.
         return ""
 
     def get_display_filter_template(self) -> str:
@@ -116,13 +108,7 @@ class RC4Handler(ProtocolHandler):
         return {BackendName.FRIDA: BackendSupport.FULL}
 
     def validate_cli_intent(self, parsed, parser, logger) -> None:
-        """RC4 needs an explicit capture intent.
-
-        ``--protocol rc4`` requires a capture intent (``-k`` to extract RC4
-        keys for offline decryption, ``-p`` live plaintext, or ``-f`` full
-        capture), since bare ``--protocol rc4`` would install hooks that
-        produce no output.
-        """
+        """Require ``-k``, ``-p`` or ``-f``; bare ``--protocol rc4`` produces no output."""
         if not (
             getattr(parsed, "keylog", False)
             or getattr(parsed, "pcap", False)

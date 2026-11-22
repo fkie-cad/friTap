@@ -107,6 +107,7 @@
       "to_dict": {
        "alpn": "h2",
        "cipher": "TLS_AES_128_GCM_SHA256",
+       "client_random": "c7a6c92fca7801c298d2e7b66b8caa775e7b5f820d05f1a1613c4ff9ca8f90b4",
        "depth": 0,
        "library": "",
        "name": "tls",
@@ -226,7 +227,14 @@
       "c5deaf13f2d7303d9a4ec20463fbbb5903ba41df2da68cba8f85980bc8b8f267",
       "a980ac5436dd261589be7ee3acc87d71d9d1b4f8b74a3a9ea0f3e9c94895aa1b",
       "25ec7191b31912bf6ce0c87954897049578aa84bcbe845595f539605170194c8"
-     ]
+     ],
+     "stream_id": {
+      "0": 1,
+      "1": 1,
+      "2": 1,
+      "3": 1,
+      "4": 1
+     }
     },
     "findings": [],
     "flow": {
@@ -326,6 +334,7 @@
      "ssl_session_id": "",
      "started": 1790455428.268293,
      "state": "complete",
+     "stream_id": 1,
      "tags": [],
      "tls_alpn": "h2",
      "tls_sni": "epimetheus.navigator.web.de",
@@ -339,6 +348,7 @@
       "to_dict": {
        "alpn": "h2",
        "cipher": "TLS_AES_128_GCM_SHA256",
+       "client_random": "c7a6c92fca7801c298d2e7b66b8caa775e7b5f820d05f1a1613c4ff9ca8f90b4",
        "depth": 0,
        "library": "",
        "name": "tls",
@@ -462,6 +472,7 @@
      "started": 1790455428.268293,
      "state": "complete",
      "status_code": 200,
+     "stream_id": 1,
      "tag_count": 0,
      "tls_alpn": "h2",
      "tls_sni": "epimetheus.navigator.web.de",
@@ -485,7 +496,10 @@
       "797aae9d572ac3fd9a64c98822642d5e741ba580d82c11abe8215d3b04fb8084",
       "f20eda741d22d85fbb725d2fa27ee6a2a9cefbfc1d3cfc679f07bd847fab1577",
       "1ed76751e29b7c1dda650ff2874cda101f211880db33902b5ab01b63a12d66e3"
-     ]
+     ],
+     "stream_id": {
+      "1": 1
+     }
     },
     "findings": [],
     "flow": {
@@ -549,6 +563,7 @@
      "ssl_session_id": "",
      "started": 1790455428.296315,
      "state": "complete",
+     "stream_id": 1,
      "tags": [],
      "tls_alpn": "h2",
      "tls_sni": "epimetheus.navigator.web.de",
@@ -562,6 +577,7 @@
       "to_dict": {
        "alpn": "h2",
        "cipher": "TLS_AES_128_GCM_SHA256",
+       "client_random": "c7a6c92fca7801c298d2e7b66b8caa775e7b5f820d05f1a1613c4ff9ca8f90b4",
        "depth": 0,
        "library": "",
        "name": "tls",
@@ -649,6 +665,7 @@
      "started": 1790455428.296315,
      "state": "complete",
      "status_code": 0,
+     "stream_id": 1,
      "tag_count": 0,
      "tls_alpn": "h2",
      "tls_sni": "epimetheus.navigator.web.de",
@@ -675,7 +692,15 @@
       "852e961fbda017b15692078cf13990de0765917c7ef799d1f4dd77d64d44f750",
       "0c297b13d813077760b917226473b0ba13637aa930c3deb51036f3b69b3de66f",
       "b5f16e936034ef69ab17481994f18455c4fa7ecad5e76caf559a1864974a17fb"
-     ]
+     ],
+     "stream_id": {
+      "0": 3,
+      "1": 2,
+      "2": 10,
+      "3": 7,
+      "4": 11,
+      "5": 6
+     }
     },
     "findings": [],
     "flow": {
@@ -738,6 +763,7 @@
       "to_dict": {
        "alpn": "h3",
        "cipher": "TLS_AES_128_GCM_SHA256",
+       "client_random": "3d5291c569e99319023d3816213de6db4abe89442ef5fafa5fcbd532f4ed7d2a",
        "dcid": "",
        "depth": 0,
        "name": "quic",
@@ -961,7 +987,140 @@
       "0b9de26996d74fa0e1e1ec54f791d9bc7f401568089e2705dfb22a4542b2d8db",
       "67c4905af747876288dca73973018ccaef8bb9aeded8478d31c37d09b40cbdda",
       "fc5b5327437fbad4e488ee053326c8f1aebce32fcc01ddd82cea68cc45493149"
-     ]
+     ],
+     "stream_id": {
+      "0": 0,
+      "1": 0,
+      "10": 0,
+      "100": 0,
+      "101": 0,
+      "102": 0,
+      "103": 0,
+      "104": 0,
+      "105": 0,
+      "106": 0,
+      "107": 0,
+      "108": 0,
+      "109": 0,
+      "11": 0,
+      "110": 0,
+      "111": 0,
+      "112": 0,
+      "113": 0,
+      "114": 0,
+      "115": 0,
+      "116": 0,
+      "117": 0,
+      "118": 0,
+      "119": 0,
+      "12": 0,
+      "120": 0,
+      "121": 0,
+      "122": 0,
+      "123": 0,
+      "124": 0,
+      "125": 0,
+      "126": 0,
+      "127": 0,
+      "128": 0,
+      "129": 0,
+      "13": 0,
+      "130": 0,
+      "14": 0,
+      "15": 0,
+      "16": 0,
+      "17": 0,
+      "18": 0,
+      "19": 0,
+      "2": 0,
+      "20": 0,
+      "21": 0,
+      "22": 0,
+      "23": 0,
+      "24": 0,
+      "25": 0,
+      "26": 0,
+      "27": 0,
+      "28": 0,
+      "29": 0,
+      "3": 0,
+      "30": 0,
+      "31": 0,
+      "32": 0,
+      "33": 0,
+      "34": 0,
+      "35": 0,
+      "36": 0,
+      "37": 0,
+      "38": 0,
+      "39": 0,
+      "4": 0,
+      "40": 0,
+      "41": 0,
+      "42": 0,
+      "43": 0,
+      "44": 0,
+      "45": 0,
+      "46": 0,
+      "47": 0,
+      "48": 0,
+      "49": 0,
+      "5": 0,
+      "50": 0,
+      "51": 0,
+      "52": 0,
+      "53": 0,
+      "54": 0,
+      "55": 0,
+      "56": 0,
+      "57": 0,
+      "58": 0,
+      "59": 0,
+      "6": 0,
+      "60": 0,
+      "61": 0,
+      "62": 0,
+      "63": 0,
+      "64": 0,
+      "65": 0,
+      "66": 0,
+      "67": 0,
+      "68": 0,
+      "69": 0,
+      "7": 0,
+      "70": 0,
+      "71": 0,
+      "72": 0,
+      "73": 0,
+      "74": 0,
+      "75": 0,
+      "76": 0,
+      "77": 0,
+      "78": 0,
+      "79": 0,
+      "8": 0,
+      "80": 0,
+      "81": 0,
+      "82": 0,
+      "83": 0,
+      "84": 0,
+      "85": 0,
+      "86": 0,
+      "87": 0,
+      "88": 0,
+      "89": 0,
+      "9": 0,
+      "90": 0,
+      "91": 0,
+      "92": 0,
+      "93": 0,
+      "94": 0,
+      "95": 0,
+      "96": 0,
+      "97": 0,
+      "98": 0,
+      "99": 0
+     }
     },
     "findings": [],
     "flow": {
@@ -1054,6 +1213,7 @@
      "ssl_session_id": "",
      "started": 1790455429.177582,
      "state": "complete",
+     "stream_id": 0,
      "tags": [],
      "tls_alpn": "",
      "tls_sni": "",
@@ -1067,6 +1227,7 @@
       "to_dict": {
        "alpn": "h3",
        "cipher": "TLS_AES_128_GCM_SHA256",
+       "client_random": "3d5291c569e99319023d3816213de6db4abe89442ef5fafa5fcbd532f4ed7d2a",
        "dcid": "",
        "depth": 0,
        "name": "quic",
@@ -1184,6 +1345,7 @@
      "started": 1790455429.177582,
      "state": "complete",
      "status_code": 200,
+     "stream_id": 0,
      "tag_count": 0,
      "tls_alpn": "",
      "tls_sni": "",
@@ -1215,7 +1377,20 @@
       "9db5a64d0e4acc0f2d64311acca2d8776d8f01d4c5c70d000c4cca675c7f44fa",
       "4ddabce87ef22eef434bd97adb77619b68cf53965e6eea4668d76654ccbb0bd1",
       "d074c08b1bc938f3211c84b92abb9438b5a29625c794c5f5543b2d32d1565a28"
-     ]
+     ],
+     "stream_id": {
+      "0": 3,
+      "1": 2,
+      "10": 6,
+      "2": 2,
+      "3": 10,
+      "4": 10,
+      "5": 2,
+      "6": 10,
+      "7": 7,
+      "8": 11,
+      "9": 6
+     }
     },
     "findings": [],
     "flow": {
@@ -1278,6 +1453,7 @@
       "to_dict": {
        "alpn": "h3",
        "cipher": "TLS_AES_128_GCM_SHA256",
+       "client_random": "744a803cf96e032efd946d0aca69987ba68d87647693e83fe44891e3ecaa3d47",
        "dcid": "",
        "depth": 0,
        "name": "quic",
@@ -1372,7 +1548,11 @@
      "sha256": [
       "bc8c334ff3654d062db90e991403c8286894bfab658d6c24cf1227e363b3bd81",
       "b2f961a1fc7f3b424c7e1cbb529320944f24b0c829c9f108615f1ffbc51f76c8"
-     ]
+     ],
+     "stream_id": {
+      "0": 0,
+      "1": 0
+     }
     },
     "findings": [],
     "flow": {
@@ -1475,6 +1655,7 @@
      "ssl_session_id": "",
      "started": 1790455429.492153,
      "state": "complete",
+     "stream_id": 0,
      "tags": [],
      "tls_alpn": "",
      "tls_sni": "",
@@ -1488,6 +1669,7 @@
       "to_dict": {
        "alpn": "h3",
        "cipher": "TLS_AES_128_GCM_SHA256",
+       "client_random": "744a803cf96e032efd946d0aca69987ba68d87647693e83fe44891e3ecaa3d47",
        "dcid": "",
        "depth": 0,
        "name": "quic",
@@ -1615,6 +1797,7 @@
      "started": 1790455429.492153,
      "state": "complete",
      "status_code": 200,
+     "stream_id": 0,
      "tag_count": 0,
      "tls_alpn": "",
      "tls_sni": "",
@@ -1637,7 +1820,11 @@
      "sha256": [
       "5b7b3bf92888ad3ff2b5f05690c316aa4c7c1db238e487748a7ebf2593a9d43d",
       "2f6936949e8439db1383832f67dcfe5c2a033ae4ab39bd066b99d4f27ec3ff64"
-     ]
+     ],
+     "stream_id": {
+      "0": 4,
+      "1": 4
+     }
     },
     "findings": [],
     "flow": {
@@ -1740,6 +1927,7 @@
      "ssl_session_id": "",
      "started": 1790455429.492487,
      "state": "complete",
+     "stream_id": 4,
      "tags": [],
      "tls_alpn": "",
      "tls_sni": "",
@@ -1753,6 +1941,7 @@
       "to_dict": {
        "alpn": "h3",
        "cipher": "TLS_AES_128_GCM_SHA256",
+       "client_random": "744a803cf96e032efd946d0aca69987ba68d87647693e83fe44891e3ecaa3d47",
        "dcid": "",
        "depth": 0,
        "name": "quic",
@@ -1880,6 +2069,7 @@
      "started": 1790455429.492487,
      "state": "complete",
      "status_code": 200,
+     "stream_id": 4,
      "tag_count": 0,
      "tls_alpn": "",
      "tls_sni": "",
@@ -1911,7 +2101,20 @@
       "73a33b3f4565796e8b1f75039cd061aae29bd9a428fb2de236cc3eae7abd12b0",
       "e0dde28ec25aa187b4e88a3339669a7ffa4e295e2f136bc0975b96df36c64d3a",
       "478829615f1f799345fa32371121248670976605014efade9c61ceaadcb3c851"
-     ]
+     ],
+     "stream_id": {
+      "0": 3,
+      "1": 7,
+      "10": 6,
+      "2": 11,
+      "3": 2,
+      "4": 2,
+      "5": 10,
+      "6": 11,
+      "7": 7,
+      "8": 7,
+      "9": 7
+     }
     },
     "findings": [],
     "flow": {
@@ -1973,6 +2176,7 @@
       "to_dict": {
        "alpn": "h3",
        "cipher": "TLS_AES_128_GCM_SHA256",
+       "client_random": "076bfe2d568324bf0259ef5a42166a2ffa29ee04076c075805ee06d65b18ad69",
        "dcid": "",
        "depth": 0,
        "name": "quic",
@@ -2066,7 +2270,11 @@
      "sha256": [
       "d3abf349c1d7efa19c83af92ee7ab83e71faa613bb5be5e288e1c69f163e3147",
       "9b390c65cc4d154e237b3966627eb45dc74703ecdc325263c9d4468062650265"
-     ]
+     ],
+     "stream_id": {
+      "0": 0,
+      "1": 0
+     }
     },
     "findings": [],
     "flow": {
@@ -2163,6 +2371,7 @@
      "ssl_session_id": "",
      "started": 1790455429.039248,
      "state": "complete",
+     "stream_id": 0,
      "tags": [],
      "tls_alpn": "",
      "tls_sni": "",
@@ -2176,6 +2385,7 @@
       "to_dict": {
        "alpn": "h3",
        "cipher": "TLS_AES_128_GCM_SHA256",
+       "client_random": "076bfe2d568324bf0259ef5a42166a2ffa29ee04076c075805ee06d65b18ad69",
        "dcid": "",
        "depth": 0,
        "name": "quic",
@@ -2297,6 +2507,7 @@
      "started": 1790455429.039248,
      "state": "complete",
      "status_code": 200,
+     "stream_id": 0,
      "tag_count": 0,
      "tls_alpn": "",
      "tls_sni": "",
@@ -2339,7 +2550,31 @@
       "71acd1f606957c185ec6207c31f6ec11c96cead83229c5025488cdbe25028bcc",
       "5c67eb93accebde9a9cba4ec737cfe1ff0a5b1416735940db9d942ae3fe0f70e",
       "0d11270d8040a5f6aff24d9bde7f8db9ad540c1243cbb8d4114b4f8544de2be3"
-     ]
+     ],
+     "stream_id": {
+      "0": 3,
+      "1": 7,
+      "10": 7,
+      "11": 6,
+      "12": 2,
+      "13": 10,
+      "14": 11,
+      "15": 7,
+      "16": 6,
+      "17": 2,
+      "18": 10,
+      "19": 11,
+      "2": 11,
+      "20": 7,
+      "21": 6,
+      "3": 2,
+      "4": 2,
+      "5": 7,
+      "6": 7,
+      "7": 7,
+      "8": 7,
+      "9": 7
+     }
     },
     "findings": [],
     "flow": {
@@ -2401,6 +2636,7 @@
       "to_dict": {
        "alpn": "h3",
        "cipher": "TLS_AES_128_GCM_SHA256",
+       "client_random": "cd95d1a0dbced03d438f39d8fc47d933cba2654dbc97a12a7037fb5fcdd9f0e6",
        "dcid": "",
        "depth": 0,
        "name": "quic",
@@ -2494,7 +2730,11 @@
      "sha256": [
       "31edc3efd289cee9d96e7c7bb29d909ea5e0aaaeca3e54ab67713cac59393bb1",
       "7b998369e333c06b0a6148c349f61af8c91206db274dad9bcc0f2e6be0b0a7d0"
-     ]
+     ],
+     "stream_id": {
+      "0": 0,
+      "1": 0
+     }
     },
     "findings": [],
     "flow": {
@@ -2598,6 +2838,7 @@
      "ssl_session_id": "",
      "started": 1790455428.908257,
      "state": "complete",
+     "stream_id": 0,
      "tags": [],
      "tls_alpn": "",
      "tls_sni": "",
@@ -2611,6 +2852,7 @@
       "to_dict": {
        "alpn": "h3",
        "cipher": "TLS_AES_128_GCM_SHA256",
+       "client_random": "cd95d1a0dbced03d438f39d8fc47d933cba2654dbc97a12a7037fb5fcdd9f0e6",
        "dcid": "",
        "depth": 0,
        "name": "quic",
@@ -2739,6 +2981,7 @@
      "started": 1790455428.908257,
      "state": "complete",
      "status_code": 200,
+     "stream_id": 0,
      "tag_count": 0,
      "tls_alpn": "",
      "tls_sni": "",
@@ -2761,7 +3004,11 @@
      "sha256": [
       "08ec22017e16a7dd685fc8eed32f2751e231af5497637066c520c89f55939c2a",
       "fdcf6d8152de2ee225a553f8a585c47946a7cbbd385090ba978421e207ee6a21"
-     ]
+     ],
+     "stream_id": {
+      "0": 4,
+      "1": 4
+     }
     },
     "findings": [],
     "flow": {
@@ -2871,6 +3118,7 @@
      "ssl_session_id": "",
      "started": 1790455429.100785,
      "state": "complete",
+     "stream_id": 4,
      "tags": [],
      "tls_alpn": "",
      "tls_sni": "",
@@ -2884,6 +3132,7 @@
       "to_dict": {
        "alpn": "h3",
        "cipher": "TLS_AES_128_GCM_SHA256",
+       "client_random": "cd95d1a0dbced03d438f39d8fc47d933cba2654dbc97a12a7037fb5fcdd9f0e6",
        "dcid": "",
        "depth": 0,
        "name": "quic",
@@ -3018,6 +3267,7 @@
      "started": 1790455429.100785,
      "state": "complete",
      "status_code": 200,
+     "stream_id": 4,
      "tag_count": 0,
      "tls_alpn": "",
      "tls_sni": "",
@@ -3040,7 +3290,11 @@
      "sha256": [
       "fd9d84d76268c6c5da255ddef5a1ba7c5c5d8577554356b537900a174b3058c1",
       "89d1d3aebf40755c0240daaafac2898e769eb3660e7c5e6db591a80f9e5c9a66"
-     ]
+     ],
+     "stream_id": {
+      "0": 8,
+      "1": 8
+     }
     },
     "findings": [],
     "flow": {
@@ -3150,6 +3404,7 @@
      "ssl_session_id": "",
      "started": 1790455429.426688,
      "state": "complete",
+     "stream_id": 8,
      "tags": [],
      "tls_alpn": "",
      "tls_sni": "",
@@ -3163,6 +3418,7 @@
       "to_dict": {
        "alpn": "h3",
        "cipher": "TLS_AES_128_GCM_SHA256",
+       "client_random": "cd95d1a0dbced03d438f39d8fc47d933cba2654dbc97a12a7037fb5fcdd9f0e6",
        "dcid": "",
        "depth": 0,
        "name": "quic",
@@ -3297,6 +3553,7 @@
      "started": 1790455429.426688,
      "state": "complete",
      "status_code": 200,
+     "stream_id": 8,
      "tag_count": 0,
      "tls_alpn": "",
      "tls_sni": "",
@@ -3326,7 +3583,18 @@
       "5da62eb663d954ab65f656e1225ed4a7d794f0dac9904b80a6c2651ce83bf965",
       "55fd6b9ae632a138c1ea6dda4b295ed8948406d51b68dc2a7fe8848fe830f10c",
       "71dd362b4767ccd7dbf5701b600d27bb202436087e18ec5f15d1b319cad4f49c"
-     ]
+     ],
+     "stream_id": {
+      "0": 3,
+      "1": 7,
+      "2": 11,
+      "3": 2,
+      "4": 2,
+      "5": 10,
+      "6": 11,
+      "7": 7,
+      "8": 6
+     }
     },
     "findings": [],
     "flow": {
@@ -3388,6 +3656,7 @@
       "to_dict": {
        "alpn": "h3",
        "cipher": "TLS_AES_128_GCM_SHA256",
+       "client_random": "6666828c4eccbf7d373f9e23842070c1374d2f7eee84153832246e289a4270ca",
        "dcid": "",
        "depth": 0,
        "name": "quic",
@@ -3482,7 +3751,12 @@
       "078a69673700adc6171a9e9f8cff2ba9a6a9663673d4135b392434566e042acd",
       "ad785787cb6ac00e0fd38c8463b0e9f23d50708bde7c3971e519f5803543e027",
       "62903deef144d3e4d33b472d80cca13cca6b6b5a81a5fba8532795b250f1077d"
-     ]
+     ],
+     "stream_id": {
+      "0": 0,
+      "1": 0,
+      "2": 0
+     }
     },
     "findings": [],
     "flow": {
@@ -3574,6 +3848,7 @@
      "ssl_session_id": "",
      "started": 1790455429.05787,
      "state": "complete",
+     "stream_id": 0,
      "tags": [],
      "tls_alpn": "",
      "tls_sni": "",
@@ -3587,6 +3862,7 @@
       "to_dict": {
        "alpn": "h3",
        "cipher": "TLS_AES_128_GCM_SHA256",
+       "client_random": "6666828c4eccbf7d373f9e23842070c1374d2f7eee84153832246e289a4270ca",
        "dcid": "",
        "depth": 0,
        "name": "quic",
@@ -3703,6 +3979,7 @@
      "started": 1790455429.05787,
      "state": "complete",
      "status_code": 200,
+     "stream_id": 0,
      "tag_count": 0,
      "tls_alpn": "",
      "tls_sni": "",
@@ -3822,7 +4099,108 @@
       "d221da07fd9474a3afad57479061795822fddf11ae04fe19bfc35a1aaaa7920e",
       "4bfd544577a8af0200c799f040eccff51c4425255c06ce0d6b6b8394b3468545",
       "1c47620b955d18a8bf1ec7a959205ccf5f41a8b272ea45bbc3f365c225d611d2"
-     ]
+     ],
+     "stream_id": {
+      "0": 3,
+      "1": 7,
+      "10": 10,
+      "11": 2,
+      "12": 10,
+      "13": 2,
+      "14": 10,
+      "15": 2,
+      "16": 10,
+      "17": 11,
+      "18": 2,
+      "19": 10,
+      "2": 11,
+      "20": 11,
+      "21": 11,
+      "22": 11,
+      "23": 2,
+      "24": 10,
+      "25": 2,
+      "26": 10,
+      "27": 11,
+      "28": 7,
+      "29": 7,
+      "3": 2,
+      "30": 7,
+      "31": 7,
+      "32": 7,
+      "33": 7,
+      "34": 7,
+      "35": 6,
+      "36": 6,
+      "37": 6,
+      "38": 11,
+      "39": 7,
+      "4": 2,
+      "40": 7,
+      "41": 7,
+      "42": 7,
+      "43": 7,
+      "44": 6,
+      "45": 7,
+      "46": 7,
+      "47": 6,
+      "48": 6,
+      "49": 7,
+      "5": 7,
+      "50": 7,
+      "51": 6,
+      "52": 2,
+      "53": 10,
+      "54": 2,
+      "55": 10,
+      "56": 2,
+      "57": 11,
+      "58": 11,
+      "59": 2,
+      "6": 7,
+      "60": 10,
+      "61": 2,
+      "62": 10,
+      "63": 7,
+      "64": 7,
+      "65": 11,
+      "66": 6,
+      "67": 7,
+      "68": 7,
+      "69": 7,
+      "7": 7,
+      "70": 7,
+      "71": 11,
+      "72": 6,
+      "73": 6,
+      "74": 7,
+      "75": 7,
+      "76": 7,
+      "77": 7,
+      "78": 6,
+      "79": 6,
+      "8": 6,
+      "80": 2,
+      "81": 10,
+      "82": 11,
+      "83": 7,
+      "84": 7,
+      "85": 6,
+      "86": 2,
+      "87": 10,
+      "88": 11,
+      "89": 7,
+      "9": 2,
+      "90": 7,
+      "91": 6,
+      "92": 2,
+      "93": 10,
+      "94": 11,
+      "95": 7,
+      "96": 7,
+      "97": 7,
+      "98": 6
+     }
     },
     "findings": [],
     "flow": {
@@ -3884,6 +4262,7 @@
       "to_dict": {
        "alpn": "h3",
        "cipher": "TLS_AES_128_GCM_SHA256",
+       "client_random": "9baa94ae39ec197fa1b723425889bb0278d55be3993d83048fb1f2e0a6764d06",
        "dcid": "",
        "depth": 0,
        "name": "quic",
@@ -4015,7 +4394,49 @@
       "d6a9edb93d26ae1f6dcdf098c83cb5b95ea494c1b37df1f4d05ca8111d19fa05",
       "2fc58b8915c50414118a077bb7993901bc2043d9530a1250b70ec7ab8fdf3cab",
       "bf903f146e63cb5c610e7397b3e752300e455caf2dfb2f0c6476a27539a9c2ff"
-     ]
+     ],
+     "stream_id": {
+      "0": 0,
+      "1": 0,
+      "10": 0,
+      "11": 0,
+      "12": 0,
+      "13": 0,
+      "14": 0,
+      "15": 0,
+      "16": 0,
+      "17": 0,
+      "18": 0,
+      "19": 0,
+      "2": 0,
+      "20": 0,
+      "21": 0,
+      "22": 0,
+      "23": 0,
+      "24": 0,
+      "25": 0,
+      "26": 0,
+      "27": 0,
+      "28": 0,
+      "29": 0,
+      "3": 0,
+      "30": 0,
+      "31": 0,
+      "32": 0,
+      "33": 0,
+      "34": 0,
+      "35": 0,
+      "36": 0,
+      "37": 0,
+      "38": 0,
+      "39": 0,
+      "4": 0,
+      "5": 0,
+      "6": 0,
+      "7": 0,
+      "8": 0,
+      "9": 0
+     }
     },
     "findings": [],
     "flow": {
@@ -4127,6 +4548,7 @@
      "ssl_session_id": "",
      "started": 1790455428.247343,
      "state": "complete",
+     "stream_id": 0,
      "tags": [],
      "tls_alpn": "",
      "tls_sni": "",
@@ -4140,6 +4562,7 @@
       "to_dict": {
        "alpn": "h3",
        "cipher": "TLS_AES_128_GCM_SHA256",
+       "client_random": "9baa94ae39ec197fa1b723425889bb0278d55be3993d83048fb1f2e0a6764d06",
        "dcid": "",
        "depth": 0,
        "name": "quic",
@@ -4276,6 +4699,7 @@
      "started": 1790455428.247343,
      "state": "complete",
      "status_code": 200,
+     "stream_id": 0,
      "tag_count": 0,
      "tls_alpn": "",
      "tls_sni": "",
@@ -4299,7 +4723,12 @@
       "8c7312c219c74a3edb13c78f3387780cb282446a6b1147e698d6a441e808ea55",
       "4c43645b08c43a13b83280c3265899b18aa457e9230b8518812264464a11f8ca",
       "bebf40c9cf7b09043ac58240b4f1fc8b37e0c34f8c0eef30aa7122bbafd53532"
-     ]
+     ],
+     "stream_id": {
+      "0": 36,
+      "1": 36,
+      "2": 36
+     }
     },
     "findings": [],
     "flow": {
@@ -4413,6 +4842,7 @@
      "ssl_session_id": "",
      "started": 1790455428.951535,
      "state": "complete",
+     "stream_id": 36,
      "tags": [],
      "tls_alpn": "",
      "tls_sni": "",
@@ -4426,6 +4856,7 @@
       "to_dict": {
        "alpn": "h3",
        "cipher": "TLS_AES_128_GCM_SHA256",
+       "client_random": "9baa94ae39ec197fa1b723425889bb0278d55be3993d83048fb1f2e0a6764d06",
        "dcid": "",
        "depth": 0,
        "name": "quic",
@@ -4564,6 +4995,7 @@
      "started": 1790455428.951535,
      "state": "complete",
      "status_code": 200,
+     "stream_id": 36,
      "tag_count": 0,
      "tls_alpn": "",
      "tls_sni": "",
@@ -4587,7 +5019,12 @@
       "cd853e67e1c2a4f6e5ddb53504d000c17f3bb7220d87e40f9ba3aee1a6c98fc5",
       "e3a8fc33c38db3585723b19af1ab15e42ce3295d1c471ec025f9b74d036d97ea",
       "245559ac993f1693a02866e05b0011b7b4e242117740c65ec5777ce93098113c"
-     ]
+     ],
+     "stream_id": {
+      "0": 40,
+      "1": 40,
+      "2": 40
+     }
     },
     "findings": [],
     "flow": {
@@ -4695,6 +5132,7 @@
      "ssl_session_id": "",
      "started": 1790455428.952156,
      "state": "complete",
+     "stream_id": 40,
      "tags": [],
      "tls_alpn": "",
      "tls_sni": "",
@@ -4708,6 +5146,7 @@
       "to_dict": {
        "alpn": "h3",
        "cipher": "TLS_AES_128_GCM_SHA256",
+       "client_random": "9baa94ae39ec197fa1b723425889bb0278d55be3993d83048fb1f2e0a6764d06",
        "dcid": "",
        "depth": 0,
        "name": "quic",
@@ -4840,6 +5279,7 @@
      "started": 1790455428.952156,
      "state": "complete",
      "status_code": 200,
+     "stream_id": 40,
      "tag_count": 0,
      "tls_alpn": "",
      "tls_sni": "",
@@ -4864,7 +5304,13 @@
       "ab3ab462f8f315368fa55123d49bbe16bd03854de12dd7bb4ca55951c284008d",
       "6ee308f011f0720631bf5d7ed25ec32ac85663c63954fdfef04936282b272236",
       "c0aac0143831e29450027347adb061f0e2172bd16e67945d14eac1a98558d642"
-     ]
+     ],
+     "stream_id": {
+      "0": 44,
+      "1": 44,
+      "2": 44,
+      "3": 44
+     }
     },
     "findings": [],
     "flow": {
@@ -4984,6 +5430,7 @@
      "ssl_session_id": "",
      "started": 1790455428.983978,
      "state": "complete",
+     "stream_id": 44,
      "tags": [],
      "tls_alpn": "",
      "tls_sni": "",
@@ -4997,6 +5444,7 @@
       "to_dict": {
        "alpn": "h3",
        "cipher": "TLS_AES_128_GCM_SHA256",
+       "client_random": "9baa94ae39ec197fa1b723425889bb0278d55be3993d83048fb1f2e0a6764d06",
        "dcid": "",
        "depth": 0,
        "name": "quic",
@@ -5141,6 +5589,7 @@
      "started": 1790455428.983978,
      "state": "complete",
      "status_code": 200,
+     "stream_id": 44,
      "tag_count": 0,
      "tls_alpn": "",
      "tls_sni": "",
@@ -5165,7 +5614,13 @@
       "d0180a8fa287812caf594c1c5b28ca88c8a5566bdd18982fd9767af657577efd",
       "950cf3b2974d5b1e169cc1113f34b04aeeefb3f0356e9b38b8bf92046d778fcd",
       "1e5eb589840c815c2d605e8f046902102d4d7448b604175988504aaab62822a2"
-     ]
+     ],
+     "stream_id": {
+      "0": 48,
+      "1": 48,
+      "2": 48,
+      "3": 48
+     }
     },
     "findings": [],
     "flow": {
@@ -5285,6 +5740,7 @@
      "ssl_session_id": "",
      "started": 1790455428.990077,
      "state": "complete",
+     "stream_id": 48,
      "tags": [],
      "tls_alpn": "",
      "tls_sni": "",
@@ -5298,6 +5754,7 @@
       "to_dict": {
        "alpn": "h3",
        "cipher": "TLS_AES_128_GCM_SHA256",
+       "client_random": "9baa94ae39ec197fa1b723425889bb0278d55be3993d83048fb1f2e0a6764d06",
        "dcid": "",
        "depth": 0,
        "name": "quic",
@@ -5442,6 +5899,7 @@
      "started": 1790455428.990077,
      "state": "complete",
      "status_code": 200,
+     "stream_id": 48,
      "tag_count": 0,
      "tls_alpn": "",
      "tls_sni": "",
@@ -5465,7 +5923,12 @@
       "9b61cd62ab1140da39b301074f6e781944590bf8332e66fe370eb05709a76a12",
       "8ad066dfb6a9a74cd82b9f52f05cf33fbb48b2d4afa157458ed563b045215239",
       "0d96f67aa1212b21d68098674c39078a169bef06195faa2071d1480a2f552ff3"
-     ]
+     ],
+     "stream_id": {
+      "0": 52,
+      "1": 52,
+      "2": 52
+     }
     },
     "findings": [],
     "flow": {
@@ -5579,6 +6042,7 @@
      "ssl_session_id": "",
      "started": 1790455429.058232,
      "state": "complete",
+     "stream_id": 52,
      "tags": [],
      "tls_alpn": "",
      "tls_sni": "",
@@ -5592,6 +6056,7 @@
       "to_dict": {
        "alpn": "h3",
        "cipher": "TLS_AES_128_GCM_SHA256",
+       "client_random": "9baa94ae39ec197fa1b723425889bb0278d55be3993d83048fb1f2e0a6764d06",
        "dcid": "",
        "depth": 0,
        "name": "quic",
@@ -5730,6 +6195,7 @@
      "started": 1790455429.058232,
      "state": "complete",
      "status_code": 200,
+     "stream_id": 52,
      "tag_count": 0,
      "tls_alpn": "",
      "tls_sni": "",
@@ -5753,7 +6219,12 @@
       "9942c877cd88a77dcf67ac4edc3b5ba12942604ec07745a787b84962e9995ce6",
       "38c50a7bb2b4bc1e1c4501171a1372e90af59d2be777e0bd711cb9bc4645c2f2",
       "284ea70d88eb99deb175fa3652975f680af2fb829f50778dfcf77b2e9db39334"
-     ]
+     ],
+     "stream_id": {
+      "0": 56,
+      "1": 56,
+      "2": 56
+     }
     },
     "findings": [],
     "flow": {
@@ -5867,6 +6338,7 @@
      "ssl_session_id": "",
      "started": 1790455429.444434,
      "state": "complete",
+     "stream_id": 56,
      "tags": [],
      "tls_alpn": "",
      "tls_sni": "",
@@ -5880,6 +6352,7 @@
       "to_dict": {
        "alpn": "h3",
        "cipher": "TLS_AES_128_GCM_SHA256",
+       "client_random": "9baa94ae39ec197fa1b723425889bb0278d55be3993d83048fb1f2e0a6764d06",
        "dcid": "",
        "depth": 0,
        "name": "quic",
@@ -6018,6 +6491,7 @@
      "started": 1790455429.444434,
      "state": "complete",
      "status_code": 200,
+     "stream_id": 56,
      "tag_count": 0,
      "tls_alpn": "",
      "tls_sni": "",
@@ -6047,7 +6521,18 @@
       "3d64b8f1a8eb491c92a60cf4b853f9c506bb708628f1bf0c0f108a052ab2198d",
       "cefe1b165e945c35aecfe88a25bde139849dea22aeeaacbb014a87c917a1e018",
       "e2134abc139ccace612d7b028424df2494e8a1cbb520264674dffb158393da6b"
-     ]
+     ],
+     "stream_id": {
+      "0": 60,
+      "1": 60,
+      "2": 60,
+      "3": 60,
+      "4": 60,
+      "5": 60,
+      "6": 60,
+      "7": 60,
+      "8": 60
+     }
     },
     "findings": [],
     "flow": {
@@ -6168,6 +6653,7 @@
      "ssl_session_id": "",
      "started": 1790455430.0172,
      "state": "complete",
+     "stream_id": 60,
      "tags": [],
      "tls_alpn": "",
      "tls_sni": "",
@@ -6181,6 +6667,7 @@
       "to_dict": {
        "alpn": "h3",
        "cipher": "TLS_AES_128_GCM_SHA256",
+       "client_random": "9baa94ae39ec197fa1b723425889bb0278d55be3993d83048fb1f2e0a6764d06",
        "dcid": "",
        "depth": 0,
        "name": "quic",
@@ -6326,6 +6813,7 @@
      "started": 1790455430.0172,
      "state": "complete",
      "status_code": 200,
+     "stream_id": 60,
      "tag_count": 0,
      "tls_alpn": "",
      "tls_sni": "",
@@ -6348,7 +6836,11 @@
      "sha256": [
       "3fb95a68eed744ef3e40315af1ac323e2b6d49140e5abaaf881eaa741b8e418c",
       "1a815bd1004102c9e1ee36e22a46a5b6ba950ea6f4497004beb10a358dfd3330"
-     ]
+     ],
+     "stream_id": {
+      "0": 4,
+      "1": 4
+     }
     },
     "findings": [],
     "flow": {
@@ -6463,6 +6955,7 @@
      "ssl_session_id": "",
      "started": 1790455428.81718,
      "state": "complete",
+     "stream_id": 4,
      "tags": [],
      "tls_alpn": "",
      "tls_sni": "",
@@ -6476,6 +6969,7 @@
       "to_dict": {
        "alpn": "h3",
        "cipher": "TLS_AES_128_GCM_SHA256",
+       "client_random": "9baa94ae39ec197fa1b723425889bb0278d55be3993d83048fb1f2e0a6764d06",
        "dcid": "",
        "depth": 0,
        "name": "quic",
@@ -6615,6 +7109,7 @@
      "started": 1790455428.81718,
      "state": "complete",
      "status_code": 200,
+     "stream_id": 4,
      "tag_count": 0,
      "tls_alpn": "",
      "tls_sni": "",
@@ -6638,7 +7133,12 @@
       "fa8686b019ad34bf806521b74b46902a1bff27e34737a86e12a780f3900b1a24",
       "dffa1e41edd4bb23dff54e0583b891355be7dda3ae4c67bdde635ff726131b73",
       "487b6b1038af90906da4087ab08eb5eadba661de264990675461abe91f35cd84"
-     ]
+     ],
+     "stream_id": {
+      "0": 8,
+      "1": 8,
+      "2": 8
+     }
     },
     "findings": [],
     "flow": {
@@ -6752,6 +7252,7 @@
      "ssl_session_id": "",
      "started": 1790455428.827798,
      "state": "complete",
+     "stream_id": 8,
      "tags": [],
      "tls_alpn": "",
      "tls_sni": "",
@@ -6765,6 +7266,7 @@
       "to_dict": {
        "alpn": "h3",
        "cipher": "TLS_AES_128_GCM_SHA256",
+       "client_random": "9baa94ae39ec197fa1b723425889bb0278d55be3993d83048fb1f2e0a6764d06",
        "dcid": "",
        "depth": 0,
        "name": "quic",
@@ -6903,6 +7405,7 @@
      "started": 1790455428.827798,
      "state": "complete",
      "status_code": 200,
+     "stream_id": 8,
      "tag_count": 0,
      "tls_alpn": "",
      "tls_sni": "",
@@ -6926,7 +7429,12 @@
       "c4630d6d88f4d97214c6464de41cf4363fbe8b4b88801ec693fa6c31c744cb44",
       "13aa9228237246900af011719cc0a06ed4cb934e05577d681770f692e831c922",
       "2b87aa61f90d6f2e31b93566fa597605a7c0bf40bcc680106bf7029383bcfef3"
-     ]
+     ],
+     "stream_id": {
+      "0": 12,
+      "1": 12,
+      "2": 12
+     }
     },
     "findings": [],
     "flow": {
@@ -7040,6 +7548,7 @@
      "ssl_session_id": "",
      "started": 1790455428.828231,
      "state": "complete",
+     "stream_id": 12,
      "tags": [],
      "tls_alpn": "",
      "tls_sni": "",
@@ -7053,6 +7562,7 @@
       "to_dict": {
        "alpn": "h3",
        "cipher": "TLS_AES_128_GCM_SHA256",
+       "client_random": "9baa94ae39ec197fa1b723425889bb0278d55be3993d83048fb1f2e0a6764d06",
        "dcid": "",
        "depth": 0,
        "name": "quic",
@@ -7191,6 +7701,7 @@
      "started": 1790455428.828231,
      "state": "complete",
      "status_code": 200,
+     "stream_id": 12,
      "tag_count": 0,
      "tls_alpn": "",
      "tls_sni": "",
@@ -7214,7 +7725,12 @@
       "a2546edb148dbdcf9e4031f3664e9b73e9fbe08b648e39b93ccada73b40cb16e",
       "b57883fd328dbad23151078253b1ceea76570375ffcc9e5613252cad9f5435f0",
       "841999c15bcc73324d69425f7eef404a2d0ed1027cb749e6a1ecb6e24e76fd4a"
-     ]
+     ],
+     "stream_id": {
+      "0": 16,
+      "1": 16,
+      "2": 16
+     }
     },
     "findings": [],
     "flow": {
@@ -7328,6 +7844,7 @@
      "ssl_session_id": "",
      "started": 1790455428.832957,
      "state": "complete",
+     "stream_id": 16,
      "tags": [],
      "tls_alpn": "",
      "tls_sni": "",
@@ -7341,6 +7858,7 @@
       "to_dict": {
        "alpn": "h3",
        "cipher": "TLS_AES_128_GCM_SHA256",
+       "client_random": "9baa94ae39ec197fa1b723425889bb0278d55be3993d83048fb1f2e0a6764d06",
        "dcid": "",
        "depth": 0,
        "name": "quic",
@@ -7479,6 +7997,7 @@
      "started": 1790455428.832957,
      "state": "complete",
      "status_code": 200,
+     "stream_id": 16,
      "tag_count": 0,
      "tls_alpn": "",
      "tls_sni": "",
@@ -7501,7 +8020,11 @@
      "sha256": [
       "4ff50687daeb6ed080de06c06e42028bab22019c84851ee2911cae4c4c3ab2cd",
       "f8fb4efdf9b250aebedb10f701a653c67d2244a5af117602b1188aa32d66ebf3"
-     ]
+     ],
+     "stream_id": {
+      "0": 20,
+      "1": 20
+     }
     },
     "findings": [],
     "flow": {
@@ -7604,6 +8127,7 @@
      "ssl_session_id": "",
      "started": 1790455428.842227,
      "state": "complete",
+     "stream_id": 20,
      "tags": [],
      "tls_alpn": "",
      "tls_sni": "",
@@ -7617,6 +8141,7 @@
       "to_dict": {
        "alpn": "h3",
        "cipher": "TLS_AES_128_GCM_SHA256",
+       "client_random": "9baa94ae39ec197fa1b723425889bb0278d55be3993d83048fb1f2e0a6764d06",
        "dcid": "",
        "depth": 0,
        "name": "quic",
@@ -7744,6 +8269,7 @@
      "started": 1790455428.842227,
      "state": "complete",
      "status_code": 200,
+     "stream_id": 20,
      "tag_count": 0,
      "tls_alpn": "",
      "tls_sni": "",
@@ -7767,7 +8293,12 @@
       "36711132a7eef6d588ece139e6897f41d944ab1bce72dc66ce67f42d591f6a51",
       "530fa477999fc7bca75a27a655ffaf605dd62bdb0506b47611a71deb06b2ed96",
       "1032d48500aa829e2251fb5abbb36fdde1626166694d74e4f6bcc62e74fc705d"
-     ]
+     ],
+     "stream_id": {
+      "0": 24,
+      "1": 24,
+      "2": 24
+     }
     },
     "findings": [],
     "flow": {
@@ -7881,6 +8412,7 @@
      "ssl_session_id": "",
      "started": 1790455428.860001,
      "state": "complete",
+     "stream_id": 24,
      "tags": [],
      "tls_alpn": "",
      "tls_sni": "",
@@ -7894,6 +8426,7 @@
       "to_dict": {
        "alpn": "h3",
        "cipher": "TLS_AES_128_GCM_SHA256",
+       "client_random": "9baa94ae39ec197fa1b723425889bb0278d55be3993d83048fb1f2e0a6764d06",
        "dcid": "",
        "depth": 0,
        "name": "quic",
@@ -8032,6 +8565,7 @@
      "started": 1790455428.860001,
      "state": "complete",
      "status_code": 200,
+     "stream_id": 24,
      "tag_count": 0,
      "tls_alpn": "",
      "tls_sni": "",
@@ -8055,7 +8589,12 @@
       "dc951feaf951ae6cfd5e6d161f9237beed57b527f93a63e47df841ba4645cb42",
       "7b45a704437cfdd4b132846fee7e5e281397a8c1eab8e9be55708303066c983e",
       "a7083c5d050c658ff1a71030e9acb297fcbb37add5bc263a7cb09eaf4b385ca7"
-     ]
+     ],
+     "stream_id": {
+      "0": 28,
+      "1": 28,
+      "2": 28
+     }
     },
     "findings": [],
     "flow": {
@@ -8169,6 +8708,7 @@
      "ssl_session_id": "",
      "started": 1790455428.866337,
      "state": "complete",
+     "stream_id": 28,
      "tags": [],
      "tls_alpn": "",
      "tls_sni": "",
@@ -8182,6 +8722,7 @@
       "to_dict": {
        "alpn": "h3",
        "cipher": "TLS_AES_128_GCM_SHA256",
+       "client_random": "9baa94ae39ec197fa1b723425889bb0278d55be3993d83048fb1f2e0a6764d06",
        "dcid": "",
        "depth": 0,
        "name": "quic",
@@ -8320,6 +8861,7 @@
      "started": 1790455428.866337,
      "state": "complete",
      "status_code": 200,
+     "stream_id": 28,
      "tag_count": 0,
      "tls_alpn": "",
      "tls_sni": "",
@@ -8343,7 +8885,12 @@
       "4083497a5c4b26a6fa5e11c61dbb414bd0a0927fa0a5d9c1b5761bcc3806f9a8",
       "4842a979dc5a6d44e0b649c42c49e9be2ad0c630965b237c5ff1756f60d9c875",
       "f6631c896225295bdde3bdc4b841f018d1df92e15f9d7d37af8e2b09db167362"
-     ]
+     ],
+     "stream_id": {
+      "0": 32,
+      "1": 32,
+      "2": 32
+     }
     },
     "findings": [],
     "flow": {
@@ -8457,6 +9004,7 @@
      "ssl_session_id": "",
      "started": 1790455428.938523,
      "state": "complete",
+     "stream_id": 32,
      "tags": [],
      "tls_alpn": "",
      "tls_sni": "",
@@ -8470,6 +9018,7 @@
       "to_dict": {
        "alpn": "h3",
        "cipher": "TLS_AES_128_GCM_SHA256",
+       "client_random": "9baa94ae39ec197fa1b723425889bb0278d55be3993d83048fb1f2e0a6764d06",
        "dcid": "",
        "depth": 0,
        "name": "quic",
@@ -8608,6 +9157,7 @@
      "started": 1790455428.938523,
      "state": "complete",
      "status_code": 200,
+     "stream_id": 32,
      "tag_count": 0,
      "tls_alpn": "",
      "tls_sni": "",
@@ -8632,7 +9182,13 @@
       "dd0bd44fe961f0420ab8eb1dd6ca54fc1ae65cd62994814439384a74e917f90b",
       "1311ec37f5895e9d8253fa6e8690a803f1a333147dca23281849403129b808d1",
       "100b7e47b72aeddd6ee51de430658e8ee3e195a834d1b546ef13de2bfeaa6b1f"
-     ]
+     ],
+     "stream_id": {
+      "0": 3,
+      "1": 7,
+      "2": 11,
+      "3": 2
+     }
     },
     "findings": [],
     "flow": {
@@ -8694,6 +9250,7 @@
       "to_dict": {
        "alpn": "h3",
        "cipher": "TLS_AES_128_GCM_SHA256",
+       "client_random": "d12ed5e62fa24b0f60a39e364d36c640bb761d7a9de4fb0669a71d435703241f",
        "dcid": "",
        "depth": 0,
        "name": "quic",
@@ -8792,7 +9349,16 @@
       "204fcd3335330a3bc6aaec8594bc042d980810d7d6a048ae9cd2a7b18c87ae72",
       "15e61e83f6436be0975d8b7c14b1468b62163881554122d84b3b6985b211cfcf",
       "82aabb08f6c939fc4a153b890be843c0bc4f77f8e238c854c5b7535438f2a492"
-     ]
+     ],
+     "stream_id": {
+      "0": 3,
+      "1": 2,
+      "2": 2,
+      "3": 10,
+      "4": 7,
+      "5": 11,
+      "6": 6
+     }
     },
     "findings": [],
     "flow": {
@@ -8855,6 +9421,7 @@
       "to_dict": {
        "alpn": "h3",
        "cipher": "TLS_AES_128_GCM_SHA256",
+       "client_random": "abb00e68b11fe32fbf11b5509eb9c9471fb638b0380a5b0232eb0e144ad4d4a3",
        "dcid": "",
        "depth": 0,
        "name": "quic",
@@ -8949,7 +9516,11 @@
      "sha256": [
       "73b06ef62505014bcd898a262d2d49f2f26da955bc89d0794578d51d7cffebc6",
       "4c53f813c0493ece79b7cb5415d659d6a7db69d5d07df5cbd5ad099942897589"
-     ]
+     ],
+     "stream_id": {
+      "0": 0,
+      "1": 0
+     }
     },
     "findings": [],
     "flow": {
@@ -9032,6 +9603,7 @@
      "ssl_session_id": "",
      "started": 1790455422.574693,
      "state": "complete",
+     "stream_id": 0,
      "tags": [],
      "tls_alpn": "",
      "tls_sni": "",
@@ -9045,6 +9617,7 @@
       "to_dict": {
        "alpn": "h3",
        "cipher": "TLS_AES_128_GCM_SHA256",
+       "client_random": "abb00e68b11fe32fbf11b5509eb9c9471fb638b0380a5b0232eb0e144ad4d4a3",
        "dcid": "",
        "depth": 0,
        "name": "quic",
@@ -9152,6 +9725,7 @@
      "started": 1790455422.574693,
      "state": "complete",
      "status_code": 200,
+     "stream_id": 0,
      "tag_count": 0,
      "tls_alpn": "",
      "tls_sni": "",
@@ -9180,7 +9754,17 @@
       "2f823de4a36f3f6d5746b6a50f8b8b94e3c851dbf1574ed5ad1859357bb9861a",
       "289c764d966c5a51218c510effeb510c22ecf3d581b2e8a1a6003db80367207e",
       "786a667784d6541eef259492c52221eadb26b13365abd5b7a5a274bd91df0b5b"
-     ]
+     ],
+     "stream_id": {
+      "0": 2,
+      "1": 3,
+      "2": 2,
+      "3": 10,
+      "4": 10,
+      "5": 7,
+      "6": 11,
+      "7": 6
+     }
     },
     "findings": [],
     "flow": {
@@ -9242,6 +9826,7 @@
       "to_dict": {
        "alpn": "h3",
        "cipher": "TLS_AES_128_GCM_SHA256",
+       "client_random": "788e88c6ffd2521419233cfc06fb01fd338fae319a248b010f2ac877e49f9dac",
        "dcid": "",
        "depth": 0,
        "name": "quic",
@@ -9335,7 +9920,11 @@
      "sha256": [
       "ab2e79a1819bcd7e38d82de6a132ed277163c046894e6f646eeed4f95d72c838",
       "15918b18130ab3e38f07ae3bb36c7bcd395972434a42394367f02fb12031aa32"
-     ]
+     ],
+     "stream_id": {
+      "0": 0,
+      "1": 0
+     }
     },
     "findings": [],
     "flow": {
@@ -9437,6 +10026,7 @@
      "ssl_session_id": "",
      "started": 1790455428.860343,
      "state": "complete",
+     "stream_id": 0,
      "tags": [],
      "tls_alpn": "",
      "tls_sni": "",
@@ -9450,6 +10040,7 @@
       "to_dict": {
        "alpn": "h3",
        "cipher": "TLS_AES_128_GCM_SHA256",
+       "client_random": "788e88c6ffd2521419233cfc06fb01fd338fae319a248b010f2ac877e49f9dac",
        "dcid": "",
        "depth": 0,
        "name": "quic",
@@ -9576,6 +10167,7 @@
      "started": 1790455428.860343,
      "state": "complete",
      "status_code": 200,
+     "stream_id": 0,
      "tag_count": 0,
      "tls_alpn": "",
      "tls_sni": "",

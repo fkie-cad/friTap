@@ -1,58 +1,33 @@
 """QPACK decoding state for ONE encoder side of an HTTP/3 connection (RFC 9204).
 
-Each endpoint runs its own QPACK encoder, so a connection has two independent
-dynamic tables:
+A connection has two independent dynamic tables (client and server encoder).
+Table size is chosen by the decoding endpoint, so a context is configured from
+the OTHER side's SETTINGS (0x01 capacity, 0x07 blocked streams); the capacity
+must be exact because Required Insert Count is encoded modulo a value from it.
 
-* the client's encoder compresses request header blocks and sends its table
-  inserts on the client's type-0x02 unidirectional stream;
-* the server's encoder does the same for response header blocks.
-
-The size of a table is chosen by its DECODER: the endpoint that decodes
-advertises ``SETTINGS_QPACK_MAX_TABLE_CAPACITY`` (0x01) and
-``SETTINGS_QPACK_BLOCKED_STREAMS`` (0x07). The context decoding client-encoded
-blocks is therefore configured from the SERVER's SETTINGS and vice versa. The
-capacity must be the exact advertised value: the Required Insert Count of
-every header block is encoded modulo a value derived from it.
-
-A passive observer sees the three inputs (SETTINGS, encoder stream, header
-blocks) in any order, possibly with gaps, so this class queues until it can
-decode and never raises:
-
-* encoder bytes are buffered until the capacity is known;
-* header blocks that reference entries not inserted yet are kept "blocked"
-  and handed back through :meth:`resume` once inserts arrive;
-* blocks with a Required Insert Count of 0 only use the static table and are
-  decoded right away by a static-only decoder;
-* after an encoder-stream error or a buffer overflow the context is
-  "poisoned": dynamic references can no longer be trusted, so blocks are
-  decoded with the injected fallback (a raw pseudo-header scan).
-
-The peer is untrusted, so decoding is bounded (header-bomb defence):
-
-* an advertised table capacity above :data:`MAX_QPACK_TABLE_CAPACITY` poisons
-  the context instead of sizing a huge decoder table;
-* a header block is only handed to pylsqpack when its worst-case expansion
-  (every byte referencing a capacity-sized entry) fits
-  :data:`MAX_DECODE_EXPANSION`;
-* a decoded header list above :data:`MAX_HEADER_LIST_COUNT` fields or
-  :data:`MAX_HEADER_LIST_BYTES` bytes is replaced by the fallback.
-
-Rejections are recorded per stream and handed out by :meth:`take_error`.
-
-With decoder isolation on (``--isolate-decoders``) every pylsqpack decoder is
-a worker-side context (:func:`new_qpack_decoder`); all bounds above stay
-here. A lost worker context poisons the QPACK context like an encoder-stream
-error; :meth:`QpackDecoderContext.release` frees the worker contexts.
+A passive observer sees SETTINGS, encoder stream and header blocks in any order,
+so this class queues until it can decode and never raises. Blocks that reference
+missing inserts stay blocked until :meth:`resume`. After an encoder-stream error,
+overflow or lost worker context the context is poisoned and blocks use the
+injected fallback. The peer is untrusted: capacity, worst-case expansion and
+decoded list size are bounded (MAX_QPACK_TABLE_CAPACITY, MAX_DECODE_EXPANSION,
+MAX_HEADER_LIST_COUNT/BYTES); rejections are handed out by :meth:`take_error`.
 """
 
 import logging
+import threading
 from typing import Callable, Optional
 
 from friTap.decoder_isolation import (
     DecoderContextLost,
     HeaderListTooLarge,
     close_isolated_decoder,
+    decoder_isolation_enabled,
     isolated_qpack_decoder,
+)
+from friTap.decoder_isolation.qpack_kind import (
+    FIELD_SECTION_TOO_LARGE,
+    field_section_limit,
 )
 
 logger = logging.getLogger(__name__)
@@ -95,8 +70,25 @@ ERROR_HEADER_BLOCK_TOO_LARGE = "qpack-header-block-too-large"
 ERROR_HEADER_LIST_TOO_LARGE = "qpack-header-list-too-large"
 ERROR_HEADER_BLOCK_MALFORMED = "qpack-header-block-malformed"
 
+# Exceptions meaning "decoded header list over the caps" (isolated or in-process;
+# pylsqpack >= 1.0 raises FieldSectionTooLarge instead of returning the list)
+HEADER_LIST_OVER_CAP = (HeaderListTooLarge,) + (
+    (FIELD_SECTION_TOO_LARGE,) if FIELD_SECTION_TOO_LARGE is not None else ())
+_DECODER_LIMIT_KWARGS = field_section_limit(MAX_HEADER_LIST_BYTES, MAX_HEADER_LIST_COUNT)
+
 # First byte of a header block prefix with Required Insert Count 0
 _STATIC_ONLY_PREFIX = 0x00
+
+# Chromium's QUICHE defaults (quic_constants.h): kDefaultQpackMaxDynamicTableCapacity
+# and kDefaultMaximumBlockedStreams. Used when a connection's SETTINGS predate
+# the capture (mid-stream attach), so they are never seen.
+MIDSTREAM_TABLE_CAPACITY = 64 * 1024
+MIDSTREAM_BLOCKED_STREAMS = 100
+
+# Field section prefix with Required Insert Count 0 and Base 0
+_EMPTY_SECTION_PREFIX = b"\x00\x00"
+# Pseudo-headers precede regular fields (RFC 9114 4.3): a short walk suffices
+_MAX_RECOVERY_LINES = 64
 
 
 def _no_fallback(_block: bytes) -> HeaderPairs:
@@ -228,12 +220,122 @@ def new_qpack_decoder(capacity: int, blocked_streams: int):
     isolated = isolated_qpack_decoder(capacity, blocked_streams,
                                       max_count=MAX_HEADER_LIST_COUNT,
                                       max_bytes=MAX_HEADER_LIST_BYTES)
-    return isolated if isolated is not None else pylsqpack.Decoder(capacity, blocked_streams)
+    if isolated is not None:
+        return isolated
+    return pylsqpack.Decoder(capacity, blocked_streams, **_DECODER_LIMIT_KWARGS)
 
 
 def is_static_only_block(block: bytes) -> bool:
     """True if *block* has Required Insert Count 0 (no dynamic references)."""
     return bool(block) and block[0] == _STATIC_ONLY_PREFIX
+
+
+def _field_lines(block: bytes):
+    """Yield ``(reference, line bytes)`` per field line; stop when malformed."""
+    try:
+        _ric, offset = _read_prefix_int(block, 0, 8)
+        _delta_base, offset = _read_prefix_int(block, offset, 7)
+        for _ in range(_MAX_RECOVERY_LINES):
+            if offset >= len(block):
+                return
+            reference, _size, end = _scan_field_line(block, offset)
+            yield reference, block[offset:end]
+            offset = end
+    except _MalformedBlock:
+        return
+
+
+def _latin1(value) -> str:
+    return value if isinstance(value, str) else bytes(value).decode("latin-1", "replace")
+
+
+class _RecoveryDecoder:
+    """One long-lived static-only decoder shared by every recovery call.
+
+    Mid-stream connections send most blocks to the fallback; a decoder per
+    block meant a worker context (create, IPC, close) per block with decoder
+    isolation on.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()  # pylsqpack decoders are not thread-safe
+        self._decoder = None
+
+    def decode(self, section: bytes) -> Optional[HeaderPairs]:
+        """Fields of the Required-Insert-Count-0 *section*, None on failure."""
+        with self._lock:
+            try:
+                _control, decoded = self._current().feed_header(0, section)
+            except Exception:
+                self._discard()  # a failed block may leave state behind
+                return None
+            return decoded
+
+    def _current(self):
+        # Rebuild when isolation was toggled since the decoder was made
+        if (self._decoder is not None
+                and getattr(self._decoder, "isolated", False) != decoder_isolation_enabled()):
+            self._discard()
+        if self._decoder is None:
+            self._decoder = new_qpack_decoder(0, 0)
+        return self._decoder
+
+    def _discard(self) -> None:
+        close_isolated_decoder(self._decoder)
+        self._decoder = None
+
+
+_RECOVERY_DECODER = _RecoveryDecoder()
+
+
+def _decode_field_lines(lines: list[bytes]) -> Optional[list[tuple[str, str]]]:
+    """Decode table-independent field *lines* as one section, None on failure."""
+    section = _EMPTY_SECTION_PREFIX + b"".join(lines)
+    if check_block(section, 0):
+        return None
+    decoded = _RECOVERY_DECODER.decode(section)
+    if decoded is None or len(decoded) != len(lines):
+        return None
+    return [(_latin1(name), _latin1(value)) for name, value in decoded]
+
+
+def _decode_field_line(line: bytes) -> Optional[tuple[str, str]]:
+    """Decode one table-independent field line, or None when it fails."""
+    decoded = _decode_field_lines([line])
+    return decoded[0] if decoded else None
+
+
+def _decoded_pairs(lines: list[bytes]):
+    """Decoded pairs of *lines*: one batch, or line by line (skipping bad
+    lines) when one bad line spoils the batch. Lazy in the fallback case."""
+    batch = _decode_field_lines(lines)
+    if batch is not None:
+        return batch
+    return (pair for pair in map(_decode_field_line, lines) if pair is not None)
+
+
+def recover_pseudo_headers(block: bytes) -> list[tuple[str, str]]:
+    """Pseudo-header fields of *block* that need no dynamic table.
+
+    Indexed static lines, static-name references with a literal value and
+    literal names (Huffman-coded too) are decoded with a shared static-only
+    pylsqpack decoder; dynamic references are skipped. Never raises.
+    """
+    if pylsqpack is None or not block:
+        return []
+    headers: list[tuple[str, str]] = []
+    try:
+        lines = [line for reference, line in _field_lines(bytes(block))
+                 if reference != "dynamic"]
+        if not lines:
+            return headers
+        for pair in _decoded_pairs(lines):
+            if not pair[0].startswith(":"):
+                break
+            headers.append(pair)
+    except Exception:
+        logger.debug("QPACK pseudo-header recovery failed", exc_info=True)
+    return headers
 
 
 class QpackDecoderContext:
@@ -250,6 +352,9 @@ class QpackDecoderContext:
         self.poisoned = False
         self.errors: dict[int, str] = {}  # stream id -> rejection reason
         self._fallback = fallback or _no_fallback
+        # Control/encoder streams predate the capture: dynamic refs never resolve
+        self.midstream = False
+        self._encoder_seen = False
 
     # ------------------------------------------------------------------
     # State
@@ -302,10 +407,28 @@ class QpackDecoderContext:
         self.pending_encoder.clear()
         return unblocked + self._feed_queued()
 
+    def start_midstream(self) -> list[int]:
+        """Decode at once with Chromium's defaults instead of waiting for
+        SETTINGS that were sent before the capture started.
+
+        Returns the stream ids that :meth:`resume` can now answer.
+        """
+        if self.midstream:
+            return []
+        self.midstream = True
+        resumable = self.configure(MIDSTREAM_TABLE_CAPACITY, MIDSTREAM_BLOCKED_STREAMS)
+        # Already configured by SETTINGS: blocks waiting for inserts that
+        # predate the capture never resolve, so fall back now, not at flush.
+        for sid in list(self.blocked):
+            self.ready[sid] = self._fallback(self.blocked.pop(sid))
+            resumable.append(sid)
+        return resumable
+
     def feed_encoder(self, data: bytes) -> list[int]:
         """Consume encoder-stream bytes -> stream ids now resumable."""
         if self.poisoned or not data:
             return []
+        self._encoder_seen = True
         if self.configured:
             return self._feed_decoder(data)
         if len(self.pending_encoder) + len(data) > MAX_PENDING_ENCODER_BYTES:
@@ -335,7 +458,7 @@ class QpackDecoderContext:
             return []
         try:
             _control, headers = self.decoder.resume_header(stream_id)
-        except HeaderListTooLarge:
+        except HEADER_LIST_OVER_CAP:
             return self._reject_block(stream_id, block, ERROR_HEADER_LIST_TOO_LARGE)
         except DecoderContextLost as exc:
             return self._context_lost(exc, block)
@@ -416,7 +539,7 @@ class QpackDecoderContext:
             self.static_decoder = new_qpack_decoder(0, 0)
         try:
             _control, headers = self.static_decoder.feed_header(stream_id, block)
-        except HeaderListTooLarge:
+        except HEADER_LIST_OVER_CAP:
             return self._reject_block(stream_id, block, ERROR_HEADER_LIST_TOO_LARGE)
         except Exception:
             logger.debug("QPACK static decode failed", exc_info=True)
@@ -429,19 +552,28 @@ class QpackDecoderContext:
         rejection = check_block(block, self.capacity)
         if rejection:
             return self._reject_block(stream_id, block, rejection)
+        if self._unresolvable(block):
+            return self._fallback(block)
         try:
             _control, headers = self.decoder.feed_header(stream_id, block)
             return self._bounded(stream_id, headers, block)
         except pylsqpack.StreamBlocked:
+            if self.midstream:
+                return self._fallback(block)  # inserts predate the capture
             self.blocked[stream_id] = block
             return None
-        except HeaderListTooLarge:
+        except HEADER_LIST_OVER_CAP:
             return self._reject_block(stream_id, block, ERROR_HEADER_LIST_TOO_LARGE)
         except DecoderContextLost as exc:
             return self._context_lost(exc, block)
         except Exception:
             logger.debug("QPACK decode failed for stream %s", stream_id, exc_info=True)
             return self._fallback(block)
+
+    def _unresolvable(self, block: bytes) -> bool:
+        """Mid-stream block with dynamic refs while no insert was ever seen."""
+        return (self.midstream and not self._encoder_seen
+                and not is_static_only_block(block))
 
     def _feed_decoder(self, data: bytes) -> list[int]:
         """Feed encoder bytes to the configured decoder; poison on error."""

@@ -138,7 +138,8 @@ def test_row_predicates():
 
 
 def test_tls_accumulator_ek_rows_match_column_rows():
-    rows = [ft.tls_handshake_row(sni="a.example"), ft.server_hello_row(alpn="h2")]
+    rows = [ft.tls_handshake_row(sni="a.example", random="AB:CD" + ":01" * 30),
+            ft.server_hello_row(alpn="h2", random="ff" * 32)]
     accumulator = tshark_mod.TlsMetadataAccumulator()
     assert [accumulator.feed_ek(r["layers"]) for r in rows] == [0, 0]
     by_columns = tshark_mod.TlsMetadataAccumulator()
@@ -146,7 +147,8 @@ def test_tls_accumulator_ek_rows_match_column_rows():
         by_columns.feed_columns(tshark_mod.ek_columns(r["layers"], tshark_mod._TLS_META_FIELDS))
     assert accumulator.result() == by_columns.result()
     assert accumulator.result() == {0: {"sni": "a.example", "cipher": "TLS_AES_128_GCM_SHA256",
-                                        "version": "TLS 1.3", "alpn": "h2"}}
+                                        "version": "TLS 1.3", "alpn": "h2",
+                                        "client_random": "abcd" + "01" * 30}}
 
 
 def test_quic_crypto_rows_never_reach_the_tls_metadata():

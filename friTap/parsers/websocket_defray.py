@@ -1,26 +1,15 @@
 """Stateless RFC 6455 WebSocket de-framing utilities (plugin-facing).
 
-These are the low-level, dependency-free building blocks used by the offline
-Signal decryptor (and reusable by any protocol that rides WebSocket): a frame
-de-framer that walks a contiguous decrypted byte stream and yields each
-complete frame's ``(opcode, payload)`` with masking honored.
+Dependency-free building blocks used by the offline Signal decryptor (reusable by
+any protocol on WebSocket): walk a contiguous decrypted stream and yield each
+complete frame's ``(opcode, payload)`` with masking honored. The stateful
+flow-level parser is ``friTap.parsers.websocket.WebSocketParser``.
 
-Moved here from ``friTap.offline.signal.transport`` so the de-framer is a
-shared, plugin-usable utility rather than Signal-locked. ``transport.py``
-re-imports these names for backwards compatibility.
-
-The companion stateful flow-level parser is
-``friTap.parsers.websocket.WebSocketParser``; this module is the stateless
-streaming primitive (no per-direction deflate context, no flow attachment).
-
-Frames are validated per RFC 6455 section 5 before they are trusted: RSV bits
-clear, a defined opcode, control frames unfragmented and at most 125 bytes, a
-64-bit length with its most significant bit clear, and a payload of at most
-:data:`MAX_FRAME_BYTES`. The first invalid frame ends iteration, exactly like
-a partial trailing frame always has. RSV1 is rejected too: no caller of this
-module negotiates permessage-deflate (Signal's chat socket uses no extension),
-so a set RSV bit means misaligned or hostile bytes. Compressed WebSocket
-traffic is handled by the stateful ``WebSocketParser`` instead.
+Frames are validated per RFC 6455 section 5 before being trusted: RSV bits clear,
+defined opcode, control frames unfragmented and <= 125 bytes, 64-bit length with
+MSB clear, payload <= :data:`MAX_FRAME_BYTES`. The first invalid frame ends
+iteration, as a partial trailing frame does. RSV1 is rejected too: no caller
+negotiates permessage-deflate, so a set RSV bit means misaligned or hostile bytes.
 """
 
 from __future__ import annotations
@@ -65,23 +54,14 @@ class _FrameHeader(NamedTuple):
 
 
 def unmask(payload: bytes, mask_key: bytes) -> bytes:
-    """XOR-unmask *payload* with the 4-byte *mask_key* (RFC 6455 §5.3).
-
-    Returns *payload* unchanged when *mask_key* is empty (server->client
-    frames are never masked).
-    """
+    """XOR-unmask *payload* with the 4-byte *mask_key* (RFC 6455 §5.3); an empty key (server->client) returns it unchanged."""
     if not mask_key:
         return payload
     return bytes(c ^ mask_key[i % 4] for i, c in enumerate(payload))
 
 
 def looks_like_websocket_frame(buf: bytes) -> bool:
-    """Cheap O(1) check that *buf* starts with a plausible WebSocket frame.
-
-    Verifies the 2-byte minimum header: reserved bits (RSV1-3) clear and a
-    known opcode. Used to distinguish DATA-derived WebSocket bytes from an
-    HTTP/1.1 handshake or HTTP/2 framing at a stream's head.
-    """
+    """O(1) check that *buf* starts with a plausible frame (RSV1-3 clear, known opcode); tells WebSocket bytes from an HTTP/1.1 handshake or HTTP/2 framing."""
     if len(buf) < 2:
         return False
     b0 = buf[0]
@@ -96,11 +76,8 @@ def looks_like_websocket_frame(buf: bytes) -> bool:
 def _skip_http_handshake(stream: bytes) -> bytes:
     """Strip a leading HTTP/1.1 WebSocket upgrade handshake, if present.
 
-    A TLS-decrypted Signal stream begins with the WebSocket HTTP handshake
-    (``GET /v1/websocket/ … \\r\\n\\r\\n`` then ``HTTP/1.1 101 …\\r\\n\\r\\n``);
-    the binary WebSocket framing only starts AFTER the final ``101`` response
-    headers. We skip past the last handshake header block so framing aligns.
-    Returns *stream* unchanged when no handshake prefix is detected.
+    A TLS-decrypted Signal stream starts with ``GET /v1/websocket`` and ``HTTP/1.1 101``
+    header blocks; framing begins after the last one. Returns *stream* unchanged otherwise.
     """
     if not stream[:8].upper().startswith((b"GET ", b"HTTP/", b"PUT ", b"POST ")):
         return stream
@@ -118,34 +95,25 @@ def _skip_http_handshake(stream: bytes) -> bytes:
 
 
 def iter_websocket_frames(stream: bytes) -> Iterator[WebSocketFrame]:
-    """De-frame a contiguous WebSocket byte stream (RFC 6455) into messages.
+    """De-frame a contiguous WebSocket stream into ``(opcode, payload)`` messages.
 
-    Yields each complete message's ``(opcode, payload)``. A leading HTTP
-    upgrade handshake (the ``GET /v1/websocket`` / ``101 Switching Protocols``
-    exchange) is stripped first. Masking is honored (client->server frames are
-    masked).
-
-    A fragmented data message (a text/binary frame with FIN=0, then
-    continuation frames up to the one with FIN=1) is reassembled and yielded
-    ONCE, under the first frame's opcode; control frames interleaved in it are
-    yielded as they arrive. Reassembly is bounded by
-    :data:`MAX_MESSAGE_BYTES` and :data:`MAX_MESSAGE_FRAGMENTS`. A continuation
-    frame with no message to continue (a capture that starts mid-message) is
-    skipped; an unfinished message is dropped when a new data message starts
-    or the stream ends. A partial trailing frame, an invalid frame (see the
-    module docstring) or an over-cap message stops iteration.
+    A leading upgrade handshake is stripped; masking honored. A fragmented message
+    (FIN=0 then continuations) is yielded ONCE under the first opcode; interleaved
+    control frames are yielded as they arrive. Reassembly is bounded by
+    :data:`MAX_MESSAGE_BYTES` and :data:`MAX_MESSAGE_FRAGMENTS`. An orphan continuation
+    (capture starting mid-message) is skipped; an unfinished message is dropped when
+    a new data message starts or the stream ends. A partial trailing frame, an invalid
+    frame or an over-cap message stops iteration.
     """
     for frame, _end in iter_websocket_frames_with_end(stream):
         yield frame
 
 
 def iter_websocket_frames_with_end(stream: bytes) -> Iterator[Tuple[WebSocketFrame, int]]:
-    """Like :func:`iter_websocket_frames`, also yielding each message's end offset.
+    """Like :func:`iter_websocket_frames`, also yielding each message's exclusive end offset.
 
-    The offset is exclusive and relative to *stream* as passed in (a skipped
-    HTTP upgrade handshake is counted), so a caller can map a message back to
-    the capture bytes that completed it (for a reassembled message: the end of
-    its final fragment).
+    Relative to *stream* as passed (a skipped handshake counts); for a reassembled
+    message it is the end of its final fragment.
     """
     stripped = _skip_http_handshake(stream)
     skipped = len(stream) - len(stripped)
@@ -161,10 +129,7 @@ def iter_websocket_frames_with_end(stream: bytes) -> Iterator[Tuple[WebSocketFra
 
 
 def _read_frame_header(stream: bytes, pos: int = 0) -> Optional[_FrameHeader]:
-    """The header of the frame starting at *pos*, or ``None`` when incomplete.
-
-    Only the header has to be present; the payload is not checked or copied.
-    """
+    """The header of the frame at *pos*, or ``None`` when incomplete; the payload is not checked or copied."""
     if pos + 2 > len(stream):
         return None
     b0, b1 = stream[pos], stream[pos + 1]
@@ -210,11 +175,7 @@ def _control_frame_violation(header: _FrameHeader) -> str:
 
 
 def _iter_valid_frames(stream: bytes) -> Iterator[Tuple[_FrameHeader, bytes, int]]:
-    """Yield ``(header, unmasked_payload, end_offset)`` per complete valid frame.
-
-    Stops at a partial trailing frame or at the first invalid header (checked
-    BEFORE its payload is sliced, so a bogus length never allocates).
-    """
+    """Yield ``(header, unmasked_payload, end_offset)`` per complete valid frame; the header is checked BEFORE the payload is sliced, so a bogus length never allocates."""
     pos = 0
     while True:
         header = _read_frame_header(stream, pos)

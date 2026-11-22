@@ -1,19 +1,14 @@
-"""
-Export service: write a capture as HAR, Markdown or an NSS keylog file.
+"""Export service: write a capture as HAR, Markdown or an NSS keylog file.
 
-The content never travels back to the caller; the result is
-``{path, bytes, sha256, format}``. Output paths resolve inside the sandbox
-root, an existing file is replaced only with ``overwrite``, files are written
-atomically with mode 0600, and the keylog (key material) needs both the
-call's ``confirm_secrets`` and the server's ``ctx.allow_secrets``.
+Only ``{path, bytes, sha256, format}`` goes back to the caller. Output paths resolve inside the
+sandbox root, an existing file is replaced only with ``overwrite``, files are written atomically
+with mode 0600, and the keylog (key material) needs both ``confirm_secrets`` and ``ctx.allow_secrets``.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
-import os
-import tempfile
 from pathlib import Path
 from typing import Any, Callable
 
@@ -21,6 +16,7 @@ from friTap.agent_api.context import ToolContext
 from friTap.agent_api.errors import ToolError
 from friTap.agent_api.paths import resolve_under_root
 from friTap.agent_api.services.reading import selector_for
+from friTap.cache_files import write_atomic as _write_atomic_file
 
 EXPORT_FORMATS = ("har", "markdown", "keylog")
 MARKDOWN_DIGEST_BUDGET = 8000
@@ -28,10 +24,6 @@ MARKDOWN_MAX_FLOWS = 200
 MARKDOWN_FLOW_BYTES = 2048
 _SLICE_KEYS = ("protocol", "app_protocol", "filter")
 
-
-# ---------------------------------------------------------------------------
-# Content builders (tap, params) -> text
-# ---------------------------------------------------------------------------
 
 def har_text(tap: Path, params: dict[str, Any]) -> str:
     """HAR 1.2 JSON of the sliced capture."""
@@ -43,7 +35,7 @@ def har_text(tap: Path, params: dict[str, Any]) -> str:
 
 
 def _flow_markdown(tap: Path, refs: list[str], show_values: bool) -> list[str]:
-    """Render every ref from ONE open reader (the capture is opened and indexed once)."""
+    """Render every ref from one open reader (the capture is opened and indexed once)."""
     from friTap.analysis.digest import ordered_flow_ids
     from friTap.analysis.digest_flow import flow_detail_from
     from friTap.analysis.digest_render import render_flow_markdown
@@ -81,11 +73,9 @@ def markdown_text(tap: Path, params: dict[str, Any]) -> str:
 
 
 def keylog_text(tap: Path, params: dict[str, Any]) -> str:
-    """Keylog lines of the capture, in file order.
+    """Keylog lines in file order: the tap's REC_KEYLOG records, else the live session's keylog files.
 
-    The REC_KEYLOG records stored in the tap; for a live capture session (whose
-    tap carries no key records) the session's keylog files written with
-    ``capture: "keys"``/``"full"`` instead.
+    A live capture session's tap carries no key records; its keylog files come from ``capture: "keys"``/``"full"``.
     """
     del params
     from friTap.flow.tap_reader import TapReader
@@ -102,8 +92,7 @@ def keylog_text(tap: Path, params: dict[str, Any]) -> str:
 def _session_keylog_lines(tap: Path) -> list[str]:
     """Non-empty lines of the keylog files next to a capture session's tap.
 
-    Read line by line with the offline keylog reader (over-long lines skipped),
-    never the whole file at once.
+    Read line by line (over-long lines skipped), never the whole file at once.
     """
     from friTap.agent_api.capture.manager import SESSIONS_DIRNAME
     from friTap.agent_api.capture.runner import TAP_NAME, session_keylog_files
@@ -128,10 +117,6 @@ _BUILDERS: dict[str, Callable[[Path, dict[str, Any]], str]] = {
     "keylog": keylog_text,
 }
 
-
-# ---------------------------------------------------------------------------
-# Policy checks
-# ---------------------------------------------------------------------------
 
 def _check_secrets(params: dict[str, Any], ctx: ToolContext) -> None:
     if params.get("format") != "keylog":
@@ -164,29 +149,13 @@ def resolve_output(params: dict[str, Any], ctx: ToolContext, tap: Path) -> Path:
     return out
 
 
-# ---------------------------------------------------------------------------
-# Writing
-# ---------------------------------------------------------------------------
-
 def write_atomic(out: Path, data: bytes) -> None:
     """Write *data* to *out* via a 0600 temp file in the same directory + rename."""
-    out.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(prefix=f".{out.name}.", dir=out.parent)
-    try:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(data)
-        os.replace(tmp, out)
-    except BaseException:
-        Path(tmp).unlink(missing_ok=True)
-        raise
+    _write_atomic_file(out, data, fsync=False)
 
 
 def export(tap: Path, params: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    """Write the capture in ``params["format"]`` to ``params["out"]``.
-
-    Returns:
-        ``{"path", "bytes", "sha256", "format"}`` (never the content).
-    """
+    """Write the capture in ``params["format"]`` to ``params["out"]``; returns ``{path, bytes, sha256, format}``."""
     _check_secrets(params, ctx)
     out = resolve_output(params, ctx, tap)
     data = _BUILDERS[params["format"]](tap, params).encode("utf-8")

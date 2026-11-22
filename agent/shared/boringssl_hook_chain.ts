@@ -16,6 +16,7 @@ import { installBoringSSLSymbolHook, makeBoringSslDumpKeys, attemptSymbolFallbac
 import { installBoringSSLPatternHook } from "./boringssl_pattern_hook.js";
 import { detectBoringSSLFamily } from "./boringssl_family_detect.js";
 import { onAllKeylogTiersMissed } from "./boringssl_keylog_outcome.js";
+import { hookLearnedSslLogSecretByName, reportPatternMatchedSslLogSecret } from "./boringssl_learned_keylog.js";
 import { devlog, devlog_debug, devlog_error, log } from "../util/log.js";
 import { keylog_enabled, pairip_safe, force_anchor_locator } from "../fritap_agent.js";
 
@@ -108,13 +109,19 @@ export function installBoringSSLKeylogChain(
     // completed without a match (or is still unmatched at the poll's hard
     // bound); a slow scan past the soft timeout keeps it pending, so tier 4 is
     // not started next to a scan that is still running.
+    const patternFallbackModule = "libcronet.so";
+    const userPatterns = { json: patternsJson, fallbackModuleName: patternFallbackModule };
+    if (runTier("learned", moduleName, () => hookLearnedSslLogSecretByName(moduleName, dumpKeysCb, userPatterns))) {
+        return "pattern";
+    }
+
     const family = def.family ?? detectBoringSSLFamily(moduleName);
     const libraryType = def.libraryType ?? "boringssl";
     const patternResult = installBoringSSLPatternHook(
         moduleName,
         patternsJson,
         dumpKeysCb,
-        "libcronet.so",
+        patternFallbackModule,
         { family, libraryType },
     );
     if (!patternResult.scheduled) {
@@ -127,6 +134,8 @@ export function installBoringSSLKeylogChain(
     patternResult.settled.then((matched) => {
         if (matched) {
             devlog_debug(`[bssl-chain] ${moduleName}: pattern tier matched (family=${family})`);
+            const hooker = patternResult.hooker;
+            if (hooker) reportPatternMatchedSslLogSecret(hooker.module, hooker.matchedAddress);
             return;
         }
         devlog(

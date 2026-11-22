@@ -1,9 +1,7 @@
-"""Dependency-free HTTP/2 wire constants (and the frame-header decoder)
-shared by the HTTP/2 parsers.
+"""Dependency-free HTTP/2 wire constants and the frame-header decoder.
 
-Kept as a leaf module (no HPACK, no friTap imports) so the stateless DATA
-harvester and the boundary scanner can share it without importing the
-HPACK-dependent :mod:`friTap.parsers.http2`.
+A leaf module (no HPACK, no friTap imports) so the DATA harvester and the
+boundary scanner can share it without importing :mod:`friTap.parsers.http2`.
 """
 
 # RFC 7540 §3.5 connection preface: the 24 bytes a client sends before its
@@ -39,12 +37,9 @@ HTTP2_FRAME_HEADER_LEN = 9
 
 
 def unpack_frame_header(buf, offset: int = 0) -> tuple[int, int, int, int]:
-    """Decode the 9-byte frame header at *offset* in *buf*.
+    """Decode the 9-byte frame header at *offset*: ``(length, frame_type, flags, stream_id)``.
 
-    Returns ``(length, frame_type, flags, stream_id)`` with the reserved
-    stream-id bit masked off. *buf* may be ``bytes``, ``bytearray`` or a
-    ``memoryview``; the caller guarantees ``HTTP2_FRAME_HEADER_LEN`` bytes are
-    available. No validation is done.
+    Reserved stream-id bit masked. No validation; the caller guarantees 9 bytes.
     """
     length = int.from_bytes(buf[offset:offset + 3], "big")
     stream_id = int.from_bytes(buf[offset + 5:offset + 9], "big") & 0x7FFFFFFF

@@ -1,19 +1,11 @@
 #!/usr/bin/env python3
 
-"""friTap memory scanning — heap secret-scanner (the ``--memory-scan`` / ``-ms`` feature).
+"""friTap memory scanning: heap secret-scanner (``--memory-scan`` / ``-ms``).
 
-Memory scanning is a first-class friTap capability, not a plugin. The core
-(:class:`friTap.legacy.ssl_logger_core.SSL_Logger`) constructs a
-:class:`~friTap.memory_scanning.engine.MemoryScanEngine` via
-:func:`build_memory_scan_engine` and drives its ``start`` / ``stop`` / ``close``
-lifecycle directly.
-
-The engine is also reachable *through* the plugin system: third-party plugins
-can import :class:`MemoryScanEngine` and drive it, or reuse the thin
-:class:`~friTap.memory_scanning.plugin.MemoryScanScriptPlugin` adapter that wraps
-it in the standard ``ScriptPlugin`` lifecycle.
-
-This module is the single public import surface for both the core and plugins.
+The core builds a :class:`~friTap.memory_scanning.engine.MemoryScanEngine` via
+:func:`build_memory_scan_engine` and drives start/stop/close. Plugins can use the
+engine or the :class:`~friTap.memory_scanning.plugin.MemoryScanScriptPlugin`
+adapter; this module is the single public import surface for both.
 """
 
 from __future__ import annotations
@@ -23,10 +15,7 @@ from typing import TYPE_CHECKING
 from .engine import MemoryScanEngine
 from .formatter import MemoryScanKeylogFormatter
 
-# The resolver API is re-exported as intentional PUBLIC surface: a third-party
-# plugin driving the engine (see MemoryScanScriptPlugin) resolves/validates its
-# own profiles through these, so they are importable from the package root even
-# though no in-repo caller uses them yet.
+# Resolver API re-exported as public surface for third-party plugins.
 from .loader import (
     MemoryScanPatternError,
     group_profiles_by_scan_target,
@@ -46,15 +35,10 @@ if TYPE_CHECKING:
 
 
 def memory_scan_sidecar_paths(config: "Config") -> dict:
-    """Derive the memory-scan sidecar paths from the memory-scan keylog path.
+    """Derive the sidecar paths (``unpaired``, ``rc4``, ``mtproto``, ``tls_midstream_secrets``) next to the memory-scan keylog.
 
-    Returns ``{"unpaired": ..., "rc4": ..., "mtproto": ...,
-    "tls_midstream_secrets": ...}`` co-located with
-    :func:`~friTap.output.factory.memory_scan_keylog_path` (e.g.
-    ``Telegram_memscan.keylog`` -> ``Telegram_memscan.mtproto.keylog``, and
-    ``keys.memscan.log`` -> ``keys.memscan.mtproto.keylog``), or ``{}`` when
-    memory scanning is off or the path cannot be derived. Best-effort: a bad
-    path must never block the scan.
+    E.g. ``Telegram_memscan.keylog`` -> ``Telegram_memscan.mtproto.keylog``.
+    Returns ``{}`` when scanning is off or the path cannot be derived; never raises.
     """
     try:
         from ..output.factory import memory_scan_keylog_path
@@ -66,7 +50,6 @@ def memory_scan_sidecar_paths(config: "Config") -> dict:
 
 
 def _sidecar_paths_for(ms_path: str) -> dict:
-    """The sidecar paths co-located with the memory-scan keylog *ms_path* (``{}`` on error)."""
     try:
         import os
 
@@ -82,13 +65,10 @@ def _sidecar_paths_for(ms_path: str) -> dict:
 
 
 def memory_scan_protocol_keylogs(config: "Config") -> dict:
-    """Map protocol name -> the memory-scan keylog holding that protocol's keys.
+    """Map protocol name -> the memory-scan keylog holding its keys.
 
-    ``"tls"`` is the NSS keylog (:func:`memory_scan_keylog_path`); ``"mtproto"``
-    and every selected protocol that resolves to the mtproto engine (e.g.
-    ``telegram``) map to the ``.mtproto.keylog`` sidecar. Lets the capture
-    manifest point an offline decryptor at the scanner's keys. ``{}`` when
-    memory scanning is off.
+    ``"tls"`` is the NSS keylog; ``"mtproto"`` and protocols resolving to it (e.g.
+    ``telegram``) map to the ``.mtproto.keylog`` sidecar. ``{}`` when scanning is off.
     """
     from ..output.factory import memory_scan_keylog_path
     from .loader import _PROTOCOL_ENGINE_ALIASES
@@ -109,24 +89,7 @@ def memory_scan_protocol_keylogs(config: "Config") -> dict:
 
 
 def build_memory_scan_engine(config: "Config") -> MemoryScanEngine:
-    """Construct a :class:`MemoryScanEngine` from a friTap ``Config``.
-
-    Encapsulates the wiring the core used to inline: reads the ``-ms`` value,
-    interval, selected protocols and ``--no-lsass`` flag off *config*, and
-    co-locates the four sidecar files (see :func:`_sidecar_paths_for`) with the
-    memory-scan keylog:
-
-    * ``<memscan-keylog-stem>.schannel.unpaired`` — Schannel unpaired secrets for
-      the offline pcap correlator;
-    * ``<memscan-keylog-stem>.rc4.keylog`` — RC4 keys recovered from the heap,
-      written even when ``--protocol rc4`` / ``-k`` was not given;
-    * ``<memscan-keylog-stem>.mtproto.keylog`` — Telegram MTProto auth/E2E keys;
-    * ``<memscan-keylog-stem>.tls_midstream.secrets.jsonl`` — TLS 1.3
-      secret bundles for mid-stream flows (no captured ClientHello).
-
-    A bad/absent keylog path must never block the scan, so sidecar derivation is
-    best-effort (falls back to ``None`` → the engine writes to a default file).
-    """
+    """Construct a :class:`MemoryScanEngine` from a ``Config``; sidecar paths are best-effort and fall back to ``None`` (default file)."""
     sidecars = memory_scan_sidecar_paths(config)
     return MemoryScanEngine(
         patterns_path=config.hooking.memory_scan_patterns,
@@ -136,15 +99,10 @@ def build_memory_scan_engine(config: "Config") -> MemoryScanEngine:
         unpaired_path=sidecars.get("unpaired"),
         rc4_path=sidecars.get("rc4"),
         mtproto_path=sidecars.get("mtproto"),
-        # Mid-stream TLS 1.3 secret bundles (flows with no captured ClientHello)
-        # co-located with the memory-scan keylog as ``<stem>.tls_midstream.secrets.jsonl``.
         tls_secret_bundle_path=sidecars.get("tls_midstream_secrets"),
-        # E4: --ms-emit-unconfirmed opt-in (default OFF) threaded through config.
         emit_unconfirmed=getattr(
             config.hooking, "memory_scan_emit_unconfirmed", False
         ),
-        # RC4 oracles (--ms-rc4-known-plaintext / --ms-rc4-ciphertext), default
-        # None, threaded through config onto the rc4 profile's params.
         rc4_known_plaintext=getattr(
             config.hooking, "memory_scan_rc4_known_plaintext", None
         ),

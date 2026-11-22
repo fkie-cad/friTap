@@ -1,23 +1,16 @@
 """Parser for the Schannel mem-scan ``.schannel.unpaired`` sidecar (PUBLIC).
 
-The read-only Schannel memory-scan engine cannot read the ClientHello random out
-of lsass (it is a transient parameter to ncrypt!Ssl*MasterKey, gone by scan time),
-so every recovered secret is written UNPAIRED to a sidecar next to the mem-scan
-keylog (``<memscan-keylog-stem>.schannel.unpaired``), one record per line:
+The Schannel memory scan cannot read the ClientHello random out of lsass (a
+transient ncrypt parameter), so every recovered secret goes to
+``<memscan-keylog-stem>.schannel.unpaired``, one record per line:
 
     <kind> <secret_hex> <session_id|-> <ssl_version>
 
-where
-
-  * ``kind`` is ``schannel_tls12_master`` or ``schannel_tls13_secret``,
-  * ``secret_hex`` is the 48-byte master (TLS 1.2) or 32/48-byte secret (TLS 1.3),
-  * ``session_id`` is a hex session id or ``-`` (Schannel keeps no memory-resident
-    client_random, so it is effectively always ``-`` on this build), and
-  * ``ssl_version`` is ``771`` (TLS 1.2) or ``772`` (TLS 1.3).
-
-Blank lines and ``#`` comment/header lines are skipped. This module is PURE and
-has no third-party dependency — it only turns text into records; the correlation
-that joins each secret to its client_random lives in :mod:`.correlate`.
+``kind`` is ``schannel_tls12_master`` or ``schannel_tls13_secret``; ``secret_hex``
+a 48-byte master (1.2) or 32/48-byte secret (1.3); ``session_id`` hex or ``-``
+(effectively always ``-``); ``ssl_version`` 771 (TLS 1.2) or 772 (TLS 1.3).
+Blank and ``#`` lines are skipped. This module only parses; the join to
+client_random lives in :mod:`.correlate`.
 """
 
 from __future__ import annotations
@@ -26,7 +19,6 @@ import re
 from dataclasses import dataclass
 from typing import List
 
-# The two kinds the scanner emits, and the TLS versions they map to.
 KIND_TLS12_MASTER = "schannel_tls12_master"
 KIND_TLS13_SECRET = "schannel_tls13_secret"
 
@@ -52,15 +44,13 @@ class UnpairedRecord:
 
     Attributes:
         kind: ``schannel_tls12_master`` or ``schannel_tls13_secret``.
-        secret: lower-cased hex secret (master or TLS 1.3 secret).
-        session_id: lower-cased hex session id, or ``None`` when the field was ``-``.
-        ssl_version: 771 (TLS 1.2) or 772 (TLS 1.3), or ``None`` when unparseable.
-        group: optional connection-group id (5th column ``group=<id>`` or a bare
-            token), tying sibling secrets of one connection together so an
-            unlabeled EXPORTER_SECRET can be placed by elimination. Emitted by the
-            memscan agent for TLS 1.3 secrets when enabled; ``None`` when the column
-            is absent.
-    """
+        secret: lower-cased hex secret.
+        session_id: lower-cased hex session id, ``None`` when ``-``.
+        ssl_version: 771 or 772, ``None`` when unparseable.
+        group: optional connection-group id (5th column, ``group=<id>`` or bare)
+            tying sibling secrets so an unlabeled EXPORTER_SECRET can be placed by
+            elimination; ``None`` when absent.
+"""
 
     kind: str
     secret: str
@@ -109,14 +99,12 @@ def _parse_ssl_version(token: str) -> int | None:
 
 
 def parse_unpaired(text: str) -> List[UnpairedRecord]:
-    """Parse the ``.schannel.unpaired`` sidecar text into records.
+    """Parse the sidecar text into records.
 
-    Skips blank lines and ``#`` comments/headers. A line must carry at least a
-    kind token and a hex secret of a valid length (48-byte master, or 32/48-byte
-    TLS 1.3 secret); anything else is ignored. ``session_id`` and ``ssl_version``
-    columns are optional and default to ``None`` when missing or ``-``. Records
-    are de-duplicated on (kind, secret), order preserved.
-    """
+    Skips blank and ``#`` lines. A line needs a kind token and a hex secret of valid
+    length; ``session_id`` / ``ssl_version`` are optional (``None`` when missing or
+    ``-``). De-duplicated on (kind, secret), ordered.
+"""
     records: List[UnpairedRecord] = []
     seen: set[tuple[str, str]] = set()
     for raw in text.splitlines():
@@ -157,12 +145,7 @@ def _first_record_line(path: str) -> str:
 
 
 def looks_like_unpaired(path: str) -> bool:
-    """True when *path* looks like a ``.schannel.unpaired`` sidecar.
-
-    Matches by :data:`SIDECAR_SUFFIX` (even if the file does not exist yet) or
-    by content: the first record line (within a bounded read) starts with one of
-    :data:`SIDECAR_KINDS`. Unreadable files yield ``False``, never an exception.
-    """
+    """True when *path* looks like a sidecar: :data:`SIDECAR_SUFFIX` (even if absent) or its first record line (bounded read) starts with a :data:`SIDECAR_KINDS` token. Never raises."""
     if not path:
         return False
     if path.endswith(SIDECAR_SUFFIX):
@@ -203,12 +186,7 @@ def tls13_secrets(records: List[UnpairedRecord]) -> List[str]:
 
 
 def tls13_groups(records: List[UnpairedRecord]) -> dict[str, str]:
-    """secret(hex) -> group id for TLS 1.3 records that carry a 5th-column group.
-
-    Lets the correlator place an unlabeled EXPORTER_SECRET by elimination once its
-    sibling secrets pin the connection down. Records with no group contribute
-    nothing (the current agent build emits none).
-    """
+    """secret(hex) -> group id for TLS 1.3 records with a 5th-column group (lets the correlator place an unlabeled EXPORTER_SECRET)."""
     mapping: dict[str, str] = {}
     for r in records:
         if r.is_tls13 and r.group and secret_len_ok(r.secret, tls13=True):
@@ -217,12 +195,7 @@ def tls13_groups(records: List[UnpairedRecord]) -> dict[str, str]:
 
 
 def session_map(records: List[UnpairedRecord]) -> dict[str, str]:
-    """session_id(hex) -> master(hex) for TLS 1.2 records that carry a real id.
-
-    Records whose session_id is ``-`` (the norm on this build) contribute nothing;
-    a session id, when present, lets the correlator join on it instead of trial
-    decrypting (Wireshark also ingests ``RSA Session-ID:<sid> Master-Key:<m>``).
-    """
+    """session_id(hex) -> master(hex) for TLS 1.2 records with a real id (``-`` contributes nothing); lets the correlator join instead of trial decrypting."""
     mapping: dict[str, str] = {}
     for r in records:
         if r.is_tls12 and r.session_id and secret_len_ok(r.secret, tls13=False):

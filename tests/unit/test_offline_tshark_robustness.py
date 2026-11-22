@@ -23,6 +23,7 @@ import pytest
 
 from friTap.offline import pipeline_api
 from friTap.offline import tshark as tshark_mod
+from tests.unit._log_helpers import attach_log_capture
 
 _TSHARK = shutil.which("tshark")
 
@@ -57,26 +58,14 @@ def _run_with_timeout(fn, timeout: float = 60):
     return outcome["value"]
 
 
-class _Records(logging.Handler):
-    """Collect the tshark module's records (its logger does not propagate to caplog)."""
-
-    def __init__(self) -> None:
-        super().__init__(logging.DEBUG)
-        self.records: list[logging.LogRecord] = []
-
-    def emit(self, record: logging.LogRecord) -> None:
-        self.records.append(record)
-
-    def warnings(self) -> list[str]:
-        return [r.getMessage() for r in self.records if r.levelno == logging.WARNING]
-
-
 @pytest.fixture
 def tshark_log():
-    handler = _Records()
-    tshark_mod.logger.addHandler(handler)
-    yield handler
-    tshark_mod.logger.removeHandler(handler)
+    """Capture of the tshark module's logger (it does not propagate to caplog)."""
+    old_level = tshark_mod.logger.level
+    logger, capture = attach_log_capture(tshark_mod.logger.name)
+    yield capture
+    logger.removeHandler(capture)
+    logger.setLevel(old_level)
 
 
 @pytest.fixture
@@ -196,7 +185,7 @@ def test_truncated_capture_after_rows_warns_and_returns_the_rows(tshark_log):
     body = _EK_LINES + f"sys.stderr.write({_CUT_SHORT!r} + '\\n')\nsys.exit(14)\n"
     packets = _run_with_timeout(lambda: list(tshark_mod.stream_packets(_python_cmd(body))))
     assert packets == [json.loads(_ROW)]
-    assert any("truncated" in message for message in tshark_log.warnings())
+    assert any("truncated" in message for message in tshark_log.messages(logging.WARNING))
 
 
 def test_truncated_capture_without_rows_still_raises():
@@ -228,7 +217,7 @@ def test_real_tshark_truncated_capture_converts_the_complete_packets(tmp_path, t
     cmd = [_TSHARK, "-r", str(pcap), "-T", "ek", "-e", "frame.number"]
     packets = _run_with_timeout(lambda: list(tshark_mod.stream_packets(cmd)))
     assert len(packets) == 4
-    assert any("truncated" in message for message in tshark_log.warnings())
+    assert any("truncated" in message for message in tshark_log.messages(logging.WARNING))
 
 
 # ---------------------------------------------------------------------------

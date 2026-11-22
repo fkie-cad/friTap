@@ -1,29 +1,23 @@
 """QUIC stream-aware flow plumbing for :class:`FlowCollector` (HTTP/3).
 
-QUIC multiplexes many streams over one connection. Each HTTP/3 request lives
-on its own bidirectional stream, while unidirectional streams (``id & 0x2``)
-carry connection-level data: the control stream (SETTINGS) and the QPACK
-encoder/decoder streams. The collector's generic byte path knows nothing about
-streams, so this mixin keeps QUIC stream events apart:
+Each HTTP/3 request lives on its own bidirectional QUIC stream; unidirectional
+streams (``id & 0x2``) carry the control stream (SETTINGS) and QPACK streams. The
+generic byte path knows nothing about streams, so this mixin:
 
-* every chunk keeps its REAL stream id (``FlowChunk.stream_id``) and is fed to
-  the parser with it, so buffered chunks never lose their stream;
-* parser detection never concatenates bytes of different streams;
-* results are remapped onto the collector's dense positive stream ids
-  (``_ConnectionState.map_qsid``) and routed to their own stream's flow, even
-  when a chunk of another stream unblocked them;
-* result-less chunks of unidirectional streams land in ONE control flow per
-  connection (or are dropped when control frames are hidden), result-less
-  chunks of a request stream land in that stream's flow.
+* keeps every chunk's REAL stream id (``FlowChunk.stream_id``) and feeds the parser with it;
+* never concatenates bytes of different streams for parser detection;
+* remaps results onto dense positive stream ids (``_ConnectionState.map_qsid``) and
+  routes them to their own stream's flow, even when another stream's chunk unblocked them;
+* puts result-less chunks of unidirectional streams in ONE control flow per connection
+  (dropped when control frames are hidden), and those of a request stream in its flow.
 
-Events that are not QUIC stream events (no real stream id, app-api decoded
-headers, neqo's already de-framed body bytes) keep the legacy path untouched.
-The host class must provide the FlowCollector helpers used here and must call
-these methods under its lock.
+Events without a real stream id (app-api decoded headers, neqo's de-framed bodies)
+keep the legacy path. Methods run under the collector's lock.
 """
 
 import dataclasses
 import logging
+import weakref
 from typing import Optional
 
 from friTap.parsers.base import unwrap_parser
@@ -40,15 +34,12 @@ _TRANSPORT_QUIC = "quic"
 # Bit 0x2 of a QUIC stream id marks a unidirectional stream (RFC 9000 2.1).
 _UNI_STREAM_BIT = 0x2
 
-# neqo hands over DE-FRAMED HTTP/3 body bytes on h3 stream ids; feeding them to
-# the frame parser would misparse them, so these keep the legacy path.
+# neqo hands over DE-FRAMED body bytes on h3 stream ids; the frame parser would misparse them.
 _NEQO_BODY_FUNCTIONS = ("read_response_data", "send_request_body")
 
-# Explicit payload kind the agent stamps on QUIC datalog records
-# (``quic_payload``): raw, in-order QUIC stream bytes (HTTP/3 frames, also of
-# the control and QPACK streams) vs. de-framed HTTP/3 DATA payload. Records
-# without it (neqo bodies, decoded headers, offline events) keep the legacy
-# transport-based rule.
+# Payload kind the agent stamps on QUIC datalog records (``quic_payload``): raw
+# in-order stream bytes (incl. control/QPACK streams) vs. de-framed HTTP/3 DATA.
+# Untagged records (neqo bodies, decoded headers, offline) use the transport-based rule.
 QUIC_PAYLOAD_STREAM = "stream"
 QUIC_PAYLOAD_BODY = "body"
 
@@ -59,20 +50,14 @@ _PUSH_STREAM_KIND = "push"
 class QuicStreamFlowMixin:
     """Routes real-stream-id QUIC chunks into per-stream HTTP/3 flows."""
 
-    # ------------------------------------------------------------------
-    # Detection screening
-    # ------------------------------------------------------------------
-
     @staticmethod
     def _screen_h3_detection(detected, data: bytes, transport: str):
         """Veto an HTTP/3 sniff on non-QUIC bytes the HTTP/3 parser cannot frame.
 
-        Off the ``quic`` transport (e.g. UDP payloads of a keyless pcap, which
-        mix friTap-written plaintext HTTP/3 with genuine QUIC cipher-text that
-        tshark cannot tell apart) a random first byte often decodes as a short
-        DATA/HEADERS frame. Cipher-text then fails a few frames later with an
-        oversized frame; plaintext HTTP/3 never does. Returns a
-        HexdumpParser in place of such a detection, else *detected* unchanged.
+        A keyless pcap's UDP payloads mix plaintext HTTP/3 with QUIC cipher-text; a
+        random first byte often decodes as a short frame, but cipher-text fails a few
+        frames later with an oversized one and plaintext never does. Returns a
+        HexdumpParser for such a detection, else *detected*.
         """
         if transport == _TRANSPORT_QUIC or not isinstance(detected, Http3Parser):
             return detected
@@ -85,10 +70,6 @@ class QuicStreamFlowMixin:
                          "(likely encrypted QUIC)", transport or "unknown")
             return HexdumpParser()
         return detected
-
-    # ------------------------------------------------------------------
-    # Classification
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _quic_stream_id(event) -> Optional[int]:
@@ -117,9 +98,8 @@ class QuicStreamFlowMixin:
     def _is_quic_stream_event(self, conn, event) -> bool:
         """True if *event* carries raw QUIC stream bytes with a real stream id.
 
-        Tagged records decide by their ``quic_payload`` whatever transport they
-        carry (under ``--protocol tls`` Chrome's QUIC records are tagged
-        ``tls``); untagged ones keep the legacy quic-transport rule.
+        Tagged records decide by ``quic_payload`` whatever their transport (older
+        captures tag QUIC records ``tls``); untagged ones use the quic-transport rule.
         """
         if not self._carries_stream_bytes(event):
             return False
@@ -128,6 +108,11 @@ class QuicStreamFlowMixin:
             return payload == QUIC_PAYLOAD_STREAM
         return conn.transport == _TRANSPORT_QUIC and not self._is_neqo_body_event(event)
 
+    def _is_quic_body_payload(self, event) -> bool:
+        """True for de-framed body bytes, with or without a stream id."""
+        return (self._quic_payload(event) == QUIC_PAYLOAD_BODY
+                and getattr(event, 'http3_headers', None) is None)
+
     def _is_quic_body_event(self, event) -> bool:
         """True for de-framed HTTP/3 body bytes (``quic_payload`` "body")."""
         return (self._quic_payload(event) == QUIC_PAYLOAD_BODY
@@ -135,11 +120,7 @@ class QuicStreamFlowMixin:
 
     def _chunk_stream_id(self, conn, event,
                          is_quic_stream: Optional[bool] = None) -> Optional[int]:
-        """Stream id to store on the event's FlowChunk (QUIC stream events only).
-
-        *is_quic_stream* is the caller's already computed
-        :meth:`_is_quic_stream_event` verdict; evaluated here when omitted.
-        """
+        """Stream id to store on the event's FlowChunk (QUIC stream events only); *is_quic_stream* is the caller's verdict if already computed."""
         if is_quic_stream is None:
             is_quic_stream = self._is_quic_stream_event(conn, event)
         if is_quic_stream or self._is_quic_body_event(event):
@@ -164,19 +145,18 @@ class QuicStreamFlowMixin:
             return str(kind).lower()
         return "uni" if sid & _UNI_STREAM_BIT else "bidi"
 
-    def _is_quic_control_stream(self, conn, sid: int) -> bool:
+    def _is_quic_control_stream(self, conn, sid: Optional[int]) -> bool:
         """True for unidirectional streams other than push streams."""
-        if not sid & _UNI_STREAM_BIT:
+        # Legacy chunks buffered before parser commit carry no stream id.
+        if sid is None or not sid & _UNI_STREAM_BIT:
             return False
         return _PUSH_STREAM_KIND not in self._quic_stream_kind(conn, sid)
-
-    # ------------------------------------------------------------------
-    # Entry point
-    # ------------------------------------------------------------------
 
     def _handle_quic_stream_chunk(self, conn, chunk, event, pending) -> None:
         """Buffer, detect, feed and route one QUIC stream chunk. Under lock."""
         conn.quic_last_event = event
+        if getattr(event, 'quic_midstream', False) is True:
+            conn.quic_midstream = True
         if conn.parser is None:
             conn.pending_chunks.append(chunk)
             conn.pending_bytes += len(chunk.data)
@@ -201,16 +181,11 @@ class QuicStreamFlowMixin:
         for chunk in chunks:
             self._process_quic_chunk(conn, chunk, event, pending)
 
-    # ------------------------------------------------------------------
-    # Detection
-    # ------------------------------------------------------------------
-
     def _ensure_quic_parser(self, conn, candidates: list, force: bool = False) -> bool:
-        """Commit a parser once a candidate chunk's stream is recognised.
+        """Commit a parser once a candidate chunk's stream is recognised (detection per stream+direction, never across streams).
 
-        Detection runs per (stream, direction) byte run, never across streams.
-        A Hexdump fallback is committed only once enough bytes are buffered
-        (or when *force* is set at finalize). Returns True when committed.
+        A Hexdump fallback is committed only once enough bytes are buffered, or when
+        *force* is set at finalize. Returns True when committed.
         """
         from .collector import PARSER_DETECTION_BUFFER_SIZE
 
@@ -222,11 +197,7 @@ class QuicStreamFlowMixin:
         return True
 
     def _detect_quic_parser(self, conn, candidates: list):
-        """First non-Hexdump parser detected on a candidate's stream bytes.
-
-        Candidates are QUIC stream chunks by construction, so detection always
-        runs for the QUIC transport (also when the record is tagged ``tls``).
-        """
+        """First non-Hexdump parser detected on a candidate's stream bytes (always for the QUIC transport, even if tagged ``tls``)."""
         for chunk in candidates:
             try:
                 detected = get_default_registry().detect(
@@ -252,17 +223,14 @@ class QuicStreamFlowMixin:
                     break
         return bytes(prefix)
 
-    # ------------------------------------------------------------------
-    # Feeding and dispatch
-    # ------------------------------------------------------------------
-
     def _feed_quic(self, conn, chunk) -> list:
         """Feed *chunk* with its real stream id -> ``[(real_sid, result)]``.
 
-        Results of a stream-aware parser are remapped onto the collector's
-        dense positive stream ids; other parsers' results belong to the chunk's
-        own stream and are passed through unchanged (legacy behaviour).
+        Stream-aware parsers' results are remapped onto dense stream ids; other
+        parsers' results belong to the chunk's own stream and pass through.
         """
+        if conn.quic_midstream and not self._parser_marked_midstream(conn):
+            self._mark_parser_midstream(conn)
         results = self._filter_control_frames(
             conn.parser.feed(chunk.data, chunk.direction, stream_id=chunk.stream_id))
         if not self._is_stream_aware(conn.parser):
@@ -270,6 +238,27 @@ class QuicStreamFlowMixin:
         return [(result.stream_id,
                  dataclasses.replace(result, stream_id=conn.map_qsid(result.stream_id)))
                 for result in results]
+
+    @staticmethod
+    def _parser_marked_midstream(conn) -> bool:
+        """True when the connection's current (unwrapped) parser was marked."""
+        ref = conn.quic_midstream_parser
+        return ref is not None and ref() is unwrap_parser(conn.parser)
+
+    @staticmethod
+    def _mark_parser_midstream(conn) -> None:
+        """Tell the parser that SETTINGS/QPACK streams predate the capture, once per parser object.
+
+        ``conn.quic_midstream_parser`` weakly remembers the marked one (a strong ref would keep replaced parsers alive).
+        """
+        parser = unwrap_parser(conn.parser)
+        try:
+            conn.quic_midstream_parser = weakref.ref(parser)
+        except TypeError:  # not weak-referenceable: re-mark (idempotent) per feed
+            conn.quic_midstream_parser = None
+        mark = getattr(parser, 'mark_midstream', None)
+        if callable(mark):
+            mark()
 
     def _dispatch_quic_results(self, conn, chunk, pairs, event, pending) -> bool:
         """Route each result to its stream's flow. True if *chunk* was placed."""
@@ -287,11 +276,7 @@ class QuicStreamFlowMixin:
         return placed
 
     def _apply_control_result(self, conn, result, event, pending) -> None:
-        """Label the control flow with a control-frame result (e.g. SETTINGS).
-
-        Non-control results on a control stream are misparsed connection-level
-        bytes and never become request flows.
-        """
+        """Label the control flow with a control-frame result (e.g. SETTINGS); non-control results on a control stream are misparsed bytes and ignored."""
         if not result.is_control_frame:
             return
         flow = self._quic_control_flow(conn, event, pending)
@@ -301,9 +286,8 @@ class QuicStreamFlowMixin:
     def _apply_result_without_chunk(self, conn, real_sid, result, event, pending) -> None:
         """Apply a result for another stream than the chunk that produced it.
 
-        Happens when e.g. a QPACK encoder-stream chunk unblocks a HEADERS
-        block of a request stream. Without a flow for that stream yet, an
-        empty placeholder chunk carries the result through the normal path.
+        E.g. a QPACK encoder-stream chunk unblocks a request stream's HEADERS. Without
+        a flow yet, an empty placeholder chunk carries the result through the normal path.
         """
         flow_id = self._h2_stream_flows.get((conn.conn_id, result.stream_id))
         flow = self._flows.get(flow_id) if flow_id else None
@@ -328,24 +312,17 @@ class QuicStreamFlowMixin:
             self._complete_flow(flow, timestamp, pending)
             self._h2_stream_flows.pop((conn.conn_id, result.stream_id), None)
 
-    # ------------------------------------------------------------------
-    # De-framed body chunks (Google QUICHE)
-    # ------------------------------------------------------------------
-
     def _handle_quic_body_chunk(self, conn, chunk, event, pending) -> None:
-        """Append a de-framed body chunk to its stream's flow. Under lock.
-
-        Request and response bodies of one stream share that flow; the
-        streams of one connection (one 4-tuple) each get their own.
-        """
+        """Append a de-framed body chunk to its stream's flow (request and response bodies share it). Under lock."""
         flow = self._quic_body_flow(conn, chunk, event, pending)
         self._append_chunk(flow, chunk)
         self._append_progress(pending, flow)
 
     def _quic_body_flow(self, conn, chunk, event, pending):
-        """The flow of *chunk*'s stream: known body flow, else its decoded-headers
-        flow (app-api mode), else a new one indexed for later headers."""
+        """The flow of *chunk*'s stream: known body flow, else its decoded-headers flow, else a new one."""
         sid = chunk.stream_id
+        if sid is None:
+            return self._quic_unattributed_flow(conn, chunk, event, pending)
         dense_key = (conn.conn_id, conn.map_qsid(sid))
         flow = self._flows.get(conn.quic_stream_flows.get(sid, ""))
         if flow is None:
@@ -356,9 +333,13 @@ class QuicStreamFlowMixin:
         conn.quic_stream_flows[sid] = flow.flow_id
         return flow
 
-    # ------------------------------------------------------------------
-    # Result-less chunks
-    # ------------------------------------------------------------------
+    def _quic_unattributed_flow(self, conn, chunk, event, pending):
+        """The connection's flow for id-less body chunks: never the parser, the detection buffer or the active flow (an unrelated request)."""
+        flow = self._flows.get(conn.quic_unattributed_flow_id or "")
+        if flow is None:
+            flow = self._open_quic_flow(conn, event, pending, chunk.direction)
+            conn.quic_unattributed_flow_id = flow.flow_id
+        return flow
 
     def _route_resultless_quic_chunk(self, conn, chunk, event, pending) -> None:
         """Place a chunk that produced no result of its own stream."""
@@ -387,7 +368,7 @@ class QuicStreamFlowMixin:
         flow = self._flows.get(conn.quic_stream_flows.get(chunk.stream_id, ""))
         if flow is not None:
             return flow
-        if not self._is_stream_aware(conn.parser):
+        if chunk.stream_id is None or not self._is_stream_aware(conn.parser):
             return self._get_or_create_active_flow(conn, event, pending)
         flow = self._open_quic_flow(conn, event, pending, chunk.direction)
         self._remember_quic_stream_flow(conn, chunk.stream_id, flow)
@@ -401,24 +382,17 @@ class QuicStreamFlowMixin:
         return flow
 
     def _remember_quic_stream_flow(self, conn, real_sid: int, flow) -> None:
-        """Index *flow* under its real and its dense (collector) stream id.
-
-        ``quic_stream_flows`` survives the flow's completion so late DATA of
-        the stream still finds its flow instead of opening a stray one.
-        """
+        """Index *flow* under its real and dense stream id; ``quic_stream_flows`` survives completion so late DATA finds its flow."""
         conn.quic_stream_flows[real_sid] = flow.flow_id
         if self._is_stream_aware(conn.parser):
             self._h2_stream_flows.setdefault(
                 (conn.conn_id, conn.map_qsid(real_sid)), flow.flow_id)
 
-    # ------------------------------------------------------------------
-    # Finalize
-    # ------------------------------------------------------------------
-
     @staticmethod
     def _is_quic_connection(conn) -> bool:
         """True if *conn* carries the QUIC transport or owns QUIC stream flows."""
-        return conn.transport == _TRANSPORT_QUIC or bool(conn.quic_stream_flows)
+        return (conn.transport == _TRANSPORT_QUIC or bool(conn.quic_stream_flows)
+                or conn.quic_unattributed_flow_id is not None)
 
     def _complete_quic_stream_flows(self, conn, ended: float, pending: list) -> None:
         """Commit, flush and complete every QUIC stream/control flow of *conn*."""
@@ -429,12 +403,10 @@ class QuicStreamFlowMixin:
             self._complete_flow(flow, ended, pending)
 
     def _flush_quic_connection(self, conn, pending: list) -> None:
-        """Commit still-buffered stream chunks and flush the parser per stream.
+        """Commit still-buffered stream chunks and flush the parser per stream (QUIC connections only).
 
-        Runs before the legacy commit/flush, which would otherwise feed the
-        buffered chunks without stream ids and hand every stream's partial
-        result to the connection's active flow. QUIC connections only: callers
-        check :meth:`_is_quic_connection` first.
+        Runs before the legacy commit/flush, which would feed buffered chunks without
+        stream ids and hand every stream's partial result to the active flow.
         """
         self._commit_quic_pending(conn, pending)
         self._flush_quic_parser(conn)
@@ -469,6 +441,7 @@ class QuicStreamFlowMixin:
 
     def _quic_owned_flows(self, conn) -> list:
         """The control flow plus every stream flow of *conn*, deduplicated."""
-        flow_ids = [conn.h3_control_flow_id, *conn.quic_stream_flows.values()]
+        flow_ids = [conn.h3_control_flow_id, conn.quic_unattributed_flow_id,
+                    *conn.quic_stream_flows.values()]
         unique_ids = dict.fromkeys(fid for fid in flow_ids if fid)
         return [self._flows[fid] for fid in unique_ids if fid in self._flows]

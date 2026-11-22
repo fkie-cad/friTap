@@ -197,3 +197,48 @@ export function stubSysctl(values: Record<string, string>): void {
         return address === SYSCTL_ADDRESS ? fakeSysctlbyname : nativeFunctionStub(address, ...rest);
     };
 }
+
+// ---------------------------------------------------------------------------
+// Fake code module — OPT-IN, see withFakeCodeModule().
+// ---------------------------------------------------------------------------
+
+/** BigInt-backed NativePointer reading from one byte image (enough for the code readers). */
+export class FakeCodePtr {
+    constructor(readonly v: bigint, private readonly image: { base: bigint; bytes: Uint8Array }) {}
+    isNull(): boolean { return this.v === 0n; }
+    and(_m: unknown): FakeCodePtr { return this; }
+    or(n: number | bigint): FakeCodePtr { return new FakeCodePtr(this.v | BigInt(n), this.image); }
+    add(n: any): FakeCodePtr { return new FakeCodePtr(this.v + BigInt(typeof n === "object" ? n.v : n), this.image); }
+    sub(n: any): FakeCodePtr { return new FakeCodePtr(this.v - BigInt(typeof n === "object" ? n.v : n), this.image); }
+    compare(o: any): number { return this.v < o.v ? -1 : this.v > o.v ? 1 : 0; }
+    equals(o: any): boolean { return o !== null && o !== undefined && this.v === o.v; }
+    toUInt32(): number { return Number(this.v & 0xffffffffn); }
+    toString(radix?: number): string { return radix === 16 ? this.v.toString(16) : "0x" + this.v.toString(16); }
+    readByteArray(n: number): ArrayBuffer | null {
+        const at = Number(this.v - this.image.base);
+        if (at < 0 || at + n > this.image.bytes.length) throw new Error("access violation");
+        return this.image.bytes.slice(at, at + n).buffer;
+    }
+}
+
+/**
+ * Run `body` with a module of `bytes` mapped at `base` whose first `readableBytes`
+ * (default: all) form ONE readable range, nothing else mapped, so reads near the end
+ * hit the real range/module boundary. Restores findRangeByAddress and ptr() afterwards.
+ */
+export function withFakeCodeModule(base: bigint, bytes: Uint8Array, body: (mod: any) => void,
+                                   readableBytes: number = bytes.length): void {
+    const image = { base, bytes: bytes.subarray(0, readableBytes) };
+    const P = (v: bigint) => new FakeCodePtr(v, image);
+    const savedRange = G.Process.findRangeByAddress, savedPtr = G.ptr;
+    G.Process.findRangeByAddress = (a: any) =>
+        a.v >= base && a.v < base + BigInt(readableBytes) ? { base: P(base), size: readableBytes, protection: "r-x" } : null;
+    G.ptr = (v: any) => P(BigInt(v));
+    const mod = {
+        name: "libfake.so", path: "/data/app/libfake.so", base: P(base), size: bytes.length,
+        enumerateRanges: () => [{ base: P(base), size: readableBytes, protection: "r-x" }],
+        enumerateExports: () => [], enumerateSymbols: () => [], enumerateSections: () => [],
+        findExportByName: () => null,
+    };
+    try { body(mod); } finally { G.Process.findRangeByAddress = savedRange; G.ptr = savedPtr; }
+}

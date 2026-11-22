@@ -219,3 +219,72 @@ def test_tls_events_never_carry_a_stream_id():
         ssl_session_id="tls-1", stream_id=4)
     collector = _feed(_collector(), event)
     assert all(c.stream_id is None for f in collector.get_flows() for c in f.chunks)
+
+
+def test_buffered_chunk_without_stream_id_is_kept_not_dropped():
+    # A stream_id-less chunk buffered before parser commit reaches the
+    # result-less route; it must land in a flow, not raise TypeError.
+    legacy = b"legacy-bytes-without-stream-id"
+    collector = _feed(_collector(), _event(legacy, None), _request(0, "/a"))
+    chunks = [c for f in collector.get_flows() for c in f.chunks]
+    assert any(c.data == legacy and c.stream_id is None for c in chunks)
+    assert [f.request.url for f in _request_flows(collector)] == ["/a"]
+
+
+# ---------------------------------------------------------------------------
+# De-framed bodies without a stream id (agent still learning QuicStream::id_)
+# ---------------------------------------------------------------------------
+
+def _idless_body(data: bytes, direction="write", ts=1.3) -> DatalogEvent:
+    event = _event(data, -1, direction, ts, "QuicSpdyStream_WriteOrBufferBody")
+    event.quic_payload = "body"
+    return event
+
+
+def _unattributed_flow(collector):
+    conn = next(iter(collector._connections.values()))
+    return collector._flows.get(conn.quic_unattributed_flow_id or "")
+
+
+def test_idless_body_never_joins_a_request_flow_nor_the_h3_parser(monkeypatch):
+    fed = []
+    original = Http3Parser.feed
+
+    def spy(self, data, direction, stream_id=None):
+        fed.append(data)
+        return original(self, data, direction, stream_id=stream_id)
+
+    monkeypatch.setattr(Http3Parser, "feed", spy)
+    body = b"post-body-from-WriteOrBufferBody"
+    collector = _feed(_collector(), _encoder_stream_event(), _request(0, "/a"), _idless_body(body))
+    request_flow, = _request_flows(collector)
+    assert all(c.data != body for c in request_flow.chunks)
+    assert body not in fed
+    flow = _unattributed_flow(collector)
+    assert flow is not None and flow is not request_flow
+    assert [(c.data, c.direction, c.stream_id) for c in flow.chunks] == [(body, "write", None)]
+
+
+def test_idless_bodies_share_one_unattributed_flow_and_keep_direction():
+    collector = _feed(_collector(), _idless_body(b"up", "write", 1.0), _idless_body(b"down", "read", 1.1))
+    conn = next(iter(collector._connections.values()))
+    assert conn.pending_chunks == [] and conn.parser is None
+    flow = _unattributed_flow(collector)
+    assert [(c.data, c.direction) for c in flow.chunks] == [(b"up", "write"), (b"down", "read")]
+    assert len(collector.get_flows()) == 1
+
+
+def test_real_id_body_after_idless_body_routes_to_its_stream():
+    real = _event(b"stream-4-body", 4, "read", 1.5, "QuicSpdyStream_OnDataFramePayload")
+    real.quic_payload = "body"
+    collector = _feed(_collector(), _idless_body(b"early"), real)
+    conn = next(iter(collector._connections.values()))
+    stream_flow = collector._flows[conn.quic_stream_flows[4]]
+    assert [c.data for c in stream_flow.chunks] == [b"stream-4-body"]
+    assert [c.data for c in _unattributed_flow(collector).chunks] == [b"early"]
+
+
+def test_unattributed_flow_is_completed_on_flush():
+    collector = _feed(_collector(), _idless_body(b"x"))
+    collector.flush()
+    assert all(f.state == FlowState.COMPLETE for f in collector.get_flows())

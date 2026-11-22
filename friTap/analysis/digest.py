@@ -84,10 +84,6 @@ _APP_GROUP_ORDER = ("websocket", "http3", "http2", "http1")
 _SECTIONS = ("hosts", "endpoints", "messages")
 
 
-# ---------------------------------------------------------------------------
-# Flow classification
-# ---------------------------------------------------------------------------
-
 def _layer_names(flow: "Flow") -> set[str]:
     return {getattr(layer, "name", "") for layer in getattr(flow, "layers", []) or []}
 
@@ -159,10 +155,6 @@ class FlowSelector:
             return False
         return True
 
-
-# ---------------------------------------------------------------------------
-# Per-flow facts
-# ---------------------------------------------------------------------------
 
 def _flow_bytes(flow: "Flow", summary_size: int) -> int:
     if summary_size:
@@ -284,10 +276,6 @@ def _iter_messages(flow: "Flow") -> Iterator[tuple[int, str, dict]]:
                 index += 1
 
 
-# ---------------------------------------------------------------------------
-# Aggregation
-# ---------------------------------------------------------------------------
-
 #: The trusted SDK-attribution keys lifted onto a row (from the bundled
 #: signature table via ``--attribute-sdk``, never from captured traffic).
 _SDK_KEYS = ("sdk", "vendor", "category")
@@ -406,10 +394,6 @@ def _row(table: dict, key: Any, ordinal: int, *, ref: str | None = None) -> _Row
     return row
 
 
-# ---------------------------------------------------------------------------
-# Row rendering (dict form)
-# ---------------------------------------------------------------------------
-
 #: Trusted attribution keys lifted onto a host row when enrichment is requested
 #: (owner/category/party come from the bundled tracker map, not from traffic, so
 #: they sit at the row's top level, never under ``untrusted``).
@@ -502,10 +486,6 @@ def protocol_sections(agg: _Aggregator, classify: Any | None = None) -> dict[str
     }
 
 
-# ---------------------------------------------------------------------------
-# Findings
-# ---------------------------------------------------------------------------
-
 # Finding categories each built-in analyzer can emit. A built-in missing here
 # always runs (safe default for a newly registered analyzer).
 _ANALYZER_CATEGORIES: dict[str, frozenset[str]] = {
@@ -514,6 +494,9 @@ _ANALYZER_CATEGORIES: dict[str, frozenset[str]] = {
     "privacy": frozenset({"pii"}),
     "protobuf": frozenset({"protocol"}),
     "tls_hygiene": frozenset({"network"}),  # weak TLS/cipher/cleartext; security focus
+    # decrypted mediate payload (device identifiers) is pii; an undecrypted
+    # envelope is a protocol note.
+    "applovin_mediate": frozenset({"pii", "protocol"}),
 }
 
 
@@ -567,17 +550,11 @@ def finding_rows(findings: list[Finding], show_values: bool,
                  ordinals: dict[str, int], masvs: bool = False) -> list[dict]:
     """Cluster findings by (severity, category, source, title); most severe first.
 
-    ``ref`` is the flow of the cluster's first finding; ``refs`` lists every
-    distinct flow the cluster covers (first-seen order, at most
-    ``MAX_FINDING_REFS``, the remainder counted in ``refs_more``).
-
-    Redaction leaves severity/category/source alone, so clustering needs only
-    the redacted title; the full :func:`redact_finding` (description) runs once
-    per cluster, on its first finding.
-
-    When *masvs* is true, each cluster gains a trusted ``masvs`` list (the OWASP
-    MASVS controls the finding maps to) — but only when that list is non-empty,
-    so unmapped findings and the ``masvs=False`` default stay byte-identical.
+    ``ref`` is the first finding's flow; ``refs`` lists distinct flows (at most
+    ``MAX_FINDING_REFS``, the rest counted in ``refs_more``). Redaction leaves
+    severity/category/source alone, so clustering needs only the redacted title
+    and the full :func:`redact_finding` runs once per cluster. With *masvs*, a
+    cluster gains a trusted ``masvs`` list only when it is non-empty.
     """
     classify = None
     if masvs:
@@ -624,10 +601,6 @@ def _findings_section(findings: list[Finding], focus: str, show_values: bool,
         "top": finding_rows(selected, show_values, ordinals, masvs)[:TOP_FINDINGS],
     }
 
-
-# ---------------------------------------------------------------------------
-# Budget
-# ---------------------------------------------------------------------------
 
 def estimate_tokens(obj: Any) -> int:
     """Rough token estimate: ``len(compact json) / 4``."""
@@ -700,13 +673,10 @@ def _truncated_marker(dropped: Counter) -> dict:
 def _apply_budget(digest: dict, budget: int) -> None:
     """Drop the lowest-priority rows until the digest fits *budget* tokens.
 
-    The digest is serialized once; every row is measured once and its cost
-    subtracted as it is dropped, walking one sorted list. Rows are tracked by
-    ``id()`` and each container is rebuilt once at the end.
-
-    Pass 1 drops on the approximate per-row token estimate (with room for the
-    ``truncated`` marker); pass 2 keeps dropping in the same order until the
-    exact size (``len(json) // 4``, tracked in characters) fits.
+    Serializes once, measures each row once and subtracts its cost as it is
+    dropped (rows tracked by ``id()``, containers rebuilt once at the end). Pass 1
+    uses the per-row token estimate (leaving room for the ``truncated`` marker);
+    pass 2 continues until the exact size (``len(json) // 4``) fits.
     """
     chars = _compact_len(digest)
     if chars // 4 <= budget:
@@ -746,10 +716,6 @@ def _remove_rows(candidates: list, dropped_ids: set[int]) -> None:
         container[:] = [row for row in container if id(row) not in dropped_ids]
 
 
-# ---------------------------------------------------------------------------
-# Public entry point
-# ---------------------------------------------------------------------------
-
 def _iter_selected_flows(reader: Any, selector: FlowSelector) -> Iterator[tuple["Flow", int, int]]:
     """Yield ``(flow, bytes, ordinal)`` for selected flows (ordinal: see :func:`ordered_flow_ids`)."""
     # Same ordering as ordered_flow_ids(); summaries are needed for sizes.
@@ -780,12 +746,9 @@ def validate_digest_args(focus: str, budget_tokens: int) -> None:
 class ScanResult:
     """One pass over the selected flows of a capture.
 
-    Attributes:
-        agg: Per-group aggregation (render with :func:`protocol_sections`).
-        findings: Raw (unredacted) findings of the analyzers that ran.
-        ordinals: flow_id -> ref ordinal (in-memory only, never emitted).
-        flows_total: Flows in the capture (set by :func:`scan_tap`).
-        fritap_version: friTap version recorded in the capture.
+    ``agg`` renders with :func:`protocol_sections`; ``findings`` are raw
+    (unredacted); ``ordinals`` (flow_id -> ref ordinal) is never emitted;
+    ``flows_total`` is set by :func:`scan_tap`.
     """
 
     agg: _Aggregator
@@ -826,13 +789,10 @@ def scan_tap(tap_path: str, selector: FlowSelector | None = None,
 
 def scan_flows(flows: Iterable["Flow"], selector: FlowSelector | None = None,
                analyzers: Iterable = (), *, fritap_version: str = "") -> ScanResult:
-    """Aggregate an in-memory iterable of flows into a :class:`ScanResult`.
+    """Aggregate in-memory flows into a :class:`ScanResult` (the no-file :func:`scan_tap`, for a live TUI session).
 
-    The no-file counterpart of :func:`scan_tap`: a live TUI session holds decoded
-    flows in memory and has no ``.tap`` path, so this runs the same aggregation
-    and *analyzers* over the flows directly, for feeding to ``build_digest(...,
-    scan=...)``. Ordinals follow iteration order so digest refs (``f<N>``) stay
-    stable within the pass.
+    Feed it to ``build_digest(..., scan=...)``. Ordinals follow iteration order,
+    keeping refs (``f<N>``) stable within the pass.
     """
     selector = selector or FlowSelector()
     analyzers = list(analyzers)
@@ -875,13 +835,9 @@ def _host_counts(agg: _Aggregator) -> dict[str, int]:
 
 
 def _resolve_first_party(first_party, agg: _Aggregator):
-    """Resolve a ``first_party`` argument, inferring the set when it is ``"auto"``.
+    """Resolve ``first_party``: ``None`` unchanged, a list/CSV normalized, ``"auto"`` inferred from the digested hosts.
 
-    ``None`` is returned unchanged; a list or a comma-separated string becomes
-    a domain list (:func:`~friTap.analysis.attribution.normalize_first_party`);
-    the ``"auto"`` sentinel (:data:`friTap.analysis.attribution.AUTO_FIRST_PARTY`)
-    is replaced by the domains :func:`infer_first_party` derives from the
-    digested hosts. The attribution subsystem is imported only when needed.
+    The attribution subsystem is imported only when needed.
     """
     if not first_party:
         return first_party
@@ -916,30 +872,21 @@ def build_digest(
     """Build a token-budgeted digest of the capture at *tap_path*.
 
     Args:
-        tap_path: Path to a ``.tap`` capture.
         focus: ``all`` | ``privacy`` (pii findings) | ``security``
             (secret/network/protocol findings). Hosts/endpoints are always shown.
-        protocol: Keep flows carrying this protocol anywhere in their stack
-            (``tls``, ``quic``, ``http2``, ``signal``, ``telegram`` ...).
-        app_protocol: Keep flows whose digest group matches (``http``,
-            ``http2``, ``grpc``, ``websocket``, ``mtproto`` ...).
+        protocol: Keep flows carrying this protocol anywhere in their stack.
+        app_protocol: Keep flows whose digest group matches (``http``, ``grpc``, ...).
         filter_expr: Display-filter expression (see ``friTap.filter``).
         budget_tokens: Soft size limit; lowest-volume rows are dropped first.
         show_values: Reveal finding values (default: redacted).
-        attribute: When true, annotate each host row with trusted
-            ``owner``/``category``/``party`` (offline tracker attribution).
-            Absent/false leaves the digest byte-identical to an unenriched one.
-        first_party: Domains to treat as first-party when attributing hosts
-            (implies ``attribute``; each is reduced to its registrable domain).
-            The string ``"auto"`` infers the set from the digested hosts (the
-            most-contacted non-tracker registrable domains; see
-            :func:`friTap.analysis.attribution.infer_first_party`).
-        masvs: When true, annotate each finding row with the OWASP MASVS v2.1
-            controls it maps to (:mod:`friTap.analysis.masvs`). Absent/false
-            leaves the digest byte-identical.
-        scan: A precomputed :func:`scan_tap` result of the same selection, run
-            with ``builtin_analyzers(show_values, focus)`` (e.g. a cached one);
-            skips the capture pass. ``None`` scans *tap_path*.
+        attribute: Annotate host rows with trusted ``owner``/``category``/``party``.
+        first_party: First-party domains for attribution (implies ``attribute``);
+            ``"auto"`` infers them (:func:`friTap.analysis.attribution.infer_first_party`).
+        masvs: Annotate finding rows with MASVS v2.1 controls (:mod:`friTap.analysis.masvs`).
+        scan: A precomputed :func:`scan_tap` result of the same selection run
+            with ``builtin_analyzers(show_values, focus)``; skips the capture pass.
+
+    The new options leave the digest byte-identical when absent or false.
 
     Raises:
         ValueError: bad focus/budget; ``FilterSyntaxError`` for a bad filter.

@@ -97,6 +97,35 @@ python chrome_ssl_intercept.py
 ```
 
 
+## Embedding the viewer
+
+Three examples for putting friTap's `.tap` viewer into your own project (`friTap.ui`). Needs `textual`.
+
+### `tap_viewer_launch.py` — Launch the viewer (mode A)
+
+A tiny host CLI that calls `friTap.ui.open_tap`, keeps its own root logging handler, and turns a missing file into a clean error and exit code.
+
+```bash
+python tap_viewer_launch.py capture.tap --title "Case 42"
+```
+
+### `tap_viewer_host_app.py` — Mount the viewer in your Textual app (mode B)
+
+A host app with its own home screen and themes. `v` pushes `TapViewerScreen`, `t` switches the host theme, and a priority `escape` binding steps aside while the viewer is open. The host handles `TapViewerScreen.Closed` and keeps running.
+
+```bash
+python tap_viewer_host_app.py capture.tap
+```
+
+### `fritap_ui_extension_demo/` — Extend the viewer (mode C)
+
+An installable package that registers a detail tab, a flow-list column, a body decoder, a filter field and an analyzer through the `fritap.ui_extensions` entry point.
+
+```bash
+pip install -e fritap_ui_extension_demo
+python tap_viewer_launch.py capture.tap
+```
+
 ## Output Formats
 
 Most analysis scripts support multiple output formats via `--format` / `-f`:

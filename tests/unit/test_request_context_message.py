@@ -180,24 +180,11 @@ def test_missing_event_or_req_id_is_dropped():
     assert _route({"contentType": "request_context", "event": "start"}) == []
 
 
-def test_drop_is_logged_at_debug():
-    records = []
-
-    class _Capture(logging.Handler):
-        def emit(self, record):
-            records.append(record.getMessage())
-
-    logger = logging.getLogger("friTap.router")
-    handler = _Capture(level=logging.DEBUG)
-    old_level = logger.level
-    logger.addHandler(handler)
-    logger.setLevel(logging.DEBUG)
-    try:
-        _route(_payload(event="nope\x1b"))
-    finally:
-        logger.removeHandler(handler)
-        logger.setLevel(old_level)
-    dropped = [r for r in records if r.startswith("request_context dropped")]
+def test_drop_is_logged_at_debug(fritap_log_records):
+    records = fritap_log_records("friTap.router")
+    _route(_payload(event="nope\x1b"))
+    dropped = [r.getMessage() for r in records
+               if r.getMessage().startswith("request_context dropped")]
     assert len(dropped) == 1
     assert "\x1b" not in dropped[0]
 

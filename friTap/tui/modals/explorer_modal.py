@@ -83,7 +83,7 @@ _TEXT_RENDER_LIMIT = 256 * 1024
 
 if TEXTUAL_AVAILABLE:
     from friTap.tui.themes import c
-    from friTap.tui.widgets.flow_detail import _is_text, format_hexdump_lines
+    from friTap.tui.widgets.hexdump import _is_text, format_hexdump_lines
 
     class HexViewerWidget(ScrollView, can_focus=True):
         """Custom hex/text viewer with byte-range selection.
@@ -825,7 +825,8 @@ if TEXTUAL_AVAILABLE:
 
             The preview log has ``markup=True``: every string derived from the
             body is escaped so ``[/x]`` renders literally instead of raising
-            ``MarkupError``. The hex and protobuf renderers escape themselves.
+            ``MarkupError``. The hex renderer escapes the ASCII column and the
+            protobuf renderer escapes itself.
             """
             if decoder == "hex":
                 return "\n".join(format_hexdump_lines(data, markup=True))

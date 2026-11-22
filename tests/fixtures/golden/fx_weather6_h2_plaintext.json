@@ -1891,7 +1891,12 @@
       "9c1ee68e0326b08aab72c55dd7e63e184172f5bfa5dd0edcde72e2955a639af9",
       "6a972a14047c4e496ac8dbba68e8a68ae3caba05933c80df5174b6056998e5ea",
       "e62cc348c23d8092452a6bf126a3bda6ce1839a715323eef6ae6327885cbff5a"
-     ]
+     ],
+     "stream_id": {
+      "0": 3,
+      "1": 3,
+      "2": 3
+     }
     },
     "findings": [],
     "flow": {
@@ -1971,6 +1976,7 @@
      "ssl_session_id": "",
      "started": 1781021965.86219,
      "state": "complete",
+     "stream_id": 3,
      "tags": [],
      "tls_alpn": "",
      "tls_sni": "",
@@ -2074,6 +2080,7 @@
      "started": 1781021965.86219,
      "state": "complete",
      "status_code": 200,
+     "stream_id": 3,
      "tag_count": 0,
      "tls_alpn": "",
      "tls_sni": "",

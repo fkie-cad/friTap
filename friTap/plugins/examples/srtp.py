@@ -7,7 +7,7 @@ SRTP (Secure Real-time Transport Protocol) via libsrtp.
 
 Usage:
     Copy to your platform's plugin directory and run friTap.
-    Find the path with: python -c "from friTap.plugins.loader import PLUGIN_DIR; print(PLUGIN_DIR)"
+    Find the path with: python -c "from friTap.plugins.loader import _get_plugin_dir; print(_get_plugin_dir())"
 """
 
 from friTap.plugins import CustomProtocolPlugin

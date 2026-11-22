@@ -4,6 +4,7 @@ import { devlog_error } from "../../../util/log.js";
 import { executeFromDefinition } from "../../../core/loader.js";
 import { createOpenSslDefinition, createBoringSSLKeylogApproach } from "../../definitions/openssl.js";
 import { Java } from "../../../shared/javalib.js";
+import { isJavaBlockedByBrokenLinkerNotifier } from "../../../shared/rtld_notifier_probe.js";
 
 export function conscrypt_execute_modern(moduleName: string, is_base_hook: boolean) {
     const def = createOpenSslDefinition({ includeExSymbols: true });
@@ -14,7 +15,10 @@ export function conscrypt_execute_modern(moduleName: string, is_base_hook: boole
     // Java interop as extraHook: block ProviderInstaller updates.
     // SKIP under --pairip-safe: ART/Java instrumentation is a separate
     // PairIP-detectable footprint (we keep the pairip-safe path native-only).
-    if (!pairip_safe) {
+    // Also SKIP when frida's arm32 linker-notifier hook is broken: Java.perform here runs
+    // from the native-library phase, outside the legacy "java" phase gate, and its first
+    // Java.use() would freeze the app (shared/rtld_notifier_probe.ts).
+    if (!pairip_safe && !isJavaBlockedByBrokenLinkerNotifier()) {
         def.extraHooks = [
             {
                 install: () => {

@@ -1,21 +1,14 @@
-"""TLS 1.2 AEAD record protection and PRF (RFC 5246).
+"""TLS 1.2 AEAD/CBC record protection and PRF (RFC 5246).
 
-A small TLS 1.2 peel that answers "does this 48-byte master secret belong to
-this connection?" in pure Python. It covers the two AEAD families TLS 1.2 stacks
-negotiate in practice — AES-GCM and ChaCha20-Poly1305 — by decrypting the first
-record after a side's ChangeCipherSpec (the encrypted ``Finished``) at record
-sequence number 0 and checking that the handshake message type is ``finished``
-(0x14). The answer is tri-state: ``True`` / ``False``, or ``None`` when this
-module cannot tell (unsupported suite, unusable crypto backend).
+Answers "does this 48-byte master secret belong to this connection?" by decrypting
+the first record after a side's ChangeCipherSpec (the encrypted ``Finished``) at
+seq 0 and checking the handshake type is ``finished`` (0x14). Covers AES-GCM,
+ChaCha20-Poly1305 and AES-CBC. Tri-state: ``True`` / ``False`` / ``None`` (cannot
+tell: unsupported suite or crypto backend; callers fall back to tshark). The
+``cryptography`` backend is imported lazily via the :mod:`.tls13` factories.
 
-CBC and any other / unknown suite are intentionally NOT handled here; callers
-fall back to another decision path (e.g. tshark) for them.
-
-The ``cryptography`` backend is imported lazily through the :mod:`.tls13` AEAD
-factories, so importing this module never requires it.
-
-References: RFC 5246 sec 5 (PRF), sec 6.2.3.3 / RFC 5116 (AEAD records),
-RFC 5288 (AES-GCM cipher suites), RFC 7905 (ChaCha20-Poly1305 cipher suites).
+References: RFC 5246 sec 5 (PRF), 6.2.3.3 / RFC 5116 (AEAD records), RFC 5288
+(AES-GCM suites), RFC 7905 (ChaCha20-Poly1305 suites).
 """
 
 from __future__ import annotations
@@ -26,12 +19,9 @@ from typing import Dict, Optional, Tuple
 from .records import CT_CHANGE_CIPHER_SPEC, CT_HANDSHAKE
 from .tls13 import _aesgcm, _chacha20, record_nonce
 
-# TLS 1.2 handshake message type ``finished`` (RFC 5246 sec 7.4.9). A master
-# that is correct for a connection decrypts that connection's first post-CCS
-# record to a plaintext whose first byte is this type.
+# Handshake type ``finished`` (RFC 5246 sec 7.4.9): a correct master decrypts the first post-CCS record to a plaintext starting with it.
 FINISHED = 0x14
 
-# Record content types, kept under their historical names for importers.
 CHANGE_CIPHER_SPEC = CT_CHANGE_CIPHER_SPEC
 HANDSHAKE = CT_HANDSHAKE
 
@@ -39,12 +29,7 @@ HANDSHAKE = CT_HANDSHAKE
 _TAG_LEN = 16
 
 
-# Per-suite crypto parameters, keyed by the 2-byte cipher_suite id.
-#   hash_name:   PRF hash (and, for GCM, the suite's SHA variant)
-#   key_len:     AEAD key length in bytes
-#   fixed_iv_len: implicit (salt) nonce bytes derived from the key block
-#   record_iv_len: explicit per-record nonce bytes sent on the wire (GCM only)
-#   is_chacha:   RFC 7905 nonce construction instead of GCM's salt||explicit
+# Per-suite parameters by cipher_suite id: hash_name (PRF hash), key_len, fixed_iv_len (implicit salt), record_iv_len (explicit wire nonce, GCM only), is_chacha (RFC 7905 nonce).
 class _Suite:
     __slots__ = ("hash_name", "key_len", "fixed_iv_len", "record_iv_len",
                  "is_chacha")
@@ -57,8 +42,7 @@ class _Suite:
         self.is_chacha = is_chacha
 
 
-# AES-GCM suites (RFC 5288 / RFC 5289): 4-byte salt, 8-byte explicit nonce.
-# ChaCha20-Poly1305 suites (RFC 7905): 12-byte implicit iv, no explicit nonce.
+# AES-GCM (RFC 5288/5289): 4-byte salt, 8-byte explicit nonce. ChaCha20-Poly1305 (RFC 7905): 12-byte implicit iv, no explicit nonce.
 AEAD_SUITES: Dict[int, _Suite] = {
     # RSA / DH(E) AES-GCM (RFC 5288)
     0x009C: _Suite("sha256", 16, 4, 8, False),   # AES_128_GCM_SHA256
@@ -82,10 +66,6 @@ def suite_supported(cipher_suite: int) -> bool:
     return cipher_suite in AEAD_SUITES
 
 
-# --------------------------------------------------------------------------- #
-# PRF (RFC 5246 sec 5)
-# --------------------------------------------------------------------------- #
-
 def _p_hash(secret: bytes, seed: bytes, length: int, hash_name: str) -> bytes:
     """RFC 5246 sec 5 P_hash: HMAC expansion to ``length`` bytes."""
     out = bytearray()
@@ -104,11 +84,7 @@ def prf(secret: bytes, label: bytes, seed: bytes, length: int,
 
 def key_block(master: bytes, server_random: bytes, client_random: bytes,
               suite: _Suite) -> Tuple[bytes, bytes, bytes, bytes]:
-    """Derive ``(client_key, server_key, client_iv, server_iv)`` (RFC 5246 sec 6.3).
-
-    AEAD suites have no MAC key, so the key block is just the two write keys and
-    the two fixed IVs (the "implicit nonce" / salt), in that order.
-    """
+    """``(client_key, server_key, client_iv, server_iv)`` (RFC 5246 sec 6.3); AEAD has no MAC key, so the IVs are the fixed implicit nonces."""
     need = 2 * suite.key_len + 2 * suite.fixed_iv_len
     block = prf(master, b"key expansion", server_random + client_random,
                 need, suite.hash_name)
@@ -119,10 +95,6 @@ def key_block(master: bytes, server_random: bytes, client_random: bytes,
     server_iv = block[2 * kl + il:2 * kl + 2 * il]
     return client_key, server_key, client_iv, server_iv
 
-
-# --------------------------------------------------------------------------- #
-# AEAD record protection (RFC 5246 sec 6.2.3.3)
-# --------------------------------------------------------------------------- #
 
 def _aead(key: bytes, is_chacha: bool):
     """The AEAD object for *key* (shared factories with :mod:`.tls13`)."""
@@ -138,19 +110,14 @@ def _aad(seq: int, content_type: int, version: bytes, plaintext_len: int) -> byt
 def decrypt_record(key: bytes, fixed_iv: bytes, suite: _Suite, seq: int,
                    content_type: int, version: bytes,
                    fragment: bytes) -> Optional[bytes]:
-    """Decrypt one TLS 1.2 AEAD record fragment, or ``None`` on tag failure.
+    """Decrypt one TLS 1.2 AEAD record fragment (payload after the 5-byte header), or ``None`` on tag failure.
 
-    ``fragment`` is the record's on-the-wire payload (after the 5-byte header).
-    For GCM it is ``explicit_nonce(8) || ciphertext || tag(16)`` and the nonce is
-    ``salt || explicit_nonce``. For ChaCha20-Poly1305 (RFC 7905) there is no
-    explicit nonce; the nonce is the 12-byte fixed IV XORed with the record
-    sequence number, and the fragment is ``ciphertext || tag(16)``.
+    GCM: ``explicit_nonce(8) || ciphertext || tag(16)``, nonce ``salt || explicit_nonce``.
+    ChaCha20-Poly1305 (RFC 7905): ``ciphertext || tag(16)``, nonce = fixed IV XOR seq.
 
-    Only an authentication failure (``InvalidTag``) means "wrong key" and yields
-    ``None``; a crypto-backend error (missing ``cryptography``, an algorithm the
-    linked OpenSSL does not support) propagates, so callers can tell "no" from
-    "cannot tell".
-    """
+    Only ``InvalidTag`` means "wrong key"; a backend error (missing ``cryptography``,
+    unsupported algorithm) propagates so callers can tell "no" from "cannot tell".
+"""
     explicit_len = 0 if suite.is_chacha else suite.record_iv_len
     if len(fragment) < explicit_len + _TAG_LEN:
         return None
@@ -168,22 +135,18 @@ def decrypt_record(key: bytes, fixed_iv: bytes, suite: _Suite, seq: int,
         return None
 
 
-# --------------------------------------------------------------------------- #
-# CBC record protection (RFC 5246 sec 6.2.3.2; Encrypt-then-MAC per RFC 7366)
-# --------------------------------------------------------------------------- #
-
-# AES-CBC block size, and the explicit per-record IV length (TLS 1.2).
+# AES block size, also the explicit per-record IV length (TLS 1.2 CBC; RFC 5246
+# sec 6.2.3.2, Encrypt-then-MAC per RFC 7366).
 _AES_BLOCK = 16
 
 
 class _CbcSuite:
-    """Crypto parameters for a TLS 1.2 AES-CBC cipher suite.
+    """Crypto parameters for a TLS 1.2 AES-CBC suite.
 
-    ``prf_hash`` is the PRF hash (SHA-384 for the ``*_SHA384`` suites, SHA-256
-    otherwise). ``mac_hash`` / ``mac_len`` are the record HMAC. ``key_len`` is
-    the AES key length (16 or 32). TLS 1.2 CBC records carry a 16-byte explicit
-    IV, so the key block has no write-IV tail — only MAC keys and write keys.
-    """
+    ``prf_hash`` is SHA-384 for ``*_SHA384`` suites else SHA-256; ``mac_hash`` /
+    ``mac_len`` the record HMAC; ``key_len`` the AES key length. Records carry an
+    explicit 16-byte IV, so the key block has no write-IV tail.
+"""
 
     __slots__ = ("prf_hash", "mac_hash", "mac_len", "key_len")
 
@@ -194,14 +157,7 @@ class _CbcSuite:
         self.key_len = key_len
 
 
-# AES-CBC suites this module can trial-decrypt. The record protection depends
-# only on the AES key length and the MAC hash, so the key exchange (RSA / DHE /
-# ECDHE / static DH-ECDH, and the auth, RSA vs ECDSA/DSS) is irrelevant here —
-# the master secret is already known. Every AES-CBC suite maps to one of a few
-# parameter tuples. 3DES / Camellia / SEED / IDEA / RC4 and the export ciphers
-# are intentionally omitted: an unknown CBC suite falls back to tshark (``None``).
-#
-# PRF hash is SHA-256 for every TLS 1.2 suite except the ``*_SHA384`` ones.
+# AES-CBC suites we can trial-decrypt. Only AES key length and MAC hash matter (the master is known); 3DES/Camellia/SEED/IDEA/RC4/export are omitted, so an unknown CBC suite gives ``None`` (tshark fallback).
 CBC_SUITES: Dict[int, _CbcSuite] = {
     # --- AES-128-CBC, HMAC-SHA1 (RFC 5246 / RFC 4492) ---
     0x002F: _CbcSuite("sha256", "sha1", 20, 16),    # RSA
@@ -246,11 +202,7 @@ def cbc_suite_supported(cipher_suite: int) -> bool:
 
 def cbc_key_block(master: bytes, server_random: bytes, client_random: bytes,
                   suite: _CbcSuite) -> Tuple[bytes, bytes, bytes, bytes]:
-    """Derive ``(client_mac, server_mac, client_key, server_key)`` (RFC 5246 sec 6.3).
-
-    The key block is MAC keys then write keys; TLS 1.2 CBC uses a per-record
-    explicit IV, so there is no write-IV tail.
-    """
+    """``(client_mac, server_mac, client_key, server_key)`` (RFC 5246 sec 6.3): MAC keys then write keys, no IVs."""
     need = 2 * suite.mac_len + 2 * suite.key_len
     block = prf(master, b"key expansion", server_random + client_random,
                 need, suite.prf_hash)
@@ -270,11 +222,7 @@ def _aes_cbc_decrypt(key: bytes, iv: bytes, ciphertext: bytes) -> bytes:
 
 
 def _strip_tls_padding(block: bytes) -> Optional[bytes]:
-    """Strip TLS CBC padding, or ``None`` when it is malformed.
-
-    The last byte is ``padding_length``; the final ``padding_length + 1`` bytes
-    must all equal it (RFC 5246 sec 6.2.3.2).
-    """
+    """Strip TLS CBC padding, or ``None`` when malformed (the last ``padding_length + 1`` bytes must equal it, RFC 5246 sec 6.2.3.2)."""
     if not block:
         return None
     pad_len = block[-1]
@@ -299,16 +247,10 @@ def _cbc_finished_decrypts(master: bytes, client_random: bytes,
                            *, from_client: bool, uses_etm: bool) -> Optional[bool]:
     """Does ``master`` decrypt this first post-CCS CBC record to a Finished?
 
-    The record HMAC is the authoritative signal: a verifying HMAC means the
-    master is correct (forging it is infeasible), a failing one means a wrong
-    master. So a framing, padding or MAC failure is a definite ``False``; a
-    verified record whose plaintext is a Finished is ``True``; and a verified
-    record whose plaintext is *not* a recognizable Finished (e.g. the legacy TLS
-    record compression in some captures leaves a DEFLATE stream, not ``0x14``)
-    is ``None`` — the master is right, but this peel cannot confirm it, so the
-    caller defers to tshark rather than wrongly excluding a valid master. A
-    crypto-backend error propagates so :func:`finished_decrypts` reports ``None``.
-    """
+    The record HMAC is authoritative: a framing, padding or MAC failure is ``False``;
+    a verified Finished is ``True``; a verified non-Finished (e.g. DEFLATE from legacy
+    compression) is ``None`` so a valid master is never excluded. Backend errors propagate.
+"""
     cm, sm, ck, sk = cbc_key_block(master, server_random, client_random, suite)
     mac_key, key = (cm, ck) if from_client else (sm, sk)
     if len(fragment) < 2 * _AES_BLOCK + (suite.mac_len if uses_etm else 0):
@@ -339,8 +281,7 @@ def _cbc_finished_decrypts(master: bytes, client_random: bytes,
                      + len(content).to_bytes(2, "big") + content)
         if not _hmac_ok(mac_key, suite.mac_hash, mac_input, mac):
             return False
-    # The HMAC verified, so the master is correct. A plain Finished confirms it;
-    # anything else (compression, or an unexpected empty body) is "cannot tell".
+    # HMAC verified: the master is right. Only a plain Finished confirms it.
     if not content:
         return None
     return True if content[0] == FINISHED else None
@@ -352,24 +293,18 @@ def finished_decrypts(master: bytes, client_random: bytes, server_random: bytes,
                       keys: Optional[Tuple[bytes, bytes, bytes, bytes]] = None,
                       uses_etm: bool = False,
                       ) -> Optional[bool]:
-    """Does ``master`` decrypt this first post-CCS record to a Finished?
+    """Does ``master`` decrypt this first post-CCS record to a Finished? (TLS 1.2 analogue of ``tls.handshake.type==20``.)
 
-    This is the TLS 1.2 analogue of tshark's ``tls.handshake.type==20`` success
-    check, for both AEAD and AES-CBC suites. ``from_client`` selects the client
-    vs server write key/iv. *keys* is an optional precomputed :func:`key_block`
-    result for an AEAD (master, randoms, suite), so a caller testing both
-    directions derives it once; it is ignored for CBC (which derives its own
-    MAC+write key block). ``uses_etm`` selects Encrypt-then-MAC framing (RFC
-    7366) for CBC, and is read from the ServerHello by the caller.
+    ``from_client`` selects the client or server write key/iv. *keys* is an optional
+    precomputed :func:`key_block` for AEAD so a caller testing both directions
+    derives once (ignored for CBC). ``uses_etm`` selects Encrypt-then-MAC (RFC 7366)
+    for CBC, read from the ServerHello by the caller.
 
-    Returns ``False`` for a non-handshake record or a MAC/tag/padding failure
-    (a wrong master); ``True`` when the record authenticates and its plaintext is
-    a Finished; and ``None`` (cannot tell) for an unsupported suite, a crypto
-    backend error, or a record that authenticates but whose plaintext is not a
-    recognizable Finished (e.g. legacy TLS record compression). A master that
-    authenticates a record is never reported ``False``, so a correct key is never
-    wrongly excluded — the caller defers it to tshark instead.
-    """
+    ``False`` for a non-handshake record or a MAC/tag/padding failure; ``True`` when
+    it authenticates to a Finished; ``None`` for an unsupported suite, backend error,
+    or an authenticated non-Finished. A master that authenticates a record is never
+    reported ``False``.
+"""
     aead_suite = AEAD_SUITES.get(cipher_suite)
     cbc_suite = None if aead_suite is not None else CBC_SUITES.get(cipher_suite)
     if aead_suite is None and cbc_suite is None:
@@ -391,8 +326,7 @@ def finished_decrypts(master: bytes, client_random: bytes, server_random: bytes,
         return None
     if pt is None:
         return False                      # tag failed → wrong master
-    # Authenticated: a Finished confirms the master; anything else (e.g. legacy
-    # record compression) is "cannot tell", so the master is never excluded.
+    # Authenticated: only a Finished confirms; anything else is "cannot tell".
     return True if pt[0] == FINISHED else None
 
 

@@ -298,7 +298,7 @@ class CaptureWizard:
                     f"Protocol: {format_protocols(protocols)}"
                 )
             # Offline decryption of the captured pcap may need an optional crypto
-            # backend (MTProto/Telegram/Signal). Warn now if it is missing; live
+            # backend (MTProto/Telegram/Signal). Warn if it is missing; live
             # key capture still works without it.
             for selected in protocols:
                 self._warn_if_offline_backend_missing(selected)

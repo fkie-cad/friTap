@@ -24,15 +24,10 @@ _backend_instances: dict[str, Backend] = {}
 
 
 def get_backend(name: str = BackendName.FRIDA) -> Backend:
-    """Return a cached backend instance for the given name.
+    """Return the cached backend (frida, gdb, lldb, ebpf) for *name*.
 
-    Supported backends: frida, gdb, lldb, ebpf.
-    Instances are cached per name so repeated calls return the same object.
-
-    *name* is validated via :class:`BackendName`; passing an unknown
-    string raises ``ValueError``.
+    An unknown name raises ``ValueError`` via :class:`BackendName`.
     """
-    # Validate (BackendName("frida") is idempotent for str-enum values)
     validated = BackendName(name)
 
     if validated in _backend_instances:

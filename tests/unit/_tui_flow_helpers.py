@@ -34,9 +34,57 @@ class FakeReplay:
         self._summaries = list(self._flows.values()) if summaries is None else summaries
         self.loaded_ids = []
 
+    def load(self):
+        pass
+
     def get_summaries(self):
         return list(self._summaries)
+
+    @property
+    def flow_count(self):
+        return len(self._summaries)
 
     def get_flow(self, flow_id):
         self.loaded_ids.append(flow_id)
         return self._flows.get(flow_id)
+
+    def get_flows(self):
+        return list(self._flows.values())
+
+    @property
+    def header(self):
+        return None
+
+    def store_reparse(self, flow_id, request, response, clear_trailing=False):
+        pass
+
+    def read_all_findings(self):
+        return []
+
+    def read_request_contexts(self):
+        return []
+
+
+def make_flow(flow_id, dst_port=443, *, src_port=12345, dst_addr="93.184.216.34"):
+    """A COMPLETE ``Flow`` between 10.0.0.1 and *dst_addr* (shared .tap fixture)."""
+    from friTap.flow.models import Flow, FlowState
+
+    return Flow(
+        flow_id=flow_id, connection_id=flow_id, src_addr="10.0.0.1",
+        src_port=src_port, dst_addr=dst_addr, dst_port=dst_port,
+        state=FlowState.COMPLETE,
+    )
+
+
+def write_tap(path, flows, *, target="test", findings=None):
+    """Write *flows* (then *findings*, a ``{flow_id: [Finding]}`` map) to *path*; returns *path*."""
+    from friTap.flow.tap_writer import TapWriter
+
+    writer = TapWriter()
+    writer.open(str(path), target=target)
+    for flow in flows:
+        writer.write_flow(flow)
+    for flow_id, flow_findings in (findings or {}).items():
+        writer.write_findings(flow_id, flow_findings)
+    writer.close()
+    return path

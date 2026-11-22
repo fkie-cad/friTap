@@ -4,7 +4,7 @@ Pinned against the official spec (core.telegram.org/mtproto/description) and the
 ``tomer8007/mtproto-dissector`` reference (reimplemented from the algorithm, not
 copied). Covers cloud-chat (client<->server transport) encryption:
 
-  * ``auth_key_id``  = low 64 bits of SHA1(auth_key)  — the ONLY SHA1 use.
+  * ``auth_key_id``  = low 64 bits of SHA1(auth_key) (the only SHA1 use).
   * KDF              = SHA256-based (MTProto 2.0; the legacy SHA1 KDF is 1.0).
   * record cipher    = AES-256 in IGE mode.
   * integrity        = msg_key == SHA256(auth_key[88+x:120+x] + plaintext)[8:24].
@@ -43,10 +43,6 @@ _ENVELOPE_PREFIX = 32  # salt(8)+session_id(8)+msg_id(8)+seq_no(4)+msg_len(4)
 _MIN_PADDING = 12
 
 
-# --------------------------------------------------------------------------- #
-# AES backend (optional dependency, resolved lazily)
-# --------------------------------------------------------------------------- #
-
 _ECB_ENCRYPT = None  # type: ignore[var-annotated]
 _ECB_DECRYPT = None  # type: ignore[var-annotated]
 _ECB_CIPHER = None  # type: ignore[var-annotated]  # key -> reusable AES-ECB Cipher
@@ -57,11 +53,9 @@ _BACKEND_RESOLVED = False
 def _resolve_backend() -> None:
     """Resolve the AES backend once.
 
-    ``cryptography`` is the FLOOR: it provides AES-CTR (the transport
+    ``cryptography`` is required: it provides AES-CTR (transport
     de-obfuscation in :mod:`.transport`) and AES-ECB (the pure-Python IGE
-    fallback here). ``tgcrypto``, when ALSO installed, only accelerates AES-IGE —
-    it cannot do the transport CTR and therefore cannot substitute for
-    ``cryptography``.
+    fallback). ``tgcrypto`` only accelerates AES-IGE and cannot replace it.
     """
     global _ECB_ENCRYPT, _ECB_DECRYPT, _ECB_CIPHER, _TGCRYPTO, _BACKEND_RESOLVED
     if _BACKEND_RESOLVED:
@@ -104,30 +98,16 @@ def _resolve_backend() -> None:
 
 
 def _require_backend() -> None:
-    """Ensure the AES backend the MTProto pipeline needs is importable.
-
-    Gates on ``cryptography`` (the floor — covers both CTR and the IGE fallback).
-    ``tgcrypto`` alone is NOT sufficient because the transport layer needs CTR.
-    """
+    """Raise :class:`MtprotoDependencyError` unless ``cryptography`` is importable."""
     _resolve_backend()
     if _ECB_ENCRYPT is None:
         raise MtprotoDependencyError(MTPROTO_DEPENDENCY_HINT)
 
 
 def backend_available() -> bool:
-    """True if the AES backend the MTProto pipeline needs (``cryptography``) is importable.
-
-    Deliberately gates on ``cryptography`` (not ``tgcrypto``): tgcrypto cannot
-    perform the transport AES-CTR de-obfuscation, so a tgcrypto-only environment
-    cannot run the pipeline. Gates on the base-install ``cryptography`` backend.
-    """
+    """True if ``cryptography`` is importable (tgcrypto alone cannot do the transport CTR)."""
     _resolve_backend()
     return _ECB_ENCRYPT is not None
-
-
-# --------------------------------------------------------------------------- #
-# AES-256-IGE
-# --------------------------------------------------------------------------- #
 
 
 def _xor(a: bytes, b: bytes) -> bytes:
@@ -185,21 +165,13 @@ def aes_ige_decrypt(key: bytes, iv: bytes, data: bytes) -> bytes:
 
 
 def aes_ige_encrypt(key: bytes, iv: bytes, data: bytes) -> bytes:
-    """AES-256 IGE encrypt — the inverse of :func:`aes_ige_decrypt`.
-
-    Used to build golden test vectors (and never on a real capture path).
-    """
+    """AES-256 IGE encrypt, the inverse of :func:`aes_ige_decrypt` (test vectors only)."""
     _check_ige_args(iv, data)
     _require_backend()
 
     if _TGCRYPTO is not None:
         return _TGCRYPTO.ige256_encrypt(data, key, iv)
     return _ige_blocks(key, iv, data, encrypt=True)
-
-
-# --------------------------------------------------------------------------- #
-# Key derivation / identity
-# --------------------------------------------------------------------------- #
 
 
 def compute_auth_key_id(auth_key: bytes) -> bytes:
@@ -233,11 +205,6 @@ def compute_msg_key(auth_key: bytes, plaintext: bytes, direction: str) -> bytes:
     x = _direction_x(direction)
     msg_key_large = hashlib.sha256(auth_key[88 + x : 88 + x + 32] + plaintext).digest()
     return msg_key_large[8:24]
-
-
-# --------------------------------------------------------------------------- #
-# Record-level decrypt / parse
-# --------------------------------------------------------------------------- #
 
 
 class MtprotoEnvelope(NamedTuple):
@@ -309,11 +276,6 @@ def decrypt_record(
     return DecryptedRecord(direction, auth_key_id, parse_envelope(plaintext))
 
 
-# --------------------------------------------------------------------------- #
-# Test/diagnostic helper: build a valid encrypted record (the encrypt direction)
-# --------------------------------------------------------------------------- #
-
-
 def build_encrypted_record(
     auth_key: bytes,
     message: bytes,
@@ -327,8 +289,7 @@ def build_encrypted_record(
 ) -> bytes:
     """Produce a valid ``auth_key_id + msg_key + enc_data`` record.
 
-    The inverse of :func:`decrypt_record`; used by tests and the Phase 0.1
-    kill-switch experiment to validate the crypto without real traffic.
+    The inverse of :func:`decrypt_record`; used by tests.
     """
     if padding is None:
         body_len = _ENVELOPE_PREFIX + len(message)
@@ -352,15 +313,10 @@ def build_encrypted_record(
     return compute_auth_key_id(auth_key) + msg_key + enc
 
 
-# --------------------------------------------------------------------------- #
-# Secret-chat (end-to-end) decrypt / parse
-# --------------------------------------------------------------------------- #
-#
-# Secret chats ride INSIDE the cloud-chat transport: a decrypted transport
+# Secret chats ride inside the cloud-chat transport: a decrypted transport
 # message carries a TL-serialized E2E blob whose own AES-IGE layer is keyed by
-# the per-chat 256-byte shared key (NOT the transport auth_key). The crypto is
-# the same MTProto 2.0 KDF/IGE as above, only the key and the wire framing
-# differ — so everything here reuses the primitives above.
+# the per-chat 256-byte shared key, not the transport auth_key. Same MTProto 2.0
+# KDF/IGE as above; only the key and the wire framing differ.
 
 SECRET_CHAT_KEY_LEN = 256
 E2E_FINGERPRINT_LEN = 8
@@ -368,11 +324,7 @@ E2E_HEADER_LEN = E2E_FINGERPRINT_LEN + MSG_KEY_LEN  # 24: fingerprint(8) + msg_k
 
 
 def compute_secret_chat_fingerprint(shared_key: bytes) -> bytes:
-    """key_fingerprint = low 64 bits of SHA1(shared_key) (the last 8 bytes).
-
-    Identical algorithm to :func:`compute_auth_key_id`; aliased so the secret-chat
-    code reads in its own terms while sharing the single SHA1 implementation.
-    """
+    """key_fingerprint = low 64 bits of SHA1(shared_key); same as :func:`compute_auth_key_id`."""
     if len(shared_key) != SECRET_CHAT_KEY_LEN:
         raise ValueError(f"shared_key must be {SECRET_CHAT_KEY_LEN} bytes")
     return compute_auth_key_id(shared_key)
@@ -388,19 +340,12 @@ def decrypt_secret_chat_blob(
     """Decrypt one secret-chat E2E blob: key_fingerprint(8) + msg_key(16) + enc.
 
     The ``x`` direction offset (0 when the sender is the chat creator, 8
-    otherwise) is NOT carried on the wire. With ``verify=True`` (default) both
-    directions are tried and the one whose recomputed msg_key matches is accepted
-    — msg_key verification is cryptographically strong, so a false accept is
-    infeasible. Returns the RAW plaintext (4-byte LE length prefix + TL payload +
-    random padding).
+    otherwise) is not on the wire. With ``verify=True`` both directions are tried
+    and the one whose recomputed msg_key matches wins (a false accept is
+    infeasible). Returns the raw plaintext (4-byte LE length + TL payload + padding).
 
-    ``verify=False`` skips that verification, so the direction can no longer be
-    inferred from the blob; an explicit ``direction`` ('write' = sender is the
-    chat creator, 'read' = the other party) is then REQUIRED — otherwise this
-    raises :class:`ValueError`. (Previously ``verify=False`` silently returned the
-    ``write`` decryption for every blob, yielding garbage for non-creator-sent
-    messages.)
-
+    ``verify=False`` cannot infer the direction, so ``direction`` ('write' = sender
+    is the creator, 'read' = the other party) is required, else :class:`ValueError`.
     Raises :class:`MtprotoCryptoError` on a length/verification failure.
     """
     if direction not in (None, "write", "read"):

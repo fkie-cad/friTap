@@ -1,23 +1,13 @@
-"""
-Shared redaction primitives for presenting analysis output.
+"""Shared redaction primitives that make captured text safe to share.
 
-Analyzer findings and the capture digest both copy text out of captured
-traffic: request URLs (query strings, fragments, userinfo), e-mail addresses,
-header values and, occasionally, key material. This module is the single place
-that decides how such text is made safe to share:
-
-* :func:`scrub_values` keeps URL structure and parameter *keys* but drops
-  query / fragment / userinfo *values*, e-mail addresses and any known raw
-  values (``api.example.com/signup?email=<redacted>``).
+* :func:`scrub_values` keeps URL structure and parameter keys but drops query,
+  fragment and userinfo values, e-mail addresses and known raw values.
 * :func:`scrub_key_material` replaces NSS keylog lines and long hex runs.
-* :func:`redact_finding` is the reporter-layer redaction of a
-  :class:`~friTap.analysis.Finding`: it masks sensitive (pii/secret) evidence
-  values and scrubs the text and evidence of *every* finding, whatever its
-  category (IOC URL findings are ``network`` but still carry query values).
+* :func:`redact_finding` masks pii/secret evidence and scrubs the text and
+  evidence of every finding (IOC URL findings are ``network`` yet carry query values).
 
-Used by the reporters (``fritap analyze`` and its findings sidecar), the
-privacy and credentials analyzers (their own descriptions) and the digest
-(``fritap report``), so the rules cannot drift apart.
+Reporters, the privacy/credentials analyzers and the digest all use these so
+the rules cannot drift apart.
 """
 
 from __future__ import annotations
@@ -26,7 +16,7 @@ import dataclasses
 import re
 from typing import TYPE_CHECKING, Any, Iterable
 
-from friTap.pipeline import TLS_KEYLOG_LABELS
+from friTap.offline.tls.keylog import TLS_KEYLOG_LABELS
 
 if TYPE_CHECKING:
     from friTap.analysis import Finding
@@ -34,40 +24,34 @@ if TYPE_CHECKING:
 REDACTED = "<redacted>"
 EMAIL_REDACTED = "<email>"
 
-# Raw values shorter than this are not scrubbed out of free text — a 1-4 char
-# value would mangle unrelated substrings. Such values are still masked in
-# evidence.
+# Shorter raw values would mangle unrelated substrings in free text; they are
+# still masked in evidence.
 MIN_SCRUB_LEN = 5
 
-# ``?key=value`` / ``&key=value`` / ``;key=value`` pairs embedded in free text.
-# Keys exclude every pair delimiter, so key runs never overlap (linear time,
-# any key length). Values run to the next ``&``/``#``/whitespace — quotes
-# included: over-masking a closing quote beats leaking ``d'Artagnan``.
+# ``?k=v`` / ``&k=v`` / ``;k=v`` pairs in free text. Keys exclude every
+# delimiter so runs never overlap (linear time). Values run to ``&``/``#``/
+# whitespace, quotes included: over-masking a quote beats leaking ``d'Artagnan``.
 _QUERY_PAIR_RE = re.compile(r"([?&;][^=\s&#?;]*)=([^&\s#]*)")
 _QUERY_PAIR_STARTS = frozenset("?&;")
-# Bounded (RFC 5321 sizes) so attacker-controlled runs cannot backtrack badly.
-# ``*`` is excluded from the local part so an already-masked address
-# (``j****@example.com``, the privacy analyzer's form) is not re-masked.
+# Bounded (RFC 5321 sizes) against backtracking on attacker-controlled runs.
+# ``*`` is excluded so an already-masked ``j****@example.com`` is not re-masked.
 _EMAIL_IN_TEXT_RE = re.compile(
     r"[^@\s\"'<>()/?&=*]{1,64}@[A-Za-z0-9.-]{1,253}\.[A-Za-z]{2,63}")
-# ``scheme://user:pass@host`` — the userinfo is a credential.
+# ``scheme://user:pass@host``: the userinfo is a credential.
 _USERINFO_RE = re.compile(r"(://)[^/\s@?#<>\"']{1,256}@")
-# Whitespace-delimited tokens; URL-looking tokens are scrubbed per token
-# (linear, no regex backtracking over attacker-controlled URLs).
+# URL-looking tokens are scrubbed per token (no backtracking over untrusted URLs).
 _TOKEN_RE = re.compile(r"\S+")
 _URL_SEPARATORS = frozenset("/?=&")
-# A whole path segment that is a long digit run (phone, PAN, IMEI, account
-# number): ``/v1/card/4111111111111111/charge``. Dots are not separators, so
-# IPv4 hosts and versions are kept.
+# A whole path segment that is a long digit run (phone, PAN, IMEI, account).
+# Dots are not separators, so IPv4 hosts and versions are kept.
 _DIGIT_SEGMENT_RE = re.compile(r"^\+?\d[\d-]*\d$")
 _MIN_SEGMENT_DIGITS = 7
 
 # Long hex runs (>= 32 bytes) are the shape of TLS secrets / keylog values.
 _LONG_HEX_RUN_RE = re.compile(r"[0-9a-fA-F]{64,}")
-# NSS keylog labels: a keylog line must never leak into shared output. Derived
-# from the pipeline's label set (so new labels cannot drift out of sync), with
-# ``*_TRAFFIC_SECRET_0`` generalised to every key-update generation, plus
-# ``EARLY_EXPORTER_SECRET`` (an NSS label the pipeline does not route).
+# A keylog line must never leak into shared output. Derived from the pipeline's
+# label set so labels cannot drift; ``*_TRAFFIC_SECRET_0`` is generalised to
+# every key-update generation.
 _EXTRA_KEYLOG_LABELS = ("EARLY_EXPORTER_SECRET",)
 
 
@@ -79,11 +63,6 @@ def _keylog_label_alternation() -> str:
 
 _KEYLOG_LABEL_RE = re.compile(rf"\b({_keylog_label_alternation()})\b\s+\S+(\s+\S+)?")
 
-# ---------------------------------------------------------------------------
-# Shared value-shape patterns (digest shapes and free-text masking)
-# ---------------------------------------------------------------------------
-
-# Whole-value shapes, matched against one (stripped) value or path segment.
 UUID_VALUE_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
 EMAIL_VALUE_RE = re.compile(r"^[^@\s]{1,64}@[^@\s]+\.[A-Za-z]{2,}$")
@@ -92,9 +71,8 @@ DIGITS_VALUE_RE = re.compile(r"^\d+$")
 # Phone / card / IMEI / SSN / date-like digit runs inside free text.
 DIGIT_RUN_IN_TEXT_RE = re.compile(r"\+?\d(?:[\s\-./]?\d){5,}")
 
-# Header names whose values describe protocol plumbing (software, format,
-# caching, transport), never the user. The digest omits them from endpoint
-# shapes; ``--flow`` shows their values verbatim. Each adds its own extras.
+# Headers describing protocol plumbing, never the user. The digest omits them
+# from endpoint shapes; ``--flow`` shows their values verbatim.
 PLUMBING_HEADERS = frozenset({
     "accept", "accept-encoding", "accept-language", "cache-control", "connection",
     "content-encoding", "content-length", "content-type", "host", "pragma", "te",
@@ -102,20 +80,13 @@ PLUMBING_HEADERS = frozenset({
 })
 
 
-# ---------------------------------------------------------------------------
-# Free-text scrubbing
-# ---------------------------------------------------------------------------
-
 def _is_digit_segment(segment: str) -> bool:
     return (_DIGIT_SEGMENT_RE.match(segment) is not None
             and sum(ch.isdigit() for ch in segment) >= _MIN_SEGMENT_DIGITS)
 
 
 def _scrub_url_token(token: str, placeholder: str) -> str:
-    """Mask the ``#fragment`` and digit-run path segments of a URL-looking *token*.
-
-    ``/app#tok`` -> ``/app#…``; ``/card/4111111111111111/x`` -> ``/card/…/x``.
-    """
+    """Mask the ``#fragment`` and digit-run path segments of a URL-looking *token*."""
     head, sep, fragment = token.partition("#")
     if _URL_SEPARATORS.isdisjoint(head):
         return token
@@ -139,16 +110,9 @@ def scrub_values(
 ) -> str:
     """Mask values inside free text while keeping its structure and keys.
 
-    * URL query values: ``?email=alice@x.org&lang=en`` -> ``?email=<redacted>&lang=<redacted>``
-    * URL fragments: ``/app#access_token=…`` -> ``/app#<redacted>``
-    * URL path segments that are long digit runs (phone, card, IMEI):
-      ``/card/4111111111111111`` -> ``/card/<redacted>``
-    * URL userinfo: ``https://user:pw@host`` -> ``https://<redacted>@host``
-    * e-mail addresses anywhere -> ``<email>``
-    * every string in *raw_values* (at least :data:`MIN_SCRUB_LEN` chars)
-
-    Analyzer titles/descriptions often embed the full request URL; this is
-    what keeps them shareable when values are not shown.
+    Masks URL query values (``?email=<redacted>``), fragments, digit-run path
+    segments (``/card/<redacted>``), userinfo and e-mail addresses (``<email>``),
+    plus every string in *raw_values* of at least :data:`MIN_SCRUB_LEN` chars.
     """
     if not text:
         return text
@@ -172,20 +136,13 @@ def scrub_key_material(text: str) -> str:
     return _LONG_HEX_RUN_RE.sub(lambda m: f"<hex:{len(m.group(0)) // 2}B>", text)
 
 
-# ---------------------------------------------------------------------------
-# Finding redaction (reporter layer)
-# ---------------------------------------------------------------------------
-
 # Categories whose evidence values are sensitive and masked by default.
 SENSITIVE_CATEGORIES = frozenset({"pii", "secret"})
 
-# Redaction is deny-by-default: for a sensitive (pii/secret) finding, EVERY
-# string evidence value is masked unless its key names purely-descriptive
-# context (a name/type/location/metric/flag — never the matched content). This
-# allowlist is the safe set; any other key (``value``, ``payload``, ``bearer``,
-# a future analyzer's new key, …) is treated as sensitive and masked. This is
-# the robust inverse of an easily-outgrown denylist of "sensitive" key names.
-# Safe keys are still :func:`scrub_values`-ed (``host`` may embed a URL).
+# Deny-by-default: for a pii/secret finding every string evidence value is
+# masked unless its key is in this allowlist of purely descriptive context
+# (never the matched content), so a new analyzer key is masked, not leaked.
+# Safe keys are still scrubbed (``host`` may embed a URL).
 SAFE_EVIDENCE_KEYS = frozenset({
     "location", "host", "type", "header", "field", "context", "content_type",
     "cwe", "scheme", "port", "algorithm", "pii_type", "pattern", "parameter",
@@ -203,11 +160,7 @@ def mask(value: str, keep: int = 4) -> str:
 
 
 def _sensitive_raw_values(finding: "Finding") -> list[str]:
-    """Raw non-safe evidence strings of a pii/secret finding (``[]`` if none apply).
-
-    Findings already redacted by their analyzer (``evidence["redacted"]``) and
-    non-sensitive categories have nothing to mask.
-    """
+    """Raw non-safe evidence strings of a pii/secret finding; ``[]`` if already redacted or non-sensitive."""
     if finding.category not in SENSITIVE_CATEGORIES or finding.evidence.get("redacted"):
         return []
     return [val for key, val in finding.evidence.items()
@@ -223,11 +176,7 @@ def _mask_raw_in_text(text: str, raw_values: list[str]) -> str:
 
 
 def _mask_sensitive_evidence(finding: "Finding") -> "Finding":
-    """Mask non-safe evidence strings of a pii/secret finding (and echo sites).
-
-    Each masked raw value is also replaced in the title/description so a value
-    embedded in free text (e.g. the IOC e-mail title) does not leak.
-    """
+    """Mask non-safe evidence strings of a pii/secret finding and their echoes in title/description."""
     raw_values = _sensitive_raw_values(finding)
     if not raw_values:
         return finding
@@ -245,10 +194,7 @@ def _mask_sensitive_evidence(finding: "Finding") -> "Finding":
 
 
 def _scrub_nested(value: Any, placeholder: str) -> tuple[Any, bool]:
-    """:func:`scrub_values` every string inside a JSON-like evidence value.
-
-    Returns ``(scrubbed, changed)``; ``changed`` is True when any string changed.
-    """
+    """:func:`scrub_values` every string in a JSON-like value; returns ``(scrubbed, changed)``."""
     if isinstance(value, str):
         scrubbed = scrub_values(value, placeholder=placeholder)
         return scrubbed, scrubbed != value
@@ -265,32 +211,19 @@ def _scrub_nested(value: Any, placeholder: str) -> tuple[Any, bool]:
 
 
 def redact_title(finding: "Finding", *, placeholder: str = REDACTED) -> str:
-    """The title :func:`redact_finding` would produce, without the full redaction.
-
-    Cheap enough to cluster many findings by their shared-safe title and run
-    :func:`redact_finding` only on each cluster's representative.
-    """
+    """The title :func:`redact_finding` would produce, cheaply (for clustering before full redaction)."""
     title = _mask_raw_in_text(finding.title, _sensitive_raw_values(finding))
     return scrub_values(title, placeholder=placeholder)
 
 
 def redact_finding(finding: "Finding", *, placeholder: str = REDACTED) -> "Finding":
-    """Return a share-safe copy of *finding* for presentation.
+    """Return a share-safe copy of *finding* (egress-layer redaction).
 
-    This is the egress-layer redaction: analyzers keep full fidelity (in-memory,
-    TUI and ``.tap`` findings), and every path that serialises findings for
-    users or agents (reporters, findings sidecar, live ``--scan`` report,
-    ``fritap report`` digest) calls this unless PII display was requested:
-
-    1. pii/secret findings get their non-safe evidence values masked
-       (deny-by-default, see :data:`SAFE_EVIDENCE_KEYS`);
-    2. every finding — any category, analyzer-redacted or not — has its
-       title, description and evidence strings passed through
-       :func:`scrub_values`, so embedded URLs keep their keys but lose query /
-       fragment / userinfo values and e-mail addresses.
-
-    ``evidence["redacted"]`` is set when evidence changed. A finding that
-    needs no change is returned as-is.
+    Analyzers keep full fidelity; every path serialising findings for users or
+    agents calls this unless PII display was requested. pii/secret evidence is
+    masked (:data:`SAFE_EVIDENCE_KEYS`), then title, description and evidence of
+    every finding go through :func:`scrub_values`. Sets ``evidence["redacted"]``
+    when evidence changed; an unchanged finding is returned as-is.
     """
     masked = _mask_sensitive_evidence(finding)
     title = scrub_values(masked.title, placeholder=placeholder)

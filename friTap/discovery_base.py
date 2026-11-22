@@ -1,19 +1,9 @@
-"""Shared, stateless scaffolding for friTap's zero-config discovery modules.
+"""Stateless plumbing for friTap's zero-config discovery modules.
 
-friTap discovers user-provided extensions from a couple of identical sources —
-a per-user drop-in directory and a setuptools entry-point group — guarded by an
-opt-out environment variable. The directory resolution (platform-native path +
-legacy ``~/.fritap`` fallback), the Python-3.9-compatible entry-point shim, the
-env-disable check, and the ``*.py`` drop-in loading boilerplate were copied
-across :mod:`friTap.analysis.discovery` and :mod:`friTap.offline.discovery`.
-
-This module owns that shared, **stateless** plumbing so the discovery modules
-no longer duplicate it. Each discovery module keeps its OWN module-global caches
-(``_*_DIR`` / ``_CACHE``) and its per-source loaders — those differ in what they
-collect (analyzer instances vs. registered decryptor entries) and are the part
-tests monkeypatch — and simply calls the helpers here for the identical parts.
-(:mod:`friTap.parsers.registry` and :mod:`friTap.plugins.loader` carry the same
-pattern and could adopt these helpers too.)
+Drop-in directory resolution (native path + legacy ``~/.fritap``), the Python-3.9
+entry-point shim, the env opt-out check and ``*.py`` drop-in loading. Each discovery
+module (:mod:`friTap.analysis.discovery`, :mod:`friTap.offline.discovery`) keeps its
+own caches and loaders, which tests monkeypatch.
 """
 
 from __future__ import annotations
@@ -24,38 +14,32 @@ import logging
 import os
 from pathlib import Path
 from types import ModuleType
-from typing import Iterator, Tuple
-
-import platformdirs
+from typing import Callable, Iterator, Optional, Tuple
 
 
 def discovery_disabled(env_var: str) -> bool:
-    """True when ambient discovery is opted out via *env_var*.
-
-    Disabled for any value other than unset / ``""`` / ``0`` / ``false`` /
-    ``False`` (so ``=1``, ``=true``, ``=yes`` all disable).
-    """
+    """True when discovery is opted out via *env_var* (any value except unset, ``""``, ``0``, ``false``)."""
     return os.environ.get(env_var, "").strip() not in ("", "0", "false", "False")
 
 
 def resolve_dropin_dir(subdir: str, logger: logging.Logger,
-                       *, label: str | None = None) -> Path:
-    """Resolve a friTap drop-in directory with native paths + legacy fallback.
+                       *, label: str | None = None, create: bool = True) -> Path:
+    """Resolve a friTap drop-in directory: ``<user-data>/friTap/<subdir>/``.
 
-    Platform paths (``<user-data>/friTap/<subdir>/``):
-      - Linux:   ``~/.local/share/friTap/<subdir>/``  (XDG)
-      - macOS:   ``~/Library/Application Support/friTap/<subdir>/``
-      - Windows: ``C:\\Users\\<user>\\AppData\\Local\\friTap\\<subdir>\\``
-
-    If the legacy ``~/.fritap/<subdir>/`` directory exists and the native path
-    does not, the legacy location is used for backwards compatibility. *label*
-    is used only in the "could not create" warning (defaults to *subdir*).
+    Linux ``~/.local/share`` (XDG), macOS ``~/Library/Application Support``, Windows
+    ``%LOCALAPPDATA%``. The legacy ``~/.fritap/<subdir>/`` is used when it exists and the
+    native path does not. *label* names the "could not create" warning (default *subdir*);
+    ``create=False`` returns the native path without creating it.
     """
+    import platformdirs  # lazy: importing the parser registry must work without it
+
     native_dir = Path(platformdirs.user_data_dir("friTap")) / subdir
     legacy_dir = Path.home() / ".fritap" / subdir
 
     if legacy_dir.exists() and not native_dir.exists():
         return legacy_dir
+    if not create:
+        return native_dir
 
     try:
         native_dir.mkdir(parents=True, exist_ok=True)
@@ -66,12 +50,7 @@ def resolve_dropin_dir(subdir: str, logger: logging.Logger,
 
 
 def get_entry_points(group: str, **kwargs: str) -> list:
-    """Return entry points for *group*, compatible with Python 3.9+.
-
-    Newer ``importlib.metadata`` exposes ``entry_points().select(group=...)``;
-    older versions return a dict keyed by group. Honors an optional ``name=``
-    filter on both paths.
-    """
+    """Entry points for *group* on Python 3.9+ (older ``importlib.metadata`` returns a dict); honors ``name=``."""
     eps = importlib.metadata.entry_points()
     if hasattr(eps, "select"):
         return list(eps.select(group=group, **kwargs))
@@ -81,19 +60,18 @@ def get_entry_points(group: str, **kwargs: str) -> list:
     return list(matches)
 
 
-def iter_dropin_modules(directory: Path, module_prefix: str,
-                        logger: logging.Logger,
-                        *, label: str = "module") -> Iterator[Tuple[Path, ModuleType]]:
+def iter_dropin_modules(
+    directory: Path, module_prefix: str, logger: logging.Logger,
+    *, label: str = "module",
+    on_error: Optional[Callable[[Path, BaseException], None]] = None,
+) -> Iterator[Tuple[Path, ModuleType]]:
     """Yield ``(path, loaded_module)`` for each importable ``*.py`` in *directory*.
 
-    Files whose name starts with ``_`` (dunder / private) are skipped. Each file
-    is loaded via ``spec_from_file_location`` + ``exec_module`` under a unique
-    ``<module_prefix><stem>`` module name; a file that fails to import is logged
-    (using *label*) and skipped so one bad drop-in never aborts the scan. Yields
-    nothing when *directory* does not exist.
+    ``_``-prefixed files are skipped; each loads as ``<module_prefix><stem>``. A file that
+    fails to import is logged (with *label*) and skipped; *on_error(path, exc)* is called
+    after each (must not raise). Yields nothing if *directory* is missing.
 
-    SECURITY: loading a ``.py`` file executes its top-level code, exactly like
-    the plugin loader — callers gate this behind an opt-out env var.
+    SECURITY: loading executes top-level code like the plugin loader, so callers gate it behind an opt-out env var.
     """
     if not directory.exists():
         return
@@ -108,8 +86,10 @@ def iter_dropin_modules(directory: Path, module_prefix: str,
                 continue
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
-        except Exception as e:  # noqa: BLE001 — one bad file must not kill discovery
+        except Exception as e:  # noqa: BLE001 - one bad drop-in must not abort scan
             logger.error("Failed to load %s file %s: %s", label, item, e)
+            if on_error is not None:
+                on_error(item, e)
             continue
         yield item, mod
 

@@ -49,6 +49,8 @@ export interface PatternHookResult {
      * (see pollPatternOutcome — the soft timeout alone never resolves it).
      */
     settled: Promise<boolean>;
+    /** The scheduled scan; its matchedAddress is the hooked ssl_log_secret once `settled` is true. */
+    hooker?: PatternBasedHooking;
 }
 
 export interface InstallPatternHookOpts {
@@ -190,6 +192,7 @@ export function installBoringSSLPatternHook(
         scheduled: true,
         reason: `scan-scheduled (${source.via})`,
         settled: pollPatternOutcome(hooker, moduleName),
+        hooker,
     };
 }
 

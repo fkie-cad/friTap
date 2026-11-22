@@ -20,6 +20,9 @@ export interface ByteOrderFns {
     ntohl: NativeFunction<number, [number]>;
 }
 
+/** Windows (and NSPR-on-Windows PR_AF_INET6) AF_INET6 value. */
+const WINDOWS_AF_INET6 = 23;
+
 /**
  * Read the address family from `sa`, normalized to the Linux/NSPR AF_* values
  * this module compares against (AF_INET=2, AF_INET6=10).
@@ -32,6 +35,11 @@ export interface ByteOrderFns {
  * (its 2-byte family@0 layout is platform-independent, so the NSS callers must
  * leave this false). The port/address field offsets (port@2, v4@4, v6@8) are
  * identical across both layouts, so only the family read needs platform care.
+ *
+ * Windows' AF_INET6 (23) is mapped to 10 on every non-Darwin platform, not only
+ * on "windows": a PE NSPR / Winsock under Wine reports Process.platform "linux"
+ * but still stores 23. On Linux/Android 23 is the obsolete AF_IRDA, which is
+ * never a TCP/UDP peer, so the mapping cannot misclassify a real native address.
  */
 export function readSockaddrFamily(sa: NativePointer, bsdSockaddr: boolean = false): number {
     if (bsdSockaddr && Process.platform === "darwin") {
@@ -39,10 +47,16 @@ export function readSockaddrFamily(sa: NativePointer, bsdSockaddr: boolean = fal
         return fam === 30 ? AF_INET6 : fam;    // Darwin AF_INET6 (30) -> Linux value (10)
     }
     const fam = sa.readU16();
-    // NSPR PRNetAddr keeps a 2-byte family@0 on all platforms, but on macOS it
-    // stores the OS AF_INET6 value (30). Normalize so the AF_INET6 (==10) branch
-    // matches. Linux/Windows never report 30 here, so this is a no-op there.
-    return (fam === 30 && Process.platform === "darwin") ? AF_INET6 : fam;
+    // NSPR PRNetAddr keeps a 2-byte family@0 on all platforms, but PR_AF_INET6
+    // is defined per platform as the OS AF_INET6 (NSPR prcpucfg: Linux 10,
+    // macOS 30, Windows 23), and a native sockaddr uses the same OS value.
+    // Normalize so the AF_INET6 (==10) branch matches.
+    return fam === nativeAfInet6() ? AF_INET6 : fam;
+}
+
+/** The OS AF_INET6 value that differs from Linux's 10: Darwin's 30, else Windows' 23 (see above). */
+function nativeAfInet6(): number {
+    return Process.platform === "darwin" ? 30 : WINDOWS_AF_INET6;
 }
 
 /**

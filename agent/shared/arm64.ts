@@ -108,6 +108,11 @@ export function isBLRAuth(insn: number): boolean {
         || maskEq(insn, 0xfffff800, 0xd73f0800); // BLRAA / BLRAB
 }
 
+/** Any call: BL, BLR or a pointer-authenticated BLR variant. */
+export function isAnyCall(insn: number): boolean {
+    return isBL(insn) || isBLR(insn) || isBLRAuth(insn);
+}
+
 /** BRK #imm16 or UDF #imm16 (also what zero padding between functions decodes as). */
 export function isTrap(insn: number): boolean {
     return maskEq(insn, 0xffe0001f, 0xd4200000) || maskEq(insn, 0xffff0000, 0x00000000);
@@ -131,6 +136,31 @@ export function isCBZ64(insn: number): boolean {
 /** CBNZ Xt, label (compare-and-branch-if-nonzero, 64-bit, sf=1). */
 export function isCBNZ64(insn: number): boolean {
     return maskEq(insn, 0xff000000, 0xb5000000);
+}
+
+/** LDRSW (immediate, unsigned offset): LDRSW Xt, [Xn, #imm12*4] — a relative-vtable slot load. */
+export function isLDRSWimmU(insn: number): boolean {
+    return maskEq(insn, 0xffc00000, 0xb9800000);
+}
+
+/** LDRSW (unsigned offset) byte displacement: imm12 scaled by 4. */
+export function decodeLDRSWImm(insn: number): number {
+    return ((insn >>> 10) & 0xfff) * 4;
+}
+
+/** ADD Xd, Xn, Xm (shifted register, 64-bit) with no shift: imm6 = 0, shift = LSL. */
+export function isADDreg64(insn: number): boolean {
+    return maskEq(insn, 0xffe0fc00, 0x8b000000);
+}
+
+/** SUB Xd, Xn, Xm (shifted register, 64-bit) with no shift. */
+export function isSUBreg64(insn: number): boolean {
+    return maskEq(insn, 0xffe0fc00, 0xcb000000);
+}
+
+/** Rm — bits[20:16] (second source register of a data-processing (register) word; same field as Rs). */
+export function regRm(insn: number): number {
+    return (insn >>> 16) & 0x1f;
 }
 
 /**
@@ -175,6 +205,33 @@ export function isLandingPadWord(insn: number): boolean {
     return word === PACIASP || word === BTI_C;
 }
 
+/** pacibsp: signs the return address with the B key. */
+export const PACIBSP = 0xd503237f;
+/** bti j / bti jc: jump-table landing pads, which follow a BR mid-function. */
+export const BTI_J = 0xd503249f;
+export const BTI_JC = 0xd50324df;
+
+/** A prologue word that is not a jump-table landing pad. */
+export function isEntryPrologueWord(insn: number): boolean {
+    const word = insn >>> 0;
+    return isFunctionPrologueWord(insn) && word !== BTI_J && word !== BTI_JC;
+}
+
+/** STP <pair>, [sp, #-imm]! or SUB sp, sp, #imm: frame setup that never follows a call in the same function. */
+export function isFrameSetupWord(insn: number): boolean {
+    return maskEq(insn, 0xffc003e0, 0xa98003e0) || maskEq(insn, 0xff0003ff, 0xd10003ff) || (insn >>> 0) === PACIBSP;
+}
+
+/** A store to memory not based on sp or fp: STP (signed offset) / STR (unsigned imm) / STUR, W or X. */
+export function isNonStackStore(insn: number): boolean {
+    const w = insn >>> 0;
+    const store = (w & 0x7fc00000) === 0x29000000 ||
+                  (w & 0xbfc00000) === 0xb9000000 ||
+                  (w & 0xbfe00c00) === 0xb8000000;
+    // x29-based stores are frame spills, not the consume.
+    return store && regRn(w) !== 31 && regRn(w) !== 29;
+}
+
 // ---- register-write analysis (conservative, fail-closed) ------------------
 //
 // writesReg() answers "may this instruction overwrite general-purpose register
@@ -197,7 +254,7 @@ function isLoadStoreGroup(insn: number): boolean {
 
 /** Branches / exceptions / system: only calls (x30), MRS and SYSL (Rt) write a GPR. */
 function branchOrSystemWritesReg(insn: number, reg: number): boolean {
-    if (isBL(insn) || isBLR(insn) || isBLRAuth(insn)) return reg === 30;
+    if (isAnyCall(insn)) return reg === 30;
     if (maskEq(insn, 0xfff00000, 0xd5300000)) return regRd(insn) === reg; // MRS
     if (maskEq(insn, 0xfff80000, 0xd5280000)) return regRd(insn) === reg; // SYSL
     return false; // B, B.cond, CBZ/CBNZ, TBZ/TBNZ, BR, RET, hints, barriers, MSR, SVC/BRK

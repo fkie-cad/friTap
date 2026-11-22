@@ -137,6 +137,46 @@ friTap declares two stability tiers:
   `QuicLayer`, `SshLayer`. These specific symbols are stable and re-exported
   from the package root even though their home namespaces
   (`friTap.parsers.*`, `friTap.flow.layers`) remain internal.
+- UI facade `friTap.ui` — the embedding seam for host projects, a separate
+  namespace from `friTap.__all__` and lazy (importing it loads neither
+  textual nor frida nor capture code). Its `__all__`: `AppCipherDecoder`,
+  `BaseAnalyzer`, `BodyDecoderSpec`, `DecodedView`, `DetailTabSpec`,
+  `ExtensionLoadError`, `Finding`, `FlowColumnSpec`, `LayerFieldSpec`,
+  `ReplayController`, `Severity`,
+  `TapSource`, `TapViewerApp`, `TapViewerScreen`,
+  `UI_EXTENSION_ENTRY_POINT_GROUP`, `available_analyzers`,
+  `extension_load_errors`, `get_body_decoders`,
+  `get_detail_tabs`, `get_filter_fields`, `get_flow_columns`, `install_theme`,
+  `iter_replay_rows`, `load_extensions`, `open_tap`, `register_analyzer`,
+  `register_app_cipher_decoder`, `register_body_decoder`,
+  `register_detail_tab`, `register_filter_field`, `register_flow_column`,
+  `theme_variable_defaults`. Extension entry-point group:
+  `fritap.ui_extensions`. `friTap.tui.*` stays internal. Embedding guide:
+  [docs/api/embedding.md](docs/api/embedding.md).
+  - **Stable** within `friTap.ui`: `open_tap`, `TapViewerApp`,
+    `TapViewerScreen` (incl. `TapViewerScreen.Closed` and `go_back`),
+    `install_theme`, `register_analyzer`, `available_analyzers`,
+    `register_app_cipher_decoder`, `AppCipherDecoder`, `DecodedView`,
+    `ReplayController`, `BaseAnalyzer`, `Finding`, `Severity`.
+  - **PROVISIONAL** (owner-approved; may change in a MINOR release until the
+    extension API has settled (the viewer widgets already consume the
+    getters); mirrored by `friTap.ui.PROVISIONAL`):
+    `TapSource`, `DetailTabSpec`, `FlowColumnSpec`, `BodyDecoderSpec`,
+    `LayerFieldSpec`, `register_detail_tab`, `register_flow_column`,
+    `register_body_decoder`, `register_filter_field`, `get_detail_tabs`,
+    `get_flow_columns`, `get_body_decoders`, `get_filter_fields`,
+    `load_extensions`, `UI_EXTENSION_ENTRY_POINT_GROUP`, `ExtensionLoadError`,
+    `extension_load_errors`, `iter_replay_rows`, `theme_variable_defaults`.
+  - `AppCipherDecoder` / `DecodedView` are a carve-out from the internal
+    `friTap.parsers.*` namespace (like `ParseResult`): these two symbols are
+    covered, the rest of `friTap.parsers.app_ciphers` is not.
+  - `BaseAnalyzer`, `Finding`, `Severity` and `ReplayController` in
+    `friTap.ui` are aliases of the stable root-package names (the same
+    objects as `friTap.BaseAnalyzer` etc.).
+  - The extension registry lives in core (`friTap.extensions`; re-exported
+    by `friTap.ui` and `friTap.ui.extensions`) so core code never imports
+    the UI. Core must not import `friTap.ui` / `friTap.tui` (layering rule
+    R14) — the UI is planned to ship as its own distribution.
 - `SSL_Logger` is in the stable tier *but* deprecated; scheduled for
   removal in friTap 3.0. New code should use `FriTap` or `CoreController`.
 

@@ -1,16 +1,16 @@
-"""Canonical friTap MTProto keylog format — the single source of truth.
+"""Canonical friTap MTProto keylog format.
 
-Imported by BOTH the live writer (``MtprotoKeylogFormatter`` in
+Shared by the live writer (``MtprotoKeylogFormatter`` in
 ``friTap.protocols.mtproto_handler``) and the offline reader
-(``friTap.offline.mtproto.keylog``) so the two never drift.
+(``friTap.offline.mtproto.keylog``) so the two cannot drift.
 
 Line format (label-first, NSS-style; ``#`` comments ignored)::
 
     MTPROTO_AUTH_KEY <dc_id> <auth_key_id_hex16> <auth_key_hex512> <key_type>
 
-  * ``dc_id``            decimal datacenter id (informational hint).
-  * ``auth_key_id_hex16`` 8 bytes / 16 hex chars — the JOIN key (every MTProto
-                          record header carries this).
+  * ``dc_id``            decimal datacenter id (hint only).
+  * ``auth_key_id_hex16`` 8 bytes / 16 hex chars; the join key (every MTProto
+                          record header carries it).
   * ``auth_key_hex512``   256 bytes / 512 hex chars.
   * ``key_type``          ``perm`` | ``temp`` (PFS: transport uses temp keys).
 
@@ -18,40 +18,29 @@ E2E secret chats reuse the same file with a distinct label::
 
     MTPROTO_E2E_KEY <key_fingerprint_hex16> <shared_key_hex512> <chat_id> [<peer_user_id>]
 
-  * ``key_fingerprint_hex16`` 8 bytes / 16 hex chars — the JOIN key (low 64 bits
-                              of SHA1(shared_key); every E2E blob carries this).
+  * ``key_fingerprint_hex16`` 8 bytes / 16 hex chars; the join key (low 64 bits
+                              of SHA1(shared_key), carried by every E2E blob).
   * ``shared_key_hex512``     256 bytes / 512 hex chars (the per-chat shared key).
-  * ``chat_id``               decimal secret-chat id (informational hint;
-                              optional — defaults to 0 when absent).
+  * ``chat_id``               decimal secret-chat id (hint; optional, default 0).
   * ``peer_user_id``          decimal user id of the other participant, read from
                               the client's Java ``EncryptedChat`` (optional 4th
-                              field; appended only when known — legacy 3-field
-                              lines still parse, peer defaults to 0).
+                              field, default 0; 3-field lines still parse).
 
-Obfuscated-transport CTR state (recovered from live memory for a connection that
-was already open when the capture started) reuses the same file with a third
-label::
+Obfuscated-transport CTR state (recovered from memory for a connection already
+open when capture started) uses a third label::
 
     MTPROTO_OBF_KEY <key_out_hex64> <iv_out_hex32> <key_in_hex64> <iv_in_hex32> <num_out> <num_in> <endpoint|->
 
-  * ``key_out_hex64`` / ``key_in_hex64``  32 bytes / 64 hex — the per-direction
-                                          AES-256 obfuscation keys (out =
-                                          client->server, in = server->client).
-  * ``iv_out_hex32`` / ``iv_in_hex32``    16 bytes / 32 hex — the LIVE CTR counter
-                                          block for each direction at scan time
-                                          (NOT the original init IV).
+  * ``key_out_hex64`` / ``key_in_hex64``  32 bytes / 64 hex; per-direction AES-256
+                                          keys (out = client->server).
+  * ``iv_out_hex32`` / ``iv_in_hex32``    16 bytes / 32 hex; the live CTR counter
+                                          block at scan time (not the init IV).
   * ``num_out`` / ``num_in``              decimal byte-phase (0..15) into the
-                                          current keystream block for each
-                                          direction at scan time.
-  * ``endpoint``                          optional ``ip:port`` hint tying the key
-                                          to one connection; ``-`` when unknown
-                                          (defaults to ``-`` when absent — the
-                                          offline path joins by trial anyway).
+                                          current keystream block at scan time.
+  * ``endpoint``                          optional ``ip:port`` hint; ``-`` when
+                                          unknown or absent (offline joins by trial).
 
-The format stays additive: :func:`parse_line` (the cloud-chat reader) ignores
-E2E and obfuscation lines, :func:`parse_e2e_line` (the secret-chat reader) ignores
-the other labels, and :func:`parse_obf_line` ignores everything but its own label,
-so all three labels coexist in one file.
+Each parser ignores the other labels, so all three coexist in one file.
 """
 
 from __future__ import annotations
@@ -79,21 +68,16 @@ OBF_IV_HEXLEN = 32  # 16-byte CTR counter block
 OBF_NUM_MAX = 15  # byte-phase within a 16-byte AES-CTR keystream block
 OBF_ENDPOINT_UNKNOWN = "-"
 
-# Sane range for the informational datacenter id. Production DCs are 1..5; the
-# headroom covers test/media/CDN ids. Anything outside (or non-numeric, or
-# +/-Infinity from JSON) is recorded as 0 = "unknown", like any other
-# malformed dc_id -- the auth key itself is still kept.
+# Production DCs are 1..5; the headroom covers test/media/CDN ids. Anything
+# outside (or non-numeric, or +/-Infinity from JSON) becomes 0 = unknown; the
+# auth key is still kept.
 DC_ID_MIN = 1
 DC_ID_MAX = 1000
 DC_ID_UNKNOWN = 0
 
 
 def _coerce_int(value) -> Optional[int]:
-    """``int(value)``, or ``None`` for anything that cannot be one.
-
-    ``OverflowError`` matters: ``float('inf')`` (JSON ``Infinity``, ``1e400``)
-    raises it, not ``ValueError``.
-    """
+    """``int(value)``, or ``None``. Catches ``OverflowError`` for JSON ``Infinity``."""
     try:
         return int(value)
     except (TypeError, ValueError, OverflowError):
@@ -134,18 +118,12 @@ def format_line(
     auth_key: str,
     key_type: str = KEY_TYPE_PERM,
 ) -> Optional[str]:
-    """Render one keylog line from hex strings, or ``None`` if malformed.
-
-    Returning ``None`` (rather than raising) lets the formatter drop a bad
-    event without aborting the whole keylog, matching friTap's other formatters.
-    """
+    """Render one keylog line from hex strings, or ``None`` if malformed (never raises, so one bad event cannot abort the keylog)."""
     aid = (auth_key_id or "").strip().lower()
     ak = (auth_key or "").strip().lower()
-    # Defense-in-depth: auth_key_id is by definition the low 64 bits of
-    # SHA1(auth_key). The agent and the message router both populate it, but if a
-    # line ever reaches here with an EMPTY id and a valid key, derive it rather
-    # than silently dropping a usable key (the offline decryptor joins on this id).
-    # A non-empty-but-malformed id is still rejected (it signals a real bug).
+    # auth_key_id is the low 64 bits of SHA1(auth_key). Derive it when empty so a
+    # usable key is not dropped (offline joins on this id). A non-empty malformed
+    # id is still rejected.
     if not aid and len(ak) == AUTH_KEY_HEXLEN:
         try:
             import hashlib
@@ -165,11 +143,7 @@ def format_line(
 
 
 def parse_line(line: str) -> Optional[MtprotoAuthKey]:
-    """Parse one keylog line into an :class:`MtprotoAuthKey`, or ``None``.
-
-    Skips blank lines, ``#`` comments, the reserved E2E label, and any
-    malformed/foreign line.
-    """
+    """Parse one line into an :class:`MtprotoAuthKey`, or ``None`` (blanks, comments, other labels, malformed)."""
     s = line.strip()
     if not s or s.startswith("#"):
         return None
@@ -208,10 +182,7 @@ def format_e2e_line(
 ) -> Optional[str]:
     """Render one secret-chat keylog line from hex strings, or ``None`` if malformed.
 
-    Returning ``None`` (rather than raising) lets the formatter drop a bad
-    event without aborting the whole keylog, matching :func:`format_line`. The
-    optional 4th ``peer_user_id`` field is appended only when known (non-zero),
-    so lines without a resolved peer stay in the original 3-field layout.
+    The optional 4th ``peer_user_id`` is appended only when non-zero.
     """
     fp = (key_fingerprint or "").strip().lower()
     key = (shared_key or "").strip().lower()
@@ -236,12 +207,7 @@ def format_e2e_line(
 
 
 def parse_e2e_line(line: str) -> Optional[MtprotoSecretChatKey]:
-    """Parse one secret-chat keylog line into an :class:`MtprotoSecretChatKey`, or ``None``.
-
-    Skips blank lines, ``#`` comments, the cloud-chat label, and any
-    malformed/foreign line. The trailing ``chat_id`` (3rd) and ``peer_user_id``
-    (4th) are both optional and default to 0, so legacy 3-field lines still parse.
-    """
+    """Parse one secret-chat line into an :class:`MtprotoSecretChatKey`, or ``None``; ``chat_id`` and ``peer_user_id`` default to 0."""
     s = line.strip()
     if not s or s.startswith("#"):
         return None
@@ -274,11 +240,10 @@ def parse_e2e_line(line: str) -> Optional[MtprotoSecretChatKey]:
 class MtprotoObfKey:
     """One parsed obfuscated-transport CTR-state keylog entry.
 
-    ``iv_out``/``iv_in`` are the LIVE 16-byte CTR counter blocks captured while the
-    connection was alive (not the original init IVs); ``num_out``/``num_in`` are the
-    byte-phase into the current keystream block. The offline path uses these to
-    seed the de-obfuscation cipher for a connection whose 64-byte init block was
-    never captured (see :mod:`friTap.offline.mtproto.transport`).
+    ``iv_out``/``iv_in`` are the live CTR counter blocks (not the init IVs);
+    ``num_out``/``num_in`` the byte-phase into the current keystream block. They
+    seed de-obfuscation when the 64-byte init block was never captured (see
+    :mod:`friTap.offline.mtproto.transport`).
     """
 
     key_out: bytes  # 32 bytes (client->server AES-256 key)
@@ -300,11 +265,7 @@ def format_obf_line(
     num_in: int = 0,
     endpoint: str = OBF_ENDPOINT_UNKNOWN,
 ) -> Optional[str]:
-    """Render one obfuscation-key keylog line from hex strings, or ``None`` if malformed.
-
-    Returning ``None`` (rather than raising) lets the formatter drop a bad event
-    without aborting the whole keylog, matching :func:`format_line`.
-    """
+    """Render one obfuscation-key keylog line from hex strings, or ``None`` if malformed."""
     ko = (key_out or "").strip().lower()
     io = (iv_out or "").strip().lower()
     ki = (key_in or "").strip().lower()
@@ -323,8 +284,7 @@ def format_obf_line(
         int(ii, 16)
     except ValueError:
         return None
-    # Byte-phase is informational-but-load-bearing; coerce like ``dc_id`` and clamp
-    # into the valid 0..15 block range rather than dropping an otherwise-good key.
+    # Clamp byte-phase into 0..15 rather than dropping an otherwise good key.
     no = _coerce_int(num_out) or 0
     ni = _coerce_int(num_in) or 0
     no = min(max(no, 0), OBF_NUM_MAX)
@@ -336,18 +296,12 @@ def format_obf_line(
 
 
 def parse_obf_line(line: str) -> Optional[MtprotoObfKey]:
-    """Parse one obfuscation-key keylog line into an :class:`MtprotoObfKey`, or ``None``.
-
-    Skips blank lines, ``#`` comments, the cloud-chat and E2E labels, and any
-    malformed/foreign line. The trailing ``endpoint`` is optional (defaults to
-    ``-``), mirroring the way :func:`parse_e2e_line` defaults ``chat_id``.
-    """
+    """Parse one obfuscation-key line into an :class:`MtprotoObfKey`, or ``None``; ``endpoint`` defaults to ``-``."""
     s = line.strip()
     if not s or s.startswith("#"):
         return None
     parts = s.split()
-    # label + key_out + iv_out + key_in + iv_in + num_out + num_in == 7 tokens;
-    # endpoint (token 8) is optional.
+    # 7 tokens required (label, 4 key/iv fields, num_out, num_in); endpoint is the 8th.
     if len(parts) < 7 or parts[0] != OBF_LABEL:
         return None
     ko_hex, io_hex, ki_hex, ii_hex, no_str, ni_str = parts[1:7]
@@ -385,9 +339,7 @@ def parse_obf_line(line: str) -> Optional[MtprotoObfKey]:
 def matches_line(line: str) -> bool:
     """True when any MTProto keylog parser (auth / E2E / obf) accepts *line*.
 
-    One MTProto keylog file may carry only one of the three labels (e.g. a
-    Secret-Chat E2E keylog or an obf-key memory-scan sidecar), so all three
-    are consulted.
+    A keylog file may carry only one label (e.g. an obf-key sidecar), so all are tried.
     """
     return (
         parse_line(line) is not None

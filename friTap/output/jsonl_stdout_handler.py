@@ -7,17 +7,14 @@ Every line is one JSON object with a stable envelope::
     {"schema": "fritap.events/1", "type": "<kind>", "event": "<EventClass>",
      "timestamp": <epoch float>, "protocol": "<proto>", ...event fields...}
 
-``type`` is a short snake_case kind (``keylog``, ``data``, ``session``,
-``library``, ``console``, ``error``, ``detach``, ...); the stream is bracketed by
-``stream_start`` / ``stream_end`` records. ``bytes`` fields (decrypted
-plaintext in ``data`` records) are hex-encoded, as in the ``.jsonl`` file output.
+``type`` is a snake_case kind (``keylog``, ``data``, ``session``, ``library``,
+``console``, ``error``, ``detach``, ...); the stream is bracketed by
+``stream_start`` / ``stream_end``. ``bytes`` fields are hex-encoded, as in the
+``.jsonl`` file output.
 
-Key material policy: ``keylog`` records carry the secret (``key_data`` /
-``payload``) ONLY when explicitly requested with ``-k`` or ``--json-keys``.
-Otherwise the record is kept (so consumers still learn that a key was seen) but
-redacted to its label (and the public client_random for NSS lines), with
-``"redacted": true``. The policy is shared with the file outputs, see
-:mod:`friTap.output.key_material`.
+Key material policy (shared with the file outputs, :mod:`friTap.output.key_material`):
+``keylog`` records carry the secret only with ``-k`` or ``--json-keys``; otherwise
+they are redacted to the label (and public client_random of NSS lines) with ``"redacted": true``.
 """
 
 from __future__ import annotations
@@ -60,10 +57,7 @@ _CAMEL_BOUNDARY = re.compile(r"(?<!^)(?=[A-Z])")
 
 @functools.lru_cache(maxsize=None)
 def event_type_name(class_name: str) -> str:
-    """``SocketTraceEvent`` -> ``socket_trace`` (explicit names win).
-
-    Cached: called once per streamed event, but the set of event classes is small.
-    """
+    """``SocketTraceEvent`` -> ``socket_trace`` (explicit names win); cached, as it runs per streamed event."""
     if class_name in _TYPE_NAMES:
         return _TYPE_NAMES[class_name]
     stem = class_name[:-len("Event")] if class_name.endswith("Event") else class_name
@@ -101,8 +95,7 @@ class JsonlStdoutHandler(JsonlOutputHandler):
             mark_stream_opened()
 
     def _uses_claimed_stdout(self) -> bool:
-        """True when this handler writes the process-wide claimed stdout stream
-        (not a stream injected by a test), so it owns the envelope state."""
+        """True when this handler writes the process-wide claimed stdout (not a test stream), so it owns the envelope state."""
         return self._stream is None
 
     def _on_any_event(self, event: "FriTapEvent") -> None:
@@ -113,9 +106,8 @@ class JsonlStdoutHandler(JsonlOutputHandler):
         class_name = type(event).__name__
         # _build_record already applied the key-material policy (redaction).
         record = self._build_record(event)
-        # "event" carries the class name: the base record's "event_type" is
-        # overwritten by SessionEvent's own event_type field ("started"/...).
-        # setdefault: an event's own field of the same name still wins.
+        # "event" carries the class name: SessionEvent's own event_type would overwrite "event_type".
+        # setdefault: an event's own field of the same name wins.
         record.setdefault("event", class_name)
         self._write_record(envelope(event_type_name(class_name), record))
 
@@ -133,11 +125,9 @@ class JsonlStdoutHandler(JsonlOutputHandler):
     def close(self) -> None:
         """Write the closing records and flush; stdout stays open. Idempotent.
 
-        The single place where a run's outcome reaches the stream: a failed run
-        gets one ``error`` record (cause noted via
-        :func:`~friTap.output.stdout_stream.note_runtime_error`), and
-        ``stream_end`` carries the final ``exit_code`` (null when unknown) and,
-        when known, ``ended_by`` (see :func:`~friTap.output.stdout_stream.ended_by`).
+        The one place a run's outcome reaches the stream: a failed run gets one ``error`` record
+        (:func:`~friTap.output.stdout_stream.note_runtime_error`); ``stream_end`` carries the final
+        ``exit_code`` (null when unknown) and ``ended_by`` when known.
         """
         if not self._file:
             return

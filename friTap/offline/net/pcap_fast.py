@@ -1,46 +1,37 @@
 """Fast, scapy-dissection-free TCP segment extraction from pcap / pcapng files.
 
-Full scapy dissection of every packet dominated offline conversion time. This
-module reads records with scapy's ``RawPcapReader`` (pcap, pcapng, gzip) and
-decodes the link, IP and TCP headers itself with ``struct`` slicing. The output
-is the same segment tuple the scapy parser yields::
+Reads records with scapy's ``RawPcapReader`` (pcap, pcapng, gzip) and decodes
+link, IP and TCP headers with ``struct`` slicing, yielding the scapy parser's
+segment tuple ``(family, src, sport, dst, dport, seq, payload, syn, fin, ts)``.
+Rare cases go back to scapy one packet at a time via the *fallback* callable so
+the result stays exact:
 
-    (family, src, sport, dst, dport, seq, payload, syn, fin, ts)
-
-Coverage mirrors what scapy would decode, with the rare cases handed back to
-scapy one packet at a time through the *fallback* callable (``scapy packet ->
-segment or None``) so the result stays exact:
-
-* link types: Ethernet (with 802.1Q / 802.1ad tags), Linux SLL / SLL2, raw IP
+* link types: Ethernet (802.1Q / 802.1ad), Linux SLL / SLL2, raw IP
   (12, 14, 101, 228, 229), BSD loopback NULL (0) and LOOP (108);
-* to scapy, from the link layer: unknown link types, LLC / PPPoE / MPLS and any
-  other unhandled ethertype, a version nibble that disagrees with the ethertype,
-  truncated link headers;
-* to scapy, from the IP layer: TCP behind IPv4 options or IPv6 extension headers,
+* to scapy from the link layer: unknown link types, LLC / PPPoE / MPLS and other
+  unhandled ethertypes, a version nibble disagreeing with the ethertype,
+  truncated headers;
+* to scapy from the IP layer: TCP behind IPv4 options or IPv6 extension headers,
   tunnels (IP protocols 4/41/47/..., UDP tunnel ports), IPv6 extension headers
-  other than hop-by-hop / destination options / fragment, and malformed IP/TCP
-  headers.
+  other than hop-by-hop / destination options / fragment, malformed headers.
 
 Packets that provably cannot yield a scapy ``TCP`` layer are skipped without
-scapy (which would also load scapy's inet layers for nothing): IPv4 with options
-whose protocol is not TCP (IGMP with Router Alert), IPv6 hop-by-hop /
-destination-options / fragment chains ending in a non-TCP header (MLD reports)
-or in a non-first fragment, and Linux cooked-capture pseudo-protocols scapy
-binds to nothing (802.2 LLC on Android).
+scapy: IPv4 options with a non-TCP protocol (IGMP Router Alert), IPv6 chains
+ending in a non-TCP header (MLD) or a non-first fragment, and Linux cooked
+pseudo-protocols scapy binds to nothing (802.2 LLC on Android).
 
-Deliberate differences from the scapy parser (decided, not accidental):
+Deliberate differences from the scapy parser:
 
 * an empty TCP segment never returns link-layer padding as payload (scapy
-  attaches the padding to the empty segment, which leaked phantom zero bytes
-  into reassembled streams);
-* loopback address families are decoded platform-independently (2/0 = IPv4;
-  24/28/30/10 = IPv6, each only with a matching IP version nibble), NULL headers
-  written big-endian are byte-swapped, and anything else is skipped;
-* link type 14 is raw IP on every platform;
+  leaked phantom zero bytes into reassembled streams);
+* loopback families decode platform-independently (2/0 = IPv4; 24/28/30/10 =
+  IPv6, each only with a matching version nibble), big-endian NULL headers are
+  byte-swapped, anything else is skipped;
+* link type 14 is raw IP everywhere;
 * simple packet blocks (pcapng, no timestamp) get ``ts = 0.0`` ("unknown").
 
-Leaf module: only the stdlib, its stdlib-only sibling :mod:`.capture_validation`
-(record lengths are checked before scapy allocates them) and (lazily) scapy.
+Leaf module: stdlib, :mod:`.capture_validation` (record lengths are checked
+before scapy allocates them) and lazily scapy.
 """
 
 from __future__ import annotations
@@ -62,7 +53,6 @@ Segment = Tuple[str, str, int, str, int, int, bytes, bool, bool, float]
 #: Turns one scapy-dissected packet (``pkt.time`` already set) into a segment.
 ScapyFallback = Callable[[Any], Optional[Segment]]
 
-# --- link types -----------------------------------------------------------
 DLT_NULL = 0
 DLT_EN10MB = 1
 DLT_RAW_12 = 12
@@ -88,7 +78,6 @@ LOOPBACK_AF_IPV4 = frozenset({0, 2})
 #: AF_INET6 on the BSDs (24), FreeBSD (28), Darwin (30) and Linux (10).
 LOOPBACK_AF_IPV6 = frozenset({10, 24, 28, 30})
 
-# --- IP payload classification ---------------------------------------------
 IPPROTO_TCP = 6
 IPPROTO_UDP = 17
 #: IPv6 extension headers walked without scapy: hop-by-hop options (0) and
@@ -112,7 +101,6 @@ TUNNEL_UDP_PORTS = frozenset({434, 1701, 4754, 4789, 4790, 6633, 8472, 48879})
 #: layer (ICMP and ICMPv6 quote headers as ``TCPerror``, not ``TCP``).
 NON_TCP_PROTOCOLS = frozenset({1, 2, 50, 58, 59, 89, 103, 112, 132})
 
-# --- per-packet decode verdicts ---------------------------------------------
 _SKIP = "skip"            # no TCP segment in this packet
 _LINK_FALLBACK = "link"   # let scapy dissect the whole frame
 _IP_FALLBACK = "ip"       # let scapy dissect from the IP header
@@ -142,8 +130,7 @@ class ParseStats:
         return self.link_fallbacks + self.ip_fallbacks
 
 
-# --- link layer ----------------------------------------------------------------
-# Each decoder returns ``(ip_version, offset)`` or a verdict string.
+# Link layer: each decoder returns ``(ip_version, offset)`` or a verdict string.
 
 def _ip_after(buf: bytes, off: int, version: int, on_mismatch: str):
     """``(version, off)`` when the header at *off* has the expected version nibble."""
@@ -246,8 +233,6 @@ _LINK_DECODERS = {
     DLT_LOOP: _link_loop,
 }
 
-
-# --- IP / TCP --------------------------------------------------------------------
 
 def _decode_ipv4(buf: bytes, off: int, ts: float):
     if len(buf) - off < 20:
@@ -378,8 +363,6 @@ def _decode_tcp(buf: bytes, start: int, end: int, family: str,
 _IP_DECODERS = {4: _decode_ipv4, 6: _decode_ipv6}
 
 
-# --- scapy fallback ----------------------------------------------------------------
-
 def _scapy_link_class(linktype: int):
     """The class scapy's PcapReader would dissect *linktype* with."""
     import scapy.layers.inet  # noqa: F401 - registers raw-IP link types
@@ -408,8 +391,6 @@ def _run_fallback(cls, data: bytes, ts: float, fallback: ScapyFallback) -> Optio
     pkt.time = ts
     return fallback(pkt)
 
-
-# --- timestamps -------------------------------------------------------------------------
 
 @lru_cache(maxsize=None)
 def _is_power_of_ten(value: int) -> bool:
@@ -454,8 +435,6 @@ def _open_raw_reader(path: str):
     validate_capture_file(path)
     return RawPcapReader(path)  # falls over to RawPcapNgReader by magic
 
-
-# --- public API ----------------------------------------------------------------------
 
 def iter_tcp_segments(
     path: str,
@@ -520,8 +499,6 @@ def first_packet_time(path: str) -> float:
             return clock(meta)
     return 0.0
 
-
-# --- UDP presence probe ---------------------------------------------------------------
 
 IPPROTO_ICMP = 1
 IPPROTO_IGMP = 2

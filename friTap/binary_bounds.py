@@ -1,11 +1,9 @@
 """Bounded reads for length-prefixed binary formats read from untrusted files.
 
-CPython's ``BufferedReader.read(n)`` / ``FileIO.read(n)`` allocate ``n`` bytes
-*before* reading, so ``f.read(length)`` with a crafted 32-bit length field is a
-4 GiB allocation attempt even when the file holds a few hundred bytes. Readers
-of third-party files (``.tap`` captures, pcap / pcapng, memory dumps) check a
-length against the bytes actually left in the file and a per-record-type
-maximum *before* using it.
+``f.read(n)`` allocates ``n`` bytes *before* reading, so a crafted 32-bit length is a
+4 GiB allocation attempt even for a tiny file. Readers of third-party files (``.tap``,
+pcap/pcapng, memory dumps) check a length against the bytes left in the file and a
+per-record-type maximum *before* using it.
 
 Stdlib-only leaf: imports nothing from friTap.
 """
@@ -17,25 +15,19 @@ import os
 import stat
 from typing import BinaryIO, Optional, Type
 
-#: Read size used when the bytes left in a stream cannot be known up front
-#: (pipes, decompressors): the result then only grows as data actually arrives.
+#: Read size when the bytes left in a stream are unknown (pipes, decompressors): the result only grows as data arrives.
 _CHUNK_SIZE = 1 << 20
 
 
 class BoundsError(ValueError):
-    """A length field is negative, exceeds its record type's maximum, or runs past EOF.
-
-    A :class:`ValueError`, so readers that already treat ``ValueError`` as
-    "malformed input" keep handling it unchanged.
-    """
+    """A length field is negative, exceeds its record type's maximum, or runs past EOF (a :class:`ValueError`)."""
 
 
 def remaining_bytes(f: BinaryIO) -> Optional[int]:
-    """Bytes between the current position of *f* and EOF, or ``None`` when unknown.
+    """Bytes between *f*'s position and EOF, or ``None`` when unknown.
 
-    Only a regular file opened through :class:`io.FileIO` (optionally buffered)
-    reports a trustworthy size. Wrappers such as ``gzip.GzipFile`` forward
-    ``fileno()`` to the *compressed* file, so their size is never trusted.
+    Only a regular file opened through :class:`io.FileIO` is trustworthy; ``gzip.GzipFile``
+    forwards ``fileno()`` to the *compressed* file, so its size is never trusted.
     """
     raw = getattr(f, "raw", f)
     if not isinstance(raw, io.FileIO):
@@ -76,10 +68,8 @@ def read_bounded(
 ) -> bytes:
     """Read exactly *n* bytes of *what* from *f*, validating *n* before allocating.
 
-    *n* must be non-negative, at most *limit* and (when the file size is known)
-    at most the bytes left in the file. For streams of unknown size the read is
-    done in chunks, so a short stream never costs an *n*-byte allocation.
-    Raises *error* (a :class:`ValueError`) on an implausible or truncated read.
+    *n* must be non-negative, <= *limit* and (when known) <= the bytes left in the file.
+    Streams of unknown size are read in chunks. Raises *error* on an implausible or truncated read.
     """
     remaining = remaining_bytes(f)
     check_length(n, what, limit, remaining, error)

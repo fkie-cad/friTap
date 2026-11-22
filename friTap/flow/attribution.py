@@ -11,25 +11,21 @@ caused it** (the originator: uncertain, so it carries a confidence)::
      "bucket": <BUCKETS>                           | absent,
      "mixed": True                                 | absent}
 
-Confidence rules (P2):
+Confidence rules:
 
-* a directly joined caller stack gives ``native-stack`` -- ``high`` only on a
-  :data:`SYNCHRONOUS_KINDS` transport (the stack is captured on the caller's
-  own thread), ``medium`` on every other kind, including Chromium-family ones
-  (that stack is from the shared network thread), ``other``, an empty kind and
-  overlay-added kinds;
-* a flow that inherits its connection's originator gives
-  ``connection-fallback``, always ``low`` -- never ``high``.
+* a directly joined caller stack gives ``native-stack``: ``high`` only on a
+  :data:`SYNCHRONOUS_KINDS` transport (stack captured on the caller's own thread),
+  ``medium`` on every other kind (Chromium-family stacks come from a shared
+  network thread);
+* a flow inheriting its connection's originator gives ``connection-fallback``,
+  always ``low``;
 * a matched Java request context (:mod:`friTap.flow.request_context_join`) gives
-  ``java-request`` (high, or medium when picked among different SDKs) or ``context``
-  (WebView subresource, at most medium). Stronger claims replace weaker ones (:func:`claim_rank`).
+  ``java-request`` (high, or medium among different SDKs) or ``context`` (WebView
+  subresource, at most medium). Stronger claims replace weaker ones (:func:`claim_rank`).
 
-A transport kind is any slug (:data:`KIND_PATTERN`): a signature overlay
-(``FRITAP_SDK_SIGNATURES``) may add kinds beyond the shipped :data:`KINDS`.
-
-``friTap.analysis.attribution.sdk`` imports this module (for
-:func:`module_basename`), so the classifier is imported lazily inside
-:func:`transport_attribution` to avoid an import cycle.
+A transport kind is any slug (:data:`KIND_PATTERN`); a signature overlay may add
+kinds beyond :data:`KINDS`. ``friTap.analysis.attribution.sdk`` imports this
+module, so the classifier is imported lazily to avoid a cycle.
 """
 
 from __future__ import annotations
@@ -40,8 +36,7 @@ from typing import Any, Callable, Optional
 
 from friTap.caller_stack_shapes import COMPACT_TEXT_LIMIT, capped_text
 
-#: Shipped transport kinds (``attribution.transport.kind``) -- documentation
-#: only: an overlay may add more, so a kind is validated by :data:`KIND_PATTERN`.
+#: Shipped transport kinds; an overlay may add more (validated by :data:`KIND_PATTERN`).
 KINDS = frozenset({
     "chrome", "webview", "cronet", "gms-cronet", "httpengine", "flutter",
     "libsignal", "electron", "cef", "other",
@@ -64,9 +59,8 @@ BUCKETS = frozenset({BUCKET_CHROMIUM_INTERNAL, BUCKET_CACHE})
 CHROMIUM_FAMILY_KINDS = frozenset({
     "chrome", "webview", "cronet", "gms-cronet", "httpengine", "electron", "cef",
 })
-#: Transports whose caller stacks are captured on the caller's own thread
-#: (the request is issued synchronously), so a directly joined stack names the
-#: real originator: the only kinds whose ``native-stack`` claim is ``high``.
+#: Transports whose caller stacks are captured on the caller's own thread: the
+#: only kinds whose ``native-stack`` claim is ``high``.
 SYNCHRONOUS_KINDS = frozenset({"libsignal"})
 #: Kind for a TLS module the classifier does not know.
 OTHER_KIND = "other"
@@ -96,8 +90,7 @@ def transport_attribution(module: str, path: str = "", process_name: str = "",
                           package_name: str = "") -> Optional[dict]:
     """``{"module", "kind"}`` for the TLS module that carried a flow.
 
-    A module the classifier does not know is still a transport, of kind
-    ``other``. ``None`` for an empty module.
+    A module the classifier does not know gets kind ``other``; ``None`` for an empty module.
     """
     if not module:
         return None
@@ -109,10 +102,8 @@ def transport_attribution(module: str, path: str = "", process_name: str = "",
 def flow_originator(flow) -> Any:
     """The SDK a flow is attributed to: ``attribution.originator``, else ``flow.sdk``.
 
-    The two-tier originator (the SDK that issued the request) wins over the
-    older single-tier ``flow.sdk``, but only when it names an SDK (a dict with
-    a non-empty string ``sdk``); a nameless originator never shadows
-    ``flow.sdk``. The result is raw: callers normalise it.
+    The two-tier originator wins over the single-tier ``flow.sdk`` only when it
+    names an SDK; the result is raw (callers normalise it).
     """
     originator = _flow_attribution(flow).get("originator")
     if isinstance(originator, dict) and _has_sdk_name(originator):
@@ -143,24 +134,21 @@ def flow_transport_kind(flow) -> Optional[str]:
 
 
 def chromium_internal_candidate(flow) -> bool:
-    """Cheap pre-check for :func:`chromium_internal_update`: no bucket,
-    Chromium-family transport, no originator."""
+    """Cheap pre-check for :func:`chromium_internal_update`."""
     if _flow_attribution(flow).get("bucket"):
         return False
     return flow_transport_kind(flow) in CHROMIUM_FAMILY_KINDS and not flow_originator(flow)
 
 
 def chromium_internal_update(flow, host: str) -> Optional[dict]:
-    """``{"bucket": "chromium-internal"}`` for an unattributed Chromium-family
-    flow to a listed internal host, else ``None``."""
+    """``{"bucket": "chromium-internal"}`` for an unattributed Chromium-family flow to an internal host."""
     if not chromium_internal_candidate(flow):
         return None
     return chromium_internal_host_update(host)
 
 
 def chromium_internal_host_update(host: str) -> Optional[dict]:
-    """The host half of :func:`chromium_internal_update`, for callers that already
-    passed :func:`chromium_internal_candidate`."""
+    """Host half of :func:`chromium_internal_update` for callers that passed the candidate check."""
     if not host or not _chromium_internal_host_check()(host):
         return None
     return {"bucket": BUCKET_CHROMIUM_INTERNAL}
@@ -168,9 +156,7 @@ def chromium_internal_host_update(host: str) -> Optional[dict]:
 
 @functools.cache
 def _chromium_internal_host_check() -> Callable[[str], bool]:
-    """``is_chromium_internal_host`` of the classifier, imported once on first
-    use: friTap.analysis imports this module, so it cannot be imported at
-    module level (see the module docstring)."""
+    """The classifier's ``is_chromium_internal_host``, imported lazily (import cycle)."""
     from friTap.analysis.attribution.sdk import is_chromium_internal_host
     return is_chromium_internal_host
 
@@ -182,13 +168,7 @@ def _flow_attribution(flow) -> dict:
 
 
 def direct_attribution(sdk: dict, transport_kind: str) -> dict:
-    """Originator claim of a directly joined caller stack (``native-stack``).
-
-    ``high`` only on a :data:`SYNCHRONOUS_KINDS` transport, whose stack is
-    captured on the caller's own thread; ``medium`` on every other kind
-    (Chromium-family, ``other``, empty or overlay-added), whose stack may come
-    from a shared network thread.
-    """
+    """Originator claim of a directly joined caller stack (``native-stack``): ``high`` on SYNCHRONOUS_KINDS, else ``medium``."""
     confidence = (CONFIDENCE_HIGH if transport_kind in SYNCHRONOUS_KINDS
                   else CONFIDENCE_MEDIUM)
     return {"originator": dict(sdk), "source": SOURCE_NATIVE_STACK,
@@ -196,20 +176,13 @@ def direct_attribution(sdk: dict, transport_kind: str) -> dict:
 
 
 def inherited_attribution(sdk: dict) -> dict:
-    """Originator claim of a flow inheriting its connection's originator.
-
-    Always ``connection-fallback`` / ``low``: never ``high``.
-    """
+    """Originator claim of a flow inheriting its connection's originator (``connection-fallback``, always ``low``)."""
     return {"originator": dict(sdk), "source": SOURCE_CONNECTION_FALLBACK,
             "confidence": CONFIDENCE_LOW}
 
 
 def request_attribution(sdk: dict, confidence: str, source: str) -> dict:
-    """Originator claim of a matched Java request context.
-
-    *source* must be ``java-request`` or ``context``; a ``context`` claim is
-    capped at ``medium`` (it is inherited from the owning WebView load).
-    """
+    """Originator claim of a matched Java request context; a ``context`` claim is capped at ``medium``."""
     if source not in REQUEST_SOURCES:
         raise ValueError(f"not a request-context source: {source!r}")
     if confidence not in CONFIDENCE:
@@ -222,9 +195,8 @@ def request_attribution(sdk: dict, confidence: str, source: str) -> dict:
 def claim_rank(claim: Optional[dict]) -> tuple:
     """Precedence of an originator claim as ``(confidence, source)`` weights.
 
-    Compared as a tuple: confidence first (high > medium > low), the source
-    breaks ties (java-request > context > native-stack > connection-fallback).
-    A missing or nameless originator ranks ``(0, 0)``, below every claim.
+    Confidence first, then source (java-request > context > native-stack >
+    connection-fallback). A missing or nameless originator ranks ``(0, 0)``.
     """
     if not isinstance(claim, dict) or not claim.get("originator"):
         return (0, 0)
@@ -235,12 +207,9 @@ def claim_rank(claim: Optional[dict]) -> tuple:
 def merge_attribution(existing: Optional[dict], update: dict) -> dict:
     """Merge *update* into a copy of *existing* without clobbering.
 
-    The transport is kept when already set; an existing originator claim
-    (originator + confidence + source) is replaced only by a strictly
-    stronger one (:func:`claim_rank`), never by an equal or weaker one; a
-    missing bucket is filled; ``mixed`` only ever turns on. A
-    ``chromium-internal`` bucket never coexists with an originator: it is
-    dropped once one is present (it means "no SDK issued this").
+    The transport is kept once set; an originator claim is replaced only by a
+    strictly stronger one (:func:`claim_rank`); a missing bucket is filled;
+    ``mixed`` only turns on. ``chromium-internal`` is dropped once an originator exists.
     """
     merged = dict(existing or {})
     if "transport" in update and "transport" not in merged:
@@ -263,11 +232,8 @@ def merge_attribution(existing: Optional[dict], update: dict) -> dict:
 def sanitize_attribution(value) -> Optional[dict]:
     """Re-bound an untrusted ``attribution`` (e.g. read from a ``.tap``).
 
-    Keeps whitelisted keys only, drops enum values outside their sets and kinds
-    that are not slugs, requires strings (escaped and capped at
-    :data:`~friTap.caller_stack_shapes.COMPACT_TEXT_LIMIT`, like
-    ``caller_stack``), keeps ``mixed`` only when it is
-    ``True``. ``None`` when nothing survives.
+    Whitelisted keys only; out-of-set enum values and non-slug kinds dropped;
+    strings escaped and capped like ``caller_stack``. ``None`` when nothing survives.
     """
     if not isinstance(value, dict):
         return None
@@ -307,11 +273,7 @@ def _sanitize_transport(value) -> Optional[dict]:
 
 
 def _sanitize_originator(value) -> Optional[dict]:
-    """``{"sdk", "vendor", "category"}`` keeping string fields only, else ``None``.
-
-    ``None`` too when no non-empty ``sdk`` name survives: a nameless
-    originator is dropped entirely rather than kept as vendor/category only.
-    """
+    """``{"sdk", "vendor", "category"}`` string fields; ``None`` without a non-empty ``sdk``."""
     if not isinstance(value, dict):
         return None
     originator = {}

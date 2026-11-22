@@ -1,11 +1,6 @@
 #!/usr/bin/env python3
 
-"""
-ScriptContext — frozen dataclass encapsulating everything a ScriptPlugin needs.
-
-Passed to ScriptPlugin.on_instrument() and on_detach_process() so that
-plugins can create/load scripts without reaching into SSL_Logger internals.
-"""
+"""Frozen ScriptContext passed to ScriptPlugin.on_instrument() / on_detach_process()."""
 
 from __future__ import annotations
 
@@ -22,31 +17,12 @@ if TYPE_CHECKING:
 class ScriptContext:
     """Immutable snapshot of the instrumentation environment.
 
-    Attributes
-    ----------
-    backend : Backend
-        Backend ABC instance (e.g. FridaBackend).
-    process : Any
-        Backend-specific process/session handle.
-    device : Any
-        Backend-specific device handle (may be None for local).
-    runtime : str
-        JavaScript runtime — ``"qjs"`` or ``"v8"``.
-    event_bus : EventBus
-        Shared event bus for emitting events.
-    backend_name : str
-        Short backend identifier (``"frida"``, ``"ebpf"``, ``"gdb"``).
-    debug : bool
-        True when debug mode (Chrome Inspector) is active.
-    debug_output : bool
-        True when verbose debug logging is active.
-    script_load_timeout : float | None
-        Upper bound in seconds for a plugin's ``load_script()`` call, already
-        resolved from the host's configuration (see
-        :func:`friTap.config.effective_script_load_timeout`). ``None`` means
-        "no bound" — either the user opted out with ``--script-load-timeout 0``
-        or the host did not supply one. Carried here rather than fetched by the
-        plugin so that ``ScriptPlugin`` never has to reach back into the host.
+    ``process`` and ``device`` are backend-specific handles (``device`` may be
+    None for local). ``runtime`` is ``"qjs"`` or ``"v8"``; ``backend_name`` is
+    ``"frida"``, ``"ebpf"`` or ``"gdb"``; ``debug`` means Chrome Inspector.
+    ``script_load_timeout`` bounds a plugin's ``load_script()`` in seconds
+    (see :func:`friTap.config.effective_script_load_timeout`); None means no
+    bound (``--script-load-timeout 0`` or none supplied).
     """
 
     backend: "Backend"

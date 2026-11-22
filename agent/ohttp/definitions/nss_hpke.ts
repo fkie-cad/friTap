@@ -2,14 +2,8 @@ import { looksLikeBhttp, sendOhttpPlaintext } from "./bhttp.js";
 import { devlog } from "../../util/log.js";
 import type { HookDefinition } from "../../core/hook_definition.js";
 import { pcap_enabled } from "../../fritap_agent.js";
-
-function readSECItem(ptr: NativePointer): { data: NativePointer; len: number } | null {
-    if (ptr.isNull()) return null;
-    const dataPtr = ptr.add(Process.pointerSize).readPointer();
-    const len = ptr.add(Process.pointerSize * 2).readU32();
-    if (len === 0 || dataPtr.isNull()) return null;
-    return { data: dataPtr, len };
-}
+import { NSS_HPKE_SYMBOLS } from "../../tls/libs/nss_windows_libraries.js";
+import { readSecItemView } from "../../shared/sec_item.js";
 
 function installNssHpkeOhttp(
     addresses: { [key: string]: { [fn: string]: NativePointer } },
@@ -22,7 +16,7 @@ function installNssHpkeOhttp(
     if (sealAddr && !sealAddr.isNull()) {
         Interceptor.attach(sealAddr, {
             onEnter(args) {
-                const ptItem = readSECItem(args[2]);
+                const ptItem = readSecItemView(args[2]);
                 if (!ptItem || !looksLikeBhttp(ptItem.data, ptItem.len)) return;
                 devlog(`[*] OHTTP: PK11_HPKE_Seal fired — ${ptItem.len} bytes bhttp request`);
                 sendOhttpPlaintext("request", "PK11_HPKE_Seal",
@@ -45,7 +39,7 @@ function installNssHpkeOhttp(
                 if (!this.outPtPtr || this.outPtPtr.isNull()) return;
                 const outPt = this.outPtPtr.readPointer();
                 if (outPt.isNull()) return;
-                const ptItem = readSECItem(outPt);
+                const ptItem = readSecItemView(outPt);
                 if (!ptItem || !looksLikeBhttp(ptItem.data, ptItem.len)) return;
                 devlog(`[*] OHTTP: PK11_HPKE_Open fired — ${ptItem.len} bytes bhttp response`);
                 sendOhttpPlaintext("response", "PK11_HPKE_Open",
@@ -58,16 +52,18 @@ function installNssHpkeOhttp(
     }
 }
 
+/**
+ * PK11_HPKE_Seal / PK11_HPKE_Open are exported by the nss3 module itself on every platform
+ * (libnss3.so, libnss3.dylib, and (lib)nss3.dll in both the folded and the unfolded Windows
+ * layout), and every platform row matches exactly that module, so they resolve in it.
+ */
 export function createNssHpkeDefinition(): HookDefinition {
     return {
         libraryId: "nss_hpke",
         offsetKey: "nss_hpke",
         functions: {
-            librarySymbols: [],
+            librarySymbols: [...NSS_HPKE_SYMBOLS],
             socketSymbols: [],
-            auxiliaryLibraries: [
-                { pattern: "*libnss*", symbols: ["PK11_HPKE_Seal", "PK11_HPKE_Open"] }
-            ],
         },
         nativeFunctions: [],
         fdDecoder: () => -1,

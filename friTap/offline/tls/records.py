@@ -53,8 +53,8 @@ def _starts_record_chain(stream: bytes, i: int) -> bool:
 def find_record_boundary(stream: bytes, start: int = 0) -> Optional[int]:
     """Offset of the first plausible TLS record boundary at/after *start*, or None.
 
-    Resyncs a byte run that begins INSIDE a record (a capture that started
-    mid-record, or a TCP start gap). A candidate must be a plausible header whose
+    Resyncs a run that begins inside a record (mid-record capture or TCP start
+    gap). A candidate must be a plausible header whose
     record is followed by another plausible header (or ends the run), so random
     ciphertext bytes rarely pass. Any real boundary lies within one maximum-size
     record of *start*, which bounds the search.
@@ -74,7 +74,7 @@ def parse_records(
 
     With ``validate`` the split stops at the first implausible header (see
     :func:`plausible_record_header`) instead of emitting a garbage record; the
-    default keeps the historical length-only framing.
+    default is length-only framing.
     """
     out, i, n = [], 0, len(stream)
     while i + 5 <= n:
@@ -95,10 +95,6 @@ def client_random_from_clienthello(frag: bytes) -> Optional[str]:
         return frag[6:38].hex()
     return None
 
-
-# --------------------------------------------------------------------------- #
-# Handshake message walking and ServerHello details
-# --------------------------------------------------------------------------- #
 
 # RFC 8446 sec 4.1.3: a HelloRetryRequest is a ServerHello whose random is
 # SHA-256("HelloRetryRequest").

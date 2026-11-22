@@ -15,8 +15,8 @@ from friTap.analysis import Finding, Severity
 from friTap.flow.models import Flow, FlowChunk, FlowState
 from friTap.flow.tap_format import FLAG_HAS_FINDINGS, FLAG_HAS_INDEX
 from friTap.flow.tap_reader import TapReader
-from friTap.flow.tap_writer import TapWriter
 from friTap.parsers.base import ParseResult
+from tests.unit._tui_flow_helpers import write_tap
 
 
 def _make_flow(flow_id: str) -> Flow:
@@ -47,19 +47,15 @@ def _make_flow(flow_id: str) -> Flow:
 
 
 def _write_tap(path: str, *, with_findings: bool) -> None:
-    writer = TapWriter()
-    writer.open(path)
-    writer.write_flow(_make_flow("flow-1"))
-    if with_findings:
-        writer.write_findings("flow-1", [Finding(
-            severity=Severity.HIGH,
-            title="AWS Access Key detected",
-            description="key in body",
-            source="credentials",
-            flow_id="flow-1",
-            evidence={"value": "AKIA****"},
-        )])
-    writer.close()
+    findings = {"flow-1": [Finding(
+        severity=Severity.HIGH,
+        title="AWS Access Key detected",
+        description="key in body",
+        source="credentials",
+        flow_id="flow-1",
+        evidence={"value": "AKIA****"},
+    )]} if with_findings else None
+    write_tap(path, [_make_flow("flow-1")], target="", findings=findings)
 
 
 def _clear_header_flags(path: str, mask: int) -> None:

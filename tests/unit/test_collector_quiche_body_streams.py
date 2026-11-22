@@ -84,12 +84,14 @@ def test_body_joins_the_decoded_headers_flow_of_its_stream():
     assert _flow_bytes(flows[0], "read") == b"<html>"
 
 
-def test_body_without_stream_id_keeps_the_legacy_connection_path():
+def test_bodies_without_stream_id_share_the_unattributed_body_flow():
     collector = _feed(_request_body(-1, b"a"), _response_body(-1, b"b"))
     flows = collector.get_flows()
     assert len(flows) == 1
     assert _flow_bytes(flows[0], "write") == b"a"
     assert _flow_bytes(flows[0], "read") == b"b"
+    conn = next(iter(collector._connections.values()))
+    assert conn.quic_unattributed_flow_id == flows[0].flow_id
 
 
 def test_tls_labelled_quiche_bodies_still_route_per_stream_and_complete():

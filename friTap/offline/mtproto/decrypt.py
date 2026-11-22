@@ -75,12 +75,11 @@ def _message_timestamp(
     ts = ts_of(frame_end - 1) if ts_of is not None else 0.0
     return ts if ts > 0 else _msg_id_seconds(msg_id)
 
-# Telegram's published data-center IP ranges (the same blocks the apps hardcode
-# as DC endpoints). Membership here is our MTProto-evidence heuristic for a
-# stream whose obfuscation init block we never captured: offline we cannot probe
-# reachability, so "the peer is a known Telegram DC" is the strongest signal on
-# hand that an init-less stream really is MTProto and not, say, foreign TLS or a
-# plain TCP flow captured mid-connection. Kept deliberately small and explicit.
+
+# Telegram's published data-center IP ranges (the blocks the apps hardcode as DC
+# endpoints). Offline there is no way to probe reachability, so "the peer is a
+# known Telegram DC" is the strongest available evidence that an init-less stream
+# is MTProto and not foreign TLS or plain TCP captured mid-connection.
 _TELEGRAM_DC_NETS = tuple(
     ipaddress.ip_network(cidr)
     for cidr in (
@@ -110,13 +109,10 @@ def _is_telegram_dc(addr: str) -> bool:
 
 
 def _has_mtproto_evidence(pair: StreamPair) -> bool:
-    """Positive evidence that a degraded (init-less) *pair* is really MTProto.
+    """True if either endpoint of an init-less *pair* is a known Telegram DC.
 
-    We cannot de-obfuscate without the init block, so instead we ask whether
-    either endpoint is a known Telegram DC. Only then do we count the stream
-    toward ``streams_degraded`` (the real Telegram-degraded number); everything
-    else is bucketed as ``streams_degraded_non_mtproto`` so foreign/empty streams
-    do not inflate the figure the user acts on.
+    Only such streams count toward ``streams_degraded``; the rest go to
+    ``streams_degraded_non_mtproto`` so foreign/empty streams do not inflate it.
     """
     return _is_telegram_dc(pair.server_addr[0]) or _is_telegram_dc(pair.client_addr[0])
 
@@ -132,32 +128,23 @@ def iter_decrypted_messages(
 ) -> Iterator[DecryptedMessage]:
     """Yield every decryptable MTProto message from ``pcap_path``.
 
-    For each reassembled conversation:
-      * de-obfuscate the first 64 client bytes and detect the transport tag; a
-        ``None`` result means the stream is not MTProto — skip it silently;
-      * CTR-decrypt both directions and split into outer records via
-        :func:`iter_frames`;
-      * decrypt each record with the auth_key looked up by ``outer[0:8]``.
+    Per conversation: de-obfuscate the 64-byte client init block and detect the
+    transport tag (``None`` = not MTProto, skipped silently), CTR-decrypt both
+    directions, split into outer records and decrypt each with the auth_key
+    looked up by ``outer[0:8]``.
 
-    Unknown key, msg_key-verify failure -> ``records_undecryptable``, further
-    split by cause into ``records_malformed`` / ``records_unknown_key`` /
-    ``records_crypto_failed``; the auth_key_ids behind the unknown-key ones are
-    collected in ``stats.unknown_key_ids`` so a caller can go hunt those keys.
-    Streams are bucketed by the ACCURATE reason they could not decrypt: a genuinely
-    mid-connection stream -> ``streams_degraded``; a short/lossy client run ->
-    ``streams_short``; a known-but-unsupported transport framing (padded/full) ->
-    ``streams_unsupported_framing`` (each logged). A :class:`MtprotoDependencyError`
-    from the backend is re-raised.
+    Failed records count as ``records_undecryptable``, split into
+    ``records_malformed`` / ``records_unknown_key`` / ``records_crypto_failed``;
+    unknown auth_key_ids are collected in ``stats.unknown_key_ids`` for a key hunt.
+    Undecryptable streams are bucketed by reason (``streams_degraded``,
+    ``streams_short``, ``streams_unsupported_framing``) and logged.
+    :class:`MtprotoDependencyError` is re-raised.
 
-    When ``obf_keys`` (memory-recovered ``MTPROTO_OBF_KEY`` entries) are supplied, an
-    init-less/mid-stream conversation that would otherwise only be counted degraded
-    is re-attempted by seeding the de-obfuscation cipher from the recovered live CTR
-    state (see :func:`_process_recovered_stream`); on success its records decrypt
-    normally and ``streams_recovered_via_obf`` is bumped.
-
-    ``obf_max_blocks`` bounds how far behind the live CTR counter each direction is
-    searched during that mid-stream recovery (see :func:`recover_obf_alignment`);
-    raise it when the obfuscation key was captured long after the pcap.
+    With ``obf_keys`` (memory-recovered ``MTPROTO_OBF_KEY`` entries), an init-less
+    conversation is re-attempted from the recovered live CTR state (see
+    :func:`_process_recovered_stream`). ``obf_max_blocks`` bounds how far behind the
+    live CTR counter each direction is searched; raise it when the obfuscation key
+    was captured long after the pcap.
     """
     # Lazy backend check: surface a missing crypto dep to the parent immediately.
     from . import MTPROTO_DEPENDENCY_HINT, crypto
@@ -189,18 +176,12 @@ def _process_stream(
     client = pair.client
     client_bytes = client.contiguous_bytes()
 
-    # E1/E3: A stream whose contiguous client run does not even reach the 64-byte
-    # init block cannot be de-obfuscated. Previously EVERY such stream was counted
-    # as a degraded MTProto stream (before detect_transport ran), so plain TCP
-    # captured mid-flow and empty/handshake-only connections inflated the number.
-    # Now we count it toward ``streams_degraded`` only with positive MTProto
-    # evidence; otherwise it goes to the separate non-MTProto bucket.
+    # A client run shorter than the 64-byte init block cannot be de-obfuscated.
+    # It counts as MTProto only with positive evidence (a Telegram DC endpoint).
     if len(client_bytes) < INIT_BLOCK_LEN:
-        # M4: the init block is unreachable, but a download-heavy / idle-client
-        # mid-stream flow can still be recovered from its SERVER run alone. Only a
-        # stream whose server run can hold an outer record is worth the search, so
-        # short non-MTProto streams stay cheap; a miss falls through to the
-        # unchanged short / non-MTProto classification below.
+        # A download-heavy / idle-client mid-stream flow can still be recovered
+        # from its server run alone. Only a server run that can hold an outer
+        # record is worth the search, so short non-MTProto streams stay cheap.
         if obf_keys and len(pair.server.contiguous_bytes()) >= _MIN_RECOVERABLE_RUN:
             recovered = _try_obf_recovery(
                 pair, obf_keys, keymap, stats, obf_max_blocks=obf_max_blocks
@@ -208,7 +189,7 @@ def _process_stream(
             if recovered is not None:
                 yield from recovered
                 return
-        # E3: classify WHY the init is missing, purely for an accurate hint.
+        # Classify why the init is missing, only for an accurate hint.
         if not client.saw_syn:
             reason = "capture started mid-flow (no client SYN observed)"
         elif client.has_start_gap:
@@ -216,9 +197,7 @@ def _process_stream(
         else:
             reason = "the connection carried too little client data to de-obfuscate"
         if _has_mtproto_evidence(pair):
-            # D3: this is a SHORT/lossy stream (a start gap or too little client
-            # data), NOT a connection captured mid-flow. Count it under its own
-            # reason so it is not reported as "started mid-connection".
+            # A short/lossy stream, not one captured mid-flow.
             stats.add_short_stream()
             logger.info(
                 "Skipping MTProto stream %s<->%s: %s (need the first %d client "
@@ -229,8 +208,7 @@ def _process_stream(
                 INIT_BLOCK_LEN,
             )
         else:
-            # No Telegram-DC endpoint: almost certainly not MTProto. Do not let it
-            # inflate the MTProto-degraded figure; record it separately at debug.
+            # No Telegram-DC endpoint: almost certainly not MTProto.
             stats.add_degraded_non_mtproto()
             logger.debug(
                 "Ignoring init-less non-MTProto stream %s<->%s (%s).",
@@ -242,19 +220,13 @@ def _process_stream(
 
     cipher = ObfuscationCipher(client_bytes[:INIT_BLOCK_LEN])
 
-    # Decrypt the init block (first 64 client bytes) to read the transport tag.
     decrypted_init = cipher.decrypt_out(client_bytes[:INIT_BLOCK_LEN])
     transport_type = detect_transport(decrypted_init)
     if transport_type is None:
-        # E3: a None tag normally means "not MTProto" (false-positive guard). But
-        # when we never saw the client SYN, the first contiguous bytes are NOT
-        # guaranteed to be the real init block, so a None does not prove non-MTProto
-        # — it may be a genuine mid-stream Telegram session whose true init we never
-        # captured. With DC evidence, classify it as degraded (recoverable once
-        # captured from the start) instead of silently dropping it.
-        # F: an init-less/mid-stream conversation is exactly the case the recovered
-        # obfuscation keys exist for. Try to re-derive the stream from the live CTR
-        # state before falling back to E's degraded counting.
+        # A None tag normally means "not MTProto". Without the client SYN the first
+        # contiguous bytes need not be the real init block, so this may be a
+        # mid-stream Telegram session: try the recovered obfuscation keys first,
+        # then classify it as degraded when there is DC evidence.
         if obf_keys:
             recovered = _try_obf_recovery(
                 pair, obf_keys, keymap, stats, obf_max_blocks=obf_max_blocks
@@ -262,11 +234,8 @@ def _process_stream(
             if recovered is not None:
                 yield from recovered
                 return
-            # F/E3: recovery WAS attempted but no supplied key aligned. This is a
-            # distinct outcome from a mid-stream flow we never had keys for, so it is
-            # counted ONLY as degraded_unrecovered — returning here keeps it mutually
-            # exclusive with the add_degraded() bucket below (a flow with obf keys
-            # supplied must never be double-counted as both).
+            # Recovery was attempted but no key aligned. Returning here keeps
+            # degraded_unrecovered mutually exclusive with add_degraded() below.
             stats.add_degraded_unrecovered()
             logger.info(
                 "MTProto stream %s<->%s looks mid-stream, but no supplied "
@@ -279,8 +248,7 @@ def _process_stream(
             )
             return
         if not client.saw_syn and _has_mtproto_evidence(pair):
-            # A mid-stream flow with NO obf keys supplied: the only recovery path is a
-            # re-capture from the start, so it is counted degraded (not unrecovered).
+            # Mid-stream with no obf keys: only a re-capture can recover it.
             stats.add_degraded()
             logger.info(
                 "MTProto stream %s<->%s looks mid-stream (no SYN, init not "
@@ -290,13 +258,10 @@ def _process_stream(
             )
         return  # SYN-anchored + no tag -> genuinely not MTProto, skip silently
 
-    # E2: a valid init block followed by a LATER gap should not discard the whole
-    # stream. ``contiguous_bytes()`` already stops at the first gap, so decrypting
-    # it yields exactly the recoverable pre-gap prefix. Note the truncation and
-    # count the stream as partial rather than dropping every message on it.
+    # A gap after a valid init block keeps the stream: ``contiguous_bytes()`` stops
+    # at the first gap, so the pre-gap prefix decrypts and the stream counts partial.
     truncated = client.degraded or pair.server.degraded
 
-    # Continue the keystream over the rest of each direction.
     client_payload = cipher.decrypt_out(client_bytes[INIT_BLOCK_LEN:])
     server_payload = cipher.decrypt_in(pair.server.contiguous_bytes())
 
@@ -310,9 +275,8 @@ def _process_stream(
             ts_of=_offset_ts_lookup(pair.server, 0),
         )
     except NotImplementedError:
-        # D5: the connection start WAS captured; only the framing (padded-
-        # intermediate / full / Fake-TLS) is not yet decodable. Count it under its
-        # own reason rather than as a mid-connection ("degraded") stream.
+        # The start was captured; only the framing (padded-intermediate / full /
+        # Fake-TLS) is not decodable, so this is not a degraded stream.
         stats.add_unsupported_framing()
         logger.info(
             "Skipping MTProto stream %s<->%s: %r transport framing is not yet "
@@ -379,10 +343,10 @@ def _key_endpoint_in(key: MtprotoObfKey, endpoints: Set[str]) -> bool:
 def _ordered_obf_keys(
     obf_keys: Sequence[MtprotoObfKey], pair: StreamPair
 ) -> List[MtprotoObfKey]:
-    """Endpoint-matched keys first, then the rest — cheap prioritisation of trials.
+    """Endpoint-matched keys first, then the rest.
 
-    The endpoint hint is advisory (blank/``-`` until the agent fills it), so this is
-    only an ordering: every key is still tried, matching the join-by-trial contract.
+    The endpoint hint is advisory (may be ``-``), so this only orders trials; every
+    key is still tried.
     """
     endpoints = _pair_endpoints(pair)
     matched = [k for k in obf_keys if _key_endpoint_in(k, endpoints)]
@@ -403,10 +367,9 @@ def _align_direction(
 ) -> Optional[ObfAlignment]:
     """Align one *direction* (``"write"``/``"read"``) at a fixed depth of ``max_blocks``.
 
-    Returns the resolved :class:`ObfAlignment`, or ``None`` when the run is too
-    short to hold one outer record or nothing aligns. Depth escalation (base pass,
-    then a wide pass for endpoint-matched keys) is the caller's job. *direction*
-    lets the search disambiguate a direction-specific header (the server's quick-ack).
+    Returns the :class:`ObfAlignment`, or ``None`` when the run cannot hold one
+    outer record or nothing aligns. Depth escalation is the caller's job.
+    *direction* disambiguates the server's quick-ack header.
     """
     if len(run) < _MIN_RECOVERABLE_RUN:
         return None
@@ -427,22 +390,21 @@ def _key_half(key: MtprotoObfKey, direction: str) -> Tuple[bytes, bytes, int]:
 
 
 class _ObfAlignmentSearch:
-    """Align each direction of one stream pair INDEPENDENTLY over the candidate keys.
+    """Align each direction of one stream pair independently over the candidate keys.
 
     Memscan keylogs hold several snapshots of the same connection (same key
     material, different live counters), and the snapshot that best reaches the
     client tail need not be the one that reaches the server tail. The search runs:
 
-    1. every key at the BASE depth, stopping at the first key that aligns EITHER
+    1. every key at the base depth, stopping at the first key that aligns either
        direction (the "primary");
-    2. only if nothing aligned: endpoint-matched keys at the WIDE depth, again
+    2. only if nothing aligned: endpoint-matched keys at the wide depth, again
        stopping at the first hit;
     3. for each direction still unaligned: the primary and the remaining keys at
-       the BASE depth (primary, then same key material, then same endpoint, then
-       the rest), then the WIDE depth for endpoint-matched keys carrying the SAME
-       key material as the primary for that direction — other snapshots of the
-       same connection, never unrelated keys (that was the 10+ min
-       wrong-same-endpoint-key hang).
+       the base depth (primary, then same key material, then same endpoint, then
+       the rest), then the wide depth only for endpoint-matched keys with the same
+       key material as the primary. Widening unrelated same-endpoint keys caused
+       a 10+ min hang.
 
     Every ``(direction, key, depth)`` search runs at most once, so an aligned
     direction is never re-searched, and each key actually tried is counted exactly
@@ -562,24 +524,16 @@ def _process_recovered_stream(
 ) -> Optional[List[DecryptedMessage]]:
     """Re-derive an init-less stream from recovered live CTR state, or ``None``.
 
-    The obfuscation key gives the raw AES-256 key + the live CTR counter/phase per
-    direction, but not where the captured tail sits in the keystream; that is found
-    by :func:`recover_obf_alignment`, whose known-plaintext oracle is exactly the
-    auth_key_ids in ``keymap`` (so recovery needs both the obf key AND the auth key,
-    which come from the same memory scan). Each direction is aligned INDEPENDENTLY
-    and may be resolved by a DIFFERENT key (another snapshot of the same
-    connection) — see :class:`_ObfAlignmentSearch` for the bounded search order. A
-    flow whose client tail never aligns is still recovered from the server direction
-    alone, and vice versa. Every aligned direction is de-obfuscated from its
-    resolved offset — via :meth:`ObfuscationCipher.from_recovered` — and handed to
-    the unchanged :func:`_decrypt_direction`. ``obf_max_blocks`` bounds the CTR
-    back-search per direction; an endpoint-matched key auto-widens that bound on a
-    miss. Returns the decrypted messages on success (the caller counts the
-    recovered stream), or ``None`` if no key aligned either direction.
+    The obfuscation key gives the AES-256 key and live CTR counter per direction,
+    not where the captured tail sits in the keystream. :func:`recover_obf_alignment`
+    finds that using the auth_key_ids in ``keymap`` as known plaintext, so recovery
+    needs both keys. Each direction aligns independently, possibly via a different
+    key snapshot (see :class:`_ObfAlignmentSearch`); one aligned direction is enough.
+    ``obf_max_blocks`` bounds the CTR back-search; endpoint-matched keys auto-widen
+    it on a miss. Returns the decrypted messages, or ``None`` if nothing aligned.
     """
     if not keymap:
-        # Without any auth_key the alignment oracle has nothing to test against, so
-        # recovery cannot even begin — leave the stream to E's degraded counting.
+        # No auth_key means no alignment oracle.
         return None
     client_run = pair.client.contiguous_bytes()
     server_run = pair.server.contiguous_bytes()
@@ -606,9 +560,8 @@ def _decrypt_recovered(
 ) -> List[DecryptedMessage]:
     """De-obfuscate and decrypt every direction *search* aligned.
 
-    Each cipher half is seeded from the key + resolved counter of ITS OWN
-    direction; an unaligned direction falls back to the primary key's raw IV and
-    is simply not decrypted.
+    Each cipher half is seeded from its own direction's key and resolved counter;
+    an unaligned direction gets the primary key's raw IV and is not decrypted.
     """
     out = search.aligned.get(CLIENT_TO_SERVER)
     inn = search.aligned.get(SERVER_TO_CLIENT)
@@ -705,9 +658,8 @@ def _decrypt_direction(
         try:
             record = crypto.decrypt_record(entry.auth_key, frame, direction)
         except MtprotoCryptoError:
-            # We HELD this key and it still did not verify. Feeding this id into
-            # a key hunt would find the key we already have, so it is kept out
-            # of ``unknown_key_ids``.
+            # The key is held but did not verify; a key hunt for this id would
+            # only find the same key, so it stays out of ``unknown_key_ids``.
             stats.add_crypto_failure()
             continue
         stats.add_message()

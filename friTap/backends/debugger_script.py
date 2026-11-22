@@ -1,11 +1,8 @@
 #!/usr/bin/env python3
 
-"""
-DebuggerScript — abstract base for GDB/LLDB script wrappers.
+"""Abstract base for the GDB/LLDB Frida-style script wrappers.
 
-Both GDBScript and LLDBScript simulate a Frida-style script using
-debugger breakpoints. This ABC captures the 95% shared logic;
-subclasses override only ``load()`` and ``unload()``.
+Subclasses override only ``load()`` and ``unload()``.
 """
 
 from __future__ import annotations

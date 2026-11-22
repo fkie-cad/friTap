@@ -8,6 +8,9 @@ import { sendKeylog } from "../../../../shared/shared_structures.js";
 import { scheduleBoringSSLSymbolFallback, installBoringSSLSymbolHook, type DumpKeysCb } from "../../../../shared/boringssl_symbol_hook.js";
 import { runForcedAnchorTier, guardKeylogDumpKeys } from "../../../../shared/boringssl_keylog_outcome.js";
 import { pollPatternOutcome } from "../../../../shared/boringssl_pattern_hook.js";
+import {
+    hookLearnedSslLogSecretByName, reportPatternMatchedSslLogSecret, type UserDumpKeysPatterns,
+} from "../../../../shared/boringssl_learned_keylog.js";
 import { GENERIC_BORINGSSL_ARM64_FALLBACK } from "../../../../shared/bundled_cronet_patterns.js";
 import { createKeylogCallbackTracker } from "../../../../shared/keylog_callback_tracker.js";
 
@@ -87,15 +90,28 @@ export class Cronet_Android extends Cronet {
 
 
 
+    private findCronetModule(): Module | null {
+        const cronetModule = Process.findModuleByName(this.module_name);
+        if (cronetModule !== null) return cronetModule;
+        return Process.findModuleByName(this.getSoName(this.module_name));
+    }
+
+    private user_dump_keys_patterns(): UserDumpKeysPatterns {
+        return { json: isPatternReplaced() ? patterns : undefined, fallbackModuleName: "libcronet.so" };
+    }
+
+    // Reuses the ssl_log_secret a previous scan learned for this build; true skips the pattern scan.
+    install_key_extraction_from_learned_cache(): boolean {
+        return hookLearnedSslLogSecretByName(this.module_name,
+            (label, ssl, data, len) => this.dumpKeys(label, ssl, data, len),
+            this.user_dump_keys_patterns(), () => this.findCronetModule());
+    }
+
     install_key_extraction_pattern_hook(){
-        let cronetModule = Process.findModuleByName(this.module_name);
+        const cronetModule = this.findCronetModule();
         if(cronetModule === null){
-            const soName   = this.getSoName(this.module_name);
-            cronetModule = Process.findModuleByName(soName);
-            if(cronetModule === null){
-                devlog_error("Cronet Error: Unable to find module: " + this.module_name);
-                return;
-            }
+            devlog_error("Cronet Error: Unable to find module: " + this.module_name);
+            return;
         }
         const hooker = new PatternBasedHooking(cronetModule);
         // Guarded: the symbol fallback (and, on a total miss, tier 4) can hook
@@ -128,7 +144,9 @@ export class Cronet_Android extends Cronet {
     // once per secret, so the log lives here and waits for the scan's match.
     private logPatternHookInstalledOnce(hooker: PatternBasedHooking): void {
         pollPatternOutcome(hooker, this.module_name).then((matched) => {
-            if (matched) devlog("Installed ssl_log_secret() hooks using byte patterns for module "+this.module_name+".");
+            if (!matched) return;
+            devlog("Installed ssl_log_secret() hooks using byte patterns for module "+this.module_name+".");
+            reportPatternMatchedSslLogSecret(hooker.module, hooker.matchedAddress);
         }).catch(() => { /* informational only */ });
     }
 
@@ -245,6 +263,12 @@ export class Cronet_Android extends Cronet {
         }else{
             //devlog_debug("SSL_CTX_set_keylog_callback not available in "+ this.module_name);
             // hooking ssl_log_secret() from BoringSSL
+            if (this.install_key_extraction_from_learned_cache()) {
+                // [true, null] keeps cronet_execute from scheduling the symbol fallback / tier 4.
+                this.install_plaintext_read_hook();
+                this.install_plaintext_write_hook();
+                return [true, null];
+            }
             hooker_instance = this.install_key_extraction_pattern_hook();
             if(hooker_instance === undefined || hooker_instance === null){
                 return [false, null];

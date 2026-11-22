@@ -4,8 +4,10 @@ import logging
 import os
 import re
 import shlex
+import signal
 import subprocess
 import time
+import weakref
 from enum import Enum
 from functools import cached_property, wraps
 from os.path import exists as file_exists
@@ -13,6 +15,72 @@ from os.path import exists as file_exists
 from .backends import BackendInvalidArgumentError, get_backend
 from .constants import build_capture_bpf
 from .fritap_utility import Failure
+
+
+def adb_child_kwargs():
+    """Popen kwargs that keep a terminal Ctrl+C away from friTap's adb children.
+
+    The terminal sends Ctrl+C to the whole foreground process group, so without
+    a session of their own a 2nd Ctrl+C during teardown would kill the running
+    ``adb pull`` of the full capture (or a tcpdump stop) and lose the pcap.
+    friTap still stops these children itself (terminate/kill, timeouts).
+    POSIX only: Windows console groups were not verified.
+    """
+    if os.name == "posix":
+        return {"start_new_session": True}
+    return {}
+
+
+def run_adb(argv, **kwargs):
+    """subprocess.run for an adb command line, in its own session (see adb_child_kwargs)."""
+    return subprocess.run(argv, **{**adb_child_kwargs(), **kwargs})
+
+
+# Background adb children (popen_adb). Their own session keeps the terminal's
+# Ctrl+C away from them, so a forced exit must stop them itself.
+_background_adb_children = weakref.WeakSet()
+
+
+def popen_adb(argv, **kwargs):
+    """subprocess.Popen for an adb command line, in its own session (see adb_child_kwargs)."""
+    process = subprocess.Popen(argv, **{**adb_child_kwargs(), **kwargs})
+    try:
+        _background_adb_children.add(process)
+    except TypeError:  # an object that cannot be weakly referenced (test doubles)
+        pass
+    return process
+
+
+def kill_adb_child(process, wait_seconds=1.0):
+    """SIGKILL one adb child and everything in its session; wait at most *wait_seconds*.
+
+    The child leads its own session (adb_child_kwargs), so killing its process
+    group also stops helpers it started. Returns True when it is gone; never raises.
+    """
+    try:
+        if process.poll() is not None:
+            return True
+        if adb_child_kwargs():
+            os.killpg(process.pid, signal.SIGKILL)
+        else:
+            process.kill()
+        process.wait(timeout=wait_seconds)
+        return True
+    except Exception:  # noqa: BLE001 - only used on exit paths
+        return False
+
+
+def kill_background_adb_children(wait_seconds=1.0):
+    """Forced-exit net: stop every still-running background adb child; return how many."""
+    killed = 0
+    for process in list(_background_adb_children):
+        try:
+            running = process.poll() is None
+        except Exception:  # noqa: BLE001
+            continue
+        if running and kill_adb_child(process, wait_seconds):
+            killed += 1
+    return killed
 
 
 class RootState(Enum):
@@ -33,6 +101,13 @@ class Android:
     pcap_name = ""
     # Device pid of the tcpdump friTap started (read from its pidfile).
     tcpdump_pid = None
+    # adb pull timeout: a base plus 2 s per MB (assumes >= 0.5 MB/s, slow
+    # devices included), capped so teardown stays bounded. Unknown size gets a
+    # middle value. A pull that still times out keeps the device file.
+    PULL_BASE_TIMEOUT = 30
+    PULL_SECONDS_PER_MB = 2
+    PULL_MAX_TIMEOUT = 600
+    PULL_UNKNOWN_SIZE_TIMEOUT = 120
 
     def __init__(self,  device_id=None):
         self.device_id = device_id
@@ -80,9 +155,63 @@ class Android:
         return self.adb.run('push', src_file, dst, timeout=30)
     push_file = _adb_push_file
     
-    def _adb_pull_file(self,src_file,dst):
-        return self.adb.run('pull', src_file, dst, timeout=30)
+    # The running `adb pull` (None when idle) and its local file, so a forced
+    # exit can stop it and the force-exit timer can see that it progresses.
+    _pull_process = None
+    _pull_target = None
+    # Set once the "device capture was kept ... recover it with" line was logged.
+    recovery_logged = False
+
+    def _adb_pull_file(self, src_file, dst, timeout=PULL_BASE_TIMEOUT):
+        """``adb pull`` as a tracked process; a CompletedProcess, TimeoutExpired on timeout."""
+        process = self.adb.Popen('pull', src_file, dst, text=True)
+        self._pull_process, self._pull_target = process, dst
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            kill_adb_child(process)
+            raise
+        finally:
+            self._pull_process = None
+        return subprocess.CompletedProcess(process.args, process.returncode, stdout, stderr)
     pull_file = _adb_pull_file
+
+    def pull_progress(self):
+        """Bytes the running pull wrote so far, or None when no pull is running."""
+        process = self._pull_process
+        if process is None or process.poll() is not None:
+            return None
+        try:
+            return os.path.getsize(self._pull_target)
+        except (OSError, TypeError):
+            return 0
+
+    def abort_pull(self, wait_seconds=1.0):
+        """Forced-exit net: kill a running pull (bounded). True if one was running."""
+        process = self._pull_process
+        if process is None:
+            return False
+        kill_adb_child(process, wait_seconds)
+        return True
+
+    def remote_file_size(self, path):
+        """Size in bytes of a device file, or ``None`` if it cannot be read."""
+        try:
+            result = self.adb.shell(f'stat -c %s "{path}"', timeout=10)
+        except Exception as exc:
+            self.logger.debug("could not stat %s on the device: %s", path, exc)
+            return None
+        text = str(getattr(result, "stdout", "") or "").strip()
+        return int(text) if result.returncode == 0 and text.isdigit() else None
+
+    @classmethod
+    def pull_timeout_for(cls, size_bytes):
+        """adb pull timeout scaled to the file size, bounded by PULL_MAX_TIMEOUT."""
+        if size_bytes is None:
+            return cls.PULL_UNKNOWN_SIZE_TIMEOUT
+        size_mb = size_bytes / (1024 * 1024)
+        return min(cls.PULL_MAX_TIMEOUT,
+                   cls.PULL_BASE_TIMEOUT + int(size_mb * cls.PULL_SECONDS_PER_MB))
 
     def file_exists(self, path):
         result = self.adb.shell('stat', f'"{path}"')
@@ -173,11 +302,19 @@ class Android:
         device file carries a per-run unique name that differs from the local
         temp capture name.
 
-        Returns the local path of the pulled file, or ``None`` if the pull failed.
+        Returns the local path of the pulled file, or ``None`` if the pull failed,
+        timed out or produced a file smaller than the device file.
         """
         pcap_path = self.dst_path + self.pcap_name
         target = local_path or os.path.join(dest_dir or ".", self.pcap_name)
-        return_Value = self._adb_pull_file(pcap_path, target)
+        remote_size = self.remote_file_size(pcap_path)
+        timeout = self.pull_timeout_for(remote_size)
+        try:
+            return_Value = self._adb_pull_file(pcap_path, target, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            self.logger.error(f"pulling pcap ({pcap_path}) from android device timed out "
+                              f"after {timeout} s (device size: {remote_size} bytes)")
+            return None
         # adb reports the pull summary on stderr (stdout stays empty).
         summary = (return_Value.stdout or return_Value.stderr or "").strip()
         self.logger.info(f"pulling capture from device: {summary}")
@@ -185,7 +322,48 @@ class Android:
         if return_Value.returncode !=0:
             self.logger.error(f"error pulling pcap ({pcap_path}) from android device")
             return None
+        if not self._pulled_completely(target, remote_size):
+            self.logger.error(f"pulled pcap {target} is smaller than the device file "
+                              f"({remote_size} bytes)")
+            return None
         return target
+
+    @staticmethod
+    def _pulled_completely(local_path, remote_size):
+        """True unless the device size is known and the local copy is smaller.
+
+        ``>=``: if the tcpdump stop failed the device file may still grow.
+        """
+        if remote_size is None:
+            return True
+        try:
+            return os.path.getsize(local_path) >= remote_size
+        except OSError:
+            return False
+
+    def recovery_pull_command(self, local_path):
+        """The exact adb command that pulls the kept device capture by hand."""
+        serial = getattr(self, "device_id", None)
+        argv = ["adb"] + (["-s", serial] if serial else [])
+        argv += ["pull", self.dst_path + self.pcap_name, local_path]
+        return shlex.join(argv)
+
+    def keep_device_capture_for_recovery(self, local_path, remove_pidfile=True):
+        """After a failed pull: keep the device pcap, drop only its pidfile, say how to recover.
+
+        The line is logged first so a forced exit cannot lose it. A forced exit
+        passes ``remove_pidfile=False``: its tcpdump kill still needs the pidfile."""
+        self.recovery_logged = True
+        self.logger.error(
+            f"full capture: the device capture was kept at {self.dst_path}{self.pcap_name}; "
+            f"recover it with: {self.recovery_pull_command(local_path)}")
+        if not remove_pidfile:
+            return
+        try:
+            self.adb.shell(f'rm -f "{self._capture_pidfile()}"', timeout=10)
+        except Exception as exc:
+            self.logger.debug("could not remove %s from the device: %s",
+                              self._capture_pidfile(), exc)
 
     def _capture_pidfile(self):
         """Device path of the pidfile next to the tcpdump temp capture."""
@@ -432,6 +610,72 @@ class Android:
             self.logger.debug("get_latest_tombstone failed", exc_info=True)
             return None, ""
 
+    # App-private crash-dump layouts, relative to /data/data/<package>/.
+    # ``*`` is a profile directory and is expanded by the device shell.
+    # Gecko (Firefox, Fenix, Focus, GeckoView apps):
+    GECKO_MINIDUMP_DIRS = (
+        "files/mozilla/*/minidumps",
+        "files/mozilla/Crash Reports/pending",
+    )
+    # Crashpad (Chrome and other Chromium-based apps):
+    CRASHPAD_MINIDUMP_DIRS = tuple(
+        f"{base}{sub}"
+        for base in ("files/crashpad", "cache/Crashpad")
+        for sub in ("", "/pending", "/completed", "/new")
+    )
+    _PACKAGE_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$")
+
+    @classmethod
+    def app_minidump_dirs(cls, package):
+        """Absolute app-private minidump directories of *package* (Gecko +
+        Crashpad); ``[]`` for anything that is not a valid package name."""
+        if not package or not cls._PACKAGE_NAME_RE.match(str(package)):
+            return []
+        return [f"/data/data/{package}/{rel}"
+                for rel in cls.GECKO_MINIDUMP_DIRS + cls.CRASHPAD_MINIDUMP_DIRS]
+
+    @staticmethod
+    def _sh_quote_glob(path):
+        """Double-quote *path* for ``sh`` while leaving ``*`` unquoted so the
+        device shell still expands it ("Crash Reports" keeps its space)."""
+        return '"' + path.replace('*', '"*"') + '"'
+
+    @classmethod
+    def minidump_listing_command(cls, dirs):
+        """One ``sh -c`` command printing ``<mtime-epoch> <path>`` per ``*.dmp``
+        directly inside *dirs*. Wrapped in ``sh -c`` so the glob is expanded by
+        the (possibly su-elevated) shell that can read app-private storage;
+        free of single quotes so every root elevator can wrap it."""
+        quoted = " ".join(cls._sh_quote_glob(d) for d in dirs)
+        script = (f"find {quoted} -maxdepth 1 -type f -name \"*.dmp\" "
+                  f"-exec stat -c \"%Y %n\" {{}} + 2>/dev/null")
+        return f"sh -c '{script}'"
+
+    def list_app_minidumps(self, package, timeout=15):
+        """Raw ``<mtime-epoch> <path>`` lines of *package*'s app-private
+        minidumps, or ``""``. Root only (app-private storage is unreadable to
+        the shell user); the root elevator is the one ADB.find() selected."""
+        dirs = self.app_minidump_dirs(package)
+        if not dirs:
+            return ""
+        try:
+            if not self.adb_check_root():
+                return ""
+            result = self.adb.shell(self.minidump_listing_command(dirs), timeout=timeout)
+            return result.stdout or ""
+        except Exception:
+            self.logger.debug("list_app_minidumps failed", exc_info=True)
+            return ""
+
+    def get_events_logcat(self, timeout=20):
+        """Return the device ``events`` logcat buffer (``am_crash`` /
+        ``am_anr`` records); readable without root. ``""`` when unavailable."""
+        try:
+            return self.adb.shell("logcat -b events -d", timeout=timeout).stdout or ""
+        except Exception:
+            self.logger.debug("get_events_logcat failed", exc_info=True)
+            return ""
+
     def send_ctrlC_over_adb(self):
         return self._run_for_pids("kill -INT %s")
 
@@ -479,14 +723,14 @@ class Android:
 
     def check_adb_availability(self):
         try:
-            subprocess.run(['adb', 'version'], capture_output=True, text=True, timeout=5)
+            run_adb(['adb', 'version'], capture_output=True, text=True, timeout=5)
             return True
         except (FileNotFoundError, subprocess.TimeoutExpired):
             self.logger.error("can't find adb in your path. Please ensure that adb is installed and in your path if you are trying a full capture on Android.")
             return False
 
     def list_devices(self):
-        lines = subprocess.run(['adb', 'devices'], capture_output=True, text=True, timeout=10).stdout.splitlines()
+        lines = run_adb(['adb', 'devices'], capture_output=True, text=True, timeout=10).stdout.splitlines()
         return [x.split()[0] for x in lines[1:] if x]
 
     def list_installed_packages(self):
@@ -620,7 +864,7 @@ class ADB:
 
     def _run(self, *args, **kwargs):
         self.logger_debug('Running `%s`', args)
-        return subprocess.run(*args, **kwargs)
+        return run_adb(*args, **kwargs)
 
     def Popen(self, *args, **kwargs):
         popen_kwargs = {"stdout": subprocess.PIPE, "stderr": subprocess.PIPE}
@@ -629,7 +873,7 @@ class ADB:
 
     def _Popen(self, *args, **kwargs):
         self.logger_debug('Running (popen/background) `%s`', args)
-        return subprocess.Popen(*args, **kwargs)
+        return popen_adb(*args, **kwargs)
 
     def shell(self, *args, background=False, **kwargs):
         cmd = ' '.join(args) if len(args) > 1 else args[0]

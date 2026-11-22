@@ -1,12 +1,9 @@
-"""
-Build the friTap command line for a live capture run as a subprocess.
+"""Build the friTap command line for a live capture run as a subprocess.
 
-A capture is never run in-process: ``SSL_Logger`` teardown ends in
-``os._exit``, which would kill an MCP/REST server. :func:`build_argv` turns a
-:class:`CaptureRequest` into the argv of ``python -m friTap.friTap`` with the
-machine-friendly flags (``-j -`` JSONL on stdout, ``--tap``, ``--duration``,
-``--non-interactive``, ``-q``). It is pure; :func:`validate_request` holds the
-checks that need the protocol catalog.
+A capture is never run in-process: ``SSL_Logger`` teardown ends in ``os._exit``, which would kill an
+MCP/REST server. :func:`build_argv` (pure) turns a :class:`CaptureRequest` into the argv of
+``python -m friTap.friTap`` with machine-friendly flags (``-j -`` JSONL on stdout, ``--tap``,
+``--duration``, ``--non-interactive``, ``-q``); :func:`validate_request` holds the catalog-dependent checks.
 """
 
 from __future__ import annotations
@@ -40,20 +37,10 @@ _KEY_MODES = frozenset({"keys", "full"})
 class CaptureRequest:
     """Everything needed to launch one capture.
 
-    Attributes:
-        target: App identifier, process name, pid or executable path.
-        session_dir: Directory receiving the tap/keylog/pcap/stderr files.
-        args: Arguments for a spawned executable (placed after ``--``).
-        device: ``None``/``"local"`` = local system, ``"usb"`` = first USB
-            device, anything else = a Frida device id (``-m <id>``).
-        host: Remote frida-server ``ip:port`` (``-H``).
-        spawn: Spawn the target instead of attaching.
-        protocols: Protocols to hook; empty = ``--protocol auto``.
-        protocol_options: Per-protocol options (see ``protocol_catalog``).
-        capture: ``keys`` | ``plaintext`` | ``full`` (what is written to disk).
-        duration_s: Capture stops cleanly after this many seconds.
-        follow_exec: Spawn mode: follow the target across ``exec()``.
-        anti_root: Android: enable the anti-root-detection hooks (``--anti_root``).
+    ``args`` go after ``--`` for a spawned executable. ``device``: ``None``/``"local"`` = local system,
+    ``"usb"`` = first USB device, else a Frida device id (``-m``). ``host`` is a remote ``ip:port``
+    (``-H``). Empty ``protocols`` = ``--protocol auto``. ``capture`` (``keys``/``plaintext``/``full``) is
+    what is written to disk. ``follow_exec`` is off by default: Frida child gating can crash fork children.
     """
 
     target: str
@@ -66,7 +53,7 @@ class CaptureRequest:
     protocol_options: Mapping[str, Any] = field(default_factory=dict)
     capture: str = DEFAULT_CAPTURE_MODE
     duration_s: int = DEFAULT_DURATION_S
-    follow_exec: bool = True
+    follow_exec: bool = False
     anti_root: bool = False
 
     @property
@@ -95,7 +82,7 @@ def build_argv(req: CaptureRequest, command: Optional[list[str]] = None) -> list
     argv += ["--protocol", ",".join(req.protocols) or AUTO_PROTOCOL]
     argv += _output_flags(req)
     argv += ["--duration", str(req.duration_s), "--non-interactive", "-q", "-j", "-"]
-    argv += [] if req.follow_exec else ["--no-follow-exec"]
+    argv += ["--follow-exec"] if req.follow_exec else []
     argv += ["--anti_root"] if req.anti_root else []
     argv += _option_flags(req.protocol_options)
     return argv + ["--", req.target, *req.args]
@@ -104,7 +91,7 @@ def build_argv(req: CaptureRequest, command: Optional[list[str]] = None) -> list
 def device_selector(device: Optional[str]) -> Union[bool, str]:
     """The one mapping of a tool's ``device`` string: False = local, True = first USB, else an id.
 
-    Same convention as :attr:`friTap.commands.devices.ListingArgs.device`.
+    Same convention as ``friTap.commands.devices.ListingArgs.device``.
     """
     if not device or device == LOCAL_DEVICE:
         return False
@@ -140,12 +127,9 @@ def _option_flags(options: Mapping[str, Any]) -> list[str]:
 def session_keylog_files(session_dir: Path) -> list[Path]:
     """Existing keylog files of a session: ``keys.log`` and the per-protocol split.
 
-    With several key-emitting protocols (``--protocol auto``/``all`` or a
-    multi-protocol selection) friTap splits ``-k keys.log`` into
-    ``keys.<proto>.log`` (e.g. ``keys.tls.log``), so the base file may not
-    exist. The candidate names come from the output factory's own rule
-    (:func:`friTap.output.factory.active_keylog_paths` under ``auto``, the
-    superset of every selection), so they cannot drift from what was written.
+    With several key-emitting protocols friTap splits ``-k keys.log`` into ``keys.<proto>.log``, so
+    the base file may not exist. Candidate names come from the output factory's own rule
+    (``active_keylog_paths`` under ``auto``, the superset), so they cannot drift from what was written.
     """
     base = session_dir / KEYLOG_NAME
     candidates = [base, *sorted(_split_keylog_paths(base))]

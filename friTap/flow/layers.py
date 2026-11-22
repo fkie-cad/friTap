@@ -1,17 +1,10 @@
-"""Typed protocol-layer model for friTap's protocol-layer-stack feature.
+"""Typed protocol-layer model: a flow is an ordered stack of protocol layers.
 
-A flow becomes an ordered stack of typed protocol layers. Each layer is a
-dataclass carrying its protocol metadata fields plus two shared facets:
-
-  * a directional decrypted-data accessor (:class:`LayerData`), and
-  * a parsed-result reference (:attr:`ProtocolLayer.parsed`).
-
-These modules are pure and self-contained: nothing here imports
-``friTap.flow.models`` at runtime. ``Flow`` and ``ParseResult`` are referenced
-only under :data:`typing.TYPE_CHECKING` for type hints.
-
-A flow-like owner is anything exposing ``get_direction_bytes(direction)`` where
-*direction* is ``"read"`` (server->client) or ``"write"`` (client->server).
+Each layer is a dataclass with protocol metadata plus a directional decrypted-data
+accessor (:class:`LayerData`) and a parsed-result reference
+(:attr:`ProtocolLayer.parsed`). Pure module: ``friTap.flow.models`` is never
+imported at runtime. A flow-like owner exposes ``get_direction_bytes(direction)``
+(``"read"`` server->client, ``"write"`` client->server).
 """
 
 from __future__ import annotations
@@ -25,23 +18,11 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 @dataclass
 class LayerData:
-    """Directional decrypted bytes for a single protocol layer.
+    """Directional decrypted bytes for one protocol layer.
 
-    Three data sources are supported:
-
-      * ``"chunks"`` — bytes are delegated to an owning flow-like object via
-        ``get_direction_bytes`` (no copy is held here). Set :attr:`_owner`
-        externally.
-      * ``"owned"`` — bytes are held in this object's own buffers (used by
-        layers whose decrypted data is produced by an inner decryptor and does
-        not live in the flow's raw chunks).
-      * ``"none"`` — no data available; accessors return ``b""``.
-
-    Fields:
-        data_source: One of ``"chunks"``, ``"owned"`` or ``"none"``.
-        _owner: Flow-like owner exposing ``get_direction_bytes`` (chunks mode).
-        _owned_read: Owned read-direction (server->client) bytes.
-        _owned_write: Owned write-direction (client->server) bytes.
+    ``data_source``: ``"chunks"`` (delegated to the flow-like ``_owner`` via
+    ``get_direction_bytes``, no copy), ``"owned"`` (own buffers, for bytes produced
+    by an inner decryptor) or ``"none"`` (accessors return ``b""``).
     """
 
     data_source: str = "none"
@@ -98,15 +79,11 @@ class LayerData:
 
 @dataclass
 class ProtocolLayer:
-    """Base class for a single typed protocol layer in a flow's stack.
+    """Base class for a typed protocol layer in a flow's stack.
 
-    A layer knows its position in the stack (:attr:`depth`, :attr:`parent`,
-    :attr:`child`), carries its directional decrypted data (:attr:`data`), and
-    resolves a parsed result either from a backing flow attribute
-    (``_parsed_field`` + ``_flow``) or from an inner parsed result set via
-    :meth:`set_parsed` (for owned layers).
-
-    Subclasses set :attr:`NAME` and add protocol metadata fields.
+    Knows its place (:attr:`depth`, :attr:`parent`, :attr:`child`), carries its
+    decrypted :attr:`data`, and resolves a parsed result from a backing flow
+    attribute (``_parsed_field`` + ``_flow``) or from :meth:`set_parsed` (owned layers).
     """
 
     NAME: ClassVar[str] = ""
@@ -118,57 +95,42 @@ class ProtocolLayer:
     _flow: Optional[object] = field(default=None, repr=False)
     _parsed_field: str = ""
     _inner_parsed: Optional["ParseResult"] = field(default=None, repr=False)
-    # Per-instance name override. Concrete subclasses leave this empty and
-    # report their ClassVar :attr:`NAME`; generic layers (e.g. :class:`AppLayer`,
-    # which serves every application protocol from one class) carry their name
-    # here. Set by ``Flow._create_layer`` from the registry/descriptor name.
+    # Per-instance name for generic layers (AppLayer serves every app protocol);
+    # typed subclasses leave it empty and use ``NAME``. Set by ``Flow._create_layer``.
     _name: str = field(default="", repr=False)
-    # Metadata-only marker: this layer carries typed metadata (e.g. a TLS SNI or
-    # the HTTP/2/WebSocket encapsulation markers on an offline-decrypted Signal
-    # flow) but NONE of its own bytes — the decrypted bytes belong to the
-    # innermost layer. Such a layer is "empty of bytes" yet meaningful, so it is
-    # NOT skipped at serialization and never rebinds to the flow's chunks view.
+    # Metadata-only marker: carries typed metadata (e.g. TLS SNI, HTTP/2/WebSocket
+    # markers on an offline-decrypted Signal flow) but none of its own bytes (they
+    # belong to the innermost layer). Not skipped at serialization; never rebinds
+    # to the flow's chunks view.
     metadata_only: bool = False
 
     @property
     def name(self) -> str:
-        """The protocol name of this layer.
-
-        Returns the per-instance :attr:`_name` when set (generic layers),
-        otherwise the class-level :attr:`NAME` (typed transport layers).
-        """
+        """The layer name: per-instance ``_name`` (generic layers), else class ``NAME``."""
         return self._name or self.NAME
 
     @property
     def parsed(self) -> Optional["ParseResult"]:
-        """The parsed result for this layer.
-
-        When :attr:`_parsed_field` and :attr:`_flow` are set, mirror the named
-        flow attribute (e.g. ``"request"``) live. Otherwise fall back to an
-        owned parsed result set via :meth:`set_parsed`.
-        """
+        """The parsed result: mirrors the flow attribute named by ``_parsed_field`` live, else the owned result from :meth:`set_parsed`."""
         if self._parsed_field and self._flow is not None:
             return getattr(self._flow, self._parsed_field, None)
         return self._inner_parsed
 
     def set_parsed(self, pr: Optional["ParseResult"]) -> None:
-        """Set the owned parsed result (used by owned layers)."""
+        """Set the owned parsed result."""
         self._inner_parsed = pr
 
     def is_empty(self) -> bool:
-        """Return True when this layer has no parsed result and no data."""
+        """True when there is no parsed result and no data."""
         return self.parsed is None and self.data.is_empty()
 
     def to_dict(self) -> dict:
-        """Serialize the layer's identity. Subclasses add metadata fields."""
+        """Serialize the layer's identity; subclasses add metadata fields."""
         return {"name": self.name, "depth": self.depth}
 
     @classmethod
     def from_dict(cls, d: dict) -> "ProtocolLayer":
-        """Reconstruct a layer from :meth:`to_dict` output.
-
-        Subclasses override to restore their metadata fields.
-        """
+        """Reconstruct a layer from :meth:`to_dict` output; subclasses restore their fields."""
         layer = cls()
         layer.depth = d.get("depth", 0)
         return layer
@@ -178,12 +140,9 @@ class ProtocolLayer:
 class TlsLayer(ProtocolLayer):
     """TLS protocol layer.
 
-    Carries the five fields mirrored from the legacy
-    ``friTap.flow.models.TlsMetadata`` value object, which this layer will
-    eventually replace, plus ``client_random``: the hex ClientHello random the
-    agent stamped on the connection's records (live flows only). Like
-    :attr:`QuicLayer.library` it is serialized only when non-empty, so flows
-    without it keep their pre-existing ``to_dict`` shape.
+    ``client_random`` is the hex ClientHello random the agent stamped (live flows
+    only); like :attr:`QuicLayer.library` it is serialized only when non-empty so
+    older flows keep their ``to_dict`` shape.
     """
 
     NAME: ClassVar[str] = "tls"
@@ -229,10 +188,8 @@ class TlsLayer(ProtocolLayer):
 class QuicLayer(ProtocolLayer):
     """QUIC protocol layer.
 
-    ``library`` mirrors :attr:`TlsLayer.library` (the hooked TLS/QUIC library,
-    stamped on live flows only). Unlike TlsLayer it is serialized only when
-    non-empty, so offline QUIC flows (which never carry a library) keep their
-    pre-existing ``to_dict`` shape.
+    ``library`` and ``client_random`` mirror :class:`TlsLayer` and are serialized
+    only when non-empty, so offline QUIC flows keep their ``to_dict`` shape.
     """
 
     NAME: ClassVar[str] = "quic"
@@ -244,10 +201,11 @@ class QuicLayer(ProtocolLayer):
     cipher: str = ""
     scid: str = ""
     dcid: str = ""
+    client_random: str = ""
 
     def is_empty(self) -> bool:
         return not (self.library or self.version or self.sni or self.alpn
-                    or self.cipher or self.scid or self.dcid)
+                    or self.cipher or self.scid or self.dcid or self.client_random)
 
     def to_dict(self) -> dict:
         d = super().to_dict()
@@ -261,6 +219,8 @@ class QuicLayer(ProtocolLayer):
             "scid": self.scid,
             "dcid": self.dcid,
         })
+        if self.client_random:
+            d["client_random"] = self.client_random
         return d
 
     @classmethod
@@ -274,6 +234,7 @@ class QuicLayer(ProtocolLayer):
         layer.cipher = d.get("cipher", "")
         layer.scid = d.get("scid", "")
         layer.dcid = d.get("dcid", "")
+        layer.client_random = d.get("client_random", "")
         return layer
 
 
@@ -355,11 +316,9 @@ class IpsecLayer(ProtocolLayer):
 class MtprotoLayer(ProtocolLayer):
     """Telegram MTProto protocol layer.
 
-    The decrypted MTProto *message* bytes ride the flow's chunks (the registry
-    descriptor registers this layer with ``data_source="chunks"``, like tls/quic),
-    fed by the agent's datalog hook (Phase A) or the offline decryptor (Phase B).
-    TL parsing of those bytes is intentionally left to a downstream parser, so this
-    layer carries only transport/identity metadata.
+    Decrypted message bytes ride the flow's chunks (``data_source="chunks"``); TL
+    parsing is left to a downstream parser, so this layer carries only
+    transport/identity metadata.
     """
 
     NAME: ClassVar[str] = "mtproto"
@@ -370,13 +329,11 @@ class MtprotoLayer(ProtocolLayer):
     dc_id: int = 0
     auth_key_id: str = ""      # hex of the auth_key_id that decrypted this flow
     message_count: int = 0
-    # Parsed per-message metadata; each entry is a JSON-native dict:
-    # {direction, kind, body, sender_id, peer_id, has_media}. Populated by the
-    # offline TL parser (friTap.offline.mtproto.content) at emit time.
+    # Per-message metadata dicts {direction, kind, body, sender_id, peer_id,
+    # has_media}, filled by the offline TL parser (friTap.offline.mtproto.content).
     messages: list = field(default_factory=list)
-    # Per-packet forensic metadata (offline, one record per flow): the MTProto
-    # envelope (salt, session_id, msg_id, seq_no, lengths, ...), cross-references
-    # to other records, and structured users seen in this record.
+    # Per-packet forensic metadata (offline, one record per flow): MTProto envelope
+    # (salt, session_id, msg_id, seq_no, ...), cross-references, users seen.
     envelope: dict = field(default_factory=dict)
     refs: dict = field(default_factory=dict)
     users: list = field(default_factory=list)
@@ -418,8 +375,8 @@ class MtprotoLayer(ProtocolLayer):
 
 
 # Additive per-packet metadata shared by MtprotoLayer and TelegramE2ELayer.
-# Serialized only when set, so layers without it keep their exact old shape and
-# taps written before these fields existed load with empty defaults.
+# Serialized only when set, so older taps load with empty defaults and layers
+# without it keep their exact shape.
 _PACKET_META_FIELDS = (("envelope", dict), ("refs", dict), ("users", list))
 _E2E_EXTRA_META = (("peer", dict),)
 
@@ -443,14 +400,11 @@ def _packet_meta_from_dict(layer, d: dict, extra: tuple = ()) -> None:
 
 @dataclass
 class TelegramE2ELayer(ProtocolLayer):
-    """Telegram secret-chat (end-to-end) protocol layer.
+    """Telegram secret-chat (end-to-end) layer, riding INSIDE the MTProto transport.
 
-    A secret-chat layer rides INSIDE the MTProto transport: its decrypted inner
-    payload bytes ride the flow's chunks (the registry descriptor registers this
-    layer with ``data_source="chunks"``, like mtproto/signal), fed by the offline
-    secret-chat decryptor (``origin="decrypted"``) or a future plaintext agent
-    hook (``origin="plaintext_hook"``). TL parsing of those bytes is intentionally
-    left to a downstream parser, so this layer carries only identity metadata.
+    Decrypted inner payload bytes ride the flow's chunks (``data_source="chunks"``),
+    from the offline decryptor (``origin="decrypted"``) or a plaintext hook
+    (``origin="plaintext_hook"``). TL parsing is left to a downstream parser.
     """
 
     NAME: ClassVar[str] = "telegram_e2e"
@@ -460,12 +414,9 @@ class TelegramE2ELayer(ProtocolLayer):
     message_count: int = 0
     origin: str = "decrypted"   # "decrypted" / "plaintext_hook"
     layer_version: int = 0
-    # Parsed per-message metadata; each entry is a JSON-native dict:
-    # {direction, kind, body, sender_id, peer_id, has_media}. Populated by the
-    # offline TL parser (friTap.offline.mtproto.content) at emit time.
+    # Per-message metadata dicts, as on MtprotoLayer.
     messages: list = field(default_factory=list)
-    # Per-packet forensic metadata, as on MtprotoLayer, plus the resolved
-    # Secret-Chat ``peer`` (the other participant, when it can be linked).
+    # Per-packet forensic metadata as on MtprotoLayer, plus the Secret-Chat ``peer`` when linkable.
     envelope: dict = field(default_factory=dict)
     refs: dict = field(default_factory=dict)
     users: list = field(default_factory=list)
@@ -508,11 +459,8 @@ class TelegramE2ELayer(ProtocolLayer):
 class SignalLayer(ProtocolLayer):
     """Signal protocol layer.
 
-    The decrypted inner Signal ``Content`` bytes ride the flow's chunks (the
-    registry descriptor registers this layer with ``data_source="chunks"``, like
-    tls/quic/mtproto), fed by the offline Signal decryptor. Protobuf parsing of
-    those bytes is intentionally left to a downstream parser, so this layer
-    carries only identity metadata.
+    Decrypted inner ``Content`` bytes ride the flow's chunks (``data_source="chunks"``);
+    protobuf parsing is left to a downstream parser, so this layer carries only identity metadata.
     """
 
     NAME: ClassVar[str] = "signal"
@@ -520,11 +468,9 @@ class SignalLayer(ProtocolLayer):
     chat_type: str = ""        # "one_to_one" / "group"
     identifier: str = ""       # hex of the eph_pub (1:1) or auth_tag (group)
     message_count: int = 0
-    # Parsed per-message metadata; each entry is a JSON-native dict:
-    # {sender, direction, timestamp, kind, body, attachments, quote, reaction}.
-    # Plaintext WS/REST metadata records (kind in {rest, ws-request, ws-response,
-    # profile, device-list, prekey}) additionally carry the optional keys
-    # {verb, path, status, request_id, meta} — all backward-compatible (.get).
+    # Per-message metadata dicts {sender, direction, timestamp, kind, body, attachments,
+    # quote, reaction}. Plaintext WS/REST records (kind in {rest, ws-request, ws-response,
+    # profile, device-list, prekey}) add optional {verb, path, status, request_id, meta}.
     messages: list = field(default_factory=list)
 
     def is_empty(self) -> bool:
@@ -557,13 +503,9 @@ class SignalLayer(ProtocolLayer):
 class Rc4Layer(ProtocolLayer):
     """RC4 cipher layer.
 
-    The decrypted RC4 plaintext bytes ride the flow's chunks (the registry
-    descriptor registers this layer with ``data_source="chunks"``, like
-    tls/quic/signal), fed by a later offline RC4-decrypt workstream. When RC4 is
-    nested inside TLS (``--protocol tls,rc4``) this layer renders INSIDE the TLS
-    layer; standalone (``--protocol rc4``) it is the sole cipher layer. This
-    layer carries only identity metadata (which key/hook recovered it); byte
-    parsing is left to a downstream parser.
+    Decrypted RC4 plaintext rides the flow's chunks (``data_source="chunks"``). Under
+    ``--protocol tls,rc4`` it renders INSIDE the TLS layer, standalone it is the
+    sole cipher layer. Carries only identity metadata (which hook recovered the key).
     """
 
     NAME: ClassVar[str] = "rc4"
@@ -573,14 +515,11 @@ class Rc4Layer(ProtocolLayer):
     key_len: int = 0          # RC4 key length in bytes
     assoc: str = ""           # association hint (agent thread id) for the nested case
     message_count: int = 0
-    # RC4-in-TLS record framing of the RC4 stream inside the TLS plaintext:
-    # "u32be-length" (4-byte big-endian length prefix per record) or
-    # "continuous" (one unframed keystream). Empty when unknown/standalone.
+    # Framing of the RC4 stream inside TLS plaintext: "u32be-length" (4-byte BE length
+    # prefix per record) or "continuous" (one unframed keystream); empty if unknown/standalone.
     framing: str = ""
-    # Per-RC4-record metadata. Each entry is a dict {"direction": "write"|"read",
-    # "length": int, "tls_frames": [int, ...], "timestamp": float,
-    # "cipher_offset": int, "frame_header_len": int}. Deliberately NOT named
-    # ``messages``: the TUI treats a layer's ``messages`` as a chat transcript.
+    # Per-record dicts {"direction", "length", "tls_frames", "timestamp", "cipher_offset",
+    # "frame_header_len"}. Not named ``messages``: the TUI treats that as a chat transcript.
     records: list = field(default_factory=list)
 
     def is_empty(self) -> bool:
@@ -621,17 +560,10 @@ class Rc4Layer(ProtocolLayer):
 class AppLayer(ProtocolLayer):
     """Generic application-protocol layer (http1/http2/http3/websocket).
 
-    Unlike the transport layers, application layers carry no distinct typed
-    metadata fields — they MIRROR the flow's parsed request/response via
-    :attr:`ProtocolLayer._parsed_field` (so ``flow.http2.parsed is
-    flow.request``). One class therefore serves every application protocol;
-    the concrete protocol name is held per-instance in
-    :attr:`ProtocolLayer._name` (a sentinel ``NAME = ""`` lets the registry
-    bind several names to this single class).
-
-    The same class also backs generic inner (owned-data) layers produced by
-    the nested-decryption seam, where :meth:`ProtocolLayer.set_parsed` supplies
-    an owned parsed result instead of mirroring a flow field.
+    Mirrors the flow's parsed request/response via ``_parsed_field`` (so
+    ``flow.http2.parsed is flow.request``); the protocol name is per-instance in
+    ``_name`` (``NAME = ""`` lets the registry bind several names to this class).
+    Also backs generic inner owned-data layers from the nested-decryption seam.
     """
 
     NAME: ClassVar[str] = ""
@@ -640,8 +572,7 @@ class AppLayer(ProtocolLayer):
         return self.parsed is None and self.data.is_empty()
 
     def to_dict(self) -> dict:
-        # Base ``to_dict`` already records ``name`` (the per-instance protocol)
-        # and ``depth`` — that is the full identity of an app layer.
+        # Base to_dict (name + depth) is the full identity of an app layer.
         return super().to_dict()
 
     @classmethod

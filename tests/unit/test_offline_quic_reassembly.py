@@ -212,3 +212,27 @@ def test_quic_sink_drains_leftovers_with_last_timestamp():
         (0, b"AB", 1.0), (4, b"Z", 3.0), (0, b"FG", 3.0)]
     assert result.stream_count == 2
     assert result.decrypted_packet_count == 3
+
+
+# --- offline events -> collector chunk stream ids ----------------------------
+
+def test_offline_quic_events_land_as_chunk_stream_ids():
+    import pytest
+
+    pytest.importorskip("pylsqpack")
+    from friTap.flow.collector import FlowCollector
+    from tests.unit._h3_helpers import headers_frame, qpack_encoder
+
+    encoder, _ = qpack_encoder()
+    _, frame = headers_frame(encoder, 4, [
+        (b":method", b"GET"), (b":scheme", b"https"),
+        (b":authority", b"example.com"), (b":path", b"/"),
+    ])
+    events, _ = _feed([_pkt([(4, None, frame, False)])])
+    assert [e.stream_id for e in events] == [4]
+    collector = FlowCollector()
+    for event in events:
+        collector.on_data(event)
+    collector.flush()
+    chunk_ids = {c.stream_id for f in collector.get_flows() for c in f.chunks}
+    assert chunk_ids == {4}

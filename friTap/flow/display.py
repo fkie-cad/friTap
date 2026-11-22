@@ -1,10 +1,8 @@
 """Shared display logic for Flow and FlowSummary.
 
-Free functions that compute display strings from any object whose
-``request`` / ``response`` attributes conform to :class:`ParseLike`.
-Both :class:`~friTap.flow.models.Flow` and
-:class:`~friTap.flow.models.FlowSummary` delegate their ``display_*``
-properties here so the formatting logic exists in exactly one place.
+Free functions computing display strings from any object whose ``request`` /
+``response`` conform to :class:`ParseLike`; both classes delegate their
+``display_*`` properties here.
 """
 
 from __future__ import annotations
@@ -20,17 +18,9 @@ from friTap.flow.layer_registry import (
 _LOOPBACK_ADDRS = frozenset({"127.0.0.1", "::1", "localhost"})
 
 
-# ---------------------------------------------------------------------------
-# Structural type shared by ParseResult and _ParseStub
-# ---------------------------------------------------------------------------
-
 @runtime_checkable
 class ParseLike(Protocol):
-    """Minimal attribute contract for parsed request/response metadata.
-
-    Both ``ParseResult`` (full parser output) and ``_ParseStub``
-    (lightweight summary stub) satisfy this protocol.
-    """
+    """Attribute contract for parsed request/response metadata (``ParseResult`` and ``_ParseStub``)."""
     protocol: str
     method: str
     url: str
@@ -49,10 +39,6 @@ class FlowLike(Protocol):
     detected_protocol: str
 
 
-# ---------------------------------------------------------------------------
-# Display free functions
-# ---------------------------------------------------------------------------
-
 def display_protocol(flow: FlowLike) -> str:
     if flow.request is not None and flow.request.protocol:
         return flow.request.protocol
@@ -63,39 +49,31 @@ def display_protocol(flow: FlowLike) -> str:
     return "unknown"
 
 
-# Ordered layer-name lists shared by the layered display path and the
-# FlowSummary scalars (models.py / tap_format.py). OUTER picks the first app
-# layer present; INNER picks the innermost E2E layer present.
-#
-# ``mtproto`` is BOTH a candidate inner E2E (a plain cloud MTProto flow has only
-# an mtproto layer) AND a candidate outer carrier (a Telegram secret chat rides
-# its ``telegram_e2e`` layer INSIDE the mtproto transport). The carrier list
-# below lets ``display_protocol_layered`` recognise that genuine nesting so it
-# renders ``MTProto[Telegram-E2E]`` while a bare cloud flow stays ``MTProto``.
+# Ordered layer-name lists shared by the layered display path and the FlowSummary
+# scalars. OUTER picks the first app layer present; INNER the innermost E2E layer.
+# ``mtproto`` is both a candidate inner E2E (plain cloud flow) and a candidate outer
+# carrier (a secret chat's ``telegram_e2e`` rides inside it), so nesting renders
+# ``MTProto[Telegram-E2E]`` while a bare cloud flow stays ``MTProto``.
 OUTER_APP_LAYER_NAMES = ("http1", "http2", "http3", "websocket")
-# Derived from the layer-registry descriptors that set an ``inner_e2e_rank``,
-# ordered by it: ("signal", "mtproto", "telegram_e2e", "rc4").
+# Derived from descriptors with an ``inner_e2e_rank``, ordered by it.
 INNER_E2E_LAYER_NAMES = inner_e2e_layer_names()
 
-# Carriers that can wrap a distinct inner E2E layer (outer[inner] nesting).
-# ``mtproto`` carries ``telegram_e2e``; the app layers above carry signal/mtproto.
-# RC4-in-TLS: TLS plaintext carries an RC4 stream -> TLS[RC4]. Derived from the
-# descriptors' ``carrier`` field.
+# Carriers that can wrap a distinct inner E2E layer (outer[inner]), derived from
+# the descriptors' ``carrier`` field (e.g. TLS[RC4]).
 _CARRIER_FOR_INNER = carrier_for_inner()
 
 
 def _carrier_display_names() -> dict:
     """Display names for carrier-only layers absent from LAYER_DISPLAY_NAMES.
 
-    Kept local on purpose: LAYER_DISPLAY_NAMES feeds the display-filter
-    vocabulary, which must not gain a ``tls`` entry through this path.
+    Local on purpose: LAYER_DISPLAY_NAMES feeds the display-filter vocabulary, which must not gain ``tls``.
     """
     from friTap.constants import PROTOCOL_TLS
 
     return {"tls": PROTOCOL_TLS}
 
 
-def _layer_display_name(layer_name: str) -> str:
+def layer_display_name(layer_name: str) -> str:
     """Return the human display string for a protocol-layer NAME."""
     from friTap.constants import LAYER_DISPLAY_NAMES
 
@@ -106,18 +84,10 @@ def _layer_display_name(layer_name: str) -> str:
 def display_protocol_layered(flow) -> str:
     """Compose a layered ``outer-app[inner-E2E]`` protocol string.
 
-    OUTER is the display name of the first app layer present (in order
-    ``http1, http2, http3, websocket``); INNER is the display name of the
-    innermost E2E layer present (in order ``signal, mtproto, telegram_e2e``).
-
-    * both present and different -> ``f"{outer}[{inner}]"`` (e.g. ``HTTP/2[Signal]``)
-    * only inner -> ``inner``
-    * only outer -> ``outer``
-    * neither -> fall back to :func:`display_protocol`
-
-    Accepts either a full ``Flow`` (has ``.layers`` to iterate) or a
-    ``FlowSummary`` (no ``.layers``; reads the ``outer_app_protocol`` /
-    ``inner_e2e_protocol`` scalars).
+    OUTER is the first app layer present, INNER the innermost E2E layer present:
+    both and different -> ``outer[inner]``; one -> that one; neither ->
+    :func:`display_protocol`. Accepts a full ``Flow`` or a ``FlowSummary`` (reads
+    the ``outer_app_protocol`` / ``inner_e2e_protocol`` scalars).
     """
     if hasattr(flow, "layers"):
         outer = ""
@@ -127,22 +97,20 @@ def display_protocol_layered(flow) -> str:
             present.add(getattr(layer, "name", getattr(layer, "_name", "")))
         for name in OUTER_APP_LAYER_NAMES:
             if name in present:
-                outer = _layer_display_name(name)
+                outer = layer_display_name(name)
                 break
         for name in INNER_E2E_LAYER_NAMES:
             if name in present:
-                inner = _layer_display_name(name)
-        # ^ keep scanning so the INNERMOST present E2E layer wins.
-        # When the innermost E2E layer rides inside a protocol carrier that is
-        # ALSO present (e.g. telegram_e2e inside mtproto), promote that carrier
-        # to the outer slot so genuine nesting renders as ``Outer[Inner]``.
+                inner = layer_display_name(name)
+        # (keeps scanning: the innermost E2E layer wins). If its carrier is also
+        # present (telegram_e2e inside mtproto), promote the carrier to outer.
         if not outer:
             inner_name = next(
                 (n for n in reversed(INNER_E2E_LAYER_NAMES) if n in present), ""
             )
             carrier = _CARRIER_FOR_INNER.get(inner_name, "")
             if carrier and carrier in present:
-                outer = _layer_display_name(carrier)
+                outer = layer_display_name(carrier)
     else:
         outer = getattr(flow, "outer_app_protocol", "") or ""
         inner = getattr(flow, "inner_e2e_protocol", "") or ""
@@ -159,30 +127,26 @@ def display_protocol_layered(flow) -> str:
 def layered_scalars_from_flow(flow) -> tuple:
     """Compute ``(outer_app_protocol, inner_e2e_protocol, inner_summary)``.
 
-    Uses the NON-mutating ``flow.layer(name)`` lookup (never attribute access,
-    which would materialize an empty layer) so a summary stays a pure read.
-    Shared by both FlowSummary implementations for offline/live parity.
+    Uses the non-mutating ``flow.layer(name)`` (attribute access would materialize
+    an empty layer). Shared by both FlowSummary implementations for offline/live parity.
     """
     outer = ""
     for name in OUTER_APP_LAYER_NAMES:
         if flow.layer(name) is not None:
-            outer = _layer_display_name(name)
+            outer = layer_display_name(name)
             break
     inner = ""
     inner_name = ""
     for name in INNER_E2E_LAYER_NAMES:
         if flow.layer(name) is not None:
-            inner = _layer_display_name(name)
+            inner = layer_display_name(name)
             inner_name = name
-    # ^ keep scanning so the INNERMOST present E2E layer wins.
-    # Promote a protocol carrier (e.g. mtproto wrapping telegram_e2e) to the
-    # outer slot when present, so the stored summary scalars reproduce the
-    # ``Outer[Inner]`` nesting offline. A bare cloud flow has no such carrier
-    # and keeps an empty outer (renders as the plain inner protocol).
+    # Keep scanning (innermost E2E wins); promote a present carrier (mtproto around
+    # telegram_e2e) to outer so stored scalars reproduce ``Outer[Inner]`` offline.
     if not outer and inner_name:
         carrier = _CARRIER_FOR_INNER.get(inner_name, "")
         if carrier and flow.layer(carrier) is not None:
-            outer = _layer_display_name(carrier)
+            outer = layer_display_name(carrier)
 
     inner_summary = ""
     signal_layer = flow.layer("signal")
@@ -202,20 +166,16 @@ def display_method(request: Optional[ParseLike]) -> str:
     return ""
 
 
-# Telegram layer names (cloud MTProto, then Secret-Chat E2E) in iteration order.
-# The same names as ``layer_pipeline.MESSAGE_TRANSPORTS`` (a set, unordered),
-# here in registry order; every ordered scan of Telegram layers uses this.
+# Telegram layer names (cloud MTProto, then Secret-Chat E2E) in registry order
+# (``layer_pipeline.MESSAGE_TRANSPORTS`` is the unordered set).
 TELEGRAM_LAYER_NAMES = message_transport_names()
-# Layer names whose ``messages`` carry a per-item ``method`` (TL operation name)
-# that can stand in for the HTTP-style Method column. Innermost (E2E) last so a
-# secret-chat method wins over the carrier transport when both exist.
+# Layers whose ``messages`` carry a per-item TL ``method`` usable as the Method
+# column; innermost (E2E) last so a secret-chat method wins over its carrier.
 _METHOD_LAYER_NAMES = TELEGRAM_LAYER_NAMES
 
-# Method-classification buckets, highest display priority first. A chat method
-# (the operation that carries the actual conversation) outranks a meaningful RPC,
-# which outranks an updates push, which outranks pure service traffic. The match
-# is a case-insensitive substring test against the TL ``method`` name, so both
-# bare ("sendMessage") and namespaced ("messages.sendMessage") forms classify.
+# Method-classification buckets, highest priority first: chat > meaningful RPC >
+# updates push > service. Case-insensitive substring match on the TL ``method``,
+# so bare and namespaced ("messages.sendMessage") names both classify.
 _CHAT_METHOD_HINTS = (
     "sendmessage", "updatenewmessage", "updatenewchannelmessage",
     "sendencrypted", "message",
@@ -228,10 +188,7 @@ _SERVICE_METHOD_HINTS = (
 
 
 def classify_method(method: str) -> int:
-    """Rank a TL method name for Method-column priority (higher == preferred).
-
-    4 chat operation · 3 meaningful RPC · 2 updates push · 1 service · 0 unknown.
-    """
+    """Rank a TL method name for Method-column priority: 4 chat, 3 RPC, 2 updates, 1 service, 0 unknown."""
     if not method:
         return 0
     low = method.lower()
@@ -244,21 +201,12 @@ def classify_method(method: str) -> int:
     return 3  # a named, non-service RPC (e.g. users.getUsers, getHistory)
 
 
-# Back-compat alias: the private name predates the public one.
-_classify_method = classify_method
-
-
 def method_from_messages(flow) -> str:
-    """Derive a flow's primary TL Method from its message-bearing layers.
+    """Derive a flow's primary TL Method from its MTProto / Telegram-E2E layer messages.
 
-    Scans the ``method`` field of each entry in any MTProto / Telegram-E2E layer
-    and returns the highest-priority operation name (chat > RPC > updates >
-    service). Reads every field defensively: entries may be missing ``method``
-    (older/partly-enriched dicts), in which case they contribute nothing. Returns
-    ``""`` when no layer carries a usable method.
-
-    Accepts either a full ``Flow`` (``flow.layer(name)`` lookup) — a ``FlowSummary``
-    has no layers and uses the stored scalar instead.
+    Returns the highest-priority operation name (chat > RPC > updates > service),
+    ``""`` when none. Entries missing ``method`` contribute nothing. A
+    ``FlowSummary`` has no layers and uses the stored scalar instead.
     """
     layer_lookup = getattr(flow, "layer", None)
     if not callable(layer_lookup):
@@ -287,14 +235,7 @@ def method_from_messages(flow) -> str:
 
 
 def display_method_layered(flow) -> str:
-    """Method-column string preferring a derived TL method, else the HTTP method.
-
-    For a full ``Flow`` this derives the primary TL operation from the layer
-    messages (see :func:`method_from_messages`); when absent it falls back to the
-    request's HTTP method. For a ``FlowSummary`` (no layers) it uses the stored
-    ``flow_method`` scalar, then the HTTP method. Returns ``""`` when nothing is
-    known (the flow list renders that as ``-``).
-    """
+    """Method-column string: stored ``flow_method`` scalar, else derived TL method, else HTTP method; ``""`` when unknown."""
     scalar = getattr(flow, "flow_method", "") or ""
     if scalar:
         return scalar
@@ -304,8 +245,7 @@ def display_method_layered(flow) -> str:
     http = display_method(getattr(flow, "request", None))
     if http:
         return http
-    # The tap_format FlowSummary carries the HTTP method as a flat scalar
-    # (no nested ``request`` object), so fall back to that shape too.
+    # tap_format FlowSummary stores the HTTP method as a flat scalar, not a nested ``request``.
     if getattr(flow, "request", None) is None:
         return getattr(flow, "method", "") or ""
     return ""
@@ -331,12 +271,10 @@ def display_status(response: Optional[ParseLike]) -> str:
 
 
 def is_message_transport(flow) -> bool:
-    """True when *flow* rides a message-stream transport (MTProto / Secret Chat).
+    """True when *flow* rides a message-stream transport (MTProto / Secret Chat), where an HTTP status is meaningless.
 
-    Such flows are sequences of messages, not HTTP request/response exchanges,
-    so an HTTP status is meaningless for them. :data:`TELEGRAM_LAYER_NAMES`
-    holds the same names as ``layer_pipeline.MESSAGE_TRANSPORTS`` (both derive
-    from the layer registry), so no import of ``layer_pipeline`` is needed.
+    Same names as ``layer_pipeline.MESSAGE_TRANSPORTS`` (both derive from the
+    layer registry), so ``layer_pipeline`` need not be imported.
     """
     return (getattr(flow, "transport", "") or "") in TELEGRAM_LAYER_NAMES
 
@@ -351,9 +289,7 @@ def display_status_for(flow) -> str:
 def has_parsed_side(flow, side: str) -> bool:
     """True when *flow* carries a parsed ``request``/``response`` (*side*).
 
-    Works on a live :class:`Flow`, the stub-bearing ``models.FlowSummary``, and
-    the flat ``tap_format.FlowSummary`` read back on replay, which has no
-    parse objects and instead records ``has_request``/``has_response``.
+    Also works on the flat ``tap_format.FlowSummary`` (no parse objects; records ``has_request``/``has_response``).
     """
     if getattr(flow, side, None) is not None:
         return True
@@ -361,10 +297,7 @@ def has_parsed_side(flow, side: str) -> bool:
 
 
 def message_direction_status(flow) -> str:
-    """``sent`` / ``recv`` / ``sent+recv`` from the flow's parsed request/response.
-
-    Returns ``""`` when neither side was parsed.
-    """
+    """``sent`` / ``recv`` / ``sent+recv`` from the parsed request/response, ``""`` when neither."""
     has_sent = has_parsed_side(flow, "request")
     has_recv = has_parsed_side(flow, "response")
     if has_sent and has_recv:
@@ -406,11 +339,10 @@ def display_connection(
     host: str = "",
     literal_direction: bool = False,
 ) -> str:
-    """Directional connection string: src -> dst, src <- dst, or src <-> dst.
+    """Directional connection string (``->``, ``<-``, ``<->``).
 
-    With *literal_direction* (per-packet message transports) the flow's
-    src/dst already are the packet's real endpoints, so the arrow is always
-    ``src -> dst`` (Wireshark-like) regardless of which side was parsed.
+    With *literal_direction* (per-packet message transports) src/dst already are the
+    packet's real endpoints, so the arrow is always ``->``.
     """
     src = f":{src_port}" if src_addr in _LOOPBACK_ADDRS else f"{src_addr}:{src_port}"
     dst = host or display_host(request, dst_addr, dst_port)

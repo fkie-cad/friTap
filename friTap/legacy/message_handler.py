@@ -1,10 +1,6 @@
 #!/usr/bin/env python3
 
-"""Legacy inline message handling from ssl_logger.py.
-
-Used when output handlers are not active (_handlers_active is False).
-This preserves the original on_fritap_message inline output logic.
-"""
+"""Agent message handling for the non-handler path (``_handlers_active`` is False)."""
 
 from datetime import datetime, timezone
 
@@ -18,21 +14,17 @@ except ImportError:
 
 
 def _legacy_json_writer(logger_instance):
-    """Return the lazily-created streaming JSON writer for the legacy path.
+    """The lazily created streaming JSON writer, or ``None`` (JSON off or file unopenable).
 
-    Bounds memory and adds crash-safety: events are appended to a
-    ``<json>.events.jsonl`` sidecar instead of growing ``session_data`` lists
-    without limit (see :mod:`friTap.output.json_stream`). The writer shares
-    ``session_data``'s metadata (``friTap_version``/``session_info``/
-    ``statistics``) by reference so counter updates and the end-time stamp are
-    reflected on finalize. Returns ``None`` when JSON output is disabled or the
-    file cannot be opened.
+    Events go to a ``<json>.events.jsonl`` sidecar instead of unbounded
+    ``session_data`` lists (:mod:`friTap.output.json_stream`), which bounds memory
+    and survives a crash. The writer shares ``session_data``'s metadata by
+    reference, so counters and the end time show up on finalize.
     """
     existing = getattr(logger_instance, "_legacy_json_stream", None)
     if existing is not None:
         return existing
-    # json_output is a file path only: -j - is normalized to
-    # OutputConfig.json_stream (the JsonlStdoutHandler), never a file here.
+    # json_output is a file path only; -j - becomes OutputConfig.json_stream.
     if not logger_instance.json_output:
         return None
     from ..output.json_stream import acquire_json_stream_writer
@@ -56,11 +48,7 @@ def _legacy_json_writer(logger_instance):
 
 
 def finalize_legacy_json(logger_instance) -> None:
-    """Finalize and release the legacy streaming JSON document. Idempotent.
-
-    Teardown code (``SSL_Logger._finalize_json_output``/the target-death path)
-    can call this on every exit; a second call is a no-op.
-    """
+    """Finalize and release the legacy streaming JSON document; a second call is a no-op."""
     writer = getattr(logger_instance, "_legacy_json_stream", None)
     if writer is None:
         return
@@ -145,27 +133,25 @@ def _add_socket_trace_entries(logger_instance, src_addr, dst_addr, payload):
     )
 
 
+def _detach_honoring_cli_timeout(logger_instance) -> None:
+    """Detach using --timeout when set, else detach_with_timeout's default."""
+    cli_timeout = getattr(getattr(logger_instance._config, "device", None), "timeout", None)
+    if isinstance(cli_timeout, int) and cli_timeout > 0:
+        logger_instance.detach_with_timeout(timeout=cli_timeout)
+    else:
+        logger_instance.detach_with_timeout()
+
+
 def handle_startup_legacy(logger_instance, payload, script=None):
-    """Handle individual startup handshake messages (pre-config_batch fallback).
+    """Answer one per-field startup handshake string (pre-config_batch agents).
 
-    This is the legacy per-field handshake that older agent versions use.
-    Modern agents use config_batch for a single round-trip.
+    The ``'anti'`` and ``'config_batch'`` requests belong to
+    ``SSL_Logger._answer_startup_handshake``, the single owner of which script a
+    blocking handshake is answered on.
 
-    The terminal ``'anti'`` request is deliberately *not* handled here anymore:
-    it now lives in ``SSL_Logger._answer_startup_handshake`` together with
-    ``'config_batch'``, so that a single owner decides which script a blocking
-    handshake is answered on. Reaching this function at all already implies
-    that responder let the payload through.
-
-    Args:
-        logger_instance: The SSL_Logger instance (self)
-        payload: The string payload from the agent (e.g., 'experimental', 'defaultFD')
-        script: The script that asked. Defaults to ``logger_instance.script``,
-            which is only correct while a single script exists.
-
-    Returns:
-        True if ``payload`` named a legacy channel and was answered, so callers
-        can tell an answered handshake from a string they must keep routing.
+    ``script`` defaults to ``logger_instance.script``, correct only while a single
+    script exists. Returns True if the payload was a legacy channel and was
+    answered, False if the caller must keep routing it.
     """
     target = script if script is not None else logger_instance.script
     startup_responses = {
@@ -188,14 +174,7 @@ def handle_startup_legacy(logger_instance, payload, script=None):
 
 
 def handle_message_legacy(logger_instance, payload, data, message):
-    """Legacy inline message handling extracted from ssl_logger.py.
-
-    Args:
-        logger_instance: The SSL_Logger instance (self)
-        payload: The message payload dict
-        data: The binary data from the message
-        message: The full message dict
-    """
+    """Route one agent message to the legacy inline output (console, keylog, datalog, ...)."""
     from .ssl_logger_core import get_addr_string
 
     if payload["contentType"] == "console":
@@ -226,8 +205,7 @@ def handle_message_legacy(logger_instance, payload, data, message):
                         "type": "key_extraction",
                         "key_data": payload["keylog"]
                     }
-                    # Stream to the crash-safe sidecar instead of growing an
-                    # in-memory list without bound.
+                    # Crash-safe sidecar, not an unbounded in-memory list.
                     writer = _legacy_json_writer(logger_instance)
                     if writer is not None:
                         writer.data["key_extractions"].append(key_entry)
@@ -270,8 +248,7 @@ def handle_message_legacy(logger_instance, payload, data, message):
                     "ss_family": endpoints["ss_family"],
                     "data_length": len(data) if data else 0
                 }
-                # Stream the connection event to the crash-safe sidecar; keep
-                # only the (bounded) counters in memory.
+                # Sidecar again; only the bounded counters stay in memory.
                 writer = _legacy_json_writer(logger_instance)
                 if writer is not None:
                     writer.data["connections"].append(connection_entry)
@@ -285,8 +262,14 @@ def handle_message_legacy(logger_instance, payload, data, message):
         try:
             _log_payload_to_pcap(logger_instance, payload, data)
         except (BrokenPipeError, IOError):
-            logger_instance.detach_with_timeout(logger_instance.process)
-            logger_instance.cleanup(logger_instance.live, logger_instance.socket_trace, logger_instance.full_capture, logger_instance.debug)
+            _detach_honoring_cli_timeout(logger_instance)
+            logger_instance.cleanup(
+                live=logger_instance.live,
+                socket_trace=logger_instance.socket_trace,
+                full_capture=logger_instance.full_capture,
+                debug_output=logger_instance.debug_output,
+                debug=logger_instance.debug,
+            )
 
     if logger_instance.keylog and payload["contentType"] == "keylog":
         if not _is_writable_keylog(payload.get("keylog")):

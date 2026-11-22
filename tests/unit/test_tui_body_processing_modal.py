@@ -23,6 +23,7 @@ from friTap.tui.modals.body_processing_modal import (
     _segment_hint,
 )
 from tests.unit._render_helpers import RenderingFakeLog as _FakeLog
+from tests.unit._tui_flow_helpers import make_flow_detail_widget
 
 # ---------------------------------------------------------------------------
 # 1. Pure helpers
@@ -50,12 +51,7 @@ def test_escape_markup_keeps_error_text_literal():
 # ---------------------------------------------------------------------------
 
 def _make_widget(processing=None, flow=None):
-    from friTap.tui.widgets.flow_detail import FlowDetailWidget
-    w = FlowDetailWidget.__new__(FlowDetailWidget)
-    w._active_processing = processing
-    w._current_flow = flow
-    w._segment_offsets = []
-    return w
+    return make_flow_detail_widget(processing=processing, _current_flow=flow)
 
 
 def _two_segment_flow(trailing=b'{"trailing": 1}', trailing_parse=None) -> Flow:

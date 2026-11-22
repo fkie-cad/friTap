@@ -1,15 +1,11 @@
 #!/usr/bin/env python3
 
-"""Generic keylog output handler.
+"""Generic keylog output handler, one instance per active protocol.
 
-One instance per active protocol. The bound :class:`KeylogFormatter`
-both selects which :class:`KeylogEvent` instances this handler cares
-about (via ``event.protocol == formatter.protocol``) and translates
-each event into Wireshark-loadable line(s).
-
-The file is opened lazily on the first matching event so that runs with
-``--protocol all`` against a target that never emits SSH (for example)
-don't leave a confusing empty ``mykeys.ssh.log`` on disk.
+The bound :class:`KeylogFormatter` selects the :class:`KeylogEvent`\ s (via
+``event.protocol == formatter.protocol``) and formats them into keylog lines.
+The file opens lazily on the first matching event, so e.g. ``--protocol all``
+leaves no empty ``mykeys.ssh.log`` when the target never emits SSH.
 """
 
 from __future__ import annotations
@@ -34,25 +30,19 @@ if TYPE_CHECKING:
 class KeylogOutputHandler(OutputHandler):
     """Writes per-protocol Wireshark-loadable key material to a file.
 
-    The file handle itself is process-wide (see
-    :mod:`friTap.output.shared_keylog_writer`): another handler on the same
-    path — e.g. the LSASS session's handler on the shared ``-k`` file — reuses
-    it instead of truncating it again.
+    The file handle is process-wide (:mod:`friTap.output.shared_keylog_writer`), so another
+    handler on the same path (e.g. the LSASS session on the shared ``-k``) reuses it.
     """
 
     def __init__(self, keylog_path: str, formatter: KeylogFormatter) -> None:
         self._path = keylog_path
         self._formatter = formatter
         self._writer: Optional[SharedKeylogWriter] = None
-        # Set by close(): a late event must never lazily re-open the path with
-        # "w" (that would truncate a finished keylog, or recreate one the
-        # SChannel relabel just renamed to <stem>.raw).
+        # Set by close(): a late event must not lazily re-open the path with "w"
+        # (it would truncate a finished keylog or recreate one the SChannel relabel renamed to <stem>.raw).
         self._closed = False
-        # True once a writer was ever acquired for this handler. A never-opened
-        # NON-tls split handler (e.g. rc4/memscan, whose async scan can land its
-        # FIRST key after main-session teardown) may still lazily open after
-        # close(); a handler that already wrote keys must not (its file is
-        # finished — reopening with "w" would truncate it).
+        # True once a writer was acquired. A never-opened non-tls split (rc4/memscan, whose async scan
+        # can land its first key after teardown) may still open after close(); one that already wrote must not.
         self._ever_opened = False
         self._state_lock = threading.Lock()
         self._dedup = KeyDeduplicator()
@@ -65,22 +55,16 @@ class KeylogOutputHandler(OutputHandler):
 
     def setup(self, event_bus: "EventBus") -> None:
         from ..events import KeylogEvent
-        # Lazy open — file is created on first matching event in on_keylog().
-        # priority=10 (vs. ConsoleOutputHandler's default 0) ensures the file
-        # is opened — and "keylog: opened …" is logged — BEFORE the verbose
-        # console echo prints the first key. EventBus dispatches in
-        # descending-priority order (see friTap/events.py:260, 302), so a
-        # higher numeric priority runs first.
+        # Lazy open on the first matching event. priority=10 (console is 0) opens the file and logs
+        # "keylog: opened" BEFORE the verbose console echo; higher priority runs first (friTap/events.py).
         event_bus.subscribe(KeylogEvent, self.on_keylog, priority=10)
 
     def _is_relabel_subject(self) -> bool:
         """Whether the SChannel relabel may rename this handler's file.
 
-        The relabel only ever touches the base ``-k`` keylog and the ``tls``
-        split (see ``SSL_Logger._schannel_keylog_candidates``: "Non-TLS split
-        files (rc4, ssh, ...) are never candidates"). A TLS handler must
-        therefore never lazily re-open after close — a late key would recreate
-        the file the relabel just renamed to ``<stem>.raw``.
+        It only touches the base ``-k`` keylog and the ``tls`` split
+        (``SSL_Logger._schannel_keylog_candidates``). A TLS handler must therefore never
+        re-open after close, or a late key would recreate the file renamed to ``<stem>.raw``.
         """
         return self._formatter.protocol == "tls"
 
@@ -88,11 +72,8 @@ class KeylogOutputHandler(OutputHandler):
         with self._state_lock:
             if self._writer is not None:
                 return self._writer
-            # Drop a late key only when reopening would be harmful: a relabel
-            # subject (tls) could recreate the renamed file, and a handler that
-            # already wrote keys would truncate its finished file. A
-            # never-opened non-tls split (e.g. an async rc4/memscan key that
-            # lands after teardown) is still allowed to open for the first time.
+            # Drop a late key only when reopening is harmful (a relabel subject, or a handler that
+            # already wrote); a never-opened non-tls split may still open for the first time.
             if self._closed and (self._is_relabel_subject() or self._ever_opened):
                 self._logger.debug("keylog: dropping late key for closed %s", self._path)
                 return None

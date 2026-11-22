@@ -1,23 +1,13 @@
 #!/usr/bin/env python3
 
-"""
-Core controller for friTap.
+"""Core controller for friTap with sync and async APIs shared by all UIs.
 
-Provides both sync and async APIs consumed by different UIs equally. Replaces the legacy pattern of SSL_Logger
-with explicit dependency injection.
+Replaces the legacy SSL_Logger pattern with explicit dependency injection::
 
-Usage (sync):
-    from friTap.core import CoreController
     ctrl = CoreController()
     session = ctrl.create_session(FriTapConfig(target="com.example.app"))
-    session.start()
-    session.wait()
-
-Usage (async):
-    ctrl = CoreController()
-    session = ctrl.create_session(config)
-    await session.astart()
-    await session.await_done()
+    session.start(); session.wait()          # sync
+    await session.astart(); await session.await_done()   # async
 """
 
 from __future__ import annotations
@@ -38,14 +28,9 @@ if TYPE_CHECKING:
 
 
 class CoreController:
-    """Central API for friTap operations.
+    """Central API for friTap operations (constructor injection, no globals), used by CLI, TUI, Web UI and MCP.
 
-    Uses constructor injection — no service locator, no globals.
-    All frontends (CLI, TUI, Web UI, MCP) use this same interface.
-
-    Both sync and async methods are provided:
-    - Sync: ``create_session()``, ``list_devices()``
-    - Async: ``acreate_session()``, ``alist_devices()``
+    Sync (``create_session``, ``list_devices``) and async (``acreate_session``, ``alist_devices``) variants.
     """
 
     def __init__(
@@ -76,11 +61,7 @@ class CoreController:
         return self._protocol_registry
 
     def create_session(self, config: FriTapConfig) -> "Session":
-        """Create a new capture session with the given configuration.
-
-        The session is created in CREATED state. Call session.start()
-        to begin the capture.
-        """
+        """Create a session in CREATED state; call ``session.start()`` to capture."""
         from .session import Session
 
         pipeline = create_default_pipeline(
@@ -101,11 +82,7 @@ class CoreController:
         return session
 
     async def acreate_session(self, config: FriTapConfig) -> "Session":
-        """Async version of create_session.
-
-        Note: create_session() is non-blocking (no I/O), so this is a
-        thin async wrapper for API consistency.
-        """
+        """Async wrapper (``create_session`` does no I/O)."""
         return self.create_session(config)
 
     def list_devices(self) -> list:

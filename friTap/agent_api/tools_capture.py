@@ -43,7 +43,7 @@ def _protocol_options_schema() -> dict[str, Any]:
 
 
 def capture_protocol_enum() -> list[str]:
-    """Protocol names a capture can hook (T2 catalog; registry as fallback)."""
+    """Protocol names a capture can hook (the protocol catalog; registry as fallback)."""
     try:
         from friTap.agent_api.protocol_catalog import capture_protocol_names
     except ImportError:
@@ -71,7 +71,7 @@ def _start_params() -> dict[str, Any]:
         "duration_s": {"type": "integer", "minimum": MIN_DURATION_S, "maximum": MAX_DURATION_S,
                        "default": DEFAULT_DURATION_S,
                        "description": "The capture stops cleanly after this many seconds."},
-        "follow_exec": {"type": "boolean", "default": True,
+        "follow_exec": {"type": "boolean", "default": False,
                         "description": "Spawn mode: follow the target across exec()."},
         "anti_root": {"type": "boolean", "default": False,
                       "description": "Android only: enable friTap's anti-root-detection hooks "

@@ -26,6 +26,9 @@ import { neqo_execute } from "../quic/platforms/macos/neqo_macos.js";
 import { gotls_execute } from "../legacy/tls/platforms/macos/gotls_macos.js";
 import { gotls_execute_modern } from "../tls/platforms/macos/gotls_macos.js";
 import { isGoModule } from "../shared/go_binary_detection.js";
+import { chromium_boringssl_hook } from "../shared/chromium_boringssl.js";
+import { chromium_plaintext_execute } from "../tls/platforms/macos/chromium_plaintext_macos.js";
+import { CHROMIUM_FRAMEWORK_MODULE_PATTERN } from "../tls/shared/chromium_plaintext_coverage.js";
 
 
 var plattform_name: Platform = PLATFORM_DARWIN;
@@ -84,6 +87,12 @@ export function load_macos_hooking_agent() {
         // omits SSL_CTX_set_keylog_callback, so only legacy's ssl_log_secret
         // byte-pattern works. cronet_execute_modern kept imported for a future fix.
         { platform: plattform_name, pattern: /.*cronet.*\.dylib/, hookFn: cronet_execute, library: "Cronet", libraryType: "boringssl", protocol: "tls" },
+        // Chrome / Electron frameworks: stripped, statically linked BoringSSL with no
+        // keylog export, so keys come from the tier-4 ssl_log_secret anchor locator
+        // (same executor as the Windows Chromium rows). Tree-independent.
+        { platform: plattform_name, pattern: CHROMIUM_FRAMEWORK_MODULE_PATTERN, hookFn: chromium_boringssl_hook(false), library: "BoringSSL (Chromium Framework)", libraryType: "boringssl", protocol: "tls" },
+        // TCP TLS plaintext for the same frameworks via the ssl_lib.cc locator; keys stay with the row above.
+        { platform: plattform_name, pattern: CHROMIUM_FRAMEWORK_MODULE_PATTERN, hookFn: chromium_plaintext_execute, library: "BoringSSL plaintext (Chromium Framework)", protocol: "tls", supplementary: true },
         { platform: plattform_name, pattern: /.*libnss[0-9]*\.dylib/, hookFn: (use_modern ? nss_execute_modern : nss_execute), library: "NSS", libraryType: "nss", protocol: "tls" },
         // GnuTLS (Homebrew libgnutls.30.dylib); not libgnutlsxx, the C++ wrapper over it.
         { platform: plattform_name, pattern: /.*libgnutls(\.[0-9]+)*\.dylib/, hookFn: (use_modern ? gnutls_execute_modern : gnutls_execute), library: "GnuTLS", libraryType: "gnutls", protocol: "tls" },
@@ -98,7 +107,7 @@ export function load_macos_hooking_agent() {
         { platform: plattform_name, pattern: /.*libnss[0-9]*\.dylib/, hookFn: nss_hpke_execute_macos, library: "NSS HPKE (OHTTP)", protocol: "tls", libraryType: "nss_hpke" },
         // QUIC libraries — gated under the TLS family for `--protocol tls`
         { platform: plattform_name, pattern: /.*libquiche\.dylib/, hookFn: quiche_execute, library: "Cloudflare QUICHE", libraryType: "quiche", protocol: "tls" },
-        { platform: plattform_name, pattern: /Google Chrome Framework/, hookFn: google_quiche_execute, library: "Google QUICHE (Chrome)", libraryType: "google_quiche", protocol: "tls", supplementary: true },
+        { platform: plattform_name, pattern: CHROMIUM_FRAMEWORK_MODULE_PATTERN, hookFn: google_quiche_execute, library: "Google QUICHE (Chrome)", libraryType: "google_quiche", protocol: "tls", supplementary: true },
         // Neqo (Firefox HTTP/3) — module is "XUL" at /Applications/Firefox.app/Contents/MacOS/XUL
         { platform: plattform_name, pattern: /^XUL$/, hookFn: neqo_execute, library: "Mozilla Neqo (Firefox HTTP/3)", libraryType: "neqo", protocol: "tls", supplementary: true },
         // Hooks contributed by optional units (e.g. the public RC4 key-capture

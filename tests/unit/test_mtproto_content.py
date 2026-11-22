@@ -18,7 +18,7 @@ import gzip
 import struct
 import zlib
 
-from friTap.flow.display import _classify_method
+from friTap.flow.display import classify_method
 from friTap.offline.mtproto.content import (
     ctor_name,
     parse_mtproto_message,
@@ -480,7 +480,7 @@ def test_inbound_updates_wrapped_message():
     assert len(texts) == 1, texts
     assert texts[0].body == "wrapped inbound"
     assert texts[0].peer_id == 424242
-    assert _classify_method(texts[0].method) == 4
+    assert classify_method(texts[0].method) == 4
 
 
 def test_inbound_updates_difference_message():

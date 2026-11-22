@@ -1,47 +1,28 @@
 #!/usr/bin/env python3
 
-"""
-Output handler factory for friTap.
-
-Creates and configures output handlers based on a FriTapConfig,
-decoupling handler instantiation from SSL_Logger.
-"""
+"""Builds the output handlers selected by a FriTapConfig (decoupled from SSL_Logger)."""
 
 
 
 def _active_keylog_formatters(protocol, protocol_registry):
-    """Return the list of :class:`KeylogFormatter` instances that should be wired
-    up for the current run, based on the active-protocol SELECTION.
+    """The :class:`KeylogFormatter` instances to wire for the active-protocol selection.
 
-    *protocol* may be a single protocol name (``"tls"``) or, since Foundation F1
-    multi-protocol selection, a list/set of names (``["tls", "rc4"]``). The
-    formatters are the UNION across the whole selection (each selected protocol
-    plus the companion protocols it implies), de-duplicated by protocol and
-    order-preserving.
-
-    - ``tls`` / ``ssh`` / ``ipsec`` / any named protocol: that protocol's
-      formatter if its handler exposes one, plus its implied companions.
-    - ``all`` / ``auto`` (in the selection): every registered handler's formatter
-      (preserves registration order, the deterministic insertion order of
-      :class:`ProtocolRegistry`).
-    - Anything else (defensive): empty list.
+    *protocol* is a name or a list/set of names. The result is the union over the
+    selection (each protocol plus the companions it implies), de-duplicated by
+    protocol, order-preserving. ``all``/``auto`` selects every registered handler's
+    formatter in registration order; unknown names yield none.
     """
     if protocol_registry is None:
         return []
-    # Normalize the selection to an ordered list of protocol names.
     if isinstance(protocol, (list, tuple, set)):
         selected = list(protocol)
     else:
         selected = [protocol]
     if any(p in ("all", "auto") for p in selected):
-        # Install-everything: every registered handler's formatter.
         handlers = protocol_registry.get_all()
     else:
-        # Each named protocol contributes its handler's formatter (if any) plus
-        # any companion protocols it implies (a TLS-wrapped protocol also emits
-        # TLS keys, so its keylog is split into <stem>.<proto><ext> +
-        # <stem>.tls<ext>). Registry-driven (not a hardcoded tuple) so new
-        # protocols need no edit here; unknown names resolve to no formatter.
+        # A TLS-wrapped protocol implies TLS, so its keylog splits into
+        # <stem>.<proto><ext> + <stem>.tls<ext>. Registry-driven: new protocols need no edit.
         from ..protocols.registry import implied_protocols
         names = []
         for p in selected:
@@ -56,8 +37,7 @@ def _active_keylog_formatters(protocol, protocol_registry):
         fmt = h.keylog_formatter()
         if fmt is None:
             continue
-        # De-dup by formatter protocol so two selections that both imply "tls"
-        # do not wire the TLS formatter (and its split file) twice.
+        # Two selections implying "tls" must not wire its formatter (and split file) twice.
         key = getattr(fmt, "protocol", None)
         key = key if key is not None else id(fmt)
         if key in seen:
@@ -68,19 +48,13 @@ def _active_keylog_formatters(protocol, protocol_registry):
 
 
 def memory_scan_keylog_path(config):
-    """Resolve where memory-scan (``-ms``) findings are written.
+    """Where memory-scan (``-ms``) findings are written; ``None`` when scanning is off.
 
-    The heap scanner always gets its OWN keylog file, never a handle onto the
-    ``-k`` file: two handlers opening one path in truncate mode would corrupt
-    each other's keys. When ``-k`` is set the memory-scan file is co-located
-    with it as ``<stem>.memscan<ext>`` (e.g. ``keys.log`` -> ``keys.memscan.log``),
-    reusing the same per-source split naming Wireshark users already see under
-    ``--protocol all``. On its own, ``-ms`` writes to
-    ``<sanitized-target>_memscan.keylog`` in the current directory so the flag
-    is useful with no other output flag. In memory-scan-only mode
-    (:func:`friTap.config.memory_scan_only`, e.g. the TUI's "memory only"
-    method) no hook handler writes ``-k``, so the scanner owns the ``-k`` path
-    itself. Returns ``None`` when memory scanning is not enabled.
+    The scanner gets its own file: two truncating handlers on one path would
+    corrupt each other. With ``-k`` it is ``<stem>.memscan<ext>``; alone it is
+    ``<sanitized-target>_memscan.keylog`` in the cwd. In memory-scan-only mode
+    (:func:`friTap.config.memory_scan_only`) no hook handler writes ``-k``, so
+    the scanner owns the ``-k`` path.
     """
     import os
     import re
@@ -104,19 +78,12 @@ def memory_scan_keylog_path(config):
 
 
 def active_keylog_paths(base_keylog, protocol, protocol_registry, protocol_handler=None):
-    """Return ``{protocol_name: keylog_path}`` for every keylog file that
-    :meth:`OutputHandlerFactory.create_handlers` writes for this run.
+    """``{protocol_name: keylog_path}`` for every keylog file :meth:`OutputHandlerFactory.create_handlers` writes.
 
-    Mirrors that method's keylog branch: a single active formatter writes the
-    base path directly; multiple active formatters (e.g. ``--protocol signal``,
-    which also emits TLS keys) split it into ``<stem>.<proto><ext>`` per
-    protocol (``keys.log`` -> ``keys.tls.log`` + ``keys.signal.log``). Empty when
-    no active protocol emits key material.
-
-    Lets post-capture callers (the results modal, the decrypt-to-flow offer)
-    locate the real keylog files instead of the possibly-never-written base path.
-    Shares ``_active_keylog_formatters`` + ``split_keylog_path`` with
-    ``create_handlers`` so the two cannot drift on naming or the active-set rule.
+    One active formatter writes the base path; several split it into
+    ``<stem>.<proto><ext>``. Empty when no protocol emits keys. Shares
+    ``_active_keylog_formatters`` and ``split_keylog_path`` with ``create_handlers``
+    so naming and the active set cannot drift.
     """
     from .keylog_paths import split_keylog_path
     if not base_keylog:
@@ -127,9 +94,7 @@ def active_keylog_paths(base_keylog, protocol, protocol_registry, protocol_handl
         fmt = protocol_handler.keylog_formatter()
         if fmt is not None:
             active = [fmt]
-    # UAT (decryption-table) formatters (IPsec) write fixed-name Wireshark files
-    # in the keylog directory, not an NSS keylog at a split path, so they are not
-    # reported here (a ``<stem>.ipsec`` path would never exist on disk).
+    # UAT (IPsec) formatters write fixed-name files in the keylog directory, so no split path exists.
     active = [f for f in active if not getattr(f, "writes_decryption_tables", False)]
     if not active:
         return {}
@@ -139,12 +104,7 @@ def active_keylog_paths(base_keylog, protocol, protocol_registry, protocol_handl
 
 
 def _pcap_handler_class(output_config):
-    """The -p handler class: PCAPNG or classic PCAP, None without -p.
-
-    The container is the config's resolved ``pcap_container`` (explicit
-    ``output_format`` wins, else the extension), the same value the PCAP
-    object and the full-capture finalizer use.
-    """
+    """The -p handler class (PCAPNG or PCAP), None without -p; uses the resolved ``pcap_container`` like the PCAP object and finalizer."""
     from ..pcap_utility import PCAP_FORMAT_PCAPNG
     from .pcap_handler import PcapOutputHandler
     from .pcapng_handler import PcapngOutputHandler
@@ -178,10 +138,231 @@ def _tap_handler_class(output_config):
     return TapOutputHandler
 
 
+def _live_view_supported() -> bool:
+    """The -l named pipe needs mkfifo, so there is no live view on Windows."""
+    from ..fritap_utility import are_we_running_on_windows
+    return not are_we_running_on_windows()
+
+
+def _live_handler_class(output_config):
+    """The -l handler class for the configured live mode, or None when no live handler is created."""
+    if not output_config.live or not _live_view_supported():
+        return None
+    if output_config.live_mode == "live_pcapng":
+        from .live_autodecrypt_handler import LiveAutoDecryptHandler
+        return LiveAutoDecryptHandler
+    if output_config.live_mode == "wireshark":
+        from .live_wireshark_handler import LiveWiresharkHandler
+        return LiveWiresharkHandler
+    from .live_pcapng_handler import LivePcapngHandler
+    return LivePcapngHandler
+
+
 def _log_tap_deferred_to_full_capture(tap_path, logger):
-    """Tell the user that -f --tap builds the .tap after the capture ends."""
+    """Log that -f --tap builds the .tap after the capture ends."""
     logger.info("Full capture (-f): %s will be built from the full-capture pcap "
                 "and keylog when the capture ends.", tap_path)
+
+
+
+def _add_pcap_handlers(config, pcap_obj, protocol_handler, handlers):
+    """Append the -p handler (non-live, non-full-capture) and the full-capture key collector."""
+    from . import PcapngOutputHandler, PcapOutputHandler
+    # One pcapng decision shared by the -p handler and the full-capture DSB injection.
+    wants_pcapng = _pcap_handler_class(config.output) is PcapngOutputHandler
+    pcap_name = config.output.pcap
+    if pcap_name and not config.output.live and not config.output.full_capture:
+        if wants_pcapng:
+            handlers.append(PcapngOutputHandler(pcap_name, protocol_handler=protocol_handler))
+        else:
+            handlers.append(PcapOutputHandler(pcap_obj))
+
+    # Key collector enables DSB injection at finalization for full-capture pcapng.
+    if config.output.full_capture and wants_pcapng:
+        from .key_collector_handler import KeyCollectorHandler
+        handlers.append(KeyCollectorHandler(protocol_handler=protocol_handler))
+
+
+def _resolve_keylog_formatters(config, protocol_handler, protocol_registry):
+    """Return (line_formatters, uat_formatters) for the -k keylog."""
+    active = _active_keylog_formatters(config.protocols, protocol_registry)
+    if not active and protocol_handler is not None \
+            and hasattr(protocol_handler, "keylog_formatter"):
+        # Fallback for callers without a registry.
+        fmt = protocol_handler.keylog_formatter()
+        if fmt is not None:
+            active = [fmt]
+    # IPsec (and any future table-based protocol) writes Wireshark UAT
+    # decryption-table files into the keylog's directory rather than NSS keylog
+    # lines, so it is kept OUT of the line-based keylog split.
+    uat_formatters = [f for f in active
+                      if getattr(f, "writes_decryption_tables", False)]
+    active = [f for f in active
+              if not getattr(f, "writes_decryption_tables", False)]
+    # The generic memory-scan engine (--scan-keys-region) emits candidates under
+    # the protocol-agnostic "scan_candidate" classifier regardless of --protocol,
+    # so wire its formatter whenever a scan region is configured.
+    if getattr(config.hooking, "scan_keys_region", None):
+        from .scan_candidate_formatter import ScanCandidateKeylogFormatter
+        if not any(getattr(f, "protocol", None) == "scan_candidate" for f in active):
+            active = list(active) + [ScanCandidateKeylogFormatter()]
+    return active, uat_formatters
+
+
+def _add_keylog_handlers(config, protocol_handler, protocol_registry, logger,
+                         handlers, live_info):
+    """Wire the -k keylog writers; returns the per-protocol split paths or None."""
+    from . import KeylogOutputHandler
+    from ..config import memory_scan_only
+    from .keylog_paths import split_keylog_path
+
+    keylog = config.output.keylog
+    # Memory-scan-only: the scanner writes -k itself; a second truncating handler would clobber it.
+    if not keylog or memory_scan_only(config):
+        return None
+
+    active, uat_formatters = _resolve_keylog_formatters(
+        config, protocol_handler, protocol_registry)
+    split_paths = None
+    if not active and not uat_formatters:
+        logger.warning(
+            "--keylog set but no active protocol emits key material; "
+            "-k has no effect with --protocol %s", config.protocol,
+        )
+    elif len(active) == 1 and not uat_formatters:
+        handlers.append(KeylogOutputHandler(keylog, formatter=active[0]))
+    elif active:
+        split_paths = {f.protocol: split_keylog_path(keylog, f.protocol)
+                       for f in active}
+        logger.info(
+            "keylog split: %s",
+            ", ".join(f"{p} → {path}" for p, path in split_paths.items()),
+        )
+        # The capture manifest records every protocol's keylog.
+        live_info["keylogs"] = split_paths
+        for fmt in active:
+            handlers.append(KeylogOutputHandler(
+                split_paths[fmt.protocol], formatter=fmt,
+            ))
+    # The Wireshark UAT files live in the -k keylog's directory.
+    for fmt in uat_formatters:
+        from .ipsec_decryption_tables import IPsecDecryptionTableHandler
+        handler = IPsecDecryptionTableHandler(keylog, formatter=fmt)
+        handlers.append(handler)
+        logger.info(
+            "ipsec decryption tables → %s/{ikev2_decryption_table,esp_sa}",
+            handler._dir,
+        )
+    return split_paths
+
+
+def _record_split_keylogs(config, pcap_obj, split_paths):
+    """Hand the split keylog paths to the PCAP object for its capture manifest."""
+    if split_paths and pcap_obj is not None \
+            and hasattr(pcap_obj, "set_active_keylogs"):
+        pcap_obj.set_active_keylogs(split_paths)
+        # Fallback when a split is never written (Windows TLS secrets land in the base keylog);
+        # config.output.keylog, not the memory-scan-only nulled value.
+        if hasattr(pcap_obj, "set_base_keylog"):
+            pcap_obj.set_base_keylog(config.output.keylog)
+
+
+def _add_memory_scan_handler(config, logger, handlers, live_info):
+    """Wire the -ms keylog: its own file, independent of -k."""
+    from . import KeylogOutputHandler
+    ms_path = memory_scan_keylog_path(config)
+    if ms_path:
+        from ..memory_scanning.formatter import MemoryScanKeylogFormatter
+        handlers.append(KeylogOutputHandler(ms_path, formatter=MemoryScanKeylogFormatter()))
+        live_info["memory_scan_keylog"] = ms_path
+        logger.info("memory-scan keylog → %s", ms_path)
+
+
+def _add_json_handler(config, session_data, handlers):
+    """Wire the -j handler (JSON document, JSONL file or stdout stream)."""
+    from . import JsonlOutputHandler, JsonOutputHandler
+    json_cls = _json_handler_class(config.output)
+    if json_cls is None:
+        return
+    from .key_material import json_key_material_enabled
+    # Raw key material only when explicitly requested (-k or --json-keys), else redacted.
+    include_keys = json_key_material_enabled(config.output)
+    # Agent dev diagnostics reach the JSONL outputs only with -d / -do.
+    include_dev_logs = bool(getattr(config, "debug_output", False))
+    if json_cls is JsonOutputHandler:
+        handlers.append(JsonOutputHandler(
+            config.output.json_output,
+            session_info=session_data.get("session_info", {}),
+            auxiliary=getattr(config.output, "auxiliary_session", False),
+            include_key_material=include_keys,
+        ))
+    elif json_cls is JsonlOutputHandler:
+        handlers.append(JsonlOutputHandler(
+            config.output.json_output, include_key_material=include_keys,
+            include_agent_dev_logs=include_dev_logs))
+    else:
+        handlers.append(json_cls(include_key_material=include_keys,
+                                 include_agent_dev_logs=include_dev_logs))
+
+
+def _add_tap_handler(config, logger, handlers):
+    """Wire --tap; under -f the .tap is built after the capture (offline/auto_tap.py) instead."""
+    tap_cls = _tap_handler_class(config.output)
+    if tap_cls is not None and config.output.full_capture:
+        _log_tap_deferred_to_full_capture(config.output.tap_output, logger)
+    elif tap_cls is not None:
+        handlers.append(tap_cls(config.output.tap_output, target=config.target or ""))
+
+
+def _build_live_handler(config):
+    """``(live_handler, description)`` for the configured live mode."""
+    from . import LivePcapngHandler
+    live_mode = config.output.live_mode
+    if live_mode == "live_pcapng":
+        from .live_autodecrypt_handler import LiveAutoDecryptHandler
+        is_mobile = bool(config.device.mobile)
+        device_id = (
+            config.device.mobile
+            if isinstance(config.device.mobile, str)
+            else None
+        )
+        live_handler = LiveAutoDecryptHandler(
+            is_mobile=is_mobile, device_id=device_id,
+            include_loopback=getattr(config.output, "include_loopback", False),
+            filter_infrastructure=getattr(config.output, "filter_infrastructure", True),
+        )
+        return live_handler, 'friTap live auto-decrypt (raw capture + TLS keys)'
+    if live_mode == "wireshark":
+        from .live_wireshark_handler import LiveWiresharkHandler
+        # PCAP is created lazily in connect() to avoid a FIFO deadlock.
+        return LiveWiresharkHandler(), 'friTap live view on Wireshark (plaintext stream)'
+    return LivePcapngHandler(), 'friTap live view on Wireshark (PCAPNG with auto-decrypt)'
+
+
+def _add_live_handler(config, logger, handlers, live_info):
+    """Wire the live Wireshark modes (named pipe); not supported on Windows."""
+    if not config.output.live:
+        return
+    from ..fritap_utility import WINDOWS_LIVE_UNSUPPORTED
+    if not _live_view_supported():
+        logger.error(WINDOWS_LIVE_UNSUPPORTED)
+        return
+    if config.output.pcap:
+        logger.warning(
+            "YOU ARE TRYING TO WRITE A PCAP AND HAVING A LIVE VIEW\n"
+            "THIS IS NOT SUPPORTED!\n"
+            "WHEN YOU DO A LIVE VIEW YOU CAN SAVE YOUR CAPTURE WITH WIRESHARK."
+        )
+    live_handler, description = _build_live_handler(config)
+
+    fifo_file = live_handler.create_fifo()
+    live_info['tmpdir'] = live_handler.tmpdir
+    live_info['filename'] = live_handler.fifo_path
+
+    logger.info(description)
+    logger.info('Created named pipe: %s', fifo_file)
+    logger.info('Open with: wireshark -k -i %s', fifo_file)
+    handlers.append(live_handler)
 
 
 class OutputHandlerFactory:
@@ -189,257 +370,39 @@ class OutputHandlerFactory:
 
     @staticmethod
     def plaintext_hooks_needed(output_config) -> bool:
-        """Whether any selected output consumes the decrypted data events.
+        """Whether any selected output (-p, -j, --tap, -l) consumes decrypted data events.
 
-        ORs ``consumes_plaintext`` over the -p, -j and --tap handler classes this
-        config selects, so the agent installs its plaintext read/write hooks only
-        when something will use them. Never in full-capture (-f) mode, where
-        tcpdump records the raw packets instead.
+        Gates the agent's plaintext hooks; never in full-capture (-f) mode (tcpdump records raw packets).
         """
         if output_config.full_capture:
             return False
         selected = (_pcap_handler_class(output_config),
                     _json_handler_class(output_config),
-                    _tap_handler_class(output_config))
+                    _tap_handler_class(output_config),
+                    _live_handler_class(output_config))
         return any(cls is not None and cls.consumes_plaintext for cls in selected)
 
     @staticmethod
     def create_handlers(config, pcap_obj, protocol_handler, session_data, logger,
                         protocol_registry=None) -> tuple:
-        """Create output handlers based on config.
+        """Create output handlers for *config*.
 
-        Args:
-            config: A FriTapConfig instance.
-            pcap_obj: An existing PCAP object (or None).
-            protocol_handler: The active protocol handler (used by PCAP/full-capture).
-            session_data: Session data dict (used by JSON handler).
-            logger: A logging.Logger instance.
-            protocol_registry: The :class:`ProtocolRegistry` for this run.
-                Required to wire keylog handlers correctly under ``--protocol
-                all|auto``; falls back to a single-protocol formatter when
-                ``None`` so callers without a registry still work.
-
-        Returns:
-            (handlers_list, live_info_dict) where live_info_dict has keys
-            'tmpdir' and 'filename' if live mode is active, else empty dict.
+        *protocol_registry* is needed for keylog wiring under ``--protocol all|auto``;
+        ``None`` falls back to a single-protocol formatter.
+        Returns ``(handlers, live_info)``; ``live_info`` has 'tmpdir' and 'filename' in live mode.
         """
-        from . import (
-            ConsoleOutputHandler,
-            JsonlOutputHandler,
-            JsonOutputHandler,
-            KeylogOutputHandler,
-            LivePcapngHandler,
-            PcapngOutputHandler,
-            PcapOutputHandler,
-        )
-        from .keylog_paths import split_keylog_path
+        from . import ConsoleOutputHandler
 
-        handlers = []
         live_info = {}
-        # Per-protocol split keylog paths, populated below when multiple
-        # protocol formatters are active. Used to record all split keylogs in
-        # the capture manifest while preserving the single "keylog" field.
-        split_paths = None
+        handlers = [ConsoleOutputHandler(verbose=config.output.verbose)]
 
-        # Console always active
-        handlers.append(ConsoleOutputHandler(verbose=config.output.verbose))
-
-        pcap_name = config.output.pcap
-        # One pcapng decision (the resolved pcap_container: --pcap-format, else
-        # the extension) shared by the -p handler and the full-capture DSB injection.
-        wants_pcapng = _pcap_handler_class(config.output) is PcapngOutputHandler
-
-        # PCAP/PCAPNG (non-live, non-full-capture only)
-        if pcap_name and not config.output.live and not config.output.full_capture:
-            if wants_pcapng:
-                handlers.append(PcapngOutputHandler(pcap_name, protocol_handler=protocol_handler))
-            else:
-                handlers.append(PcapOutputHandler(pcap_obj))
-
-        # Key collector enables DSB injection at finalization for full-capture pcapng.
-        if config.output.full_capture and wants_pcapng:
-            from .key_collector_handler import KeyCollectorHandler
-            handlers.append(KeyCollectorHandler(protocol_handler=protocol_handler))
-
-        # Keylog — unified across protocols. The user provides one ``-k`` path;
-        # if a single protocol is active that file is written directly, if
-        # multiple protocols emit keys (``--protocol all|auto``) the path is
-        # split per protocol so each Wireshark-loadable format gets its own
-        # file (``mykeys.log`` → ``mykeys.tls.log`` + ``mykeys.ssh.log``).
-        keylog = config.output.keylog
-        # Memory-scan-only: the scanner writes -k itself (memory_scan_keylog_path
-        # below), so a hook keylog handler here would open the same file twice
-        # in truncate mode and clobber it.
-        from ..config import memory_scan_only
-        if keylog and memory_scan_only(config):
-            keylog = None
-        if keylog:
-            active = _active_keylog_formatters(config.protocols, protocol_registry)
-            if not active and protocol_handler is not None \
-                    and hasattr(protocol_handler, "keylog_formatter"):
-                # Fallback for callers without a registry: use the active
-                # protocol_handler's formatter if it has one.
-                fmt = protocol_handler.keylog_formatter()
-                if fmt is not None:
-                    active = [fmt]
-            # IPsec (and any future table-based protocol) writes Wireshark UAT
-            # decryption-table files (ikev2_decryption_table / esp_sa) into the
-            # keylog's directory rather than NSS keylog lines, so it is wired to
-            # a dedicated writer and kept OUT of the line-based keylog split.
-            uat_formatters = [f for f in active
-                              if getattr(f, "writes_decryption_tables", False)]
-            active = [f for f in active
-                      if not getattr(f, "writes_decryption_tables", False)]
-            # The generic memory-scan engine (--scan-keys-region) emits candidates
-            # under the protocol-agnostic "scan_candidate" classifier regardless of
-            # the selected --protocol, so wire its formatter whenever a scan region
-            # is configured. It gets its own split keylog file when other protocols
-            # are also active; on its own it writes straight to the -k path.
-            if getattr(config.hooking, "scan_keys_region", None):
-                from .scan_candidate_formatter import ScanCandidateKeylogFormatter
-                if not any(getattr(f, "protocol", None) == "scan_candidate" for f in active):
-                    active = list(active) + [ScanCandidateKeylogFormatter()]
-            if not active and not uat_formatters:
-                logger.warning(
-                    "--keylog set but no active protocol emits key material; "
-                    "-k has no effect with --protocol %s", config.protocol,
-                )
-            elif len(active) == 1 and not uat_formatters:
-                handlers.append(KeylogOutputHandler(keylog, formatter=active[0]))
-            elif active:
-                split_paths = {f.protocol: split_keylog_path(keylog, f.protocol)
-                               for f in active}
-                logger.info(
-                    "keylog split: %s",
-                    ", ".join(f"{p} → {path}" for p, path in split_paths.items()),
-                )
-                # Surface all split keylogs so callers (and the capture manifest)
-                # can record every protocol's keylog, not just the single -k path.
-                live_info["keylogs"] = split_paths
-                for fmt in active:
-                    handlers.append(KeylogOutputHandler(
-                        split_paths[fmt.protocol], formatter=fmt,
-                    ))
-            # IPsec decryption-table writer(s): the two Wireshark UAT files live
-            # in the -k keylog's directory (not at a split keylog path).
-            for fmt in uat_formatters:
-                from .ipsec_decryption_tables import IPsecDecryptionTableHandler
-                handler = IPsecDecryptionTableHandler(keylog, formatter=fmt)
-                handlers.append(handler)
-                logger.info(
-                    "ipsec decryption tables → %s/{ikev2_decryption_table,esp_sa}",
-                    handler._dir,
-                )
-
-        # In the multi-format case, hand the split keylog paths to the PCAP
-        # object so its capture manifest records every protocol's keylog under
-        # "keylogs" (the single "keylog" field is set elsewhere and preserved).
-        if split_paths and pcap_obj is not None \
-                and hasattr(pcap_obj, "set_active_keylogs"):
-            pcap_obj.set_active_keylogs(split_paths)
-            # Also hand the un-split base -k path so the manifest can fall back to
-            # it when a per-protocol split (e.g. <base>.tls.keylog) is never written
-            # — on Windows the TLS secrets land in the base keylog, not the split.
-            # Use config.output.keylog (the original), NOT the local `keylog` var,
-            # which is nulled above for memory-scan-only captures.
-            if hasattr(pcap_obj, "set_base_keylog"):
-                pcap_obj.set_base_keylog(config.output.keylog)
-
-        # Memory-scan (--memory-scan / -ms). The heap secret-scanner runs as a
-        # separate injected agent and emits ready NSS keylog lines forwarded as
-        # KeylogEvent(protocol="memscan"). Following the --scan-keys-region
-        # precedent, it reuses the shared KeylogOutputHandler with a tagged
-        # formatter rather than a bespoke handler. Its own dedicated file
-        # (memory_scan_keylog_path) keeps it independent of -k, so -ms alone
-        # still writes a keylog, and it never shares a file handle with the
-        # hooked-key writer.
-        ms_path = memory_scan_keylog_path(config)
-        if ms_path:
-            from ..memory_scanning.formatter import MemoryScanKeylogFormatter
-            handlers.append(KeylogOutputHandler(ms_path, formatter=MemoryScanKeylogFormatter()))
-            live_info["memory_scan_keylog"] = ms_path
-            logger.info("memory-scan keylog → %s", ms_path)
-
-        # JSON / JSONL / -j - stdout stream
-        json_cls = _json_handler_class(config.output)
-        if json_cls is not None:
-            from .key_material import json_key_material_enabled
-            # One policy for every JSON output: raw key material only when it
-            # was explicitly requested (-k or --json-keys), else redacted.
-            include_keys = json_key_material_enabled(config.output)
-            # Agent dev diagnostics reach the JSONL outputs only with -d / -do.
-            include_dev_logs = bool(getattr(config, "debug_output", False))
-            if json_cls is JsonOutputHandler:
-                handlers.append(JsonOutputHandler(
-                    config.output.json_output,
-                    session_info=session_data.get("session_info", {}),
-                    auxiliary=getattr(config.output, "auxiliary_session", False),
-                    include_key_material=include_keys,
-                ))
-            elif json_cls is JsonlOutputHandler:
-                handlers.append(JsonlOutputHandler(
-                    config.output.json_output, include_key_material=include_keys,
-                    include_agent_dev_logs=include_dev_logs))
-            else:
-                handlers.append(json_cls(include_key_material=include_keys,
-                                         include_agent_dev_logs=include_dev_logs))
-
-        # --tap: write a .tap capture (flows) directly from the CLI session.
-        # Under -f there are no plaintext events; the session builds the .tap
-        # from the finished full capture at teardown instead (offline/auto_tap.py),
-        # so no live handler truncates the user's path up front.
-        tap_cls = _tap_handler_class(config.output)
-        if tap_cls is not None and config.output.full_capture:
-            _log_tap_deferred_to_full_capture(config.output.tap_output, logger)
-        elif tap_cls is not None:
-            handlers.append(tap_cls(config.output.tap_output, target=config.target or ""))
-
-        # Live Wireshark modes
-        if config.output.live:
-            from ..fritap_utility import (
-                WINDOWS_LIVE_UNSUPPORTED,
-                are_we_running_on_windows,
-            )
-            if are_we_running_on_windows():
-                logger.error(WINDOWS_LIVE_UNSUPPORTED)
-            else:
-                if pcap_name:
-                    logger.warning(
-                        "YOU ARE TRYING TO WRITE A PCAP AND HAVING A LIVE VIEW\n"
-                        "THIS IS NOT SUPPORTED!\n"
-                        "WHEN YOU DO A LIVE VIEW YOU CAN SAVE YOUR CAPTURE WITH WIRESHARK."
-                    )
-                live_mode = config.output.live_mode
-                if live_mode == "live_pcapng":
-                    from .live_autodecrypt_handler import LiveAutoDecryptHandler
-                    is_mobile = bool(config.device.mobile)
-                    device_id = (
-                        config.device.mobile
-                        if isinstance(config.device.mobile, str)
-                        else None
-                    )
-                    live_handler = LiveAutoDecryptHandler(
-                        is_mobile=is_mobile, device_id=device_id,
-                        include_loopback=getattr(config.output, "include_loopback", False),
-                        filter_infrastructure=getattr(config.output, "filter_infrastructure", True),
-                    )
-                    description = 'friTap live auto-decrypt (raw capture + TLS keys)'
-                elif live_mode == "wireshark":
-                    from .live_wireshark_handler import LiveWiresharkHandler
-                    # PCAP created lazily in connect() to avoid FIFO deadlock
-                    live_handler = LiveWiresharkHandler()
-                    description = 'friTap live view on Wireshark (plaintext stream)'
-                else:
-                    live_handler = LivePcapngHandler()
-                    description = 'friTap live view on Wireshark (PCAPNG with auto-decrypt)'
-
-                fifo_file = live_handler.create_fifo()
-                live_info['tmpdir'] = live_handler.tmpdir
-                live_info['filename'] = live_handler.fifo_path
-
-                logger.info(description)
-                logger.info('Created named pipe: %s', fifo_file)
-                logger.info('Open with: wireshark -k -i %s', fifo_file)
-                handlers.append(live_handler)
+        _add_pcap_handlers(config, pcap_obj, protocol_handler, handlers)
+        split_paths = _add_keylog_handlers(
+            config, protocol_handler, protocol_registry, logger, handlers, live_info)
+        _record_split_keylogs(config, pcap_obj, split_paths)
+        _add_memory_scan_handler(config, logger, handlers, live_info)
+        _add_json_handler(config, session_data, handlers)
+        _add_tap_handler(config, logger, handlers)
+        _add_live_handler(config, logger, handlers, live_info)
 
         return handlers, live_info

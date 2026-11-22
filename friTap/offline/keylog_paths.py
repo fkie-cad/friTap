@@ -1,9 +1,8 @@
-"""
-Keylog path identity.
+"""Keylog path identity.
 
-One canonical answer to "do these two paths name the same keylog file?", shared
-by the pcap -> tap converter, the keylog suggester and the TUI wizard; plus
-the validation rules for paths read from an (untrusted) capture manifest.
+One answer to "do these two paths name the same keylog file?" for the converter,
+the suggester and the TUI wizard, plus validation of paths read from an
+(untrusted) capture manifest.
 """
 
 from __future__ import annotations
@@ -17,12 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 def canonical_keylog_path(path: str) -> str:
-    """Canonical form of *path* for identity comparisons.
-
-    Symlinks and relative segments are resolved (``realpath``) and the case is
-    folded where the platform's paths are case-insensitive (``normcase``). A
-    path that cannot be resolved falls back to its normalized absolute form.
-    """
+    """Canonical form of *path* for identity comparisons: ``realpath`` plus ``normcase``; unresolvable paths fall back to the normalized absolute form."""
     try:
         resolved = os.path.realpath(path)
     except (OSError, ValueError):
@@ -40,23 +34,7 @@ def same_keylog_path(a: str, b: str) -> bool:
         return False
 
 
-# ---------------------------------------------------------------------------
-# Manifest path validation
-#
-# A ``<pcap>.fritap.json`` manifest shipped with a third-party capture is
-# untrusted. friTap's own manifests legitimately record absolute paths and
-# paths relative to the capture's CWD (``-k /tmp/k.log -p out/cap.pcap``), so
-# paths are NOT confined to the manifest directory. Instead:
-#
-# * a manifest path must name a bounded regular file (never a FIFO, device or
-#   directory — a FIFO would block the reader forever), and
-# * the exfiltration risk is closed at the sink: when manifest-named files are
-#   merged into a new keylog only well-formed keylog lines are copied (see
-#   :func:`friTap.offline.keylog_picker.merge_keylogs`), so an arbitrary file
-#   such as ``~/.ssh/id_rsa`` contributes zero lines.
-#
-# Protocol names (used in output file names) are restricted to a safe charset.
-# ---------------------------------------------------------------------------
+# A third-party manifest is untrusted, yet friTap's own record absolute and CWD-relative paths, so paths are not confined to the manifest directory. Instead a path must name a bounded regular file (a FIFO would block the reader) and exfiltration is closed at the sink: merging copies only well-formed keylog lines (``keylog_picker.merge_keylogs``), so ``~/.ssh/id_rsa`` contributes zero. Protocol names (used in file names) get a safe charset.
 
 # Upper bound for a manifest-referenced keylog / sidecar file.
 MANIFEST_FILE_MAX_BYTES = 512 * 1024 * 1024
@@ -70,10 +48,7 @@ def is_safe_protocol_name(name) -> bool:
 
 
 def is_bounded_regular_file(path: str, max_bytes: int | None = None) -> bool:
-    """True when *path* is a regular file (not a FIFO/device/dir) of <= *max_bytes*.
-
-    *max_bytes* defaults to :data:`MANIFEST_FILE_MAX_BYTES`.
-    """
+    """True when *path* is a regular file (not FIFO/device/dir) of <= *max_bytes* (default :data:`MANIFEST_FILE_MAX_BYTES`)."""
     limit = MANIFEST_FILE_MAX_BYTES if max_bytes is None else max_bytes
     try:
         info = os.stat(path)
@@ -93,17 +68,12 @@ def _manifest_path_candidates(manifest_dir: str, path: str) -> list[str]:
 def validate_manifest_path(manifest_dir: str, path) -> str | None:
     """Resolve manifest-supplied *path*, rejecting anything unsafe to read.
 
-    Resolution order is unchanged from friTap's historical behaviour: an
-    absolute path is used as-is; a relative one is looked up next to the
-    manifest first, then in the CWD (live captures record paths relative to
-    *their* CWD). The first candidate that exists must be a regular file of at
-    most :data:`MANIFEST_FILE_MAX_BYTES` — a FIFO, device, directory or
-    oversized file is rejected (``None``, with a warning). When no candidate
-    exists the first one is returned unchanged, so a later "not found" error
-    names the location looked at first (nothing is read).
-
-    Never raises; a non-string, empty or NUL-containing *path* yields ``None``.
-    """
+    Absolute paths are used as-is; relative ones are looked up next to the manifest,
+    then in the CWD. The first existing candidate must be a regular file of at most
+    :data:`MANIFEST_FILE_MAX_BYTES`, else ``None`` with a warning. If none exists the
+    first is returned so a later "not found" names it. Never raises; a non-string,
+    empty or NUL-containing *path* yields ``None``.
+"""
     if not isinstance(path, str) or not path or "\x00" in path:
         return None
     candidates = _manifest_path_candidates(manifest_dir, path)

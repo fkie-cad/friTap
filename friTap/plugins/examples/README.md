@@ -18,10 +18,10 @@ Example plugins demonstrating the three plugin tiers.
 
    ```bash
    # Find your plugin directory:
-   python -c "from friTap.plugins.loader import PLUGIN_DIR; print(PLUGIN_DIR)"
+   python -c "from friTap.plugins.loader import _get_plugin_dir; print(_get_plugin_dir())"
 
    # Copy the plugin:
-   cp stats_plugin.py "$(python -c 'from friTap.plugins.loader import PLUGIN_DIR; print(PLUGIN_DIR)')"
+   cp stats_plugin.py "$(python -c 'from friTap.plugins.loader import _get_plugin_dir; print(_get_plugin_dir())')"
    ```
 
 2. Run friTap normally — the plugin loads automatically:

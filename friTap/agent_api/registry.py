@@ -1,14 +1,11 @@
-"""
-Tool registry: the single source of truth for agent-facing tools.
+"""Tool registry: the single source of truth for agent-facing tools.
 
 A :class:`ToolSpec` names a tool, its JSON-Schema parameters and its handler
-``handler(params: dict, ctx: ToolContext) -> dict``. The CLI (``fritap q``),
-MCP and REST adapters are generated from :meth:`Registry.specs` and execute
-tools through :meth:`Registry.call`, which validates parameters, runs the
-handler, converts exceptions to :class:`ToolError` and caps the response.
+``handler(params, ctx) -> dict``. The CLI (``fritap q``), MCP and REST adapters are generated from
+:meth:`Registry.specs` and execute tools through :meth:`Registry.call`, which validates parameters,
+runs the handler, converts exceptions to :class:`ToolError` and caps the response.
 
-The default registry loads :mod:`friTap.agent_api.tools` lazily on first use,
-so importing this module stays cheap.
+The default registry loads :mod:`friTap.agent_api.tools` lazily on first use (cheap import).
 """
 
 from __future__ import annotations
@@ -34,14 +31,9 @@ Handler = Callable[[dict, ToolContext], dict]
 class ToolSpec:
     """Declaration of one agent tool.
 
-    Attributes:
-        name: Unique snake_case tool name.
-        summary: One-line description (<= 100 chars).
-        params_schema: JSON-Schema object (see :func:`schema.object_schema`).
-        handler: ``handler(params, ctx) -> dict`` (params already validated).
-        kind: ``read`` | ``discover`` | ``capture`` | ``export``.
-        mutating: True if the tool changes state (starts/stops captures, writes files).
-        result_schema: Optional JSON-Schema of the result, used for docs.
+    ``summary`` is one line (<= 100 chars). ``handler`` receives already-validated params.
+    ``mutating`` marks tools that change state (start/stop captures, write files).
+    ``result_schema`` is optional and used for docs.
     """
 
     name: str
@@ -113,19 +105,14 @@ class Registry:
     ) -> dict[str, Any]:
         """Validate ``params``, run the tool and return its (size-capped) result.
 
-        Raises:
-            ToolError: for every failure (unknown tool, bad params, handler errors).
+        Every failure (unknown tool, bad params, handler error) raises ``ToolError``.
         """
         return self.call_json(name, params, context=context)[0]
 
     def call_json(
         self, name: str, params: dict | None = None, *, context: ToolContext | None = None
     ) -> tuple[dict[str, Any], str]:
-        """Like :meth:`call`, also returning the result as compact JSON (encoded once).
-
-        Raises:
-            ToolError: for every failure (unknown tool, bad params, handler errors).
-        """
+        """Like :meth:`call`, also returning the result as compact JSON (encoded once)."""
         ctx = context if context is not None else ToolContext()
         try:
             spec = self.get(name)

@@ -1,9 +1,4 @@
-"""Lightweight protocol re-detection and re-parsing for flows.
-
-Used to upgrade flows with ``protocol="unknown"`` (e.g. from legacy .tap
-files or HexdumpParser fallback) by running proper protocol detection on
-the raw chunk data.
-"""
+"""Lightweight protocol re-detection and re-parsing, used to upgrade ``unknown``-protocol flows from their raw chunks."""
 
 from __future__ import annotations
 
@@ -17,11 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 def _parser_protocol_label(parser) -> str:
-    """Map a parser instance to a human-readable protocol name.
-
-    A parser's own ``PROTOCOL`` wins when it declares one; the class-name
-    heuristics remain for parsers that leave it at ``"unknown"``.
-    """
+    """Human-readable protocol name of a parser: its own ``PROTOCOL`` when declared, else a class-name heuristic."""
     declared = getattr(parser, "PROTOCOL", "unknown")
     if declared and declared != "unknown":
         return declared
@@ -38,15 +29,9 @@ def _parser_protocol_label(parser) -> str:
 
 
 def detect_protocol_from_bytes(data: bytes, transport: str | None = None) -> str:
-    """Lightweight protocol detection from first bytes.
+    """Lightweight protocol detection from first bytes: a label like ``"HTTP/1.1"`` or ``"unknown"``.
 
-    *transport* (a ``Flow.transport`` value) selects a pinned parser first, so
-    decrypted TL transports are labelled by transport rather than by sniffing.
-
-    Returns a human-readable protocol name (e.g. ``"HTTP/1.1"``,
-    ``"HTTP/2"``) or ``"unknown"`` if no parser matches.
-
-    Cost: O(1) — only checks byte prefixes, no actual parsing.
+    *transport* selects a pinned parser first. O(1): checks byte prefixes only.
     """
     if not data:
         return "unknown"
@@ -67,13 +52,9 @@ def detect_protocol_from_bytes(data: bytes, transport: str | None = None) -> str
 
 
 def reparse_flow(flow: "Flow") -> bool:
-    """Re-parse a flow's chunks through protocol detection.
+    """Re-parse a flow's chunks through protocol detection and assign ``request``/``response``.
 
-    Feeds the flow's raw chunks through the detected parser and assigns
-    the resulting ``request`` / ``response`` to the flow.
-
-    Returns ``True`` if the protocol was successfully upgraded from
-    ``"unknown"`` to a real protocol.
+    Returns ``True`` if the protocol was upgraded from ``"unknown"`` to a real one.
     """
     from friTap.parsers.base import SafeParserAdapter, unwrap_parser
     from friTap.parsers.hexdump import HexdumpParser
@@ -92,7 +73,7 @@ def reparse_flow(flow: "Flow") -> bool:
                      getattr(flow, "flow_id", "?"), exc_info=True)
         return False
 
-    # Try write-direction bytes first (client request), fall back to read
+    # Detect on write bytes (client request) first, then read.
     write_bytes = flow.get_direction_bytes("write", max_bytes=512)
     read_bytes = flow.get_direction_bytes("read", max_bytes=512)
 
@@ -107,7 +88,7 @@ def reparse_flow(flow: "Flow") -> bool:
         return False
 
     if isinstance(raw_parser, HexdumpParser):
-        # Try the other direction
+        # Try the other direction.
         alt_data = read_bytes if detect_data is write_bytes else write_bytes
         if alt_data:
             try:
@@ -117,22 +98,16 @@ def reparse_flow(flow: "Flow") -> bool:
         if isinstance(raw_parser, HexdumpParser):
             return False
 
-    # Trailing-data detection inside the parser honours the flow's transport.
+    # Trailing-data detection honours the flow's transport.
     raw_parser.flow_transport = transport
 
-    # Wrap in SafeParserAdapter so a single malformed chunk can no longer
-    # raise out of feed/flush; on first failure, subsequent feeds are
-    # short-circuited and the adapter's friTap.parsers.safe logger records
-    # the traceback. This replaces the prior per-iteration try/except blocks.
+    # SafeParserAdapter: a malformed chunk cannot raise out of feed/flush.
     parser = SafeParserAdapter(raw_parser)
 
-    # Clear existing results so the new parser can replace them.
-    # This handles both "unknown" protocol upgrades and re-parsing with
-    # improved parsers (e.g., WebSocket decompression, H2 control frames).
+    # Clear results so the new parser replaces them (also covers re-parsing with improved parsers).
     flow.request = None
     flow.response = None
 
-    # Feed all chunks through the detected parser
     for chunk in flow.chunks:
         results = parser.feed(chunk.data, chunk.direction)
         for result in results:
@@ -141,7 +116,6 @@ def reparse_flow(flow: "Flow") -> bool:
             elif not result.is_request and flow.response is None:
                 flow.response = result
 
-    # Flush remaining partial messages
     for result in parser.flush():
         if result.is_request and flow.request is None:
             flow.request = result
@@ -154,12 +128,10 @@ def reparse_flow(flow: "Flow") -> bool:
     elif flow.response and flow.response.protocol != "unknown":
         upgraded = True
 
-    # Fallback: parser detected a real protocol but produced no results
-    # (e.g. HTTP/2 control-only frames with no HEADERS).  Set a minimal
-    # protocol indicator so the flow list shows the correct label.
+    # Parser detected a protocol but produced no results (e.g. HTTP/2 control-only
+    # frames): set a minimal indicator so the flow list shows the label.
     if not upgraded and flow.request is None:
         from friTap.parsers.base import ParseResult
-        # Unwrap the adapter so the protocol label reflects the concrete parser.
         proto_label = _parser_protocol_label(unwrap_parser(parser))
         if proto_label != "unknown":
             flow.request = ParseResult(
@@ -169,11 +141,8 @@ def reparse_flow(flow: "Flow") -> bool:
             )
             upgraded = True
 
-    # Per-layer generalization: after the app-level request/response are
-    # re-detected, refresh the protocol layer stack so flow.<proto> reflects the
-    # new protocol and any OWNED inner layers (decryptor output) are re-parsed
-    # against their current bytes. Mirrored transport/app layers track the
-    # reassigned request/response automatically; this rebuilds their identity.
+    # Refresh the layer stack so flow.<proto> follows the new protocol and OWNED
+    # inner layers are re-parsed against their current bytes.
     _refresh_layer_stack(flow)
 
     if upgraded:
@@ -229,9 +198,8 @@ def _first_result_for_direction(registry, transport: str, flow: "Flow", directio
 def _reparse_pinned_flow(flow: "Flow", registry, transport: str) -> bool:
     """Re-parse a transport-pinned flow (decrypted TL) per direction.
 
-    Each direction gets its own parser so the request holds only write data and
-    the response only read data; stale trailing-data segments from an earlier
-    byte-sniffed parse (e.g. a bogus WebSocket PING) are cleared.
+    Each direction gets its own parser (request = write data only, response = read
+    data only); stale trailing-data segments from an earlier byte-sniffed parse are cleared.
     """
     clear_trailing_data(flow)
     flow.request = _first_result_for_direction(registry, transport, flow, "write")

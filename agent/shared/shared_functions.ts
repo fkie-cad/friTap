@@ -16,6 +16,7 @@ import { nativeSocketObserver, NativeSocketObserver, CLOSED_FD_CONSUMER, fdClose
 // use (getPortsAndAddresses) and re-exported below for existing importers.
 import { decodeSockaddr, readSockaddrFamily } from "./sockaddr.js";
 import type { DecodedSockaddr, ByteOrderFns } from "./sockaddr.js";
+import type { ScanStatus } from "./arm64_xref.js";
 
 /*
  * Tracks which (platform, loader-function, protocol) triples already have a
@@ -881,6 +882,7 @@ export function getPortsAndAddresses(sockfd: number, isRead: boolean, methodAddr
         // Byte math by default; flip to `true` to route through the cached ntohs/ntohl.
         // addr is a real OS sockaddr from libc getpeername/getsockname — BSD layout on
         // darwin (sa_len@0, AF_INET6=30). bsdSockaddr=true is a no-op on Linux/Windows.
+        // Winsock under Wine returns AF_INET6 = 23 on "linux"; readSockaddrFamily maps it.
         const decoded = decodeSockaddr(addr, false, _cachedSocketFns, true);
         if (!decoded) {
             // only uncomment this if you really need to debug this
@@ -1082,9 +1084,11 @@ export function underscoreVariants(name: string): string[] {
  *
  * @param moduleName Name of the module to search
  * @param symbolNames Array of exact symbol names to find
+ * @param status Optional; `complete` turns false when the walk failed, so its misses prove nothing
  * @returns Map of symbolName → address (only includes found symbols)
  */
-export function findNonExportedSymbols(moduleName: string, symbolNames: string[]): Map<string, NativePointer> {
+export function findNonExportedSymbols(moduleName: string, symbolNames: string[],
+                                       status?: ScanStatus): Map<string, NativePointer> {
     const result = new Map<string, NativePointer>();
     const variantToInput = new Map<string, string>();
     for (const name of symbolNames) {
@@ -1105,6 +1109,7 @@ export function findNonExportedSymbols(moduleName: string, symbolNames: string[]
         }
     } catch (e) {
         devlog(`[findNonExportedSymbols] in ${moduleName}: ${e}`);
+        if (status) status.complete = false;
     }
     return result;
 }

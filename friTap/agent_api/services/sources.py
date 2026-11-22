@@ -1,6 +1,4 @@
-"""
-Resolve a read tool's capture source (``tap`` path or capture ``session_id``) to a file.
-"""
+"""Resolve a read tool's capture source (``tap`` path or capture ``session_id``) to a file."""
 
 from __future__ import annotations
 
@@ -17,13 +15,9 @@ TAP_SUFFIX = ".tap"
 def resolve_tap_source(params: dict[str, Any], ctx: ToolContext) -> Path:
     """Return the ``.tap`` file named by ``params["tap"]`` or ``params["session_id"]``.
 
-    ``tap`` must resolve inside ``ctx.root``; a ``session_id`` is looked up in
-    the capture session manager (its files live in the manager's session dir).
-
-    Raises:
-        ToolError: ``bad_param`` (neither given), ``forbidden`` (sandbox
-            escape), ``not_found`` (missing file / unknown session) or
-            ``capture_running`` (session not stopped yet).
+    ``tap`` must resolve inside ``ctx.root``; a ``session_id`` is looked up in the session manager.
+    Raises ``bad_param`` (neither given), ``forbidden`` (sandbox escape), ``not_found`` (missing file /
+    unknown session) or ``capture_running`` (session not stopped yet).
     """
     if params.get("tap"):
         return resolve_under_root(params["tap"], ctx.root, suffix=TAP_SUFFIX)

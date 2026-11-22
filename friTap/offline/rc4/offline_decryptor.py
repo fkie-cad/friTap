@@ -2,25 +2,16 @@
 
 """RC4 offline decryptor: dual-mode emitter + registry entry (PUBLIC).
 
-RC4 appears in two shapes in the wild, and ONE registry entry covers both:
+One registry entry covers standalone RC4 over raw TCP and nested RC4-in-TLS.
 
-  * **standalone** — RC4 is the outer cipher directly over raw TCP, and
-  * **nested RC4-in-TLS** — plaintext -> RC4 -> TLS 1.3 -> socket.
-
-The entry registers with ``requires_tls_strip=False`` so it runs as an
-*independent* emitter (like MTProto), which — per the offline driver contract —
-STILL receives the TLS ``--keylog`` path (``tls_keylog_path``). The emitter
-branches on that single fact:
-
-  * ``tls_keylog_path`` present  -> NESTED: let tshark strip TLS first (via the
-    SAME ``list_tls_streams``/``follow_tls_stream`` helpers the Signal emitter
-    uses), then strip RC4 from the decrypted TLS plaintext;
-  * ``tls_keylog_path`` absent   -> STANDALONE: strip RC4 straight off the
-    reassembled raw-TCP payloads.
+It registers with ``requires_tls_strip=False`` (an independent emitter, like
+MTProto), which still receives ``tls_keylog_path``. With it, tshark strips TLS
+first and RC4 is stripped from the TLS plaintext (nested); without it, RC4 is
+stripped from the reassembled raw TCP payloads (standalone).
 
 Each recovered directional payload becomes one ``DatalogEvent(protocol="rc4")``
-fed through the SAME collector/writer path; the collector types the flow as
-``rc4`` and :class:`~friTap.flow.layers.Rc4Layer` renders the decrypted chunks.
+through the normal collector/writer path; :class:`~friTap.flow.layers.Rc4Layer`
+renders the decrypted chunks.
 """
 
 from __future__ import annotations
@@ -40,11 +31,9 @@ logger = logging.getLogger(__name__)
 def _candidates_from_scan_source():
     """Mine RC4 candidate keys from the CLI-supplied memory scan source, if any.
 
-    The source (a .dmp/.bin dump or a live pid/name) was stashed by this package's
-    ``handle_offline_cli_extras``. Returns a de-duplicated ``[(source, key), ...]``
-    list, or ``[]`` when no source was given or it could not be read. Never raises:
-    a bad dump/pid is logged and treated as "no candidates" so the conversion still
-    runs (falling back to keylog keys / in-band candidate bytes).
+    The source (dump or live pid/name) is stashed by ``handle_offline_cli_extras``.
+    Returns de-duplicated candidates, or ``[]`` when there is no source or it is
+    unreadable. Never raises, so the conversion still runs.
     """
     from . import get_rc4_scan_source
 
@@ -72,7 +61,7 @@ def _span_streams_kwargs(state, nested: bool) -> dict:
     """``{"streams": ...}`` built from the TLS single pass's span store, else ``{}``.
 
     Nested RC4 reuses the single-pass TLS plaintext (with per-frame provenance)
-    instead of a second tshark run; without spans the tshark path is unchanged.
+    instead of a second tshark run.
     """
     spans = getattr(state, "tls_spans", None)
     if not nested or not spans:
@@ -84,10 +73,9 @@ def _span_streams_kwargs(state, nested: bool) -> dict:
 def _rc4_datalog_event(msg) -> DatalogEvent:
     """The ``protocol="rc4"`` DatalogEvent for one decrypted message.
 
-    Carries the pcap capture time when the message has one (else the event's
-    default clock, as before). No session token: ``protocol="rc4"`` alone keys
-    it onto its OWN ``net:rc4:<4-tuple>`` flow, apart from the ``net:`` flow the
-    outer TLS plaintext of the same connection lands in.
+    Carries the pcap capture time when the message has one. No session token:
+    ``protocol="rc4"`` alone keys it onto its own ``net:rc4:<4-tuple>`` flow,
+    apart from the ``net:`` flow of the connection's outer TLS plaintext.
     """
     from friTap.offline.pipeline_api import event_ts_kwargs
 
@@ -154,12 +142,10 @@ def _emit_rc4_streams(
 ) -> None:
     """Decrypt RC4 (standalone or nested-in-TLS) and emit DatalogEvents.
 
-    NESTED vs STANDALONE is decided solely by whether a usable TLS keylog is
-    present: with one, tshark peels TLS first and RC4 is stripped from the
-    decrypted TLS plaintext; without one, RC4 is stripped from raw TCP. The
-    candidate RC4 keys come from *rc4_keylog*; when it yields none, the
-    trial-decrypt path falls back to keys recovered from candidate bytes in the
-    ciphertext itself (see :func:`iter_decrypted_messages`).
+    Nested vs standalone depends only on whether a usable TLS keylog file exists.
+    Candidate keys come from *rc4_keylog* (plus the memory scan source); with
+    none, trial-decrypt falls back to candidate bytes in the ciphertext (see
+    :func:`iter_decrypted_messages`).
     """
     from friTap.connection_index import canonical_4tuple
     from friTap.offline.pipeline_api import open_at_capture_time
@@ -168,11 +154,7 @@ def _emit_rc4_streams(
 
     # Keylog keys come first so they keep priority in trial ordering.
     candidates = load_rc4_keylog(rc4_keylog)
-    # A managed-RC4 key (a passphrase in the client's own byte arrays) is not on
-    # the wire and not in a keylog unless the live agent recovered it. When the
-    # user points us at the client's memory (--rc4-scan-dump/--rc4-scan-pid/-name),
-    # mine candidate keys from it and append them, so the key whose output looks
-    # like plaintext is recovered here exactly as the live agent recovers it.
+    # Keys mined from the client's memory (--rc4-scan-*) rank after keylog keys.
     scan_candidates = _candidates_from_scan_source()
     if scan_candidates:
         logger.info("RC4: mined %d candidate key(s) from the memory scan source",
@@ -200,9 +182,8 @@ def _emit_rc4_streams(
         **_span_streams_kwargs(state, nested),
     ):
         ev = _rc4_datalog_event(msg)
-        # Keep the recovering key's provenance keyed by the perspective-independent
-        # 4-tuple (tagged with the chunk key so it can be scoped to the flow the
-        # collector put the chunk in); the decrypted BYTES already ride the chunks.
+        # Keyed by the perspective-independent 4-tuple; the chunk key scopes it to
+        # the flow the collector put the chunk in.
         _record_rc4_provenance(state, canonical_4tuple(
             msg.src_addr, msg.src_port, msg.dst_addr, msg.dst_port), msg, ev.data)
         open_at_capture_time(state, msg.timestamp or 0.0)
@@ -222,11 +203,7 @@ def _rc4_offline_emitter(
     *, pcap_path, proto_keylog, tls_keylog_path, tshark_bin, tls_ports,
     bus, state, result,
 ) -> None:
-    """Normalized adapter around :func:`_emit_rc4_streams`.
-
-    Registered as an INDEPENDENT emitter (``requires_tls_strip=False``) so it runs
-    on every conversion and still receives ``tls_keylog_path`` for the nested case.
-    """
+    """Registry emitter adapter around :func:`_emit_rc4_streams`."""
     _emit_rc4_streams(
         pcap_path, proto_keylog, tls_keylog_path,
         tshark_bin=tshark_bin, tls_ports=tls_ports,

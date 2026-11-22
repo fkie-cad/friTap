@@ -44,6 +44,8 @@ If you also passed plaintext pcap (`-do`), you'll additionally see:
 
 For Chrome itself, the QUICHE hooks fire on `libmonochrome_64.so` rather than the APEX library — Chrome carries its own embedded Chromium stack and doesn't actually route page-load traffic through Mainline Cronet (even though the APEX may be loaded into the process).
 
+Attaching to a running Chrome misses the QUIC connections it preconnects at startup. See [Chrome: attach vs spawn](../platforms/android.md#chrome-attach-vs-spawn).
+
 ## Force-scanning the higher-level runtime
 
 The sibling-coverage suppression is purely a runtime optimization. If for some reason you need to pattern-scan `libmainlinecronet` anyway (e.g., a hypothetical build that statically links BoringSSL into it), pass `--force-scan libmainlinecronet*`. friTap will then ignore the sibling and run the full pattern cascade.

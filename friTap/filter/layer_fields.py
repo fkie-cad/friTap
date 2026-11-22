@@ -8,7 +8,9 @@ function (:func:`extract_filter_attrs`) serves both live flows
 (``[l.to_dict() for l in flow.layers]``) and replayed tap summaries.
 
 Adding a protocol field means adding a row to :data:`LAYER_FIELD_SPECS`; no
-evaluator code changes (open/closed).
+evaluator code changes (open/closed). Viewer extensions add fields at runtime
+via :func:`register_layer_field` (through ``friTap.extensions``); every derived
+index is rebuilt and :func:`all_layer_field_specs` lists built-ins + registered.
 
 Path syntax (see :func:`_walk`): dotted keys descend into mappings
 (``envelope.session_id``) and a ``[]`` suffix fans out over a list
@@ -20,12 +22,18 @@ base fields it unites, and :func:`lookup_attr` resolves it at query time.
 
 from __future__ import annotations
 
+import dataclasses
+import threading
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from dataclasses import field as _dc_field
 from typing import Any, Optional
 
-from friTap.filter.protocols import canonical_protocols
+from friTap.filter.protocols import (
+    PROTOCOL_FIELD_PREFIX,
+    canonical_protocols,
+    known_protocol_names,
+)
 
 # Memory bounds: a flow can carry thousands of parsed messages, and bodies can
 # be arbitrarily long. Values beyond these caps are dropped / truncated.
@@ -168,17 +176,28 @@ LAYER_FIELD_SPECS: tuple[LayerFieldSpec, ...] = (
     _spec("rc4.assoc", "rc4", "assoc", "str", "Association hint (thread id)"),
 )
 
+# Every active spec: the built-in table, with extension-registered specs (see
+# register_layer_field) replacing same-named rows in place and new ones
+# appended. Rebuilt, together with the indexes below, by _rebuild_indexes().
+_ALL_SPECS: tuple[LayerFieldSpec, ...] = LAYER_FIELD_SPECS
+
 _SPECS_BY_NAME: dict[str, LayerFieldSpec] = {s.field: s for s in LAYER_FIELD_SPECS}
+_BUILTIN_SPEC_NAMES = frozenset(s.field for s in LAYER_FIELD_SPECS)
 
 # Only base specs are extracted; union specs are resolved by lookup_attr().
 _EXTRACTED_SPECS: tuple[LayerFieldSpec, ...] = tuple(
     s for s in LAYER_FIELD_SPECS if not s.union_of)
 
 
-def _scalar_roots_by_layer() -> dict[str, tuple[str, ...]]:
-    """Per layer, the non-fan-out top-level attributes the extracted specs read."""
+def _scalar_roots_by_layer(
+    extracted: Optional[tuple[LayerFieldSpec, ...]] = None,
+) -> dict[str, tuple[str, ...]]:
+    """Per layer, the non-fan-out top-level attributes the extracted specs read.
+
+    *extracted* defaults to the active :data:`_EXTRACTED_SPECS`.
+    """
     roots: dict[str, dict[str, None]] = {}
-    for spec in _EXTRACTED_SPECS:
+    for spec in _EXTRACTED_SPECS if extracted is None else extracted:
         root, fan_out = spec.segments[0]
         if fan_out:
             continue
@@ -201,13 +220,184 @@ def layer_field_spec(name: str) -> Optional[LayerFieldSpec]:
 
 
 def layer_field_names() -> list[str]:
-    """All per-protocol filter field names, in table order."""
-    return [s.field for s in LAYER_FIELD_SPECS]
+    """All per-protocol filter field names (built-in + registered), in table order."""
+    return [s.field for s in _ALL_SPECS]
 
 
-# ---------------------------------------------------------------------------
-# Path walking and value normalization
-# ---------------------------------------------------------------------------
+def all_layer_field_specs() -> tuple[LayerFieldSpec, ...]:
+    """Every active spec: built-ins (registered replacements in place), then new ones."""
+    return _ALL_SPECS
+
+
+# Extension-registered specs by field name, in first-registration order.
+_REGISTERED_SPECS: dict[str, LayerFieldSpec] = {}
+_REGISTRY_LOCK = threading.RLock()
+
+# Bumped after every successful index rebuild (see layer_fields_generation).
+_GENERATION = 0
+
+# The value types _normalize() knows how to coerce.
+SUPPORTED_VALUE_TYPES = frozenset({"str", "int", "float", "bool"})
+
+
+def layer_fields_generation() -> int:
+    """Counter bumped each time the active spec indexes change.
+
+    Caches derived from the specs (``friTap.filter.fields``) tag entries
+    with it and treat an entry from another generation as a miss.
+    """
+    return _GENERATION
+
+
+def _validated_layers(layers: Any) -> tuple[str, ...]:
+    """*layers* as a lowercase tuple; must be a tuple/list of strings."""
+    if not isinstance(layers, (tuple, list)):
+        raise TypeError(
+            "LayerFieldSpec.layers must be a tuple or list of layer names, "
+            f"got {type(layers).__name__} (wrap a single name: ('tls',))")
+    if not all(isinstance(name, str) for name in layers):
+        raise TypeError("LayerFieldSpec.layers must contain only strings")
+    return tuple(name.lower() for name in layers)
+
+
+def _validated_union_members(union_of: Any) -> tuple[str, ...]:
+    """*union_of* as a lowercase tuple; empty means "not a union".
+
+    A set union must be a tuple/list of non-blank strings (a bare ``str``
+    would otherwise be resolved over its single characters).
+    """
+    if not union_of:
+        return ()
+    if not isinstance(union_of, (tuple, list)):
+        raise TypeError(
+            "LayerFieldSpec.union_of must be a tuple or list of field names, "
+            f"got {type(union_of).__name__} (wrap a single name: ('a.b',))")
+    if not all(isinstance(name, str) for name in union_of):
+        raise TypeError("LayerFieldSpec.union_of must contain only strings")
+    members = tuple(name.strip().lower() for name in union_of)
+    if not all(members):
+        raise ValueError("LayerFieldSpec.union_of must not contain blank names")
+    return members
+
+
+def _validate_spec_shape(spec: LayerFieldSpec) -> None:
+    """Reject specs the indexes and extraction cannot handle."""
+    if spec.value_type not in SUPPORTED_VALUE_TYPES:
+        raise ValueError(
+            f"LayerFieldSpec.value_type must be one of "
+            f"{sorted(SUPPORTED_VALUE_TYPES)}, got {spec.value_type!r}")
+    if not isinstance(spec.description, str):
+        raise TypeError("LayerFieldSpec.description must be a string")
+    if not spec.union_of and not spec.segments:
+        raise ValueError(
+            f"LayerFieldSpec {spec.field!r} needs a non-empty path "
+            "(only union specs may omit it)")
+
+
+def _normalized(spec: LayerFieldSpec) -> LayerFieldSpec:
+    """*spec* validated, with a lowercase field name and layer names
+    (how lookups compare). Raises TypeError/ValueError on a bad spec."""
+    if not isinstance(spec, LayerFieldSpec):
+        raise TypeError(f"expected LayerFieldSpec, got {type(spec).__name__}")
+    field_name = spec.field.strip().lower() if isinstance(spec.field, str) else ""
+    if not field_name:
+        raise ValueError("LayerFieldSpec.field must be a non-empty string")
+    layers = _validated_layers(spec.layers)
+    union_of = _validated_union_members(spec.union_of)
+    _validate_spec_shape(spec)
+    if (field_name, layers, union_of) == (spec.field, spec.layers, spec.union_of):
+        return spec
+    return dataclasses.replace(
+        spec, field=field_name, layers=layers, union_of=union_of)
+
+
+def _merged_specs(registered: dict[str, LayerFieldSpec]) -> tuple[LayerFieldSpec, ...]:
+    merged = [registered.get(s.field, s) for s in LAYER_FIELD_SPECS]
+    merged += [s for name, s in registered.items() if name not in _BUILTIN_SPEC_NAMES]
+    return tuple(merged)
+
+
+def _rebuild_indexes(registered: dict[str, LayerFieldSpec]) -> None:
+    """Recompute every derived spec index from built-ins + *registered*.
+
+    Transactional: every index is computed from *registered* into locals
+    first and only assigned (with *registered* itself) once all of them
+    succeeded, so a failure leaves the active indexes untouched. The
+    generation is bumped after the swap, so a reader that resolved against
+    the old indexes holds the old generation.
+    """
+    global _ALL_SPECS, _SPECS_BY_NAME, _EXTRACTED_SPECS, _SCALAR_ROOTS_BY_LAYER
+    global _REGISTERED_SPECS, _GENERATION
+    all_specs = _merged_specs(registered)
+    specs_by_name = {s.field: s for s in all_specs}
+    extracted = tuple(s for s in all_specs if not s.union_of)
+    scalar_roots = _scalar_roots_by_layer(extracted)
+    _REGISTERED_SPECS = registered
+    _SPECS_BY_NAME = specs_by_name
+    _EXTRACTED_SPECS = extracted
+    _SCALAR_ROOTS_BY_LAYER = scalar_roots
+    _ALL_SPECS = all_specs
+    _GENERATION += 1
+
+
+def _reject_static_field_name(name: str) -> None:
+    """Raise ValueError when *name* is a static filter field the layer table
+    does not back (static fields win in the engine, so it would be shadowed).
+
+    ``tls.sni``/``tls.alpn`` are static but read through the built-in layer
+    spec of the same name, so replacing that layer spec stays allowed.
+    """
+    # Lazy: friTap.filter.fields imports this module at import time.
+    from friTap.filter.fields import FIELD_REGISTRY
+    if name in FIELD_REGISTRY and name not in _BUILTIN_SPEC_NAMES:
+        raise ValueError(
+            f"filter field {name!r} is a built-in static field and cannot "
+            "be registered as a layer field (it would be shadowed)"
+        )
+
+
+def _reject_protocol_predicate_name(name: str) -> None:
+    """Raise ValueError when *name* is a protocol predicate (``telegram``,
+    ``bhttp`` ...) or a ``protocol.<x>`` form: a layer field of that name
+    would replace the bare predicate or never be reachable."""
+    if name.startswith(PROTOCOL_FIELD_PREFIX):
+        raise ValueError(
+            f"filter field {name!r} uses the reserved {PROTOCOL_FIELD_PREFIX!r} "
+            "prefix and cannot be registered as a layer field")
+    if name in known_protocol_names():  # per call: late plugin protocols count
+        raise ValueError(
+            f"filter field {name!r} is a protocol predicate and cannot be "
+            "registered as a layer field (it would replace the predicate)")
+
+
+def register_layer_field(spec: LayerFieldSpec) -> LayerFieldSpec:
+    """Add (or replace, by field name) a per-protocol filter field.
+
+    The field name and layer names are lowercased. A registered spec named
+    like a built-in replaces it until :func:`clear_registered_layer_fields`.
+    Specs only reach flows whose filter attributes are extracted afterwards,
+    so register before a ``.tap`` is read. Returns the stored spec.
+
+    Raises ``ValueError`` if the name is a built-in *static* field (see
+    ``friTap.filter.fields``): the engine resolves static fields first, so
+    the registration would never take effect; likewise for a protocol
+    predicate name or a ``protocol.`` name. Raises ``TypeError`` /
+    ``ValueError`` for a malformed spec (see :func:`_normalized`). A
+    rejected registration leaves every index unchanged.
+    """
+    stored = _normalized(spec)
+    _reject_static_field_name(stored.field)
+    _reject_protocol_predicate_name(stored.field)
+    with _REGISTRY_LOCK:
+        _rebuild_indexes({**_REGISTERED_SPECS, stored.field: stored})
+    return stored
+
+
+def clear_registered_layer_fields() -> None:
+    """Drop every registered spec; the built-in table is restored unchanged."""
+    with _REGISTRY_LOCK:
+        _rebuild_indexes({})
+
 
 def _step(node: Any, key: str, fan_out: bool) -> list[Any]:
     """Apply one pre-split path step (``key`` or ``key[]``) to *node*."""
@@ -295,10 +485,6 @@ def _normalize(value: Any, spec: LayerFieldSpec) -> Any:
         return value
     return _to_str(value)
 
-
-# ---------------------------------------------------------------------------
-# Extraction
-# ---------------------------------------------------------------------------
 
 def _layer_name(layer_dict: Any) -> str:
     if not isinstance(layer_dict, Mapping):

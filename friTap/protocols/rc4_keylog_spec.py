@@ -1,35 +1,20 @@
-"""Canonical friTap RC4 keylog format — the single source of truth.
+"""Canonical friTap RC4 keylog format.
 
-Imported by BOTH the live writer (``Rc4KeylogFormatter`` in
-``friTap.protocols.rc4_handler``) and a later offline RC4 decrypt workstream, so
-the two never drift.
-
-Unlike keylogs whose layout is dictated by an external Wireshark dissector
-(e.g. the TLS ``SSLKEYLOGFILE`` format), the RC4 keylog is a **friTap-owned, label-prefixed** format, like the
-MTProto keylog. One record per line, single-space-separated, lowercase-hex key::
+Shared by the live writer (``Rc4KeylogFormatter``) and the offline RC4 decrypt.
+One record per line, single-space-separated, lowercase hex::
 
     RC4_KEY <key_hex> <key_len> <source> <direction> <assoc>
 
-Fields:
-  * ``RC4_KEY``    — the constant line label (:data:`LABEL`).
-  * ``key_hex``    — the raw RC4 key, lowercase hex, no separator (1..256 bytes).
-  * ``key_len``    — the key length in **bytes** (decimal). Redundant with
-                     ``key_hex`` but explicit, so a truncated line is detectable.
-  * ``source``     — the hook that recovered the key (a whitespace-free token,
-                     e.g. ``RC4_set_key``, ``BCryptGenerateSymmetricKey``,
-                     ``mbedtls_arc4_setup``, ``nettle_arcfour_set_key``,
-                     ``CryptEncrypt/RC4(CryptExportKey)``).
-  * ``direction``  — ``out`` (client→server), ``in`` (server→client), or
-                     ``unknown`` (RC4 key SETUP usually predates any direction).
-  * ``assoc``      — association hint for the nested (RC4-in-TLS) case: the agent
-                     thread id at capture, or ``-`` when unavailable. A downstream
-                     RC4 decryptor uses it to group keys captured on the same
-                     thread as the RC4 record stream that TLS-stripping produced.
+  * ``key_hex``    raw RC4 key (1..256 bytes).
+  * ``key_len``    key length in bytes; redundant, so a truncated line is detectable.
+  * ``source``     whitespace-free hook name, e.g. ``RC4_set_key``,
+                   ``BCryptGenerateSymmetricKey``, ``mbedtls_arc4_setup``.
+  * ``direction``  ``out`` (client->server), ``in`` or ``unknown`` (key setup
+                   usually predates any direction).
+  * ``assoc``      agent thread id, or ``-``; groups RC4-in-TLS keys with the
+                   record stream captured on the same thread.
 
-Comment lines (``#``) and blank lines are skipped by :func:`parse_line`, so a
-provenance ``HEADER_COMMENT`` may be written into a friTap RC4 keylog file.
-
-Example (the fixture key ``fritap-rc4-demo-key``)::
+:func:`parse_line` skips ``#`` and blank lines. Example::
 
     RC4_KEY 6672697461702d7263342d64656d6f2d6b6579 19 RC4_set_key unknown 4711
 """
@@ -49,10 +34,9 @@ LABEL = "RC4_KEY"
 MIN_KEY_LEN = 1
 MAX_KEY_LEN = 256
 
-# A recovered post-KSA S-box is emitted on the SAME RC4_KEY line shape, but its
-# `key_hex` is the 256-byte PERMUTATION (running keystream state, i=j=0), NOT a key
-# to feed through the KSA. It is disambiguated by (source, key_len): the offline
-# decryptor must decrypt with rc4_prga(sbox, data) directly, skipping the KSA.
+# A recovered post-KSA S-box uses the same line shape, but ``key_hex`` is the
+# 256-byte permutation (state i=j=0), not a key. Identified by (source, key_len);
+# decrypt with rc4_prga(sbox, data) directly, skipping the KSA.
 SBOX_SOURCE = "memscan-sbox"
 SBOX_LEN = 256
 
@@ -61,7 +45,6 @@ DIR_IN = "in"
 DIR_UNKNOWN = "unknown"
 _VALID_DIRECTIONS = (DIR_OUT, DIR_IN, DIR_UNKNOWN)
 
-# friTap-internal provenance; safe to write (parse_line skips ``#``).
 HEADER_COMMENT = (
     f"# friTap RC4 keylog v{VERSION} — format:\n"
     f"#   {LABEL} <key_hex> <key_len> <source> <direction> <assoc>"
@@ -83,11 +66,7 @@ class Rc4Key:
 
     @property
     def is_sbox(self) -> bool:
-        """True when this entry carries a post-KSA S-box permutation, not a key.
-
-        Both conditions are required so a genuine 256-byte KEY from some other hook
-        is never misread as an S-box.
-        """
+        """True for a post-KSA S-box; both conditions guard against a real 256-byte key."""
         return self.source == SBOX_SOURCE and self.key_len == SBOX_LEN
 
 
@@ -96,10 +75,8 @@ def _norm_hex(value: str) -> str:
 
 
 def _valid_hex(value: str) -> bool:
-    # Gate on bytes.fromhex (not int(value, 16)): the latter accepts a "0x"
-    # prefix and "_" digit separators that bytes.fromhex — used by parse_line
-    # to materialise the key — rejects, which would otherwise raise an uncaught
-    # ValueError and abort the whole keylog conversion on one malformed line.
+    # Not int(value, 16): it accepts "0x" and "_" that bytes.fromhex rejects,
+    # which would abort the whole keylog conversion on one malformed line.
     if not value or (len(value) % 2) != 0:
         return False
     try:
@@ -110,11 +87,7 @@ def _valid_hex(value: str) -> bool:
 
 
 def _sanitize_token(value: str, default: str) -> str:
-    """Collapse a field to a single whitespace-free token (never empty).
-
-    Whitespace would break the single-space split, so any run of it becomes an
-    underscore; an empty field falls back to *default*.
-    """
+    """Whitespace-free token (runs of whitespace become ``_``); empty gives *default*."""
     token = "_".join((value or "").split())
     return token or default
 
@@ -129,8 +102,7 @@ def format_line(
 ) -> Optional[str]:
     """Render an ``RC4_KEY`` line from the agent payload, or ``None`` if malformed.
 
-    Returning ``None`` (rather than raising) lets the formatter drop a bad event
-    without aborting the whole keylog, matching friTap's other formatters.
+    Returns ``None`` instead of raising so one bad event does not abort the keylog.
     """
     key_hex = _norm_hex(key)
     if not _valid_hex(key_hex):
@@ -138,8 +110,7 @@ def format_line(
     actual_len = len(key_hex) // 2
     if actual_len < MIN_KEY_LEN or actual_len > MAX_KEY_LEN:
         return None
-    # If the agent supplied key_len, it must agree with the hex (guards against a
-    # truncated/garbled key field).
+    # A supplied key_len must agree with the hex (guards against truncation).
     if key_len is not None:
         try:
             if int(key_len) != actual_len:

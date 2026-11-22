@@ -13,6 +13,7 @@ import { mbedTLS_execute_modern } from "../tls/platforms/android/mbedTLS_android
 import { boring_execute_modern, httpengine_execute_modern } from "../tls/platforms/android/openssl_boringssl_android.js";
 import { conscrypt_execute_modern } from "../tls/platforms/android/conscrypt.js";
 import { s2ntls_execute_modern } from "../tls/platforms/android/s2ntls_android.js";
+import { installFizzKeylog, isFizzCandidateModule } from "../shared/fizz_install.js";
 import { cronet_execute_modern } from "../tls/platforms/android/cronet_modern_android.js";
 // Legacy (class-based) executors
 import { boring_execute, httpengine_execute } from "../legacy/tls/platforms/android/openssl_boringssl_android.js";
@@ -25,9 +26,10 @@ import { conscrypt_native_execute } from "../legacy/tls/platforms/android/conscr
 import { s2ntls_execute } from "../legacy/tls/platforms/android/s2ntls_android.js";
 // V1-only (re-exported from legacy)
 import { java_execute } from "../tls/platforms/android/android_java_tls_libs.js";
+import { isJavaBlockedByBrokenLinkerNotifier } from "../shared/rtld_notifier_probe.js";
 import { flutter_execute, flutter_execute_modern } from "../tls/platforms/android/flutter_android.js";
 import { mono_btls_execute, mono_btls_execute_modern } from "../tls/platforms/android/mono_btls_android.js";
-import { patterns, isPatternReplaced, selected_protocols, use_modern, scan_results, library_scan_enabled, quic_only, no_loader_hook, spawned, stealth_loader, pairip_safe, attribute_sdk, pcap_enabled } from "../fritap_agent.js"
+import { patterns, isPatternReplaced, selected_protocols, use_modern, scan_results, library_scan_enabled, quic_only, no_loader_hook, spawned, stealth_loader, pairip_safe, attribute_sdk, pcap_enabled, full_capture, keylog_enabled } from "../fritap_agent.js"
 import { processScanResults, isModuleHooked, markModuleHooked } from "../shared/library_scanner.js";
 import { buildPairipSafeRegistrations, matchPairipSafeLib, PairipExecutorTable } from "../shared/pairip_safe_libs.js";
 // Unity (statically-linked MbedTLS 3.x): offset-based master-secret scrape,
@@ -51,6 +53,9 @@ import { nss_hpke_execute_android } from "../ohttp/platforms/android/nss_hpke_an
 import { quiche_execute } from "../quic/platforms/android/quiche_android.js";
 import { google_quiche_execute } from "../quic/platforms/android/google_quiche_android.js";
 import { chromium_plaintext_execute } from "../tls/platforms/android/chromium_plaintext_android.js";
+import {
+    CRONET_PLAINTEXT_MODULE_PATTERN, FLUTTER_PLAINTEXT_MODULE_PATTERN, SIGNAL_MODULE_EXCLUDE_PATTERN, SIGNAL_MODULE_PATTERN,
+} from "../tls/shared/chromium_plaintext_coverage.js";
 import { installJavaRequestContextHooks, requestContextHooksWanted } from "../shared/java_request_context.js";
 import { neqo_execute } from "../quic/platforms/android/neqo_android.js";
 
@@ -173,6 +178,29 @@ export function pairipSafeExecutors(modern: boolean): PairipExecutorTable {
     return modern ? MODERN_PAIRIP_EXECUTORS : LEGACY_PAIRIP_EXECUTORS;
 }
 
+/**
+ * Meta Fizz (TLS 1.3 + mvfst QUIC keys) row. Fizz is statically linked into
+ * arbitrarily named Meta libraries, so the name pattern admits any shared object
+ * and the cheap, cached content filter (isFizzCandidateModule: arm64, path class,
+ * own probe export) decides; the RTTI confirmation runs asynchronously inside the
+ * installer. Both trees run the same executor: the shared installer itself (no
+ * symbols to resolve, no plaintext hooks), whose promise is the row's verdict.
+ *
+ * `supplementary`: a Meta library may carry another TLS stack (e.g. BoringSSL) next
+ * to Fizz, so a Fizz match must never claim the module's TLS coverage — it still
+ * installs and reports library_detected, but the --library-scan BoringSSL pass and
+ * the tlsLibHunter pre-scan (findPrimaryMatch) keep the module eligible.
+ */
+export const FIZZ_MODULE_PATTERN = /\.so$/;
+
+export function fizzAndroidRow() {
+    return {
+        platform: plattform_name, pattern: FIZZ_MODULE_PATTERN, contentFilter: isFizzCandidateModule,
+        hookFn: installFizzKeylog, library: "Fizz (Meta)", libraryType: "fizz" as const, protocol: "tls",
+        supplementary: true,
+    };
+}
+
 export function load_android_hooking_agent() {
     const __androidHooks: Parameters<typeof hookRegistry.registerAll>[0] = [
         // TLS libraries (TLS protocol family — also covers QUIC and OHTTP below)
@@ -227,7 +255,7 @@ export function load_android_hooking_agent() {
         // (tombstone_12, 2026-06-15: SIGSEGV inside frida-agent Memory.scan).
         // Exclude it under `--protocol signal`; still scanned for generic TLS.
         { platform: plattform_name, pattern: /.*libringrtc_rffi.*\.so/, hookFn: (use_modern ? cronet_execute_modern : cronet_execute), library: "Cronet (RingRTC)", libraryType: "boringssl", protocol: "tls", excludeProtocols: ["signal"] },
-        { platform: plattform_name, pattern: /.*libsignal_jni.*\.so/, excludePattern: /_testing\.so$/, hookFn: (use_modern ? cronet_execute_modern : cronet_execute), library: "Cronet (Signal)", libraryType: "boringssl", protocol: "tls" },
+        { platform: plattform_name, pattern: SIGNAL_MODULE_PATTERN, excludePattern: SIGNAL_MODULE_EXCLUDE_PATTERN, hookFn: (use_modern ? cronet_execute_modern : cronet_execute), library: "Cronet (Signal)", libraryType: "boringssl", protocol: "tls" },
         { platform: plattform_name, pattern: /.*monochrome.*\.so/, hookFn: (use_modern ? cronet_execute_modern : cronet_execute), library: "Cronet (Monochrome)", libraryType: "boringssl", protocol: "tls" },
         // Android System WebView monolith — full Chromium with BoringSSL statically linked
         // (same shape as libmonochrome). The ssl_log_secret arm64 prologue is already covered
@@ -244,6 +272,7 @@ export function load_android_hooking_agent() {
         { platform: plattform_name, pattern: /.*libwarp_mobile.*\.so/, hookFn: (use_modern ? cronet_execute_modern : cronet_execute), library: "Cronet (Warp Mobile)", libraryType: "boringssl", protocol: "tls" },
         { platform: plattform_name, pattern: /.*lib*quiche*.*\.so/, hookFn: (use_modern ? cronet_execute_modern : cronet_execute), library: "Cronet (QUICHE)", libraryType: "boringssl", protocol: "tls" },
         { platform: plattform_name, pattern: /.*librustls.*\.so/, hookFn: (use_modern ? rustls_execute_modern : rustls_execute), library: "Rustls", libraryType: "rustls", protocol: "tls" },
+        fizzAndroidRow(),
         { platform: plattform_name, pattern: /.*libstartup.*\.so/, hookFn: metartc_execute, library: "metaRTC", protocol: "tls" },
         { platform: plattform_name, pattern: /libgojni.*\.so/, hookFn: (use_modern ? gotls_execute_modern : gotls_execute), library: "Go TLS", libraryType: "gotls", protocol: "tls" },
         // IPSec libraries — strongSwan VPN is common on Android (detection stub, key extraction still needs to be done)
@@ -291,7 +320,12 @@ export function load_android_hooking_agent() {
         // Stripped Cronet (embedded libcronet.<ver>.so and GMS Dynamite's): the Cronet row
         // above only extracts keys when SSL_* are not exported. Builds that do export them
         // are skipped inside chromium_plaintext (exportsSslRecordApi), so no double hooks.
-        { platform: plattform_name, pattern: /^libcronet([_.].*)?\.so$/, hookFn: chromium_plaintext_execute, library: "BoringSSL plaintext (Cronet)", protocol: "tls", supplementary: true },
+        { platform: plattform_name, pattern: CRONET_PLAINTEXT_MODULE_PATTERN, hookFn: chromium_plaintext_execute, library: "BoringSSL plaintext (Cronet)", protocol: "tls", supplementary: true },
+        // Signal's chat TLS: BoringSSL statically linked into libsignal_jni.so (Rust `boring`),
+        // SSL_read/SSL_write not exported. Keys stay with the "Cronet (Signal)" row.
+        { platform: plattform_name, pattern: SIGNAL_MODULE_PATTERN, excludePattern: SIGNAL_MODULE_EXCLUDE_PATTERN, hookFn: chromium_plaintext_execute, library: "BoringSSL plaintext (Signal)", protocol: "tls", supplementary: true },
+        // Flutter statically links a stripped BoringSSL too; keys stay with the Flutter row.
+        { platform: plattform_name, pattern: FLUTTER_PLAINTEXT_MODULE_PATTERN, hookFn: chromium_plaintext_execute, library: "BoringSSL plaintext (Flutter)", protocol: "tls", supplementary: true },
         { platform: plattform_name, pattern: /.*libxul\.so/, hookFn: neqo_execute, library: "Mozilla Neqo (Firefox HTTP/3)", libraryType: "neqo", protocol: "tls", supplementary: true },
         // Hooks contributed by optional, separately bundled units (empty in the
         // public build; a full build's private unit registers its rows before the
@@ -415,7 +449,14 @@ export function load_android_hooking_agent() {
     // ipsec) — those capture paths are purely native, so the Java hooks are pointless
     // there and only add the deopt/crash risk. Native hooks, the loader hook and the
     // memory scanner are unaffected.
-    if (!quic_only && !pairip_safe && isTlsFamilyRequested()) {
+    // 32-bit ARM: frida-gum's linker-notifier hook can branch into unmapped memory;
+    // the bridge's first Java.use() dlopen()s libopenjdkjvmti.so, faults there while
+    // holding the linker lock, and freezes the app (see shared/rtld_notifier_probe.ts).
+    // The gate logs LINKER_NOTIFIER_JAVA_SKIP_WARNING once (shared with modern conscrypt).
+    const linkerNotifierBroken = !quic_only && !pairip_safe && isTlsFamilyRequested() && isJavaBlockedByBrokenLinkerNotifier();
+    if (linkerNotifierBroken) {
+        // Java phase skipped; the one-time warning was logged by the gate.
+    } else if (!quic_only && !pairip_safe && isTlsFamilyRequested()) {
         phases.push({ label: "java", fn: () => install_java_hooks() });
     } else if (!quic_only && !pairip_safe) {
         log("[*] TLS not in the selected protocol set — skipping Android TLS Java hooks (ART instrumentation); this also avoids the frida-java-bridge deopt that can crash the app on detach.");
@@ -447,8 +488,8 @@ export function load_android_hooking_agent() {
             if (isPatternReplaced()) install_pattern_based_hooks();
         },
     });
-    // Per-request Java context (--attribute-sdk, -p only). Its own phase, not the TLS-gated "java" phase.
-    if (requestContextHooksWanted({ attribute_sdk, pcap_enabled, pairip_safe, quic_only })) phases.push({
+    // Per-request Java context (--attribute-sdk with -p or -f -k). Its own phase, not the TLS-gated "java" phase.
+    if (requestContextHooksWanted({ attribute_sdk, pcap_enabled, full_capture, keylog_enabled, pairip_safe, quic_only })) phases.push({
         label: "java-request-context",
         fn: () => installJavaRequestContextHooks(),
     });

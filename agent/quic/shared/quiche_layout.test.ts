@@ -19,9 +19,14 @@ import "../../shared/frida-test-stubs.js";
 import {
     Address, QuicheMemory, containsPointer, decodeQuicSocketAddress, discoverConnectionLayout, discoverQuicheLayout,
     discoverSessionLayout, findAddressPairOffset, readConnectionLink, readSessionLink, readStreamLink,
-    streamFromHookObject,
+    streamFromHookObject, findHandshakerConnection, HANDSHAKER_SESSION_OFFSET,
 } from "./quiche_layout.js";
 import { QuicConnectionTracker, buildQuicMessage } from "./quic_connection_tracker.js";
+import {
+    QuicheLayoutState, resolveConnectionRecord, resolveStreamRecord, seedQuicheLayout, sessionConnection,
+} from "./quiche_records.js";
+import { installLearnedModuleCache } from "../../shared/learned_module_cache.js";
+import { readQuicheLayoutHints, reportQuicheLayout } from "./quiche_layout_hints.js";
 
 // ---- fake memory -----------------------------------------------------------
 
@@ -271,6 +276,18 @@ test("a session hook learns session->connection, skipping the back-pointing deco
     assert.equal(learned?.connectionAddresses, 0x248);
 });
 
+test("session discovery without a known layout reads the connection's bytes once", () => {
+    const mem = buildChromeLikeObjects();
+    const readBytes = mem.readBytes.bind(mem);
+    let connectionReads = 0;
+    mem.readBytes = (addr: Address, length: number) => {
+        if (addr === CONNECTION) connectionReads++;
+        return readBytes(addr, length);
+    };
+    assert.equal(discoverSessionLayout(mem, SESSION)?.connectionAddresses, 0x248);
+    assert.equal(connectionReads, 1);
+});
+
 test("with the connection layout known, a 0-RTT session (no repeated pair yet) still resolves", () => {
     const known = discoverConnectionLayout(buildChromeLikeObjects(), CONNECTION)!;
     const mem = buildChromeLikeObjects({ self: v4Address([0, 0, 0, 0], 0, 2) });
@@ -295,3 +312,202 @@ test("containsPointer matches only aligned full-width little-endian words", () =
     assert.equal(containsPointer(bytes, 0x12345678n, 4), true);
     assert.equal(containsPointer(bytes, 0x112345678n, 4), false);         // wider than a pointer
 });
+
+// ---- TlsClientHandshaker -> connection (CryptoConnect) ------------------------
+
+const HANDSHAKER = 0x7500000n;
+const HS_LINK = { sessionConnection: 0x58, connectionVtable: CONNECTION_VTABLE };
+
+/** handshaker -> session (at `sessionSlot`) -> connection (session+0x58) with `vtable`. */
+function handshakerFixture(sessionSlot: number, vtable: bigint = CONNECTION_VTABLE): FakeMemory {
+    const mem = new FakeMemory(MOD, MOD + 0x1000000n);
+    mem.region(HANDSHAKER, 0x200);
+    mem.region(SESSION, 0x200);
+    mem.region(CONNECTION, 0x100);
+    mem.writePointer(HANDSHAKER, MOD + 0x100n);
+    mem.writePointer(HANDSHAKER + BigInt(sessionSlot), SESSION);
+    mem.writePointer(SESSION + 0x58n, CONNECTION);
+    mem.writePointer(CONNECTION, vtable);
+    return mem;
+}
+
+test("a handshaker's session_ at +0x108 leads to its connection", () => {
+    const mem = handshakerFixture(HANDSHAKER_SESSION_OFFSET);
+    assert.deepEqual(findHandshakerConnection(mem, HANDSHAKER, HS_LINK),
+                     { handshakerSession: 0x108, connection: CONNECTION });
+});
+
+test("a handshaker with session_ elsewhere is found by the slot scan", () => {
+    const mem = handshakerFixture(0x110);
+    assert.deepEqual(findHandshakerConnection(mem, HANDSHAKER, HS_LINK),
+                     { handshakerSession: 0x110, connection: CONNECTION });
+    // A cached offset is tried first.
+    assert.deepEqual(findHandshakerConnection(mem, HANDSHAKER, HS_LINK, 0x110),
+                     { handshakerSession: 0x110, connection: CONNECTION });
+});
+
+test("a connection with another vtable, or a null handshaker, resolves to nothing", () => {
+    const mem = handshakerFixture(HANDSHAKER_SESSION_OFFSET, MOD + 0x999n);
+    assert.equal(findHandshakerConnection(mem, HANDSHAKER, HS_LINK), null);
+    assert.equal(findHandshakerConnection(mem, 0n, HS_LINK), null);
+});
+
+// ---- cross-run layout hints (seeded, validated live) -----------------------------
+
+const CACHE_KEY = "b1d0|268435456|arm64";
+const CRONET_MODULE: any = { name: "/data/app/lib/arm64/libcronet.so", base: { toString: () => "0x" + MOD.toString(16) },
+                             size: 0x10000000 };
+const GOOD_HINTS = {
+    "quiche.layout.streamSession": 0x88, "quiche.layout.sessionConnection": 0x58,
+    "quiche.layout.connectionAddresses": 0x248, "quiche.layout.connectionVtableRva": Number(CONNECTION_VTABLE - MOD),
+};
+
+/** Installs a learned cache holding `layout` for libcronet.so; returns what it emits (flushed). */
+function withLayoutCache(layout: Record<string, number> | null, run: (emitted: () => any[]) => void): void {
+    const sent: any[] = [];
+    const flushes: (() => void)[] = [];
+    const raw = layout ? { [CACHE_KEY]: { module: "libcronet.so", layout } } : {};
+    installLearnedModuleCache(raw, {
+        identify: () => ({ buildId: "b1d0", size: 0x10000000, arch: "arm64" }),
+        emit: (p) => sent.push(p), schedule: (flush) => flushes.push(flush), arch: () => "arm64",
+    });
+    try {
+        run(() => { flushes.splice(0).forEach((f) => f()); return sent; });
+    } finally {
+        installLearnedModuleCache({});
+    }
+}
+
+function seededState(mem: QuicheMemory): QuicheLayoutState {
+    const state: QuicheLayoutState = { moduleName: "libcronet.so", mem, layout: null, attempts: 0, triedStreams: new Set(),
+                                       connLayout: null, sessionConnection: null, connAttempts: 0 };
+    seedQuicheLayout(state, CRONET_MODULE);
+    return state;
+}
+
+const layoutReports = (sent: any[]) => sent.filter((m) => m.layout).map((m) => m.layout);
+
+test("a seeded layout resolves the first stream without discovery and is not reported back", () => {
+    withLayoutCache(GOOD_HINTS, (emitted) => {
+        const state = seededState(buildChromeLikeObjects());
+        assert.equal(state.layout?.streamSession, 0x88);
+        const record = resolveStreamRecord(state, STREAM, "read", "read");
+        assert.equal(record?.connection, CONNECTION);
+        assert.equal(record?.streamId, 4);
+        assert.equal(state.attempts, 0);
+        assert.deepEqual([...state.seeded!.keys()], []);                      // every hint validated
+        assert.equal(emitted().filter((m) => m.cache_hit).length, 1);
+        assert.deepEqual(layoutReports(emitted()), []);
+    });
+});
+
+test("a bad streamSession hint is dropped on its second failure and discovery learns (and reports) the real one", () => {
+    withLayoutCache({ ...GOOD_HINTS, "quiche.layout.streamSession": 0xe8 }, (emitted) => {
+        const state = seededState(buildChromeLikeObjects());
+        resolveStreamRecord(state, STREAM, "read", "read");
+        assert.equal(state.layout?.streamSession, 0xe8, "one failed check is tolerated");
+        assert.equal(state.attempts, 0);
+        const record = resolveStreamRecord(state, STREAM, "read", "read");
+        assert.equal(record?.streamId, 4);
+        assert.equal(state.attempts, 1);
+        assert.equal(state.layout?.streamSession, 0x88);
+        assert.deepEqual(layoutReports(emitted()), [{ "quiche.layout.streamSession": 0x88 }]);
+    });
+});
+
+test("a bad connectionAddresses hint is rejected on the second connection hook and rediscovered", () => {
+    withLayoutCache({ ...GOOD_HINTS, "quiche.layout.connectionAddresses": 0x400 }, (emitted) => {
+        const state = seededState(buildChromeLikeObjects());
+        resolveConnectionRecord(state, CONNECTION, 3, "read", "read");
+        assert.equal(state.connLayout?.connectionAddresses, 0x400, "one failed check is tolerated");
+        const record = resolveConnectionRecord(state, CONNECTION, 3, "read", "read");
+        assert.notEqual(record, null);
+        assert.equal(state.connLayout?.connectionAddresses, 0x248);
+        assert.equal(state.layout, null);                              // the seeded full layout embedded it
+        assert.deepEqual(layoutReports(emitted()), [{ "quiche.layout.connectionAddresses": 0x248 }]);
+    });
+});
+
+test("a bad sessionConnection hint is rejected on the second session and rediscovered", () => {
+    withLayoutCache({ ...GOOD_HINTS, "quiche.layout.sessionConnection": 0x70 }, (emitted) => {  // the decoy slot
+        const state = seededState(buildChromeLikeObjects());
+        assert.equal(sessionConnection(state, SESSION), DECOY, "one failed check is tolerated");
+        assert.equal(sessionConnection(state, SESSION), CONNECTION);
+        assert.equal(state.sessionConnection, 0x58);
+        assert.equal(state.layout, null);                              // the seeded full layout embedded it
+        assert.deepEqual([...state.seeded!.keys()], ["connection"]);          // streamSession dropped with it
+        assert.deepEqual(layoutReports(emitted()), [{ "quiche.layout.sessionConnection": 0x58 }]);
+    });
+});
+
+test("a seeded connection hint survives one hook on a torn-down connection, then is confirmed for good", () => {
+    withLayoutCache(GOOD_HINTS, (emitted) => {
+        const mem = buildChromeLikeObjects();
+        const tornDown = 0x7600000n;
+        mem.region(tornDown, 0x400);                                    // zeroed: no vtable, no addresses
+        const state = seededState(mem);
+        assert.equal(resolveConnectionRecord(state, tornDown, 3, "read", "read"), null);
+        assert.equal(state.connLayout?.connectionAddresses, 0x248, "a single failed check keeps connLayout");
+        assert.ok(state.seeded!.has("connection"));
+        assert.notEqual(resolveConnectionRecord(state, CONNECTION, 3, "read", "read"), null);
+        assert.equal(state.seeded!.has("connection"), false, "confirmed by the live connection");
+        resolveConnectionRecord(state, tornDown, 3, "read", "read");
+        resolveConnectionRecord(state, tornDown, 3, "read", "read");
+        assert.equal(state.connLayout?.connectionAddresses, 0x248, "a confirmed seed is not rechecked");
+        assert.equal(state.connAttempts, 0);
+        assert.deepEqual(layoutReports(emitted()), []);
+    });
+});
+
+test("without hints a discovered layout is reported once, vtable as a module RVA", () => {
+    withLayoutCache(null, (emitted) => {
+        const state = seededState(buildChromeLikeObjects());
+        resolveStreamRecord(state, STREAM, "read", "read");
+        resolveStreamRecord(state, STREAM, "write", "write");
+        assert.deepEqual(layoutReports(emitted()), [GOOD_HINTS]);
+    });
+});
+
+test("a vtable hint outside the module is not seeded", () => {
+    withLayoutCache(GOOD_HINTS, () => {
+        const mem = buildChromeLikeObjects();
+        const outside = { ...mem, pointerSize: 8, readPointer: mem.readPointer.bind(mem), readBytes: mem.readBytes.bind(mem),
+                          isModuleAddress: () => false };
+        const state = seededState(outside);
+        assert.equal(state.connLayout, null);
+        assert.equal(state.layout, null);
+        assert.equal(state.sessionConnection, 0x58);
+    });
+});
+
+// WHY: a hint discarded before seeding must be rejected in the cache too, or
+// the value discovered later is never reported and the stale one sticks.
+test("a discarded stale vtable hint does not block reporting the discovered value", () => {
+    const stale = { ...GOOD_HINTS, "quiche.layout.connectionVtableRva": 0x20000000 };    // past the module
+    withLayoutCache(stale, (emitted) => {
+        const state = seededState(buildChromeLikeObjects());
+        assert.equal(state.connLayout, null);
+        assert.equal(state.layout, null);
+        resolveStreamRecord(state, STREAM, "read", "read");
+        assert.deepEqual(layoutReports(emitted()), [{
+            "quiche.layout.connectionVtableRva": Number(CONNECTION_VTABLE - MOD),
+        }]);
+    });
+});
+
+test("a vtable RVA past Module.size (macOS __TEXT-only size) is reported and seeded", () => {
+    const textOnly: any = { ...CRONET_MODULE, size: 0x100000 };
+    const rva = Number(CONNECTION_VTABLE - MOD);
+    assert.ok(rva > textOnly.size);
+    withLayoutCache(null, (emitted) => {
+        reportQuicheLayout(textOnly, { connection: { connectionAddresses: 0x248, connectionVtable: CONNECTION_VTABLE } });
+        assert.deepEqual(layoutReports(emitted()), [{
+            "quiche.layout.connectionAddresses": 0x248, "quiche.layout.connectionVtableRva": rva,
+        }]);
+    });
+    withLayoutCache(GOOD_HINTS, () => {
+        const hints = readQuicheLayoutHints(textOnly, () => true);
+        assert.equal(hints.connection?.connectionVtable, CONNECTION_VTABLE);
+    });
+});
+

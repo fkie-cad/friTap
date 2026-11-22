@@ -10,16 +10,9 @@ class BodyProcessor(Protocol):
     """Protocol for body content processors."""
 
     def process(self, body: bytes, content_type: str, encoding: str) -> tuple[bytes, str, str]:
-        """Process body content.
+        """Process a body; returns ``(processed_body, updated_content_type, error_message)``.
 
-        Args:
-            body: Raw body bytes
-            content_type: MIME content type (e.g. "application/json")
-            encoding: Content-Encoding value (e.g. "gzip")
-
-        Returns:
-            Tuple of (processed_body, updated_content_type, error_message).
-            Error is empty string on success.
+        *content_type* is a MIME type, *encoding* the Content-Encoding value; error is ``""`` on success.
         """
         ...
 
@@ -46,11 +39,7 @@ class BodyPipeline:
         self._processors.append(processor)
 
     def process(self, body: bytes, content_type: str = "", encoding: str = "") -> tuple[bytes, str, str]:
-        """Run body through all processors in order.
-
-        Returns (final_body, final_content_type, first_error).
-        Continues through all processors even on error; records the first error.
-        """
+        """Run the body through all processors in order, continuing past errors; returns ``(body, content_type, first_error)``."""
         first_error = ""
         for proc in self._processors:
             body, content_type, err = proc.process(body, content_type, encoding)

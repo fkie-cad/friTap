@@ -161,3 +161,53 @@ test("hook_DumpKeys settles only after the JSON-driven cascade terminates", () =
     drainScansAsMisses();
     assert.equal(hooker.cascadeCompleted, true);
 });
+
+// ---- ssl_log_secret once-set: only Dump-Keys / keylog-function matches ------
+
+/** Run `body` with Interceptor.attach counted and every address inside a mapping named `mappingName`. */
+function countingAttaches(mappingName: string, body: () => void): number {
+    const prev = { attach: G.Interceptor.attach, byAddr: G.Process.findModuleByAddress };
+    let attaches = 0;
+    G.Interceptor.attach = () => { attaches++; return { detach: () => { } }; };
+    G.Process.findModuleByAddress = () => ({ name: mappingName, base: fakeAddress(0x1000), size: 0x1000 });
+    try {
+        body();
+    } finally {
+        G.Interceptor.attach = prev.attach;
+        G.Process.findModuleByAddress = prev.byAddr;
+    }
+    return attaches;
+}
+
+function matchTwice(hook: (hooker: any) => void): void {
+    for (let i = 0; i < 2; i++) {
+        const hooker: any = new PatternBasedHooking(fakeModule());
+        hook(hooker);
+        finishNextScan("match");
+        assert.equal(hooker.found_ssl_log_secret, true);
+    }
+}
+
+test("keylog-function matches share one interceptor per mapping + address", () => {
+    const attaches = countingAttaches("libonce_a.so", () => matchTwice((h) => h.hookModuleByPattern(PATTERNS, () => { })));
+    assert.equal(attaches, 1);
+});
+
+test("a different library later mapped at the same address is hooked again", () => {
+    let attaches = countingAttaches("libonce_b.so", () => matchTwice((h) => h.hookModuleByPattern(PATTERNS, () => { })));
+    attaches += countingAttaches("libonce_c.so", () => matchTwice((h) => h.hookModuleByPattern(PATTERNS, () => { })));
+    assert.equal(attaches, 2);
+});
+
+test("non-Dump-Keys actions (SSL_Read/SSL_Write/KeyLogCallback) attach normally, outside the once-set", () => {
+    const viaAction = (action: string) => (h: any) => {
+        h.get_action_specific_pattern = () => PATTERNS;
+        h.invoke_pattern_based_hooking(action, "libcronet.so", "android", "arm64", () => { });
+    };
+    const attaches = countingAttaches("libonce_d.so", () => {
+        matchTwice(viaAction("Dump-Keys"));
+        matchTwice(viaAction("SSL_Read"));
+        matchTwice(viaAction("KeyLogCallback-Function"));
+    });
+    assert.equal(attaches, 1 + 2 + 2);
+});

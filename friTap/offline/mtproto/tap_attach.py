@@ -2,16 +2,11 @@
 
 """MTProto/Telegram attach pass: fold parsed metadata onto offline flows.
 
-Holds the Telegram-specific ATTACH side of the offline conversion that was
-historically inlined in ``friTap.offline.pcap_to_tap``: after the collection
-pass, the parsed cloud / Secret-Chat messages accumulated by the emitters in
-:mod:`friTap.offline.mtproto.offline_decryptor` (the per-record
-:class:`~friTap.offline.mtproto.packet_meta.RecordLedger` first, the
-side-channel scoping as fallback) are folded onto each flow's inner layer, and
-the cross-references / users / Secret-Chat peer are finalized.
-
-Generic helpers come from the public :mod:`friTap.offline.pipeline_api`. The
-code keeps its original behavior verbatim; only its enclosing module moved.
+After the collection pass, the parsed cloud / Secret-Chat messages
+accumulated by :mod:`friTap.offline.mtproto.offline_decryptor` (the per-record
+:class:`~friTap.offline.mtproto.packet_meta.RecordLedger` first, side-channel
+scoping as fallback) are folded onto each flow's inner layer, and the
+cross-references / users / Secret-Chat peer are finalized.
 """
 
 from __future__ import annotations
@@ -34,10 +29,8 @@ logger = logging.getLogger(__name__)
 def _apply_mtproto_meta(layer, meta: dict | None) -> None:
     """Fold accumulated parsed Telegram messages onto an inner layer.
 
-    Shared by the cloud ``MtprotoLayer`` and the Secret-Chat ``TelegramE2ELayer``
-    (both expose ``messages``/``message_count``). No-op when *layer* or *meta* is
-    absent, so a flow with no recovered messages keeps its empty-but-valid layer
-    (degrades, never raises). Mirrors :func:`_apply_inner_meta`.
+    Works for ``MtprotoLayer`` and ``TelegramE2ELayer``. No-op when *layer* or
+    *meta* is absent, so a flow with no recovered messages keeps its empty layer.
     """
     if layer is None or not meta:
         return
@@ -136,9 +129,7 @@ def _attach_scoped_meta(flow, mtproto_meta: dict | None,
         return
     if not meta:
         return
-    # Materialize the inner layer if the offline flow built it lazily
-    # (``getattr`` triggers _create_layer, which appends the chunks-view
-    # layer); then fold the parsed messages onto it.
+    # ``getattr`` materializes a lazily built inner layer (_create_layer).
     getattr(flow, inner_name)
     _apply_mtproto_meta(flow.layer(inner_name), meta)
 
@@ -151,25 +142,13 @@ def _attach_telegram_meta(
 ) -> None:
     """Fold parsed Telegram messages onto offline-decrypted MTProto/E2E flows.
 
-    Unlike Signal, MTProto rides RAW TCP (no TLS to strip), so these flows are
-    NOT processed by :func:`_attach_transport_metadata_layers`. This applies the
-    side-channel parsed-message dicts accumulated by ``_emit_mtproto_streams`` /
-    ``_emit_telegram_streams`` onto each flow's innermost decrypted layer:
-
-      * cloud ``mtproto`` flows are keyed by the canonical 4-tuple (like Signal);
-      * Secret-Chat ``telegram_e2e`` flows are keyed by their
-        ``telegram_e2e:<fp>`` session id (several chats share one 4-tuple).
-
-    Like the Signal pass it MUST run on the LIVE flow objects and BEFORE flush().
-    Each flow receives only the messages whose record became one of ITS chunks
-    (see :func:`scope_messages_to_flow`), so sibling exchange flows of one
-    connection/chat no longer share one connection-wide message list.
-    Flows with no recovered messages are left untouched (degrades, never raises).
-
-    When a :class:`RecordLedger` is given (the emitter's per-record queue), it
-    is tried FIRST: each per-packet flow gets exactly its own record's messages
-    and forensic envelope (:func:`_meta_from_ledger`), which stays correct even
-    for byte-identical packets. The scoping above is the per-flow fallback.
+    MTProto rides raw TCP, so these flows skip the TLS metadata pass. Must run on
+    the live flow objects before flush(). A given *ledger* is tried first, so each
+    per-packet flow gets exactly its own record (correct even for byte-identical
+    packets). Fallback: side-channel scoping, keyed by the canonical 4-tuple for
+    cloud flows and by the ``telegram_e2e:<fp>`` session id for Secret-Chat flows
+    (several chats share one 4-tuple); each flow keeps only messages of its own
+    chunks. Flows with no recovered messages are left untouched.
     """
     for flow in flows:
         if getattr(flow, "transport", "") not in MESSAGE_TRANSPORTS:
@@ -286,9 +265,8 @@ def _finalize_telegram_refs(flows, refs_state) -> None:
 def attach_telegram_post_collection(flows, state) -> None:
     """Registry attach hook: fold Telegram metadata, then finalize the refs.
 
-    Folds the parsed MTProto/Secret-Chat messages onto their (raw-TCP,
-    non-TLS-riding) LIVE flows, then writes the cross-references / users /
-    Secret-Chat peer, which need every record's flow_id. Absorbs no flow.
+    Refs / users / peer are written last because they need every record's
+    flow_id. Absorbs no flow.
     """
     flows = list(flows)
     telegram_state = protocol_state_of(state, TELEGRAM_STATE)

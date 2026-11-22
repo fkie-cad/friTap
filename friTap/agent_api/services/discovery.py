@@ -1,9 +1,7 @@
-"""
-Device / app discovery services, wrapping :mod:`friTap.commands.devices`.
+"""Device / app discovery services, wrapping :mod:`friTap.commands.devices`.
 
-Device selection matches the capture tools: ``None``/``"local"`` = local
-system, ``"usb"`` = first USB device, anything else = a Frida device id;
-``host`` (``ip:port``) selects a remote frida-server and wins over ``device``.
+Device selection matches the capture tools: ``None``/``"local"`` = local system, ``"usb"`` = first
+USB device, else a Frida device id; ``host`` (``ip:port``) selects a remote frida-server and wins.
 """
 
 from __future__ import annotations
@@ -29,9 +27,8 @@ def list_devices() -> dict[str, Any]:
 class AppSnapshots:
     """Per ``(device, host, running)`` app listing, reused while paging.
 
-    The first page (no cursor) always enumerates the device; later pages reuse
-    that snapshot for up to ``ttl`` seconds instead of one frida-server
-    enumeration per page (and page through a consistent list).
+    The first page (no cursor) always enumerates the device; later pages reuse that snapshot for up
+    to ``ttl`` seconds, avoiding one frida-server enumeration per page and keeping the list consistent.
     """
 
     def __init__(self, ttl: float = APPS_SNAPSHOT_TTL_S,

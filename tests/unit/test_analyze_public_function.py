@@ -107,7 +107,9 @@ def test_list_analyzers_values(monkeypatch):
     # entry points) so the built-in contract is asserted deterministically.
     monkeypatch.setattr("friTap.analysis.registry._DISCOVERED", {})
     monkeypatch.setattr("friTap.analysis.registry._DISCOVERY_DONE", True)
-    assert list_analyzers() == ["credentials", "ioc", "privacy", "protobuf", "tls_hygiene"]
+    assert list_analyzers() == [
+        "applovin_mediate", "credentials", "ioc", "privacy", "protobuf", "tls_hygiene",
+    ]
 
 
 # ---------------------------------------------------------------------------

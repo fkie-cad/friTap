@@ -33,8 +33,7 @@ def test_http3_declares_its_exclusive_transport():
     assert Http3Parser.EXCLUSIVE_TRANSPORTS == Http3Parser.TRANSPORTS == ("quic",)
 
 
-def test_classify_method_is_public_with_private_alias():
-    assert display._classify_method is display.classify_method
+def test_classify_method_is_public():
     assert display.classify_method("messages.sendMessage") == 4
 
 

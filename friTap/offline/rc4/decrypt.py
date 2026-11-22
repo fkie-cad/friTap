@@ -2,17 +2,14 @@
 
 Two layers:
 
-  * The **pure trial-decrypt engine** — a byte-for-byte port of the scoring,
-    candidate-extraction, and trial-decryption logic in
-    ``research/memory_scan_lsass/tools/rc4_trial_decrypt.py``. Output that "looks
-    like plaintext" (printable fraction + token bonuses) proves the key. This is
-    how a key is recovered from candidate BYTES when none is supplied.
-
-  * The **friTap offline orchestrator** :func:`iter_decrypted_messages` — decides
-    NESTED (RC4-in-TLS) vs STANDALONE (RC4-over-raw-TCP) from whether a TLS keylog
-    is present, obtains the per-direction RC4 ciphertext via :mod:`.transport`,
-    and yields one :class:`DecryptedRc4Message` per recovered direction. Mirrors
-    the shape of the Signal/MTProto ``iter_decrypted_messages`` orchestrators.
+  * The trial-decrypt engine, a port of the scoring, candidate-extraction and
+    trial-decryption logic in ``research/memory_scan_lsass/tools/rc4_trial_decrypt.py``.
+    Output that looks like plaintext (printable fraction + token bonuses) proves
+    the key.
+  * :func:`iter_decrypted_messages`, which picks nested (RC4-in-TLS) or
+    standalone (raw TCP) from the presence of a TLS keylog, gets the
+    per-direction ciphertext via :mod:`.transport`, and yields one
+    :class:`DecryptedRc4Message` per recovered direction.
 """
 
 from __future__ import annotations
@@ -23,17 +20,12 @@ from dataclasses import dataclass
 from typing import Iterable, Iterator, List, Optional, Tuple
 
 from ..tls.tls13 import inner_app_content
-from .crypto import INNER_APPLICATION_DATA, rc4, rc4_prga  # noqa: F401
+from .crypto import rc4, rc4_prga
 
 logger = logging.getLogger(__name__)
 
 
-# --------------------------------------------------------------------------- #
-# Plaintext scoring — the trial-decrypt validator (port of scorePlaintext/TOKENS
-# in agent/rc4_decrypt.js / rc4_trial_decrypt.py: output that looks like
-# plaintext proves the key).
-# --------------------------------------------------------------------------- #
-
+# Plaintext scoring: port of scorePlaintext/TOKENS in agent/rc4_decrypt.js.
 TOKENS = (b"GET ", b"POST ", b"HEAD ", b"PUT ", b"HTTP", b"Host:",
           b"User-Agent", b"{", b"</", b": ")
 
@@ -49,11 +41,8 @@ def score_plaintext(data: bytes) -> Tuple[float, float, str]:
     return frac, frac + bonus, ascii_
 
 
-# --------------------------------------------------------------------------- #
-# Candidate-key extraction from a byte blob (offline analogue of the agent's
-# scanChunk/runToTrials: ASCII and UTF-16LE printable runs become candidate keys).
-# --------------------------------------------------------------------------- #
-
+# Candidate-key extraction (offline analogue of the agent's scanChunk/runToTrials):
+# ASCII and UTF-16LE printable runs become candidate keys.
 _ASCII_RUN = re.compile(rb"[\x20-\x7e]+")
 _UTF16_RUN = re.compile(rb"(?:[\x20-\x7e]\x00)+")
 
@@ -62,10 +51,9 @@ def _run_to_candidates(run: bytes, min_len: int, max_len: int,
                        max_window_run: int) -> Iterator[bytes]:
     """Yield candidate keys from one printable run.
 
-    Whole run when it is short enough to be a key on its own (the isolated
-    allocation case). A longer run is windowed so a key embedded inside a bigger
-    printable blob is still found, but ONLY up to ``max_window_run``: a giant blob
-    is skipped rather than windowed, so it cannot dominate the candidate set.
+    A run up to ``max_len`` is yielded whole. A longer run is windowed so an
+    embedded key is found, but only up to ``max_window_run``: a giant blob is
+    skipped so it cannot dominate the candidate set.
     """
     length = len(run)
     if length < min_len:
@@ -74,7 +62,7 @@ def _run_to_candidates(run: bytes, min_len: int, max_len: int,
         yield run
         return
     if length > max_window_run:
-        return  # too long to be (or usefully window for) a key; budget guard
+        return  # budget guard
     for start in range(length):
         here = min(max_len, length - start)
         for keylen in range(min_len, here + 1):
@@ -83,8 +71,7 @@ def _run_to_candidates(run: bytes, min_len: int, max_len: int,
 
 def extract_candidates(blob: bytes, min_len: int = 5, max_len: int = 64,
                        max_window_run: int = 256) -> Iterator[bytes]:
-    """Every candidate key in a blob: ASCII runs and UTF-16LE runs (even printable
-    byte, zero odd byte -> decoded to its ASCII bytes)."""
+    """Every candidate key in a blob: ASCII runs and UTF-16LE runs (decoded to ASCII)."""
     for m in _ASCII_RUN.finditer(blob):
         yield from _run_to_candidates(m.group(), min_len, max_len, max_window_run)
     for m in _UTF16_RUN.finditer(blob):
@@ -95,19 +82,16 @@ def extract_candidates(blob: bytes, min_len: int = 5, max_len: int = 64,
 class Rc4Candidate:
     """A recovered RC4 secret to trial-decrypt with.
 
-    ``material`` is either a KEY (fed through the KSA) or, when ``is_sbox`` is
-    True, a 256-byte post-KSA S-box PERMUTATION used directly as keystream state
-    (i=j=0), skipping the KSA. This lets the recovered S-box artifact
-    (``memscan-sbox``) be consumed offline instead of being wrongly KSA'd as a key.
+    ``material`` is a key (fed through the KSA) or, when ``is_sbox`` is True, a
+    256-byte post-KSA S-box used directly as keystream state (i=j=0). The
+    ``memscan-sbox`` artifact must not be KSA'd as a key.
     """
 
     source: str
     material: bytes
     is_sbox: bool = False
 
-    # Backward-compat: behave like the legacy ``(source, material)`` 2-tuple so
-    # existing callers/tests that unpack or index a candidate keep working, while
-    # the S-box flag rides along as an attribute.
+    # Behaves like a ``(source, material)`` 2-tuple for callers that unpack or index it.
     def __iter__(self):
         return iter((self.source, self.material))
 
@@ -119,11 +103,7 @@ class Rc4Candidate:
 
 
 def _as_candidate(item) -> Rc4Candidate:
-    """Normalize a candidate, accepting either an :class:`Rc4Candidate` or a legacy
-    ``(source, material)`` 2-tuple (treated as a key, ``is_sbox=False``).
-
-    Keeps every existing caller and test that passes bare 2-tuples working.
-    """
+    """Accept an :class:`Rc4Candidate` or a ``(source, material)`` 2-tuple (a key)."""
     if isinstance(item, Rc4Candidate):
         return item
     source, material = item
@@ -131,9 +111,8 @@ def _as_candidate(item) -> Rc4Candidate:
 
 
 def _apply(cand: Rc4Candidate, data: bytes) -> bytes:
-    """Decrypt ``data`` with a candidate: keystream from its S-box directly when it
-    is an S-box (skip KSA, i=j=0 — correct for the reset-per-message/framed case),
-    else run the full KSA over the key bytes."""
+    """Decrypt ``data``: an S-box skips the KSA (i=j=0, right for reset-per-message
+    framing); a key runs the full KSA."""
     if cand.is_sbox:
         return rc4_prga(list(cand.material), data)
     return rc4(cand.material, data)
@@ -141,11 +120,10 @@ def _apply(cand: Rc4Candidate, data: bytes) -> bytes:
 
 def materialize_candidates(candidates: Iterable[Tuple[str, bytes]]
                            ) -> List[Tuple[str, bytes]]:
-    """De-duplicate a candidate stream into a reusable list (each secret tried once).
+    """De-duplicate candidates (2-tuples or :class:`Rc4Candidate`) into a list.
 
-    Accepts legacy ``(source, key)`` 2-tuples or :class:`Rc4Candidate` objects;
-    returns :class:`Rc4Candidate` objects. The dedup key is ``(is_sbox, material)``
-    so a 256-byte S-box and a hypothetical 256-byte key never collide.
+    The dedup key is ``(is_sbox, material)`` so a 256-byte S-box and a 256-byte
+    key never collide.
     """
     seen: set = set()
     out: List[Rc4Candidate] = []
@@ -159,10 +137,6 @@ def materialize_candidates(candidates: Iterable[Tuple[str, bytes]]
             out.append(cand)
     return out
 
-
-# --------------------------------------------------------------------------- #
-# Trial decryption
-# --------------------------------------------------------------------------- #
 
 def _best_by_prefix_score(ciphertext: bytes, cands: List[Rc4Candidate],
                           prefix: int) -> Optional[Rc4Candidate]:
@@ -181,8 +155,8 @@ def _best_containing(ciphertext: bytes, cands: List[Rc4Candidate],
                      known_plaintext: bytes) -> Optional[Rc4Candidate]:
     """The best-scoring candidate whose FULL decryption contains ``known_plaintext``.
 
-    known_plaintext is exact evidence, so it must drive the choice: a wrong key
-    whose prefix happens to look more printable must never shadow the proven one.
+    known_plaintext is exact evidence: a wrong key whose prefix looks more
+    printable must never shadow the proven one.
     """
     best_cand: Optional[Rc4Candidate] = None
     best_score = 0.0
@@ -199,7 +173,7 @@ def _best_containing(ciphertext: bytes, cands: List[Rc4Candidate],
 def _key_ascii(cand: Rc4Candidate) -> Optional[str]:
     """ASCII form of a key candidate; None for an S-box or non-ASCII key."""
     if cand.is_sbox:
-        return None  # An S-box permutation has no meaningful ASCII key form.
+        return None
     try:
         return cand.material.decode("ascii")
     except UnicodeDecodeError:
@@ -210,11 +184,9 @@ def _decrypt_result(cand: Rc4Candidate, ciphertext: bytes, accept: float,
                     known_plaintext: Optional[bytes]) -> dict:
     """Run ``cand`` over the whole ciphertext and build the result dict.
 
-    Acceptance = EXACT evidence when available, else the strict combined score.
-    known_plaintext is exact proof (RC4 keystream reproduces known bytes), so it
-    overrides the fuzzy printability score; without it, require frac + token-bonus
-    >= accept (NOT the old "printable OR has any token byte" clause, which let
-    ~random output containing a single token byte like b"{" pass as plaintext).
+    known_plaintext is exact proof and overrides the printability score. Without
+    it, frac + token bonus must reach ``accept``; a lone token byte such as b"{"
+    in random output must not pass.
     """
     full = _apply(cand, ciphertext)
     frac, sc, ascii_ = score_plaintext(full)
@@ -240,11 +212,9 @@ def trial_decrypt(ciphertext: bytes, candidates: Iterable[Tuple[str, bytes]],
     """Trial-decrypt ``ciphertext`` against (source, key) candidates; keep the best.
 
     With ``known_plaintext``, the winner is the best-scoring candidate whose full
-    decryption CONTAINS it; only when no candidate does, the ranking falls back to
-    the prefix score (and the result is then reported as not accepted). Without it,
-    each key decrypts the first ``prefix`` bytes and the highest score wins.
-    Returns a result dict (with an ``accepted`` flag) or None when there were no
-    candidates.
+    decryption contains it; if none does, ranking falls back to the prefix score
+    and the result is not accepted. Without it, the highest prefix score wins.
+    Returns a result dict (with ``accepted``) or None when there are no candidates.
     """
     cands = materialize_candidates(candidates)
     best_cand = None
@@ -257,32 +227,20 @@ def trial_decrypt(ciphertext: bytes, candidates: Iterable[Tuple[str, bytes]],
     return _decrypt_result(best_cand, ciphertext, accept, known_plaintext)
 
 
-# --------------------------------------------------------------------------- #
-# Framed RC4 (length-prefixed, re-keyed per frame).
-#
-# A continuous RC4 stream (one keystream per direction from byte 0) is the common
-# case that :func:`trial_decrypt` on the whole direction handles. But some protocols
-# frame each message as ``[length][RC4(message)]`` and RE-KEY RC4 per frame (a fresh
-# key schedule each message). Then the concatenated direction is NOT one keystream, so
-# a whole-blob decrypt fails; each frame must be located by its length prefix and
-# decrypted independently. friTap's own RC4-in-TLS fixture (tls13_rc4_chat.ps1) does
-# exactly this, and the live agent recovers it frame-by-frame — this is the offline
-# counterpart. Auto-detected: the caller tries the continuous path first and only falls
+# Framed RC4: some protocols send ``[length][RC4(message)]`` and re-key RC4 per
+# frame (e.g. the tls13_rc4_chat.ps1 fixture), so the concatenated direction is
+# not one keystream. Each frame is located by its length prefix and decrypted
+# independently. The caller tries the continuous interpretation first and falls
 # back here, so real continuous RC4 is unaffected.
-# --------------------------------------------------------------------------- #
 
-# A frame length header wider than this is treated as "not a frame boundary" — guards
-# against misreading random bytes as a huge length on a non-framed (continuous) stream.
+# A larger length header is not a frame boundary; guards against reading random
+# bytes of a continuous stream as a huge length.
 _MAX_FRAME_LEN = 1 << 20  # 1 MiB
 
 
 @dataclass(frozen=True)
 class FrameSpan:
-    """One ``[length][payload]`` frame located in its direction's blob.
-
-    ``offset`` is where the frame's length HEADER starts; the payload starts at
-    ``offset + header_len``.
-    """
+    """One ``[length][payload]`` frame; the payload starts at ``offset + header_len``."""
 
     offset: int
     header_len: int
@@ -295,9 +253,9 @@ def parse_length_prefixed_frame_spans(blob: bytes, *, length_size: int = 4,
                                       ) -> Optional[List[FrameSpan]]:
     """Parse ``blob`` as consecutive ``[length][payload]`` frames, with offsets.
 
-    Returns one :class:`FrameSpan` per frame when the blob parses cleanly into
-    whole frames (no trailing garbage, every length in range), else ``None`` — so
-    a continuous (non-framed) stream is rejected rather than mis-split.
+    Returns one :class:`FrameSpan` per frame when the blob parses into whole
+    frames (no trailing bytes, every length in range), else ``None``, so a
+    continuous stream is rejected rather than mis-split.
     """
     order = "big" if big_endian else "little"
     spans: List[FrameSpan] = []
@@ -320,10 +278,8 @@ def parse_length_prefixed_frames(blob: bytes, *, length_size: int = 4,
                                  max_frame_len: int = _MAX_FRAME_LEN) -> Optional[list]:
     """Parse ``blob`` as consecutive ``[length][payload]`` frames.
 
-    Returns the list of payload ``bytes`` when the blob parses cleanly into whole
-    frames (no trailing garbage, every length in range), else ``None`` — so a
-    continuous (non-framed) stream is rejected rather than mis-split. Thin view
-    over :func:`parse_length_prefixed_frame_spans`.
+    Returns the payload ``bytes`` list, or ``None`` when the blob is not cleanly
+    framed. Thin view over :func:`parse_length_prefixed_frame_spans`.
     """
     spans = parse_length_prefixed_frame_spans(
         blob, length_size=length_size, big_endian=big_endian,
@@ -332,8 +288,7 @@ def parse_length_prefixed_frames(blob: bytes, *, length_size: int = 4,
 
 
 def _tag_frame(result: dict, offset: int, header_len: int) -> dict:
-    """Record where ``result``'s ciphertext sits in its direction's blob:
-    ``frame_offset`` (start of the length header) and ``frame_header_len``."""
+    """Record ``frame_offset`` (start of the length header) and ``frame_header_len``."""
     result["frame_offset"] = offset
     result["frame_header_len"] = header_len
     return result
@@ -366,11 +321,9 @@ def _decrypt_frames_with_known_plaintext(frames: list, cands: List[Rc4Candidate]
                                          ) -> list:
     """Decrypt every frame with the key proven by ``known_plaintext``.
 
-    The frame(s) carrying the marker are accepted on that exact evidence (a marker
-    spanning frames accepts the frames it touches); every other frame decrypted
-    with the proven key must still pass the normal score gate. With
-    ``frame_spans`` (parallel to ``frames``) each result carries its frame's
-    ``frame_offset``/``frame_header_len``; without, both are 0.
+    Frames touching the marker are accepted on that evidence; the rest must pass
+    the normal score gate. ``frame_spans`` (parallel to ``frames``) supplies each
+    result's ``frame_offset``/``frame_header_len``; without it both are 0.
     """
     key = _proven_frame_key(frames, cands, known_plaintext)
     if key is None:
@@ -386,8 +339,7 @@ def _decrypt_frames_with_known_plaintext(frames: list, cands: List[Rc4Candidate]
 
 
 def _frames_touching_marker(plains: list, marker: bytes) -> set:
-    """Indices of the frames that hold any byte of an occurrence of ``marker`` in
-    the concatenation of ``plains``."""
+    """Indices of frames holding any byte of a ``marker`` occurrence in ``plains``."""
     joined = b"".join(plains)
     bounds, pos = [], 0
     for p in plains:
@@ -407,16 +359,15 @@ def decrypt_framed(ciphertext: bytes, candidates: Iterable[Tuple[str, bytes]],
                    known_plaintext: Optional[bytes] = None) -> list:
     """Decrypt a length-prefixed, per-frame-re-keyed RC4 direction.
 
-    Parses ``[4-byte big-endian length][RC4 frame]`` records and trial-decrypts each
-    frame independently. Returns a list of per-frame result dicts (same shape as
-    :func:`trial_decrypt`) for the ACCEPTED frames, or ``[]`` when the blob is not
-    cleanly framed or nothing decrypts (so the caller keeps the continuous result).
+    Parses ``[4-byte big-endian length][RC4 frame]`` records and trial-decrypts
+    each frame. Returns result dicts (shape of :func:`trial_decrypt`) for the
+    accepted frames, or ``[]`` when the blob is not cleanly framed or nothing
+    decrypts.
 
-    ``known_plaintext`` semantics: it selects the KEY, not the frames. The key is
-    the candidate whose frame decryptions contain the marker (inside one frame, or
-    across a frame boundary); the frames holding the marker are accepted on that
-    exact proof, and every other frame is decrypted with the same key and accepted
-    by the normal score gate. No candidate containing the marker -> ``[]``.
+    ``known_plaintext`` selects the key, not the frames: the key is the candidate
+    whose frame decryptions contain the marker (within or across a frame
+    boundary). Marker frames are accepted on that proof, others by the score
+    gate. No candidate containing the marker gives ``[]``.
     """
     cand_list = materialize_candidates(candidates)
     if not cand_list:
@@ -436,16 +387,14 @@ def decrypt_framed(ciphertext: bytes, candidates: Iterable[Tuple[str, bytes]],
     return results
 
 
-# --------------------------------------------------------------------------- #
-# Nested TLS 1.3 record path (pure Python, no tshark) — used by the record-level
-# tests and by a caller that supplies a raw traffic secret rather than a keylog.
-# --------------------------------------------------------------------------- #
+# Nested TLS 1.3 record path (pure Python, no tshark) for callers that supply a
+# raw traffic secret instead of a keylog.
 
 def rc4_cts_from_inners(inners: Iterable[bytes]) -> List[bytes]:
     """TLS 1.3 inner plaintexts -> the application_data record bodies (RC4 ct).
 
-    Each inner plaintext is content || content_type || zeros; strip the zeros,
-    then the 1-byte type, and keep only application_data (0x17) bodies.
+    Each inner plaintext is content || content_type || zeros (RFC 8446 sec 5.2);
+    only application_data (0x17) bodies are kept.
     """
     return [body for body in map(inner_app_content, inners) if body]
 
@@ -467,10 +416,6 @@ def decrypt_records_with_candidates(records, suite: str, secret_hex: str,
             results.append((ct, r))
     return results
 
-
-# --------------------------------------------------------------------------- #
-# friTap offline orchestrator
-# --------------------------------------------------------------------------- #
 
 @dataclass
 class DecryptedRc4Message:
@@ -497,9 +442,8 @@ class DecryptedRc4Message:
 def _provenance(stream, direction: str, result: dict) -> dict:
     """Provenance fields of one decrypt ``result`` from ``stream``'s TLS spans.
 
-    The covered range is the frame's header plus its ciphertext; a continuous
-    (unframed) result has offset 0 and header 0. Returns ``{}`` (dataclass
-    defaults) when the stream has no spans for ``direction``.
+    The range is the frame's header plus ciphertext; a continuous result has
+    offset 0 and header 0. Returns ``{}`` when the stream has no spans.
     """
     from ..tls_spans import spans_covering
 
@@ -542,7 +486,7 @@ class Rc4Stats:
         self.directions_undecryptable += 1
 
     @property
-    def records_undecryptable(self) -> int:  # naming parity with the other stats
+    def records_undecryptable(self) -> int:  # name shared with the other stats
         return self.directions_undecryptable
 
 
@@ -561,24 +505,19 @@ def iter_decrypted_messages(
 ) -> Iterator[DecryptedRc4Message]:
     """Yield every RC4-decryptable directional payload from ``pcap_path``.
 
-    Dual-mode, decided purely by ``tls_keylog_path``:
+    Mode is decided by ``tls_keylog_path``:
 
-      * **nested** (a TLS keylog is present): tshark strips the outer TLS 1.3
-        layer first (via :func:`.transport.nested_rc4_streams`, which reuses the
-        SAME ``list_tls_streams``/``follow_tls_stream`` helpers the Signal emitter
-        uses); the decrypted TLS plaintext IS the RC4 ciphertext, from which RC4
-        is stripped.
-      * **standalone** (no TLS keylog): RC4 is the outer cipher over raw TCP;
-        :func:`.transport.standalone_rc4_streams` reassembles each TCP direction
-        and RC4 is stripped directly.
+      * nested (keylog present): tshark strips TLS first
+        (:func:`.transport.nested_rc4_streams`); the TLS plaintext is the RC4
+        ciphertext.
+      * standalone (no keylog): :func:`.transport.standalone_rc4_streams`
+        reassembles each raw TCP direction.
 
-    For each direction the best-scoring candidate key wins (:func:`trial_decrypt`);
-    an accepted decrypt becomes one :class:`DecryptedRc4Message`.
+    The best-scoring candidate wins per direction (:func:`trial_decrypt`).
 
-    ``streams`` (e.g. :func:`.transport.rc4_streams_from_spans` over the TLS
-    single pass's span store) replaces the tshark/reassembly source entirely and
-    is treated as nested; streams carrying spans fill each message's provenance
-    (timestamp, TLS frames, cipher offset/length).
+    ``streams`` (e.g. :func:`.transport.rc4_streams_from_spans`) replaces the
+    tshark/reassembly source, is treated as nested, and fills each message's
+    provenance when the streams carry spans.
     """
     from .transport import nested_rc4_streams, standalone_rc4_streams
 
@@ -597,22 +536,15 @@ def iter_decrypted_messages(
 
     for stream in stream_iter:
         stats.add_stream()
-        # Candidate keys can be enriched from the ciphertext bytes themselves when
-        # no explicit key was supplied (a key sometimes travels in-band); the
-        # keylog keys always take priority in trial ordering.
         for direction, ciphertext in stream.directions.items():
             if not ciphertext:
                 continue
             cands = candidates
-            if not cands:
+            if not cands:  # no explicit key: mine candidates from the ciphertext
                 cands = materialize_candidates(
                     ("candidate-bytes", k) for k in extract_candidates(ciphertext)
                 )
-            # Try the CONTINUOUS-stream interpretation first (one keystream per
-            # direction — the common case). If that does not decrypt, fall back to
-            # the FRAMED interpretation ([len][RC4 frame], re-keyed per frame), which
-            # yields one message per frame. Auto-detected, so real continuous RC4 is
-            # unaffected and a framed protocol (the RC4-in-TLS fixture) still decrypts.
+            # Continuous interpretation first, then the framed one.
             per_direction: list = []
             result = trial_decrypt(ciphertext, cands, accept=accept,
                                    known_plaintext=known_plaintext)

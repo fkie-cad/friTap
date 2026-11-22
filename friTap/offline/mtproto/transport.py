@@ -1,14 +1,10 @@
 """MTProto obfuscated-transport de-obfuscation and frame extraction.
 
-Reimplemented from the *algorithm* described by ``tomer8007/mtproto-dissector``
-(``mtproto/mtproto.lua``) and the Telegram MTProto transport docs — no GPL text
-is copied.
-
+Reimplemented from the algorithm in ``tomer8007/mtproto-dissector``
+(``mtproto/mtproto.lua``) and the Telegram transport docs; no GPL text copied.
 Obfuscated transport prepends a 64-byte init block to the client->server stream.
-The whole stream (init block included) is AES-256-CTR encrypted; the keystream is
-position-dependent, so each direction is driven by ONE stateful CTR cipher that
-must be fed bytes strictly in order. The init block is keyed as follows:
-
+The whole stream (init block included) is AES-256-CTR encrypted, so each
+direction needs ONE stateful CTR cipher fed strictly in order. Init block keying:
   * ``key_out = init[8:40]``,  ``iv_out = init[40:56]``           (client->server)
   * ``rev = init[8:56][::-1]`` (48 bytes); ``key_in = rev[0:32]``,
     ``iv_in = rev[32:48]``                                        (server->client)
@@ -40,12 +36,11 @@ _INIT_LEN = 64
 _QUICK_ACK_BIT = 0x80  # high bit of the abridged length byte; masked off
 # Bit 31 of the little-endian intermediate length word: the same quick-ack flag.
 _INTERMEDIATE_QUICK_ACK_BIT = 0x80000000
-# A standalone quick-ack TOKEN (the server's answer to an ack request) is 4 bytes.
+# A standalone quick-ack token (the server's answer) is 4 bytes.
 _QUICK_ACK_TOKEN_LEN = 4
 
-# Stream directions, spelled like the decryptor's ``direction`` argument. Only the
-# client sets the quick-ack REQUEST flag on a data frame; only the server sends
-# quick-ack TOKENS. ``None`` means the direction is unknown to the caller.
+# Spelled like the decryptor's ``direction``. Only the client sets the quick-ack
+# request flag on data frames; only the server sends tokens. ``None`` = unknown.
 CLIENT_TO_SERVER = "write"
 SERVER_TO_CLIENT = "read"
 
@@ -53,9 +48,8 @@ SERVER_TO_CLIENT = "read"
 def _ctr_cipher(key: bytes, iv: bytes):
     """Create a stateful AES-256-CTR encryptor (CTR is symmetric: enc == dec).
 
-    AES-CTR comes from ``cryptography`` only (``tgcrypto`` cannot do the stateful,
-    position-continuous CTR this needs). Missing it surfaces as a clean
-    :class:`MtprotoDependencyError` rather than a raw ImportError.
+    Needs ``cryptography`` (``tgcrypto`` lacks stateful, position-continuous CTR);
+    raises :class:`MtprotoDependencyError` when it is missing.
     """
     try:
         from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -68,10 +62,7 @@ def _ctr_cipher(key: bytes, iv: bytes):
 
 
 def derive_obfuscation_keys(init: bytes) -> tuple[bytes, bytes, bytes, bytes]:
-    """Derive ``(key_out, iv_out, key_in, iv_in)`` from the raw 64-byte init block.
-
-    ``init`` is the *encrypted* client->server prefix as seen on the wire.
-    """
+    """Derive ``(key_out, iv_out, key_in, iv_in)`` from the encrypted 64-byte wire init."""
     if len(init) < 56:
         raise ValueError("init block too short to derive obfuscation keys")
     key_out = init[8:40]
@@ -86,13 +77,7 @@ _COUNTER_LEN = 16  # AES block / CTR counter width in bytes
 
 
 def counter_add(counter_block: bytes, delta_blocks: int) -> bytes:
-    """Return the 16-byte CTR counter *delta_blocks* ahead of *counter_block*.
-
-    Big-endian 128-bit add, mod 2^128 (matching how AES-CTR increments its
-    counter). ``delta_blocks`` may be negative to walk the counter backwards, which
-    is how :func:`recover_obf_alignment` searches the blocks captured *behind* the
-    live counter.
-    """
+    """CTR counter *delta_blocks* ahead of *counter_block* (big-endian mod 2^128; may be negative)."""
     if len(counter_block) != _COUNTER_LEN:
         raise ValueError("counter block must be 16 bytes")
     value = (int.from_bytes(counter_block, "big") + delta_blocks) % (1 << 128)
@@ -102,11 +87,8 @@ def counter_add(counter_block: bytes, delta_blocks: int) -> bytes:
 def deobfuscate_at(key: bytes, counter_block: bytes, data: bytes) -> bytes:
     """One-shot, seekable AES-256-CTR of *data* with *counter_block* as the IV.
 
-    CTR is position-independent given the right counter, so the caller can jump to
-    any block boundary by advancing the counter (see :func:`counter_add`) and
-    de-obfuscate a slice in isolation — the seekable counterpart to the stateful
-    :class:`ObfuscationCipher`. A sub-block byte-phase is handled by prepending that
-    many padding bytes and discarding them from the result.
+    Seekable: jump with :func:`counter_add`. For a sub-block phase, prepend that
+    many padding bytes and discard them from the result.
     """
     return _ctr_cipher(key, counter_block).update(data)
 
@@ -114,9 +96,8 @@ def deobfuscate_at(key: bytes, counter_block: bytes, data: bytes) -> bytes:
 class ObfuscationCipher:
     """Stateful de-obfuscation for one MTProto conversation.
 
-    Holds two CTR ciphers — ``out`` (client->server) and ``in`` (server->client)
-    — each seeded from the client init block. Bytes must be fed in stream order
-    because CTR advances its counter across calls.
+    Holds ``out`` (client->server) and ``in`` CTR ciphers seeded from the init
+    block; feed bytes in stream order.
     """
 
     def __init__(self, init: bytes):
@@ -132,15 +113,11 @@ class ObfuscationCipher:
         key_in: bytes,
         iv_in: bytes,
     ) -> "ObfuscationCipher":
-        """Build a cipher directly from memory-recovered per-direction key/IV pairs.
+        """Build a cipher from memory-recovered per-direction key/IV pairs.
 
-        Unlike :meth:`__init__` (which derives the keys from the 64-byte client init
-        block), this seeds each direction's CTR cipher straight from the recovered
-        ``key``/``iv`` — used for a connection whose init block was never captured
-        (mid-stream). ``iv_out``/``iv_in`` are the 16-byte CTR counter blocks the
-        caller has resolved for each direction (via :func:`recover_obf_alignment`),
-        so feeding the (phase-padded) payload de-obfuscates it in place. The
-        init-bytes ``__init__`` path is left untouched.
+        For a mid-stream connection whose init block was never captured.
+        ``iv_out``/``iv_in`` are the 16-byte CTR counter blocks resolved by
+        :func:`recover_obf_alignment`; feed the phase-padded payload.
         """
         self = cls.__new__(cls)
         self._out = _ctr_cipher(key_out, iv_out)
@@ -216,16 +193,6 @@ def iter_frames_with_offsets(
         raise NotImplementedError(f"unsupported transport type: {transport_type!r}")
 
 
-def _iter_abridged(buf: bytes) -> Iterator[bytes]:
-    for _start, _end, payload in _iter_abridged_offsets(buf):
-        yield payload
-
-
-def _iter_intermediate(buf: bytes) -> Iterator[bytes]:
-    for _start, _end, payload in _iter_intermediate_offsets(buf):
-        yield payload
-
-
 def _iter_abridged_offsets(
     buf: bytes, keymap: Optional[Dict[bytes, object]] = None,
     direction: Optional[str] = None,
@@ -263,9 +230,7 @@ def _iter_framed_offsets(
         pos = end
 
 
-# --------------------------------------------------------------------------- #
-# Mid-stream obfuscation-key recovery (init block never captured)
-# --------------------------------------------------------------------------- #
+# Mid-stream obfuscation-key recovery (init block never captured).
 
 # A well-formed outer record is auth_key_id(8) + msg_key(16) + >= one AES block(16).
 _MIN_RECORD_LEN = 40
@@ -275,10 +240,8 @@ _ANCHOR_TEST_WINDOW = 2048
 _ANCHOR_MAX_START = 1024
 # Default: how many AES blocks behind the live counter to search (capture lag).
 DEFAULT_OBF_MAX_BLOCKS = 4096
-# An endpoint-matched key is confidently the flow's, so search far further before
-# giving up (auto-widen): the ~500x deeper ceiling only ever runs for a key whose
-# endpoint hint ties it to this exact flow, keeping the expensive search off every
-# un-attributed key.
+# Auto-widen ceiling for an endpoint-matched key (confidently this flow's). The
+# ~500x deeper search runs only for such keys, keeping it off un-attributed ones.
 DEFAULT_OBF_ENDPOINT_MATCH_BLOCKS = 2_000_000
 # Consecutive in-keymap frames required to beat a ~2^-64 false accept.
 _ANCHOR_FRAMES = 2
@@ -301,7 +264,7 @@ class ObfAlignment:
 
 
 def _abridged_length_header(buf: bytes, pos: int, length_byte: int, n: int) -> Optional[tuple[int, int]]:
-    """``(header_end, payload_len)`` for a NORMAL abridged length header.
+    """``(header_end, payload_len)`` for a normal abridged length header.
 
     *length_byte* is the (already quick-ack-bit-masked) first byte: < ``0x7f`` is a
     1-byte header, ``0x7f`` escapes to a 3-byte little-endian length.
@@ -316,10 +279,8 @@ def _abridged_length_header(buf: bytes, pos: int, length_byte: int, n: int) -> O
 def _header_names_known_key(
     buf: bytes, header: Optional[tuple[int, int]], keymap: Dict[bytes, object]
 ) -> bool:
-    """True if *header* opens a real record: a full-length frame whose leading 8
-    bytes are an ``auth_key_id`` we hold. The known-plaintext oracle used to tell a
-    quick-ack-REQUEST data frame from a standalone quick-ack TOKEN (see
-    :func:`_parse_frame_header`, which only calls it when a *keymap* is supplied).
+    """True if *header* opens a full-length frame whose first 8 bytes are a held
+    ``auth_key_id``: the oracle telling a quick-ack request from a quick-ack token.
     """
     if header is None:
         return False
@@ -336,16 +297,13 @@ def _parse_frame_header(
 ) -> Optional[tuple[int, int]]:
     """Return ``(header_end, payload_len)`` for the frame at *pos*, or ``None``.
 
-    The single length-header parser shared by the frame iterators and the
-    recovery anchor, so both always agree on frame boundaries. ``None`` means the
-    header is truncated within *buf* (or *pos* is at its end).
+    Shared by the frame iterators and the recovery anchor so both agree on frame
+    boundaries. ``None`` means the header is truncated (or *pos* is at the end).
 
     The quick-ack flag (``0x80`` on the abridged first byte, bit 31 of the
-    intermediate length word) is ambiguous: the CLIENT sets it on a data frame's
-    length to request an ack (mask it off and read a normal frame), while the
-    SERVER's ack response is a standalone 4-byte token carrying no record
-    (returned as ``(pos + 4, 0)``). See :func:`_resolve_quick_ack` for how the
-    *direction* and the *keymap* oracle pick between the two.
+    intermediate length word) is ambiguous: the client sets it on a data frame to
+    request an ack (mask it off), while the server's ack is a standalone 4-byte
+    token, returned as ``(pos + 4, 0)``. :func:`_resolve_quick_ack` decides.
     """
     n = len(buf)
     if transport_type == ABRIDGED:
@@ -384,14 +342,13 @@ def _resolve_quick_ack(
 ) -> Optional[tuple[int, int]]:
     """Resolve a quick-ack-flagged header to a data frame (*masked*) or a token.
 
-    Decided by DIRECTION first, since each side only ever emits one of the two:
+    Direction decides first, since each side only emits one of the two:
 
-    * client->server: always an ack-REQUEST flag on a data frame -> *masked*, so a
-      flagged frame under an unknown auth_key_id still frames (and gets reported);
-    * server->client (or unknown): a token unless :func:`_flagged_is_data_frame`
-      says the masked reading is a real record; with no oracle at all the server
-      side defaults to a token and the unknown side keeps the historical masked
-      reading.
+    * client->server: always a request flag on a data frame -> *masked*, so a
+      frame under an unknown auth_key_id still frames and gets reported;
+    * server->client or unknown: a token unless :func:`_flagged_is_data_frame`
+      says the masked reading is a real record. Without a keymap the server side
+      defaults to a token and the unknown side to *masked*.
     """
     if direction == CLIENT_TO_SERVER:
         return masked
@@ -450,13 +407,10 @@ def _count_anchor_frames(
 ) -> bool:
     """True if *need* consecutive frames from *start* each name a known auth_key_id.
 
-    The known-plaintext oracle: at a real frame boundary the length header is
-    plausible and the 8 bytes following it are an ``auth_key_id`` carried in the
-    clear, which we can test against ``auth_keymap``. Requiring several consecutive
-    hits drives the false-accept probability far below ~2^-64. A quick-ack token
-    between two records (the server interleaves them with its replies) is stepped
-    over without counting, so it does not break the run; the anchor frame itself
-    must always be a real record.
+    Known-plaintext oracle: at a real frame boundary the 8 bytes after the length
+    header are a cleartext ``auth_key_id``. Several consecutive hits push the
+    false-accept probability far below ~2^-64. A quick-ack token between records
+    is stepped over without counting; the anchor frame itself must be a record.
     """
     pos = start
     hits = 0
@@ -490,10 +444,9 @@ def _anchor_candidates(
 ) -> list[int]:
     """Sorted frame starts ``< limit`` whose header could end at a known auth_key_id.
 
-    A frame passes :func:`_count_anchor_frames` only if a known auth_key_id sits
-    right after its length header, so locating the ids first (``bytes.find``)
-    and stepping back by each possible header length yields every start that can
-    possibly hit — the expensive per-offset check then runs only there.
+    Locating the ids first (``bytes.find``) and stepping back by each possible
+    header length yields every start that can pass :func:`_count_anchor_frames`,
+    so the expensive per-offset check runs only there.
     """
     header_lengths = _HEADER_LENGTHS.get(transport_type, ())
     search_end = limit + max(header_lengths, default=0) + _AUTH_KEY_ID_LEN
@@ -551,8 +504,8 @@ def _keystream_targets(
     """``{8 keystream bytes: [window offsets]}`` that would decrypt to a known id.
 
     Plaintext ``window[j:j+8] ^ ks[o+j:o+j+8]`` equals auth_key_id ``kid`` exactly
-    when the keystream there is ``window[j:j+8] ^ kid``; so every (offset, id) pair
-    reduces to ONE 8-byte keystream pattern, independent of the unknown lag ``o``.
+    when the keystream there is ``window[j:j+8] ^ kid``, so every (offset, id) pair
+    reduces to one 8-byte keystream pattern, independent of the unknown lag ``o``.
     """
     kids = _known_key_ids(auth_keymap)
     targets: Dict[bytes, List[int]] = {}
@@ -570,10 +523,10 @@ def _known_key_ids(auth_keymap: Mapping[bytes, object]) -> Tuple[bytes, ...]:
     )
 
 
-# One stream pair tries EVERY candidate obfuscation key against the same two
-# direction windows, so the (key-independent) target table repeats per key. The
-# memo is keyed purely by immutable CONTENT (window bytes, transports, id tuple):
-# a hit can never be stale, and a few slots cover the per-stream locality.
+# One stream pair tries every candidate obfuscation key against the same two
+# direction windows, so the key-independent target table repeats per key. The
+# memo is keyed by immutable content (window bytes, transports, id tuple), so a
+# hit is never stale; a few slots cover the per-stream locality.
 _TARGETS_MEMO_SIZE = 4
 
 
@@ -615,7 +568,7 @@ def _keystream_hits(
     targets: Mapping[bytes, Sequence[int]],
     word_index: Optional[TargetWordIndex] = None,
 ) -> set:
-    """Target patterns occurring ANYWHERE (any byte offset) in *keystream*.
+    """Target patterns occurring at any byte offset in *keystream*.
 
     One C-level pass per 8-byte residue class: the keystream is viewed as native
     uint64 words starting at byte ``r`` and intersected with the target set, so
@@ -671,22 +624,15 @@ def recover_obf_alignment(
 ) -> Optional[ObfAlignment]:
     """Recover the CTR alignment that de-obfuscates a mid-stream *run_bytes* tail.
 
-    For a connection captured after it was already open, the 64-byte init block is
-    gone, so :func:`detect_transport` cannot key the stream. Instead we hold (from
-    live memory) the raw obfuscation ``key`` for one direction plus that
-    direction's LIVE CTR state — the 16-byte ``live_counter`` and the byte-phase
-    ``num`` — captured while the connection was alive.
+    The init block is gone, so the stream is keyed from live memory: the raw
+    obfuscation ``key`` for one direction plus its live CTR state (16-byte
+    ``live_counter`` and byte-phase ``num``).
 
-    The unknown is the capture LAG: how many bytes separate the tail's last byte
-    from the live position. It is searched BYTE-granular (the capture lag is not a
-    whole number of AES blocks in general) over ``-16 * max_blocks ..
-    16 * max_blocks`` bytes — the negative side covers a pcap that runs PAST the
-    snapshot (the counter model is symmetric, so the cap is the same depth). One
-    keystream is generated over that whole span and every byte offset of it is
-    tested at once for a known auth_key_id right after a plausible length header
-    (see :func:`_keystream_hits`); only the few offsets that hit get the full
-    two-consecutive-frames anchor check. Candidates are tried smallest ``|lag|``
-    first, so a tail ending exactly at the live position wins.
+    The unknown is the capture lag between the tail's last byte and the live
+    position, searched byte-granular over ``-16 * max_blocks .. 16 * max_blocks``
+    (negative covers a pcap that runs past the snapshot). One keystream covers the
+    whole span and every offset is tested at once (:func:`_keystream_hits`); only
+    hits get the two-consecutive-frames anchor check. Smallest ``|lag|`` wins.
 
     ``transport_hint`` (the framing already resolved for the other direction)
     constrains the search to that one framing; ``direction`` resolves quick-ack

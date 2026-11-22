@@ -3,25 +3,21 @@
 // Function boundaries of a loaded ELF module from its in-memory .eh_frame_hdr
 // binary-search table (PT_GNU_EH_FRAME). Stripped builds (Chrome's
 // libmonochrome, Cronet) keep this table for C++ unwinding, so it bounds every
-// function without symbols. functionBoundsFor() falls back to landing-pad bounds where no FDE covers an address.
+// function without symbols. Mach-O images use __unwind_info instead (macho_unwind_info.ts).
+// functionBoundsFor() falls back to landing-pad bounds where no FDE covers an address.
 
 import { BTI_C, PACIASP, endsFallThrough, isLandingPadWord } from "./arm64.js";
 import type { FunctionBoundsSource } from "./arm64_xref.js";
+import { isMachOModule } from "./macho_header.js";
+import { MachOUnwindFunctionBounds } from "./macho_unwind_info.js";
+import { searchSortedStarts } from "./module_mapping.js";
 
 const PT_LOAD = 1;
 const PT_GNU_EH_FRAME = 0x6474e550;
 const DW_EH_PE_udata4 = 0x03;
 const DW_EH_PE_datarel_sdata4 = 0x3b;
 
-/** Index of the last sorted table entry whose start is <= addr, or -1. */
-export function searchSortedStarts(count: number, startAt: (i: number) => number, addr: number): number {
-    let lo = 0, hi = count - 1, found = -1;
-    while (lo <= hi) {
-        const mid = (lo + hi) >>> 1;
-        if (startAt(mid) <= addr) { found = mid; lo = mid + 1; } else { hi = mid - 1; }
-    }
-    return found;
-}
+export { searchSortedStarts };
 
 /**
  * [start, end) of a function; end is null when its FDE is not decodable (or,
@@ -95,12 +91,17 @@ function ehFrameHdrOf(base: NativePointer): NativePointer | null {
 /** Identity of one loaded module (name + base + size) for the per-module caches. */
 const moduleKey = (mod: Module) => `${mod.name}@${mod.base}+${mod.size}`;
 
-const tablesByModule = new Map<string, EhFrameFunctionTable | null>();
+const tablesByModule = new Map<string, FunctionBoundsSource | null>();
 
-/** The module's function table, built once per loaded module (name + base + size). */
-export function ehFrameTableFor(mod: Module): EhFrameFunctionTable | null {
+/**
+ * The module's function table, built once per loaded module (name + base + size):
+ * .eh_frame_hdr for ELF, __unwind_info for Mach-O (chosen by the header magic).
+ */
+export function ehFrameTableFor(mod: Module): FunctionBoundsSource | null {
     const key = moduleKey(mod);
-    if (!tablesByModule.has(key)) tablesByModule.set(key, EhFrameFunctionTable.fromModule(mod));
+    if (!tablesByModule.has(key)) {
+        tablesByModule.set(key, isMachOModule(mod) ? MachOUnwindFunctionBounds.fromModule(mod) : EhFrameFunctionTable.fromModule(mod));
+    }
     return tablesByModule.get(key)!;
 }
 

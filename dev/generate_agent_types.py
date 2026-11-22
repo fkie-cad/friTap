@@ -40,9 +40,14 @@ from friTap.schemas.agent_messages import (  # noqa: E402
     IPSecESPKeysMessage,
     IPSecIKEKeysMessage,
     KeylogMessage,
+    LearnedFunction,
     LibraryDetectedMessage,
+    ModuleOffsetsLearnedMessage,
     NetlogMessage,
     OhttpPlaintextMessage,
+    PlaintextApiLearnedMessage,
+    PlaintextPrologueHashes,
+    PlaintextRvas,
     RequestContextMessage,
     SSHKeylogMessage,
     SSHKeyMessage,
@@ -189,6 +194,9 @@ def generate_all() -> str:
     # only (no type guard, NOT part of the AgentMessage union).
     supporting_models = [
         CallerFrame,
+        PlaintextRvas,
+        PlaintextPrologueHashes,
+        LearnedFunction,
     ]
     models = [
         KeylogMessage,
@@ -211,6 +219,8 @@ def generate_all() -> str:
         OhttpPlaintextMessage,
         CallerStackMessage,
         RequestContextMessage,
+        PlaintextApiLearnedMessage,
+        ModuleOffsetsLearnedMessage,
     ]
 
     parts = [HEADER]

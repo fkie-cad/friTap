@@ -1,28 +1,35 @@
-
 import {NSS } from "../../../../tls/libs/nss.js";
 import { socket_library } from "../../../../platforms/windows.js";
+import { devlog } from "../../../../util/log.js";
+import { nssWindowsMethodMapping } from "../../../../tls/libs/nss_windows_libraries.js";
+import { installLegacyNssKeyExtraction } from "../../libs/nss_key_extraction.js";
 import { executeSSLLibrary } from "../../../shared/shared_functions_legacy.js";
 
 export class NSS_Windows extends NSS {
 
     constructor(public moduleName:string, public socket_library:String, is_base_hook: boolean){
-        var library_method_mapping : { [key: string]: Array<string> }= {};
-        library_method_mapping[`*${moduleName}*`] = ["PR_Write", "PR_Read", "PR_FileDesc2NativeHandle", "PR_GetPeerName", "PR_GetSockName", "PR_GetNameForIdentity"]
-        // library_method_mapping[`*libnss*`] = ["PK11_ExtractKeyValue", "PK11_GetKeyData"]
-        library_method_mapping["*ssl*.dll"] = ["SSL_ImportFD", "SSL_GetSessionID", "SSL_HandshakeCallback"]
+        // Folded nss3.dll (Firefox/Thunderbird, MOZ_FOLD_LIBS) carries PR_*, SSL_* and PK11_*;
+        // an unfolded (lib)nspr4.dll gets SSL_* from (lib)ssl3.dll and PK11_* from (lib)nss3.dll.
+        // See agent/tls/libs/nss_windows_libraries.ts (shared with the modern definition).
+        var library_method_mapping : { [key: string]: Array<string> } = nssWindowsMethodMapping(moduleName, String(socket_library));
 
         super(moduleName,socket_library,library_method_mapping);
     }
 
     install_tls_keys_callback_hook(){
-        // TBD
+        void installLegacyNssKeyExtraction(this.module_name, this.addresses[this.module_name]);
     }
 
 
     execute_hooks(){
         this.install_plaintext_read_hook();
         this.install_plaintext_write_hook();
-        // this.install_tls_keys_callback_hook(); needs to be implemented
+        try {
+            this.install_tls_keys_callback_hook();
+        } catch (e) {
+            devlog("Installing NSS key hooking failed");
+            devlog("NSS Error code: " + e);
+        }
     }
 
 }

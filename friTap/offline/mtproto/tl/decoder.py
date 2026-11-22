@@ -51,11 +51,9 @@ MESSAGE_BARE_ID = 0x5BB8E511
 #: inner object was decoded from the partial output inflated so far.
 GZIP_TRUNCATED_NOTE = "gzip_packed truncated (partial inflate)"
 
-#: Default cap on the INFLATED size of a ``gzip_packed`` body. The packed bytes
-#: are peer-supplied, so an unbounded inflate is a decompression bomb; 16 MiB is
-#: far above any real Telegram TL payload while keeping a hostile record cheap.
-#: ``MAX_INFLATE`` (16 MiB) is defined with the generic bounded inflater in
-#: :mod:`friTap.parsers.decompress` and re-exported above.
+# ``MAX_INFLATE`` (16 MiB, from friTap.parsers.decompress) caps one inflated
+# ``gzip_packed`` body. The packed bytes are peer-supplied, so an unbounded
+# inflate is a decompression bomb; 16 MiB is far above any real TL payload.
 
 _UINT32 = struct.Struct("<I")
 _FIXED_PRIMS = {"int": ("<i", 4), "long": ("<q", 8), "double": ("<d", 8), "#": ("<I", 4)}
@@ -197,7 +195,6 @@ class _TlDecoder:
         self.inflated_total = 0
         self.gzip_depth = 0
 
-    # -- budget ------------------------------------------------------------ #
     def _enter(self, reader: _Reader, depth: int) -> bool:
         """Account one node; return whether it should be built."""
         if depth > self.limits.max_depth:
@@ -210,7 +207,6 @@ class _TlDecoder:
             return False
         return True
 
-    # -- typed values -------------------------------------------------------- #
     def read_value(self, reader: _Reader, tl_type: TlType, depth: int) -> Any:
         kind = tl_type.kind
         if kind == "prim":
@@ -268,7 +264,6 @@ class _TlDecoder:
             return self._read_message(reader, depth)
         return self._read_combinator(reader, combinator, reader.pos, depth)
 
-    # -- boxed objects -------------------------------------------------------- #
     def read_boxed(self, reader: _Reader, depth: int, *, expected: Optional[TlType] = None,
                    prefer_function: bool = False) -> Any:
         start = reader.pos
@@ -347,7 +342,6 @@ class _TlDecoder:
         return TlNode(combinator.name, combinator.id, kind, tuple(fields), start,
                       reader.pos - start, note)
 
-    # -- vectors -------------------------------------------------------------- #
     def _guess_elem(self, reader: _Reader, count: int) -> Optional[TlType]:
         """Element type of a vector whose type the schema does not give."""
         head = reader.peek_uint32()
@@ -419,7 +413,6 @@ class _TlDecoder:
             return None
         return TlVector(label, tuple(items), count, start, self._vector_note(count))
 
-    # -- MTProto service objects --------------------------------------------- #
     def _read_gzip(self, reader: _Reader, start: int, depth: int,
                    inner_type: Optional[TlType]) -> Any:
         build = self._enter(reader, depth)
@@ -572,7 +565,6 @@ class _TlDecoder:
         return TlNode("rpc_result", RPC_RESULT_ID, "constructor", fields, start,
                       reader.pos - start, note)
 
-    # -- top level ------------------------------------------------------------ #
     def decode(self, data: bytes) -> TlNode:
         reader = _Reader(data)
         stopped = False

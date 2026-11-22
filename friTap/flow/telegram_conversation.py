@@ -1,14 +1,9 @@
 """Telegram conversation helpers for the Message tab (pure, UI-free).
 
-Every MTProto / Secret-Chat packet is its own flow, so one chat is spread over
-many flows. These helpers let the TUI reunite them and name the participants:
-
-* :func:`conversation_peer_key` — which conversation a chat-text entry belongs to;
-* :func:`flow_has_chat_text` — cheap test whether a flow (or summary) carries chat
-  text, used to pre-filter sibling candidates;
-* :func:`participants_from_structured_users` — participant dicts (the
-  ``{"name", "detail", "is_self"}`` shape the Message tab renders) built from the
-  structured ``layer.users`` / ``layer.peer`` metadata of newer taps.
+Every MTProto / Secret-Chat packet is its own flow, so a chat spans many flows. These
+helpers reunite them (:func:`conversation_peer_key`, :func:`flow_has_chat_text`) and
+name participants (:func:`participants_from_structured_users`: ``{"name", "detail",
+"is_self"}`` dicts from the structured ``layer.users`` / ``layer.peer`` of newer taps).
 """
 
 from __future__ import annotations
@@ -24,10 +19,8 @@ CHAT_METHOD_RANK = 4
 CHAT_TEXT_KIND = "text"
 #: Layers whose ``messages`` may carry Telegram chat text.
 _CHAT_LAYER_NAMES = TELEGRAM_LAYER_NAMES
-#: Message-dict ``direction`` values meaning "sent by this device". The
-#: decrypted message-dict contract uses "write"; other producers use synonyms.
+#: Message-dict ``direction`` values meaning "sent by this device" (the decrypted contract uses "write"; other producers use synonyms).
 OUTBOUND_DIRECTIONS = frozenset({"write", "outgoing", "sent"})
-_OUTBOUND_DIRECTIONS = OUTBOUND_DIRECTIONS
 
 
 def as_int(value) -> int:
@@ -38,16 +31,11 @@ def as_int(value) -> int:
         return 0
 
 
-_as_int = as_int
-
-
 def conversation_peer_key(entry: dict, self_id: int = 0) -> str:
-    """Conversation key of a chat-text *entry*; ``""`` when it cannot be told.
+    """Conversation key of a chat-text *entry*; ``""`` when unknown.
 
-    Outbound messages are keyed by their ``peer_id`` (the recipient). Inbound
-    messages are keyed by ``peer_id`` when it names the chat (a group, or the
-    private peer), else by the ``sender`` — also when ``peer_id`` is our own
-    *self_id* (older layers address a private message to the receiver).
+    Outbound: its ``peer_id`` (recipient). Inbound: ``peer_id`` when it names the chat (group or
+    private peer), else the ``sender``, also when ``peer_id`` is *self_id* (older layers address a private message to the receiver).
     """
     peer_id = as_int(entry.get("peer_id"))
     if (entry.get("direction") or "") in OUTBOUND_DIRECTIONS:
@@ -96,11 +84,7 @@ def method_is_chat_ranked(summary_or_flow) -> bool:
 
 
 def flow_has_chat_text(summary_or_flow) -> bool:
-    """Whether a flow carries chat text.
-
-    A full flow (has layers) is judged by its layer messages; a summary (no
-    layers) by its chat-ranked Method scalar — a cheap, permissive pre-filter.
-    """
+    """Whether a flow carries chat text: a full flow by its layer messages, a summary (no layers) by its chat-ranked Method scalar (cheap, permissive pre-filter)."""
     if callable(getattr(summary_or_flow, "layer", None)):
         return bool(chat_text_entries(summary_or_flow))
     return method_is_chat_ranked(summary_or_flow)
@@ -118,10 +102,6 @@ def conversation_keys_of(flow, self_id: int = 0) -> set:
     return conversation_keys_of_entries(chat_text_entries(flow), self_id)
 
 
-# --------------------------------------------------------------------------- #
-# Participants
-# --------------------------------------------------------------------------- #
-
 def _user_detail(user: dict, name: str, is_self: bool) -> str:
     """Participants-block line: ``name (you) @username · id N`` (unescaped)."""
     parts = [f"{name} (you)" if is_self else name]
@@ -138,8 +118,7 @@ def _participant(user: dict, is_self: bool) -> dict:
             "is_self": is_self, "user_id": as_int(user.get("id"))}
 
 
-#: Appended to a peer resolved by heuristic (no wire ``encryptedChat*`` link), so
-#: an inferred identity is never shown as a wire-confirmed one.
+#: Appended to a heuristic-resolved peer (no wire ``encryptedChat*`` link) so an inferred identity is never shown as wire-confirmed.
 _INFERRED_SUFFIX = " (likely peer — inferred)"
 
 
@@ -168,9 +147,8 @@ def participants_from_structured_users(users: Iterable[dict], peer: Optional[dic
                                        self_first: bool = True) -> List[dict]:
     """Participant dicts from structured users (+ an optional conversation *peer*).
 
-    With a *peer* the conversation is 1:1: the result is the self user (when
-    known) plus the peer (its user, else its ``label``). Without one every
-    distinct user is listed. *self_first* moves the self user to the front.
+    With a *peer* the chat is 1:1: the self user (when known) plus the peer (its user, else its ``label``).
+    Without one every distinct user is listed. *self_first* moves the self user to the front.
     """
     directory = merge_user_directory(u for u in (users or []) if isinstance(u, dict))
     me = self_user(directory)

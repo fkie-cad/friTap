@@ -1,32 +1,12 @@
-"""PARKED / NOT-YET-WIRED TUI code — retained for possible future use.
+"""Parked, not wired in: message-tab "layer transcript" renderers superseded by the
+conversation renderers in :mod:`friTap.tui.widgets.flow_detail`.
 
-This module holds the message-tab "layer transcript" renderers that were
-**superseded** by the conversation renderers (``_render_conversation`` /
-``_render_chat_row``) in :mod:`friTap.tui.widgets.flow_detail`. The code below
-is intentionally NOT imported by any active widget, so it cannot affect the
-running UI. It is kept verbatim (logic + comments preserved) so a future
-maintainer can re-activate it instead of rewriting it.
-
-The two renderers were relocated out of ``FlowDetail`` as a *mixin* so that
-``self`` semantics are preserved: they still reference live sibling members on
-the host widget (``self._message_chat_descriptor``, ``self._format_msg_time_secs``,
-``self._TEXT_RENDER_LIMIT``), all of which remain defined on ``FlowDetail``.
-The kind-classification constants used only by these two methods
-(``_KIND_LABELS`` / ``_MEANINGFUL_KINDS``) are kept here with them.
-
-HOW TO RE-ACTIVATE
-------------------
-1. Add this mixin to the host widget's bases, e.g.::
-
-       from friTap.tui.widgets._parked_transcript import ParkedTranscriptRenderMixin
-
-       class FlowDetail(ParkedTranscriptRenderMixin, Static):
-           ...
-
-2. Call ``self._render_layer_transcript(log, flow, layer)`` from the relevant
-   message-tab build path. The mixin resolves ``self._message_chat_descriptor``,
-   ``self._format_msg_time_secs`` and ``self._TEXT_RENDER_LIMIT`` from the host
-   widget at runtime.
+No active widget imports this module. It is kept (logic preserved) so it can be
+re-activated: add :class:`ParkedTranscriptRenderMixin` to the host widget's bases
+(``class FlowDetail(ParkedTranscriptRenderMixin, Static)``) and call
+``self._render_layer_transcript(log, flow, layer)`` from the message-tab build path.
+The host must provide ``_message_chat_descriptor``, ``_format_msg_time_secs`` and
+``_TEXT_RENDER_LIMIT``. ``_KIND_LABELS`` / ``_MEANINGFUL_KINDS`` live here with them.
 """
 
 from __future__ import annotations
@@ -43,15 +23,9 @@ if TYPE_CHECKING:
 
 
 class ParkedTranscriptRenderMixin:
-    """Parked message-tab transcript renderers (see module docstring).
+    """Parked message-tab transcript renderers (see module docstring)."""
 
-    Mix into a ``FlowDetail``-like widget to re-activate. Relies on the host
-    providing ``_message_chat_descriptor``, ``_format_msg_time_secs`` and the
-    ``_TEXT_RENDER_LIMIT`` class attribute.
-    """
-
-    # Kind -> (icon/label, is_chat) for the Message-tab row heading. Chat
-    # kinds render the body prominently in quotes; others stay muted.
+    # Kind -> (icon/label, is_chat) for the row heading; chat kinds show the body prominently in quotes.
     _KIND_LABELS = {
         "text": ("💬 message", True),
         "data": ("💬 message", True),
@@ -65,27 +39,20 @@ class ParkedTranscriptRenderMixin:
         "unparsed": ("[dim]unparsed[/]", False),
     }
 
-    # Kinds shown in full in the Message transcript; everything else
-    # (ack/rpc/service/receipt/unparsed) is transport chatter, collapsed.
+    # Kinds shown in full; the rest (ack/rpc/service/receipt/unparsed) is collapsed transport chatter.
     _MEANINGFUL_KINDS = frozenset({"text", "data", "message", "user", "update"})
 
     def _render_layer_transcript(self, log: "RichLog", flow: "Flow", layer) -> None:
         """Render a message-bearing layer's entries as a chat transcript.
 
-        Mirrors :meth:`_render_signal_messages` so MTProto / Telegram-E2E
-        flows present identically. Reads the shared message-dict contract
-        (``direction``, ``timestamp``, ``kind``, ``body``, ``method``,
-        ``sender``) defensively so partly-enriched dicts still render.
+        Mirrors :meth:`_render_signal_messages`; reads the shared message-dict contract
+        (``direction``, ``timestamp``, ``kind``, ``body``, ``method``, ``sender``) defensively.
         """
         messages = list(getattr(layer, "messages", None) or [])
         protocol, chat = self._message_chat_descriptor(layer)
 
-        # Split meaningful content (chat text, identities, updates) from the
-        # high-volume transport chatter (acks, rpc acks, pings, …). The
-        # transcript surfaces the former in full and collapses the latter into
-        # one summary line, so a busy flow's dozens of msgs_acks never bury the
-        # actual messages (Signal's transcript stays clean because it has only a
-        # handful of receipts; MTProto carries far more service records).
+        # Show meaningful content in full and collapse high-volume chatter (acks, pings)
+        # into one summary line so dozens of msgs_acks never bury the messages.
         meaningful = [m for m in messages
                       if (m.get("kind") or "") in self._MEANINGFUL_KINDS]
         noise = [m for m in messages
@@ -138,18 +105,15 @@ class ParkedTranscriptRenderMixin:
         if ts:
             head_parts.append(f"[dim]{ts}[/]")
         head_parts.append(label)
-        # Show the TL method only when it adds information (not for chat rows,
-        # and not when it merely repeats the kind label, e.g. a "user" item).
+        # Show the TL method only when it adds information.
         if method and not is_chat and method.lower() != kind.lower():
             head_parts.append(f"[dim]{method}[/]")
-        # "from <sender>" only on received chat rows — for a user/identity row
-        # the sender id is the user's own id and just repeats the body.
+        # "from <sender>" only on received chat rows; on user/identity rows the id repeats the body.
         if not outgoing and sender and kind != "user":
             head_parts.append(f"[dim]from {sender}[/]")
         log.write(f"[bold {c('primary')}]{'  '.join(head_parts)}[/]")
 
-        # Render any body (chat text, or a user/identity summary) in quotes when
-        # it's a chat kind; otherwise show it indented and muted.
+        # Chat kinds render the body in quotes, others indented and muted.
         text = (body or "").strip()
         if text:
             limit = self._TEXT_RENDER_LIMIT

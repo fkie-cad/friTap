@@ -1,14 +1,11 @@
 """Offline MTProto (Telegram) decryption support.
 
-This package implements friTap's own MTProto 2.0 decryptor. Unlike TLS/QUIC —
-where friTap shells out to tshark — tshark cannot decrypt MTProto, so the whole
-pipeline (TCP reassembly, transport de-obfuscation, AES-IGE record decryption)
-lives here in pure Python and feeds the existing FlowCollector -> TapWriter path.
+tshark cannot decrypt MTProto, so TCP reassembly, transport de-obfuscation and
+AES-IGE decryption live here in pure Python.
 
-The crypto backend (the ``cryptography`` package, optionally ``tgcrypto``) is an
-**optional** dependency: importing this package never requires it. Functions that
-need it raise :class:`MtprotoDependencyError` with an actionable hint, and the
-offline driver catches that to skip MTProto gracefully.
+The crypto backend (``cryptography``, optionally ``tgcrypto``) is optional;
+functions needing it raise :class:`MtprotoDependencyError`, which the driver
+catches to skip MTProto.
 """
 
 from __future__ import annotations
@@ -19,12 +16,9 @@ class MtprotoError(Exception):
 
 
 class MtprotoDependencyError(MtprotoError):
-    """Raised when the crypto backend is unavailable.
+    """Raised when the crypto backend is unavailable (e.g. a ``--no-deps`` install).
 
-    The backend ships in friTap's base install; you only hit this on a
-    ``--no-deps`` / minimal install. Restore it with ``pip install cryptography``
-    (the optional ``TgCrypto-pyrofork`` AES-IGE accelerator installs automatically
-    with the base wherever a wheel exists).
+    Restore it with ``pip install cryptography``.
     """
 
 
@@ -32,10 +26,7 @@ class MtprotoCryptoError(MtprotoError):
     """Raised when a record fails to decrypt or its msg_key does not verify."""
 
 
-# The dependency hint and backend probe live in the side-effect-free leaf
-# :mod:`friTap.protocols.mtproto_backend` (so the live protocol handlers can
-# use them without importing this self-registering package); re-exported here
-# as the same objects so every existing import path keeps working.
+# Leaf module so live handlers avoid importing this self-registering package.
 from friTap.protocols.mtproto_backend import (  # noqa: E402
     MTPROTO_DEPENDENCY_HINT,
     mtproto_backend_available,
@@ -43,13 +34,10 @@ from friTap.protocols.mtproto_backend import (  # noqa: E402
 
 
 def offline_cli_dependency_warnings(keylog_value, tls_keylog_path) -> list:
-    """Offline-CLI hook: warning lines for a requested MTProto decryption run.
+    """Offline-CLI hook (discovered by name): warnings when the backend is missing.
 
-    Discovered by convention by :mod:`friTap.offline.cli` (like Signal's hook).
     *keylog_value* is the ``mtproto`` keylog (truthy when MTProto was requested);
-    *tls_keylog_path* is unused (MTProto rides raw TCP). Loud and up front when
-    the optional backend is missing, rather than silently producing a .tap
-    without the Telegram flows; non-fatal. Never raises.
+    *tls_keylog_path* is unused. Never raises.
     """
     if not keylog_value or mtproto_backend_available():
         return []
@@ -59,21 +47,16 @@ def offline_cli_dependency_warnings(keylog_value, tls_keylog_path) -> list:
     ]
 
 
-# Module-level discovery marker: tells the offline-decryptor discovery scan
-# (:func:`friTap.offline.pcap_to_tap._discover_offline_decryptor_extensions`,
-# mirroring ``is_fritap_parser``/``is_fritap_analyzer``) that importing this
-# package self-registers offline decryptors, exactly like the Signal package.
-# ``pcap_to_tap`` imports this package before its discovery scan runs, so the
-# ``mtproto`` and ``telegram`` entries stay first in registration order.
+# Discovery marker for pcap_to_tap._discover_offline_decryptor_extensions:
+# importing this package self-registers offline decryptors. pcap_to_tap imports
+# it before the scan, so ``mtproto`` and ``telegram`` stay first in order.
 is_fritap_offline_decryptor = True
 
 
 def _register_mtproto_offline_decryptors() -> None:
     """Register the MTProto and Telegram offline decryptors (in that order).
 
-    Lazy + fully guarded so importing this package can never raise: a missing
-    dependency or an import cycle during registration is logged at debug and
-    skipped. Re-registration of an identical entry is idempotent.
+    Never raises; failures are logged at debug. Re-registration is idempotent.
     """
     from friTap.offline.registry import register_offline_decryptors_safely
 
@@ -85,13 +68,8 @@ def _register_mtproto_offline_decryptors() -> None:
     )
 
 
-
 def _register_telegram_pipeline_state() -> None:
-    """Register the Telegram per-conversion state namespace on the writer state.
-
-    Guarded like the decryptor self-registration below: importing this package
-    can never raise; a failure is logged at debug and skipped.
-    """
+    """Register the Telegram per-conversion state namespace. Never raises."""
     try:
         from .state import register_telegram_pipeline_state
 

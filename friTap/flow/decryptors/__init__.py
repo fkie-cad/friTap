@@ -1,8 +1,4 @@
-"""Layer-decryptor seam for the protocol-layer-stack feature.
-
-Re-exports the decryptor abstractions for convenience. The default decryptor
-registry is intentionally empty: it is a live-but-empty extension seam.
-"""
+"""Layer-decryptor seam: re-exports the decryptor abstractions (the default registry is empty)."""
 
 from friTap.flow.decryptors.base import LayerDecryptor
 from friTap.flow.decryptors.registry import (

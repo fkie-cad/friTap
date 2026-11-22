@@ -288,8 +288,11 @@ def _cleanup_shell(order, *, auxiliary=False, full_capture=True):
         protocol="tls")
     shell.logger = MagicMock()
     shell.special_logger = MagicMock()
-    for name in ("_stop_instrument_thread", "_stop_consumer_thread", "_finalize_live_scan"):
+    for name in ("_stop_instrument_thread", "_finalize_live_scan"):
         setattr(shell, name, MagicMock())
+    # Shutdown steps 2-3: the agent's graceful_detach RPC, then the drain.
+    shell._detach_agent_gracefully = lambda: order.append("graceful")
+    shell._stop_consumer_thread = lambda: order.append("drain")
     shell.close_output_handlers = lambda: order.append("close_own_handlers")
     shell._auto_relabel_schannel_keylog = lambda _p: order.append("relabel")
     pcap_obj = MagicMock(apptap_session=None, capture_tier=None, pcap_file_name="cap.pcap")
@@ -313,7 +316,8 @@ def test_target_teardown_releases_lsass_before_closing_and_finalizing(monkeypatc
     shell = _cleanup_shell(order)
     shell._run_cleanup_steps(full_capture=True)
 
-    assert order == ["release_lsass", "close_own_handlers", "finalize", "relabel"]
+    assert order == ["graceful", "drain", "release_lsass", "close_own_handlers",
+                     "finalize", "relabel"]
     shell.pcap_obj.finalize_full_capture.assert_called_once()
 
 
@@ -323,7 +327,7 @@ def test_lsass_session_teardown_does_not_release_itself(monkeypatch):
     monkeypatch.setattr("friTap.legacy.ssl_logger_core._release_lsass_keylog_writer",
                         lambda _logger: order.append("release_lsass"))
     _cleanup_shell(order, auxiliary=True, full_capture=False)._run_cleanup_steps()
-    assert order == ["close_own_handlers"]
+    assert order == ["graceful", "drain", "close_own_handlers"]
 
 
 def test_teardown_off_windows_never_touches_lsass(monkeypatch):
@@ -332,7 +336,7 @@ def test_teardown_off_windows_never_touches_lsass(monkeypatch):
     monkeypatch.setattr("friTap.legacy.ssl_logger_core._release_lsass_keylog_writer",
                         lambda _logger: order.append("release_lsass"))
     _cleanup_shell(order, full_capture=False)._run_cleanup_steps()
-    assert order == ["close_own_handlers"]
+    assert order == ["graceful", "drain", "close_own_handlers"]
 
 
 def test_cleanup_releases_the_real_lsass_session_outputs(tmp_path, monkeypatch):

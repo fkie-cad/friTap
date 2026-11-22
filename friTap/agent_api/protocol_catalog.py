@@ -1,23 +1,13 @@
-"""
-Capture protocol catalog: what ``start_capture`` can hook, and how options map to CLI flags.
+"""Capture protocol catalog: what ``start_capture`` can hook and how options map to CLI flags.
 
-The capture protocol enum is derived from the protocol registry at call time
-(never hard-coded): a filtered build advertises only what it ships. Omitting
-``protocols`` means ``--protocol auto`` (every protocol, no prompt).
+The protocol enum is derived from the protocol registry at call time (a filtered build advertises
+only what it ships); omitting ``protocols`` means ``--protocol auto``. Options are a flat
+``{name: value}`` dict shared by all selected protocols; ``options_to_cli_flags`` maps them to argv.
 
-Capture options are a FLAT ``{name: value}`` dict shared by all selected
-protocols (``patterns`` is the same ``--patterns`` flag for TLS and SSH)::
-
-    validate_protocol_options(["tls"], {"pairip_safe": True, "force_scan": ["libfoo.so"]})
-    options_to_cli_flags({"pairip_safe": True, "force_scan": ["libfoo.so"]})
-    # -> ["--force-scan", "libfoo.so", "--pairip-safe"]
-
-File options follow the CLI loaders: ``offsets`` is a file path or inline
-JSON (``--offsets`` tries the file, then parses the text as JSON), ``patterns``
-is a file path only (``PatternLoader`` never parses inline JSON, so inline
-JSON is rejected here). The caller must sandbox file paths before building the
-argv (:class:`~friTap.agent_api.capture.manager.SessionManager` does, see
-:func:`path_option_names` / :func:`is_inline_value`).
+File options follow the CLI loaders: ``offsets`` is a file path or inline JSON, ``patterns`` is a
+file path only (``PatternLoader`` never parses inline JSON, so inline JSON is rejected here). The
+caller must sandbox file paths before building argv (``SessionManager`` does; see
+:func:`path_option_names` and :func:`is_inline_value`).
 """
 
 from __future__ import annotations
@@ -51,15 +41,9 @@ _PLATFORMS: dict[str, tuple[str, ...]] = {
 class OptionSpec:
     """One capture option and the friTap CLI flag it becomes.
 
-    Attributes:
-        name: Option key in the ``options`` dict.
-        flag: CLI flag (verified against ``friTap/friTap.py`` argparse).
-        type: JSON type: ``boolean`` (flag only when true), ``string``
-            (flag + value) or ``array`` of strings (flag repeated per item).
-        description: One line for agents.
-        protocols: Protocols the option applies to.
-        value_kind: ``path`` (a file path) or ``path_or_json`` (a file path or
-            inline JSON), mirroring how the CLI loads the flag's value.
+    ``type``: ``boolean`` (flag only when true), ``string`` (flag + value) or ``array`` of strings
+    (flag repeated per item). ``value_kind``: ``path`` or ``path_or_json``, mirroring how the CLI
+    loads the flag's value.
     """
 
     name: str
@@ -129,10 +113,6 @@ class ProtocolInfo:
                 for key, value in doc.items()}
 
 
-# ---------------------------------------------------------------------------
-# Enum
-# ---------------------------------------------------------------------------
-
 def capture_protocol_names() -> list[str]:
     """Valid ``start_capture`` protocol names, sorted (plus ``custom`` if any cipher ships).
 
@@ -145,10 +125,6 @@ def capture_protocol_names() -> list[str]:
         names.append(CUSTOM_GROUP)
     return sorted(names)
 
-
-# ---------------------------------------------------------------------------
-# Catalog
-# ---------------------------------------------------------------------------
 
 def _handler(name: str):
     from friTap.protocols.registry import _all_handler_factories
@@ -208,10 +184,6 @@ def catalog() -> list[dict[str, Any]]:
     return [describe(name).to_dict() for name in capture_protocol_names()]
 
 
-# ---------------------------------------------------------------------------
-# Options
-# ---------------------------------------------------------------------------
-
 def options_schema() -> dict[str, Any]:
     """JSON-Schema object of every capture option (for a ``start_capture`` param)."""
     return {
@@ -267,16 +239,10 @@ def validate_protocol_options(
 ) -> None:
     """Validate a capture request's protocol list and flat ``options`` dict.
 
-    Args:
-        protocols: Capture protocol names (see :func:`capture_protocol_names`);
-            ``None``/empty means auto, which accepts every option.
-        options: ``{option_name: value}``; ``None`` values count as absent.
-
-    Raises:
-        ToolError: ``unknown_protocol`` (hint: valid names),
-            ``unsupported_option`` (unknown option, no CLI equivalent, or not
-            applicable to any selected protocol; ``extra["option"]`` names it)
-            or ``bad_param`` (wrong value type, ``extra["param"]`` = ``options.<name>``).
+    ``None``/empty ``protocols`` means auto, which accepts every option; ``None`` option values
+    count as absent. Raises ``ToolError``: ``unknown_protocol`` (hint: valid names),
+    ``unsupported_option`` (unknown, no CLI equivalent, or not applicable to any selected protocol;
+    ``extra["option"]`` names it) or ``bad_param`` (wrong value type; ``extra["param"]``).
     """
     _check_protocols(protocols or ())
     selected = _expand(protocols) if protocols else None
@@ -323,10 +289,8 @@ def is_inline_value(name: str, value: Any) -> bool:
 def options_to_cli_flags(options: Mapping[str, Any] | None) -> list[str]:
     """Map a validated ``options`` dict to friTap CLI argv tokens (catalog order).
 
-    ``boolean`` -> ``[flag]`` when true (nothing when false); ``string`` ->
-    ``[flag, value]``; ``array`` -> ``[flag, item]`` per item. ``None`` values
-    are skipped. Call :func:`validate_protocol_options` first; an unknown name
-    raises ``unsupported_option`` here too.
+    ``boolean`` -> ``[flag]`` when true; ``string`` -> ``[flag, value]``; ``array`` -> ``[flag, item]``
+    per item; ``None`` is skipped. Call :func:`validate_protocol_options` first.
     """
     given = {name: value for name, value in (options or {}).items() if value is not None}
     for name in given:

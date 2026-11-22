@@ -1,11 +1,6 @@
 #!/usr/bin/env python3
 
-"""
-LegacyCustomScriptPlugin — wraps the --custom_script CLI flag as a ScriptPlugin.
-
-Provides exact backward-compatible behavior for users who pass a custom
-Frida JS script via the command line.
-"""
+"""LegacyCustomScriptPlugin: wraps the ``--custom_script`` CLI flag as a ScriptPlugin."""
 
 from __future__ import annotations
 
@@ -24,24 +19,21 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("friTap.plugins.legacy_custom_script")
 
-# Directory where friTap package lives (for resolving relative script paths)
+# friTap package directory, base for relative script paths
 _here = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
 
-# Frida may deliver an error thrown by the script's top-level code just after
-# script.load() returns; errors this soon after the load still count as
-# load-time (fatal) errors.
+# Frida may deliver a top-level script error just after script.load() returns;
+# errors within this window still count as load-time (fatal).
 LOAD_ERROR_GRACE_SECONDS = 1.0
 
 
 class LegacyCustomScriptPlugin(ScriptPlugin):
-    """Wraps ``--custom_script`` as a ScriptPlugin with exact legacy behavior.
+    """Wraps ``--custom_script`` as a ScriptPlugin.
 
-    - Load order: BEFORE_MAIN (matches original instrument() order).
-    - On load-time error messages: pprint + SIGTERM (original behavior).
-    - On later runtime errors (an exception in a deferred callback, which
-      does not stop the script): log, rate-limited, and keep running --
-      killing the host then would detach while hooks may still be running.
-    - On "custom" payloads: log as info.
+    Loads BEFORE_MAIN. A load-time error is pprinted then SIGTERMs the host. A
+    later runtime error (deferred callback; the script keeps running) is logged,
+    rate-limited, without killing the host, which would detach live hooks.
+    "custom" payloads are logged at info.
     """
 
     def __init__(self, script_path: str) -> None:
@@ -72,7 +64,7 @@ class LegacyCustomScriptPlugin(ScriptPlugin):
         return ["frida"]
 
     def get_script_source(self, context: "ScriptContext") -> str:
-        """Read the custom Frida script from disk (cached after first read)."""
+        """Read the script from disk (cached)."""
         if self._source_cache is not None:
             return self._source_cache
         path = os.path.join(_here, self._script_path)
@@ -85,8 +77,7 @@ class LegacyCustomScriptPlugin(ScriptPlugin):
             return ""
 
     def on_instrument(self, context: "ScriptContext") -> None:
-        """Load the script, remembering when loading finished (see
-        :meth:`_is_load_time_error`)."""
+        """Load the script, recording when loading finished (see :meth:`_is_load_time_error`)."""
         self._loading = True
         try:
             super().on_instrument(context)
@@ -100,8 +91,7 @@ class LegacyCustomScriptPlugin(ScriptPlugin):
         return time.monotonic() - self._loaded_at < LOAD_ERROR_GRACE_SECONDS
 
     def on_script_message(self, message: dict, data: Any) -> None:
-        """Original on_custom_hook_message() behavior, except that a runtime
-        error after a successful load no longer ends the run."""
+        """Handle a script message; a post-load runtime error does not end the run."""
         if message.get("type") == "error":
             if self._is_load_time_error():
                 # pprint uses repr(), so control characters are shown escaped.

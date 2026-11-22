@@ -44,13 +44,56 @@ test("a long-lived CTX survives its connections' SSL_free (observed up_ref)", ()
     assert.deepEqual(drainKeys(registry), ["0xctx"]);
 });
 
-test("an unobserved (inlined) up_ref drops the entry early: fail-safe", () => {
+test("an unobserved (inlined) up_ref: refs 0 restores via releaseLastRef, never a silent drop", () => {
     const registry = new KeylogCallbackRegistry<Entry>();
-    registry.recordInstall("0xctx", () => ({ previous: "NULL" })); // SSL_new, up_ref invisible
-    registry.noteFree("0xctx");                                   // SSL_free's release
+    const released: string[] = [];
+    registry.recordInstall("0xctx", () => ({ previous: "appCb" })); // SSL_new, up_ref invisible
+    registry.noteFree("0xctx", (e) => released.push(e.previous));  // SSL_free's release
+    assert.deepEqual(released, ["appCb"]);                         // restored while alive
     assert.equal(registry.has("0xctx"), false);
-    registry.recordInstall("0xctx", () => ({ previous: "NULL" })); // next SSL_new re-records
+    registry.recordInstall("0xctx", () => ({ previous: "appCb" })); // next SSL_new re-records
     assert.equal(registry.has("0xctx"), true);
+});
+
+test("fallback: install refs=1, two frees with inlined up_ref -> the CTX is still restored", () => {
+    // Homebrew OpenSSL 3.x: SSL_new's up_ref is inlined, the install happens in
+    // SSL_new's onLeave, so each connection's SSL_free brings refs 1 -> 0.
+    const registry = new KeylogCallbackRegistry<Entry>();
+    let restores = 0;
+    const release = () => { restores++; };
+    registry.recordInstall("0xctx", () => ({ previous: "NULL" }));
+    registry.noteFree("0xctx", release);
+    registry.noteFree("0xctx", release);                           // already released: no-op
+    assert.equal(restores, 1);
+    assert.deepEqual(drainKeys(registry), []);                     // nothing left pointing at us
+});
+
+test("observed destruction: frees never drop the entry; detach restores it", () => {
+    const registry = new KeylogCallbackRegistry<Entry>();
+    let releases = 0;
+    registry.recordInstall("0xctx", () => ({ previous: "NULL" }), true);
+    registry.noteFree("0xctx", () => { releases++; });
+    registry.noteFree("0xctx", () => { releases++; });
+    assert.equal(releases, 0);
+    assert.equal(registry.has("0xctx"), true);
+    assert.equal(registry.refsOf("0xctx"), 0);
+    assert.deepEqual(drainKeys(registry), ["0xctx"]);
+});
+
+test("noteDestroyed drops the entry without restoring it", () => {
+    const registry = new KeylogCallbackRegistry<Entry>();
+    registry.recordInstall("0xctx", () => ({ previous: "NULL" }), true);
+    registry.recordInstall("0xother", () => ({ previous: "NULL" }), true);
+    registry.noteDestroyed("0xctx");
+    registry.noteDestroyed("0xunknown");                           // untracked: ignored
+    assert.deepEqual(drainKeys(registry), ["0xother"]);
+});
+
+test("a throwing releaseLastRef is swallowed and the entry is still removed", () => {
+    const registry = new KeylogCallbackRegistry<Entry>();
+    registry.recordInstall("0xctx", () => ({ previous: "NULL" }));
+    registry.noteFree("0xctx", () => { throw new Error("access violation"); });
+    assert.equal(registry.has("0xctx"), false);
 });
 
 test("re-install never lowers a tracked refcount below what was observed", () => {

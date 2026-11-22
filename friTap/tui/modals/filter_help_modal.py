@@ -30,7 +30,7 @@ except ImportError:
     TEXTUAL_AVAILABLE = False
 
 from friTap.filter.fields import FIELD_REGISTRY, FieldDef
-from friTap.filter.layer_fields import LAYER_FIELD_SPECS
+from friTap.filter.layer_fields import all_layer_field_specs
 from friTap.filter.presets import FILTER_PRESETS
 from friTap.filter.protocols import PROTOCOL_ALIASES, known_protocol_names
 from friTap.tui.themes import c
@@ -72,7 +72,8 @@ class _Grid:
                 ratio=None if fixed else 1,
             )
         for row in self.rows:
-            grid.add_row(*(Text(cell) for cell in row))  # cells are plain text
+            # cells are plain text; str() guards a non-str extension description
+            grid.add_row(*(Text(str(cell)) for cell in row))
         return Padding(grid, (0, 0, 0, self.indent))
 
 
@@ -101,9 +102,9 @@ def _protocols_blocks(accent: str, dim: str) -> list[_Block]:
 
 
 def _layer_field_groups() -> dict[str, list]:
-    """LAYER_FIELD_SPECS grouped by protocol prefix, in table order."""
+    """Layer field specs (built-in + extension-registered) by protocol prefix, in table order."""
     groups: dict[str, list] = {}
-    for spec in LAYER_FIELD_SPECS:
+    for spec in all_layer_field_specs():
         groups.setdefault(spec.field.split(".", 1)[0], []).append(spec)
     return groups
 
@@ -111,7 +112,7 @@ def _layer_field_groups() -> dict[str, list]:
 def _protocol_field_blocks() -> list[_Block]:
     blocks: list[_Block] = []
     for proto, specs in _layer_field_groups().items():
-        blocks.append(_Para(f"[bold]{proto}[/]"))
+        blocks.append(_Para(f"[bold]{escape(proto)}[/]"))  # extension names may hold "["
         blocks.append(_field_grid(tuple((s.field, s.value_type, s.description) for s in specs)))
     return blocks
 
@@ -137,7 +138,7 @@ def _field_row(fdef: FieldDef) -> tuple[str, str, str]:
 
 def _static_field_groups() -> list[tuple[str, tuple[tuple[str, str, str], ...]]]:
     """FIELD_REGISTRY as (group title, rows); layer fields are listed separately."""
-    layer_fields = {spec.field for spec in LAYER_FIELD_SPECS}
+    layer_fields = {spec.field for spec in all_layer_field_specs()}
     remaining = [name for name in FIELD_REGISTRY
                  if name not in layer_fields and name not in _GENERIC_FIELD_ORDER]
     groups = [("Generic", [n for n in _GENERIC_FIELD_ORDER if n in FIELD_REGISTRY])]

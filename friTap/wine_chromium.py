@@ -28,8 +28,12 @@ import struct
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional
 
+from .cache_files import CACHE_WRITE_OPTIONS, fritap_cache_dir, write_atomic
+
 logger = logging.getLogger("friTap.wine_chromium")
 
+# Subset on purpose: the labels BoringSSL's keylog writer embeds as byte
+# strings, used to locate that function in a PE image (not the full TLS set).
 KEYLOG_LABELS = (
     b"CLIENT_RANDOM",
     b"CLIENT_HANDSHAKE_TRAFFIC_SECRET",
@@ -175,17 +179,8 @@ def locate_ssl_log_secret_rva(data: bytes) -> Optional[int]:
     return agreed
 
 
-# --------------------------------------------------------------------------
-# File discovery, caching and the --offsets payload
-# --------------------------------------------------------------------------
-
 def _cache_path() -> str:
-    try:
-        from platformdirs import user_cache_dir
-        base = user_cache_dir("friTap")
-    except Exception:
-        base = os.path.join(os.path.expanduser("~"), ".cache", "friTap")
-    return os.path.join(base, "chromium_boringssl_rva.json")
+    return os.path.join(fritap_cache_dir(), "chromium_boringssl_rva.json")
 
 
 def _cache_key(path: str) -> str:
@@ -204,11 +199,8 @@ def _load_cache(cache_file: str) -> dict:
 
 def _store_cache(cache_file: str, cache: dict) -> None:
     try:
-        os.makedirs(os.path.dirname(cache_file), exist_ok=True)
-        tmp = cache_file + ".tmp"
-        with open(tmp, "w") as fh:
-            json.dump(cache, fh, indent=1, sort_keys=True)
-        os.replace(tmp, cache_file)
+        write_atomic(cache_file, json.dumps(cache, indent=1, sort_keys=True).encode("utf-8"),
+                     **CACHE_WRITE_OPTIONS)
     except OSError as exc:
         logger.debug("could not write %s: %s", cache_file, exc)
 

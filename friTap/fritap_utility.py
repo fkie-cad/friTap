@@ -329,9 +329,6 @@ class Failure(FriTapExit):
         return logging.ERROR
 
 
-# ---------------------------------------------------------------------------
-# Debug log subsystem
-# ---------------------------------------------------------------------------
 # Goal: a single file (``fritap_debug_<ts>_<pid>.log``) that captures ALL of:
 #   * Python ``logging`` records from any logger (friTap, frida, scapy, h11,
 #     asyncio, urllib3, py.warnings, root),

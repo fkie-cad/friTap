@@ -1,27 +1,14 @@
-"""Does a TLS keylog actually cover the handshakes in a capture? (no TUI code)
+"""Check whether a TLS keylog covers the handshakes in a capture (no TUI code).
 
-A keylog whose client randoms never appear in the pcap converts to *0 flows*
-with no hint why. This module answers the question up front and offers a rescue:
+A keylog whose client randoms never appear in the pcap converts to 0 flows.
+:func:`check_keylog_coverage` reads the keylog and makes one tshark pass over the
+pcap; :func:`describe` explains the result. :func:`repair_keylog` and
+:func:`relabel_keylog` rescue keylogs with right secrets but wrong or missing
+client randoms/labels by trial decryption (the Schannel correlator).
 
-  * :func:`keylog_client_randoms` / :func:`keylog_secrets` read an NSS
-    SSLKEYLOGFILE (CRLF tolerant, bounded read) into client_random -> labels /
-    (label, secret) pairs.
-  * :func:`read_capture_handshakes` makes ONE tshark pass over the pcap and
-    returns every ClientHello (stream, client_random, SNI, negotiated version)
-    plus the TLS streams that started before the capture (no ClientHello).
-  * :func:`assess_coverage` (pure) compares the two; :func:`describe` turns the
-    result into user-facing lines with a severity; :func:`check_keylog_coverage`
-    wires the three together using the files' modification times.
-  * :func:`repair_keylog` re-pairs the secrets of keylog sessions that are NOT
-    in the capture to the capture's ClientHellos by trial decryption (the
-    Schannel correlator), for keylogs whose secrets are right but whose client
-    randoms are wrong or missing.
-
-The label predicate :func:`is_nss_tls_label` is the single source of truth for
-"is this an NSS TLS keylog label" (also used by :mod:`.keylog_suggest`).
-
-Everything here is total for recoverable problems: unreadable files and tshark
-failures degrade to empty results, never exceptions.
+:func:`is_nss_tls_label` is the single source of truth for NSS TLS labels.
+Recoverable problems (unreadable files, tshark failures) yield empty results,
+never exceptions.
 """
 
 from __future__ import annotations
@@ -33,14 +20,12 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Set, Tuple
 
-from friTap.pipeline import TLS_KEYLOG_LABELS
-
-from .tls.keylog import UNKNOWN_CLIENT_RANDOM, parse_strict_nss_line
+from .tls.keylog import TLS_KEYLOG_LABELS, UNKNOWN_CLIENT_RANDOM, parse_strict_nss_line
 
 logger = logging.getLogger(__name__)
 
-# NSS labels the pipeline's set does not list; *_TRAFFIC_SECRET_N via the marker.
-NSS_TLS_LABELS = TLS_KEYLOG_LABELS | {"EARLY_EXPORTER_SECRET"}
+# *_TRAFFIC_SECRET_N generations beyond _0 are matched via the marker below.
+NSS_TLS_LABELS = TLS_KEYLOG_LABELS
 NSS_TRAFFIC_SECRET_MARKER = "_TRAFFIC_SECRET"  # {CLIENT,SERVER}_HANDSHAKE_TRAFFIC_SECRET, *_TRAFFIC_SECRET_N
 
 DEFAULT_MAX_KEYLOG_BYTES = 4 * 1024 * 1024
@@ -77,10 +62,6 @@ def is_nss_tls_label(label: str) -> bool:
     """True for NSS SSLKEYLOGFILE TLS labels (incl. every ``*_TRAFFIC_SECRET*``)."""
     return label in NSS_TLS_LABELS or NSS_TRAFFIC_SECRET_MARKER in label
 
-
-# --------------------------------------------------------------------------
-# Keylog reading
-# --------------------------------------------------------------------------
 
 def _keylog_triples(path: str, max_bytes: int) -> List[Tuple[str, str, str]]:
     """``(label, client_random, secret)`` for each valid NSS TLS line in *path*.
@@ -129,10 +110,6 @@ def keylog_secrets(
             pairs.append((label, secret))
     return out
 
-
-# --------------------------------------------------------------------------
-# Capture reading (one tshark pass)
-# --------------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class TlsHandshake:
@@ -252,10 +229,6 @@ def read_capture_handshakes(tshark_bin: str, pcap: str) -> CaptureTls:
         return CaptureTls()
 
 
-# --------------------------------------------------------------------------
-# Coverage assessment
-# --------------------------------------------------------------------------
-
 @dataclass(frozen=True)
 class Coverage:
     """How well a keylog covers a capture's TLS handshakes."""
@@ -306,10 +279,6 @@ def assess_coverage(
         written_after_capture_s=_written_after_capture(keylog_mtime, capture_window),
     )
 
-
-# --------------------------------------------------------------------------
-# Human description
-# --------------------------------------------------------------------------
 
 def _plural(count: int, singular: str, plural: Optional[str] = None) -> str:
     """``"1 session"`` / ``"2 sessions"``."""
@@ -439,10 +408,6 @@ def check_keylog_coverage(
     )
 
 
-# --------------------------------------------------------------------------
-# Repair by trial decryption
-# --------------------------------------------------------------------------
-
 NO_REPAIR_HITS_MESSAGE = (
     "None of the keylog's secrets decrypt any session in this capture — "
     "the keys belong to different connections."
@@ -529,14 +494,12 @@ def _not_repairable(keylog: str) -> Optional[RepairResult]:
 
 
 def _original_keylog_lines(keylog: str) -> List[str]:
-    """The valid NSS keylog lines of *keylog* to carry into a rewritten copy.
+    """The valid NSS TLS keylog lines of *keylog* to carry into a rewritten copy.
 
-    The keylog may be named by an untrusted capture manifest, so — like
-    :func:`~friTap.offline.keylog_picker.merge_keylogs` — only well-formed TLS
-    keylog lines are copied (stripped, file order, over-long lines skipped);
-    ``#`` comments and every other line are dropped, counted and reported in one
-    warning, so an arbitrary file such as a private key contributes zero lines.
-    Raises :class:`OSError` for anything that is not a bounded regular file.
+    The keylog may be named by an untrusted capture manifest, so only well-formed
+    lines are copied and all others are dropped with one warning; an arbitrary
+    file such as a private key contributes zero lines. Raises :class:`OSError`
+    for anything that is not a bounded regular file.
     """
     from friTap.offline.keylog_picker import _read_valid_key_lines
 
@@ -604,18 +567,12 @@ def _relabeled_path(keylog: str) -> str:
 def _relabel_inputs(keylog: str, max_bytes: int) -> Tuple[List[str], List[dict]]:
     """All TLS secrets in *keylog* as ``(tls12 masters, tls13 records)``.
 
-    Unlike :func:`keylog_secrets`, this keeps lines whose client_random is ``???``
-    or otherwise not 64-hex — the live ncrypt/lsass hook writes those when it cannot
-    correlate the ClientHello.random — so trial decryption can still place and label
-    the secret. Each TLS 1.3 record carries its original label only as a *hint*
-    (confirmed or overridden by decryption in :mod:`.correlate`) and its original
-    client_random as a ride-along group when it is valid hex. De-duplicated.
-
-    An unknown-client_random line gets no label hint (decryption alone labels
-    it) and a synthetic group shared with the consecutive unknown lines around
-    it (see :class:`_UnknownClientRandomRuns`), so an ``EXPORTER_SECRET ???``
-    line, which decrypts nothing, can still be placed by elimination once its
-    siblings pinned the connection down.
+    Unlike :func:`keylog_secrets`, this keeps ``???`` client_random lines (the
+    live ncrypt/lsass hook writes them when it cannot correlate the ClientHello)
+    so trial decryption can place them. A TLS 1.3 record's label is only a hint
+    and its valid client_random is its group. Unknown-client_random lines get no
+    hint and a synthetic run group (:class:`_UnknownClientRandomRuns`), so an
+    ``EXPORTER_SECRET ???`` line can be placed by elimination. De-duplicated.
     """
     from friTap.offline.schannel.correlate import (
         TLS12_MASTER_HEXLEN,
@@ -693,10 +650,9 @@ class _UnknownClientRandomRuns:
 def _line_nss_triple(line: str) -> Optional[Tuple[str, str, str]]:
     """``(label, client_random, secret)`` if *line* is an NSS TLS triple, else None.
 
-    Any client_random token that is not 64 hex chars (``???``, ``-``, a garbled
-    or truncated value) is accepted as unknown and returned lowercased as-is, so
-    callers see it fail ``_CLIENT_RANDOM_HEX``: relabelling places such secrets
-    by trial decryption. The label and secret stay strictly validated.
+    A client_random that is not 64 hex chars (``???``, garbled) is returned
+    lowercased as-is so callers see it fail ``_CLIENT_RANDOM_HEX``. The label and
+    secret stay strictly validated.
     """
     parts = line.split()
     if len(parts) == 3 and not _CLIENT_RANDOM_HEX.match(parts[1].lower()):
@@ -712,13 +668,9 @@ def _line_nss_triple(line: str) -> Optional[Tuple[str, str, str]]:
 def _write_relabeled(keylog: str, corrected: List[str], out_path: str) -> None:
     """Write *corrected* lines plus every original line they don't supersede.
 
-    An original NSS TLS line is dropped when its secret was authoritatively placed
-    by trial decryption (so a swapped/``???`` line is replaced, not duplicated) or
-    when its client_random is not valid hex (a ``???`` line trial decryption could
-    not place — foreign noise). Every other valid keylog line (e.g. a session
-    outside this capture) is preserved; comments and non-keylog lines are dropped
-    (see :func:`_original_keylog_lines`). De-duplicated (case-insensitively on
-    content), order preserved.
+    An original line is dropped when trial decryption placed its secret or when
+    its client_random is not valid hex (an unplaced ``???`` line). Other valid
+    keylog lines are kept. Output is de-duplicated case-insensitively, in order.
     """
     placed = {c.split()[-1].lower() for c in corrected if len(c.split()) == 3}
     original = _original_keylog_lines(keylog)
@@ -754,21 +706,14 @@ def relabel_keylog(
     max_bytes: int = DEFAULT_MAX_KEYLOG_BYTES,
     progress: Optional[ProgressCallback] = None,
 ) -> RepairResult:
-    """Rebuild *keylog* with authoritative TLS 1.3 labels + client_randoms.
+    """Rebuild *keylog* with the TLS labels and client_randoms trial decryption proves.
 
-    Every secret in the keylog — including ``???`` lines and sessions already in the
-    capture — is trial-decrypted against *pcap* via
-    :mod:`friTap.offline.schannel.correlate`, which assigns the true label and
-    client_random by which record the secret actually decrypts. This corrects the
-    live ncrypt hook's HANDSHAKE<->TRAFFIC_SECRET_0 label swap and its ``???``
-    client_randoms, and drops foreign secrets that decrypt nothing in *pcap*. Writes
-    ``<stem>.relabeled.keylog`` (or *out_path*) when the result differs from the
-    input; a no-op otherwise. Requires tshark. Never raises for a recoverable
-    problem (logs and returns a no-hit ``RepairResult``).
-
-    Superset of :func:`repair_keylog`: it also re-pairs orphan sessions, but in
-    addition relabels in-capture sessions and ingests ``???`` lines. Like it, only
-    valid keylog lines are copied and a non-regular / oversized *keylog* is not read.
+    Every secret, including ``???`` lines and in-capture sessions, is
+    trial-decrypted against *pcap*. This fixes the live ncrypt hook's
+    HANDSHAKE<->TRAFFIC_SECRET_0 label swap and its ``???`` client_randoms, and
+    drops secrets that decrypt nothing. Writes ``<stem>.relabeled.keylog`` (or
+    *out_path*) only when something changed. Superset of :func:`repair_keylog`.
+    Never raises for a recoverable problem.
     """
     refused = _not_repairable(keylog)
     if refused is not None:
@@ -787,8 +732,7 @@ def relabel_keylog(
         return RepairResult(
             None, 0, tried,
             "Every secret already carries its correct label; nothing to relabel.")
-    # Count only sessions whose lines actually changed or were added — an
-    # already-correct session re-emitted by correlation was not relabeled.
+    # Count only changed or added sessions; correlation re-emits correct ones too.
     matched = len({line.split()[1] for line in changed})
     target = out_path or _relabeled_path(keylog)
     try:

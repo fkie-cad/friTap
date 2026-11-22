@@ -1,25 +1,20 @@
 """Read-only memory sources for offline RC4 key recovery.
 
-A managed-RC4 key (a passphrase held in a client process's own byte arrays) is not
-on the wire and not reachable by any crypto-API hook, so the offline decryptor cannot
-find it from the pcap alone. It CAN, however, recover it by trial-decryption if it is
-given the process's memory to mine candidate keys from — the offline analogue of the
-live agent's in-memory trial-decrypt (agent/rc4/libs/rc4_memscan.ts).
+A managed-RC4 key (a passphrase in a client process's own byte arrays) is not on
+the wire, so the offline decryptor mines candidate keys from the process's memory
+and trial-decrypts them (offline analogue of agent/rc4/libs/rc4_memscan.ts).
 
-This module vendors the minimal read-only readers for that, ported from
+Minimal read-only readers, ported from
 ``research/memory_scan_lsass/tools/{minidump_reader,proc_mem}.py``:
 
-  * :class:`MiniDump`  — a Windows ``.dmp`` (MiniDumpWithFullMemory) parsed to VA ranges.
-  * :class:`FlatDump`  — a flat ``.bin`` memory image, read as one range.
-  * :class:`LiveProcess` — a live process read via ``ReadProcessMemory`` (Windows only),
-    read-only: the target is opened PROCESS_QUERY_INFORMATION|PROCESS_VM_READ, never
-    written and never hooked, so a target thread cannot be faulted. Nothing is written
-    to disk. This is the same read-only primitive the Frida scanner uses; it is NEVER
-    pointed at lsass (a client process's own RC4 key is the target, and that is not lsass).
+  * :class:`MiniDump`  - a Windows ``.dmp`` (MiniDumpWithFullMemory) as VA ranges.
+  * :class:`FlatDump`  - a flat ``.bin`` image, read as one range.
+  * :class:`LiveProcess` - a live process via ``ReadProcessMemory`` (Windows only),
+    opened PROCESS_QUERY_INFORMATION|PROCESS_VM_READ: never written, hooked or
+    dumped to disk. Never point it at lsass; the target is the RC4 client.
 
-All readers expose ``iter_ranges() -> (va, bytes)`` and ``total_bytes()``; the offline
-decryptor turns those bytes into RC4 candidate keys via
-:func:`friTap.offline.rc4.decrypt.extract_candidates`.
+All readers expose ``iter_ranges() -> (va, bytes)`` and ``total_bytes()``; bytes
+become candidates via :func:`friTap.offline.rc4.decrypt.extract_candidates`.
 """
 
 from __future__ import annotations
@@ -32,10 +27,6 @@ from typing import Iterator, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-
-# --------------------------------------------------------------------------- #
-# Minidump (.dmp) parser — pure stdlib, offline, no OS dependency.
-# --------------------------------------------------------------------------- #
 
 _MINIDUMP_SIGNATURE = 0x504D444D  # 'MDMP'
 _STREAM_MEMORY_LIST = 5           # MINIDUMP_MEMORY_LIST
@@ -100,8 +91,7 @@ def _has_minidump_signature(data: bytes) -> bool:
 def _parse_ranges(data: bytes) -> List[Tuple[int, int, int]]:
     """The memory ranges of a minidump; :class:`MiniDumpFormatError` if malformed.
 
-    ``struct.error`` never escapes: every table is bounds-checked first, and a
-    residual unpack failure is converted at this boundary.
+    Tables are bounds-checked first; a residual ``struct.error`` is converted here.
     """
     if not _has_minidump_signature(data):
         raise ValueError("not a minidump (bad MDMP signature); is this a flat dump?")
@@ -167,11 +157,10 @@ def _require_table(data: bytes, offset: int, count: int, entry_size: int, what: 
 
 def _clip_ranges_to_file(ranges: List[Tuple[int, int, int]], file_size: int
                          ) -> List[Tuple[int, int, int]]:
-    """Clip each range's data size to the bytes the file holds at its offset.
+    """Clip each range to the bytes the file holds at its offset.
 
-    A dump cut short while being written keeps its surviving bytes (a range
-    starting past EOF becomes empty), and ``total_bytes()`` / ``read_va()``
-    never describe data the file does not hold.
+    A dump truncated mid-write keeps its surviving bytes (a range past EOF
+    becomes empty), so ``total_bytes()``/``read_va()`` never claim missing data.
     """
     clipped = [(va, max(0, min(size, file_size - off)), off) for va, size, off in ranges]
     if clipped != ranges:
@@ -179,10 +168,6 @@ def _clip_ranges_to_file(ranges: List[Tuple[int, int, int]], file_size: int
                        "%d-byte file; clipped to the data it holds", file_size)
     return clipped
 
-
-# --------------------------------------------------------------------------- #
-# Flat (.bin) image — one range at VA 0.
-# --------------------------------------------------------------------------- #
 
 class FlatDump:
     """A flat memory image (raw ``.bin``) as a single range at VA 0."""
@@ -210,10 +195,7 @@ def load_dump(path: str | Path):
         return FlatDump(data)
 
 
-# --------------------------------------------------------------------------- #
-# Live process (Windows only) — read-only ReadProcessMemory. Ported/inlined from
-# research/.../tools/proc_mem.py (which reused schannel_dump for the win32 bits).
-# --------------------------------------------------------------------------- #
+# Live process (Windows only): ported from research/.../tools/proc_mem.py.
 
 _MEM_COMMIT = 0x1000
 _PAGE_GUARD = 0x100
@@ -348,7 +330,7 @@ def _enable_se_debug() -> bool:
             advapi.AdjustTokenPrivileges(htok, False, ctypes.byref(tp), 0, None, None)
             return ctypes.get_last_error() == 0
         finally:
-            k32.CloseHandle(htok)  # the token handle is ours on every path
+            k32.CloseHandle(htok)
     except Exception:  # noqa: BLE001 - privilege escalation is best-effort
         return False
 
@@ -398,10 +380,6 @@ def resolve_pid_by_name(name: str) -> List[int]:
         k32.CloseHandle(snap)
     return out
 
-
-# --------------------------------------------------------------------------- #
-# Reader factory + candidate extraction
-# --------------------------------------------------------------------------- #
 
 def open_reader(dump: Optional[str] = None, pid: Optional[int] = None,
                 name: Optional[str] = None, all_pages: bool = False):

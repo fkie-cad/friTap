@@ -1,47 +1,31 @@
 """Pair memory-recovered Schannel secrets to their client_random (PUBLIC).
 
-Port of ``research/memory_scan_lsass/tools/schannel_correlate.py``. Schannel never
-stores the ClientHello random next to the key object, so the mem-scan engine emits
-every recovered secret UNPAIRED (see :mod:`.unpaired`). What is unknown is only the
-MAPPING: which recovered secret belongs to which captured connection. This module
-discovers that mapping by TRIAL DECRYPTION against the pcap — the one correlation
-method that needs nothing from lsass beyond the secrets already recovered.
+Schannel never stores the ClientHello random beside the key object, so the
+mem-scan engine emits every secret UNPAIRED (:mod:`.unpaired`). This module finds
+the MAPPING by TRIAL DECRYPTION against the pcap.
 
 TLS 1.2
-  Every TLS 1.2 ClientHello in the pcap carries its client_random in the clear.
-  For each candidate 48-byte master, a keylog pairing it with EVERY stream's
-  client_random is written and tshark asked which streams then dissect a decrypted
-  Finished (handshake type 20 — encrypted, so only dissectable once the master is
-  right). Those streams are the ones whose real master is that candidate. That is
-  O(number of masters) tshark runs, not O(masters x streams). The resulting NSS
-  line is ``CLIENT_RANDOM <client_random> <master>``.
+  For each candidate 48-byte master a keylog pairing it with EVERY stream's
+  client_random (``CLIENT_RANDOM <client_random> <master>``) is written and tshark
+  asked which streams dissect a decrypted Finished (type 20): O(masters) runs, not
+  O(masters x streams).
 
 TLS 1.3
-  A connection has a SET of secrets sharing one client_random; the keylog is keyed
-  by label. Each recovered secret is trial-placed by decryption, which both LABELS
-  it and identifies its connection:
-    * SERVER_HANDSHAKE_TRAFFIC_SECRET decrypts EncryptedExtensions (type 8) — the
-      anchor present in every full handshake.
+  A connection's secrets share one client_random, keyed by label. Trial decryption
+  both labels each secret and identifies its connection:
+    * SERVER_HANDSHAKE_TRAFFIC_SECRET decrypts EncryptedExtensions (type 8).
     * CLIENT_HANDSHAKE_TRAFFIC_SECRET decrypts the client Finished (type 20).
-    * {SERVER,CLIENT}_TRAFFIC_SECRET_0 decrypt application data (proven by a
-      decrypted inner content_type 23); the correct direction/label is the one
-      whose AEAD tag verifies.
-  A wrong (secret,label) pairing fails its AEAD tag and simply does not match, so
-  input labels are hints confirmed by decryption. EXPORTER_SECRET protects no
-  records and can never be confirmed by decryption — it is placed only via a
-  ``group`` tag: riding along on a connection a sibling secret pinned down when
-  it carries its label, or BY ELIMINATION (the last unplaced secret of a group
-  whose four decryptable labels were all placed by that group's members).
+    * {SERVER,CLIENT}_TRAFFIC_SECRET_0 decrypt app data (inner content_type 23).
+  A wrong (secret,label) pairing fails its AEAD tag, so input labels are hints.
+  EXPORTER_SECRET protects no records and is placed only via a ``group`` tag:
+  riding along on a connection a sibling pinned down, or by elimination.
 
 Python oracle (:mod:`.oracle`)
-  Before any tshark trial, a pure-Python oracle answers the clean, unambiguous
-  (stream, secret) pairs by decrypting the records itself; tshark runs only on
-  the pairs it answers ``None`` ("ask tshark") — for every pair when the oracle
-  is disabled or raises. The oracle never changes WHICH lines are produced,
-  only how many tshark passes it takes.
+  Answers clean, unambiguous (stream, secret) pairs before any tshark trial;
+  tshark runs only on pairs it answers ``None``. It changes how many tshark passes
+  run, never which lines are produced.
 
-tshark is driven through the shared hermetic wrapper (:mod:`friTap.offline.tshark`
-``_run_capture`` + ``-o tls.keylog_file``); nothing here touches lsass.
+tshark runs via :mod:`friTap.offline.tshark` ``_run_capture`` with ``-o tls.keylog_file``.
 """
 
 from __future__ import annotations
@@ -57,9 +41,7 @@ from ..tls.keylog import TLS13_LABELS, TLS13_TRIAL_LABELS
 
 logger = logging.getLogger(__name__)
 
-# Sentinel for the ``oracle`` parameter of the public ``correlate_*`` helpers:
-# build one from the pcap automatically. An explicit value (including ``None``)
-# is used as given, so the pcap-free unit tests keep running with no oracle.
+# Default for ``oracle``: build one from the pcap; an explicit value (including ``None``) is used as given.
 _AUTO = object()
 
 _HEX = re.compile(r"^[0-9a-fA-F]+$")
@@ -70,37 +52,12 @@ _GROUP_KV = re.compile(r"group=(\S+)")
 
 TLS12_MASTER_HEXLEN = 96  # 48 bytes
 
-# TLS13_LABELS / TLS13_TRIAL_LABELS (imported above, re-exported here) live in
-# friTap.offline.tls.keylog. EXPORTER_SECRET protects no records, so it can never
-# be confirmed by trial decryption — only placed via its group.
+# EXPORTER_SECRET protects no records, so trial decryption cannot confirm it.
 _EXPORTER_LABEL = "EXPORTER_SECRET"
 # 32 bytes (SHA-256 suites) or 48 bytes (SHA-384 suites).
 TLS13_SECRET_HEXLENS = frozenset({64, 96})
 
-# Which label a probe writes, paired with the tshark display filter that proves it
-# decrypted. All four messages are ENCRYPTED in TLS 1.3, so they are dissectable
-# only once the right secret is supplied — a clean yes/no signal that lets a wrong
-# (secret,label) pairing fail silently (its AEAD tag never verifies).
-# NOTE on the traffic-secret probes: `tls.app_data` is the *encrypted* payload,
-# present on every application record whether or not decryption succeeded, so it
-# can NOT prove a (secret,label) pairing. `tls.record.content_type` is the *inner*
-# content type — but it is ALSO present on the plaintext handshake records
-# (ClientHello/ServerHello carry content_type 22 with no decryption), so bare
-# presence still matches every stream regardless of the traffic secret. The clean
-# signal is `tls.record.content_type==23`: the INNER *application_data* type, which
-# tshark exposes only after a traffic secret AEAD-decrypts an application record.
-# A wrong-direction/wrong secret fails the tag and never yields a type-23 inner
-# record — giving the same clean yes/no the handshake probes get from the
-# (already decryption-gated, encrypted-only) tls.handshake.type==8/==20 filters.
-# (Verified against a real TLS 1.3 pcap in
-# tests/integration/test_schannel_tls13_correlate_e2e.py.)
-# The signal is further anchored to a TLS 1.3 ciphertext record
-# (`tls.record.opaque_type==23`): in TLS 1.2 `tls.record.content_type` is the
-# OUTER, plaintext record type, so every TLS 1.2 application record carries
-# content_type 23 with no decryption at all (e.g. a TLS 1.2 connection whose
-# ClientHello merely OFFERED 1.3, or a mid-stream TLS 1.2 connection). TLS 1.2
-# records never carry opaque_type, and an undecrypted TLS 1.3 record exposes no
-# inner content_type 23, so the conjunction is decryption-gated for both.
+# Label a probe writes -> tshark display filter proving it decrypted (all four messages are encrypted in TLS 1.3, so a wrong pairing never matches). Traffic-secret probes use ``tls.record.content_type==23`` (the INNER type, present only after decryption), anchored to ``tls.record.opaque_type==23`` because in TLS 1.2 content_type is the plaintext OUTER type; bare ``tls.app_data`` and ``tls.record.content_type`` also match undecrypted records. Verified in tests/integration/test_schannel_tls13_correlate_e2e.py.
 TLS13_APP_DATA_SIGNAL = "tls.record.opaque_type==23 && tls.record.content_type==23"
 TLS13_PROBE_SIGNAL = {
     "SERVER_HANDSHAKE_TRAFFIC_SECRET": "tls.handshake.type==8",
@@ -110,16 +67,8 @@ TLS13_PROBE_SIGNAL = {
 }
 
 
-# --------------------------------------------------------------------------- #
-# Pure parsing (unit-testable without tshark)
-# --------------------------------------------------------------------------- #
-
 def parse_secrets(text: str) -> List[str]:
-    """Pull candidate 48-byte master secrets out of scanner output.
-
-    Accepts both ``kind=... secret=<hex>`` records and a plain file of one hex
-    master per line. De-duplicated, lower-cased, order preserved.
-    """
+    """Candidate 48-byte master secrets from scanner output: ``kind=... secret=<hex>`` records or one hex per line; de-duplicated, lower-cased, ordered."""
     out: List[str] = []
     seen: set[str] = set()
     for raw in text.splitlines():
@@ -141,11 +90,10 @@ def parse_secrets(text: str) -> List[str]:
 
 
 def parse_session_map(text: str) -> dict[str, str]:
-    """session_id(hex) -> master(hex) from scanner records that carry both.
+    """session_id(hex) -> master(hex) from scanner records carrying both.
 
-    A record with an empty session_id contributes nothing: an empty id cannot be
-    matched to a ClientHello (the documented gap for ticket-resumed sessions).
-    """
+    An empty session_id contributes nothing (the gap for ticket-resumed sessions).
+"""
     mapping: dict[str, str] = {}
     for raw in text.splitlines():
         sec = _SECRET_KV.search(raw)
@@ -188,14 +136,13 @@ def build_keylog(client_randoms: Iterable[str], master: str) -> str:
 
 
 def parse_tls13_records(text: str) -> List[dict]:
-    """Pull TLS 1.3 secret records out of scanner output.
+    """TLS 1.3 secret records from scanner output.
 
-    Accepts, in order of preference: ``kind=... label=... group=... secret=<hex>``
-    key=value records; NSS-style triples ``LABEL <client_random> <hex>`` (the
-    client_random is ignored — re-derived); ``LABEL <hex>``; and bare ``<hex>``.
-    A record keeps its label only if it names a real TLS 1.3 label. Secrets must be
-    32 or 48 bytes. De-duplicated on (label, secret, group), order preserved.
-    """
+    Accepts, in order: ``kind=... label=... group=... secret=<hex>``; NSS triples
+    ``LABEL <client_random> <hex>`` (client_random ignored, re-derived); ``LABEL <hex>``;
+    bare ``<hex>``. A label is kept only if it is a real TLS 1.3 label; secrets must
+    be 32 or 48 bytes. De-duplicated on (label, secret, group), ordered.
+"""
     records: List[dict] = []
     seen: set[tuple] = set()
     for raw in text.splitlines():
@@ -245,11 +192,7 @@ def unique_secrets(records: Iterable[dict]) -> List[str]:
 
 def group_connection_map(records: Iterable[dict],
                          secret_to_stream: dict[str, str]) -> dict[str, str]:
-    """group -> stream, for groups where any member secret was placed to a stream.
-
-    This lets EXPORTER_SECRET (and any secret that carried no decryptable signal)
-    ride along on a connection a sibling secret already identified.
-    """
+    """group -> stream for groups where any member secret was placed, so EXPORTER_SECRET (no decryptable signal) can ride along."""
     mapping: dict[str, str] = {}
     for r in records:
         g, s = r["group"], r["secret"]
@@ -269,12 +212,10 @@ def records_from_secret_lists(masters: Iterable[str],
                               ) -> tuple[List[str], List[dict]]:
     """Adapt the :mod:`.unpaired` hex lists into (masters, tls13-record dicts).
 
-    The mem-scan sidecar carries no TLS 1.3 label (Schannel keeps none), so each
-    1.3 secret becomes an unlabeled record — the shape :func:`correlate_tls13`
-    trial-places by decryption. A *groups* mapping (secret hex -> group id, from
-    the optional sidecar ``group=`` column) rides along so an unlabeled secret
-    that protects no records (EXPORTER_SECRET) can be placed by elimination.
-    """
+    The sidecar carries no TLS 1.3 label, so each 1.3 secret becomes an unlabeled
+    record for :func:`correlate_tls13`. *groups* (secret hex -> group id, from the
+    optional ``group=`` column) lets an EXPORTER_SECRET be placed by elimination.
+"""
     groups = groups or {}
     m = [h.lower() for h in masters if len(h) == TLS12_MASTER_HEXLEN]
     recs = [{"secret": h.lower(), "label": None, "group": groups.get(h.lower())}
@@ -282,24 +223,13 @@ def records_from_secret_lists(masters: Iterable[str],
     return m, recs
 
 
-# --------------------------------------------------------------------------- #
-# tshark orchestration (reuses the shared hermetic wrapper)
-# --------------------------------------------------------------------------- #
-
 def run_fields_pass(tshark_bin: str, pcap: str, display_filter: str,
                     fields: Iterable[str], *, keylog: str | None = None) -> str:
-    """Run one hermetic ``-T fields`` tshark pass and return its raw stdout.
+    """One hermetic ``-T fields`` tshark pass; returns raw stdout.
 
-    Reuses :func:`friTap.offline.tshark._run_capture` (hermetic env, time budget,
-    output cap) and the same ``-o tls.keylog_file`` mechanism the rest of the
-    offline pipeline uses, rather than inventing a fresh tshark invocation.
-
-    A tshark failure yields ``""`` (no rows), except a run stopped by a friTap
-    run limit (:class:`~friTap.offline.tshark.TsharkLimitError`, e.g. a
-    timeout): that propagates, because the capture itself stalls tshark and
-    every further pass over it (trial decryption runs one per secret) would
-    wait out the same budget again.
-    """
+    A failure yields ``""``, except :class:`~friTap.offline.tshark.TsharkLimitError`
+    (e.g. timeout), which propagates: every further per-secret pass would wait out the same budget.
+"""
     from friTap.offline.tshark import (
         TsharkLimitError,
         _run_capture,
@@ -322,25 +252,20 @@ def run_fields_pass(tshark_bin: str, pcap: str, display_filter: str,
         return ""
 
 
-# Private alias kept for existing importers.
-_run_fields = run_fields_pass
-
-
 def read_client_randoms(tshark_bin: str, pcap: str) -> dict[str, str]:
     """Every TLS 1.2 ClientHello in the pcap: tcp.stream -> client_random."""
-    out = _run_fields(tshark_bin, pcap, "tls.handshake.type==1",
-                      ("tcp.stream", "tls.handshake.random"))
+    out = run_fields_pass(tshark_bin, pcap, "tls.handshake.type==1",
+                          ("tcp.stream", "tls.handshake.random"))
     return client_randoms_from_rows(parse_tshark_fields(out, 2))
 
 
 def read_tls13_client_randoms(tshark_bin: str, pcap: str) -> dict[str, str]:
-    """Every TLS 1.3 ClientHello in the pcap: tcp.stream -> client_random.
+    """Every TLS 1.3 ClientHello: tcp.stream -> client_random.
 
-    A TLS 1.3 ClientHello still carries legacy_version 0x0303; what marks it 1.3 is
-    a supported_versions extension offering 0x0304, the field keyed on here so a
-    1.2-only ClientHello in the same capture is not swept in.
-    """
-    out = _run_fields(
+    Keyed on a ``supported_versions`` extension offering 0x0304 (legacy_version stays
+    0x0303), so a 1.2-only ClientHello is not swept in.
+"""
+    out = run_fields_pass(
         tshark_bin, pcap,
         "tls.handshake.type==1 && tls.handshake.extensions.supported_version==0x0304",
         ("tcp.stream", "tls.handshake.random"))
@@ -356,18 +281,14 @@ def streams_that_decrypted(tshark_bin: str, pcap: str, keylog_path: str) -> set[
 def streams_matching_filter(tshark_bin: str, pcap: str, keylog_path: str,
                             display_filter: str) -> set[str]:
     """tcp.streams for which `display_filter` matches once this keylog is applied."""
-    out = _run_fields(tshark_bin, pcap, display_filter, ("tcp.stream",),
-                      keylog=keylog_path)
+    out = run_fields_pass(tshark_bin, pcap, display_filter, ("tcp.stream",),
+                          keylog=keylog_path)
     return {row[0].strip() for row in parse_tshark_fields(out, 1) if row[0].strip()}
 
 
 @contextmanager
 def _temp_keylog(content: str) -> Iterator[str]:
-    """Yield the path to a temp NSS keylog holding `content`, unlinking on exit.
-
-    The write-keylog / capture-name / unlink-in-finally dance lives here in one
-    place so every trial-decryption call site is leak-safe by construction.
-    """
+    """Yield the path to a temp NSS keylog holding `content`, unlinking on exit."""
     with tempfile.NamedTemporaryFile("w", suffix=".keylog", delete=False,
                                      encoding="utf-8") as fh:
         fh.write(content)
@@ -383,13 +304,11 @@ Verdict = Callable[[str], Optional[bool]]
 
 def _partition_by_oracle(candidates: dict[str, str],
                          verdict: Optional[Verdict]) -> tuple[List[str], dict[str, str]]:
-    """Split stream -> client_random *candidates* by an oracle *verdict*.
+    """Split stream -> client_random *candidates* by an oracle *verdict*: ``(matched, undecided)``.
 
-    Returns ``(matched streams, undecided stream -> client_random)``. A ``False``
-    verdict excludes the stream; ``None`` — or the verdict raising, or no
-    *verdict* at all — leaves it for tshark, so an oracle failure is never
-    turned into a confident answer.
-    """
+    ``False`` excludes a stream; ``None``, a raising verdict or no *verdict* leaves it
+    for tshark, so an oracle failure never becomes a confident answer.
+"""
     if verdict is None:
         return [], dict(candidates)
     matched: List[str] = []
@@ -411,10 +330,8 @@ def correlate_by_trial(tshark_bin: str, pcap: str, masters: List[str],
                        client_randoms: dict[str, str], oracle=None) -> dict[str, str]:
     """Return stream -> master by testing each master against every stream.
 
-    When an *oracle* is given, each stream the oracle decides for a master is
-    answered in Python; tshark runs only on the streams it leaves undecided, with
-    the keylog restricted to that subset. The per-master loop and ``remaining``
-    bookkeeping are otherwise unchanged.
+    With an *oracle*, streams it decides are answered in Python; tshark runs only
+    on the undecided ones, with the keylog restricted to that subset.
     """
     identified: dict[str, str] = {}
     remaining = dict(client_randoms)
@@ -450,15 +367,11 @@ def probe_tls13_label(tshark_bin: str, pcap: str, label: str, secret: str,
 def place_tls13_secret(tshark_bin: str, pcap: str, secret: str,
                        client_randoms: dict[str, str],
                        oracle=None) -> List[tuple[str, str]]:
-    """(label, stream) pairs a secret verifiably decrypts, over the trial labels.
+    """(label, stream) pairs a secret verifiably decrypts over the trial labels.
 
-    Only streams in *client_randoms* count: a probe filter matching some other
-    stream (one the probe keylog never covered) proves nothing about *secret*.
-
-    An *oracle* answers each (stream, label) it can in Python; tshark probes only
-    the streams it leaves undecided, keyed to that subset. The trial-label order
-    and the stop-on-first-hit shortcut are unchanged.
-    """
+    Only streams in *client_randoms* count (a probe filter matching another stream
+    proves nothing). An *oracle* answers what it can; tshark probes the rest.
+"""
     hits: List[tuple[str, str]] = []
     for label in TLS13_TRIAL_LABELS:
         verdict = (None if oracle is None
@@ -477,17 +390,8 @@ def place_tls13_secret(tshark_bin: str, pcap: str, secret: str,
     return hits
 
 
-# --------------------------------------------------------------------------- #
-# High-level correlation (used by the offline emitter)
-# --------------------------------------------------------------------------- #
-
 def _build_oracle(oracle, pcap: str):
-    """Resolve the ``oracle`` argument: build from *pcap* when it is ``_AUTO``.
-
-    An explicit value (including ``None``) is returned as-is so the pcap-free unit
-    tests keep running with no oracle; ``_AUTO`` builds one, which is ``None`` for
-    a nonexistent pcap, keeping those tests unchanged.
-    """
+    """Return *oracle* as given, or build one from *pcap* when it is ``_AUTO``."""
     if oracle is not _AUTO:
         return oracle
     from .oracle import TrialOracle
@@ -534,18 +438,16 @@ def correlate_tls12(tshark_bin: str, pcap: str, masters: List[str],
 
 def correlate_tls13(tshark_bin: str, pcap: str, records: List[dict],
                     oracle=_AUTO) -> List[str]:
-    """Correlate a TLS 1.3 secret set -> client_random. Returns NSS keylog lines.
+    """Correlate a TLS 1.3 secret set -> client_random; returns NSS keylog lines.
 
-    Trial-place every distinct secret by decryption (which both labels it and
-    identifies its connection's client_random), then let any secret carrying no
-    decryptable signal be placed via its group: a labeled secret rides along on a
-    group a sibling pinned down, and an UNLABELED (or ``EXPORTER_SECRET``-hinted)
-    secret is placed as ``EXPORTER_SECRET`` by elimination when its group's own
-    members already placed all four decryptable labels on that connection and it
-    is the only secret in that group still unplaced. A group whose placed
-    members landed on different connections is ambiguous and places nothing.
-    Unplaced TLS 1.3 secrets are logged and counted.
-    """
+    Every distinct secret is trial-placed by decryption (labels it and identifies its
+    client_random). Secrets without a decryptable signal are placed via their group:
+    a labeled one rides along on a group a sibling pinned down; an UNLABELED (or
+    ``EXPORTER_SECRET``-hinted) one becomes ``EXPORTER_SECRET`` by elimination when its
+    group's members placed both application traffic secrets on that connection and it
+    is the only one left. A group split across connections is ambiguous and places
+    nothing. Unplaced secrets are logged and counted.
+"""
     return _correlate_tls13(tshark_bin, pcap, records, oracle)[0]
 
 
@@ -563,8 +465,7 @@ def _correlate_tls13(tshark_bin: str, pcap: str, records: List[dict],
 
     lines: set[str] = set()
     secret_to_stream: dict[str, str] = {}
-    # secret -> the (label, stream) pairs it verifiably decrypted, so a group's
-    # own placements decide whether its remaining secret is the EXPORTER.
+    # secret -> (label, stream) pairs it verifiably decrypted.
     placements: dict[str, set[tuple[str, str]]] = {}
     for secret in secrets:
         for label, stream in place_tls13_secret(tshark_bin, pcap, secret,
@@ -586,14 +487,7 @@ def _correlate_tls13(tshark_bin: str, pcap: str, records: List[dict],
             lines.add(f"{label} {client_randoms[stream]} {secret}\n")
             placed_secrets.add(secret)
 
-    # EXPORTER by elimination: an unlabeled secret whose group's connection has
-    # both application traffic secrets placed, and which is the last unplaced
-    # secret in that group, can only be the EXPORTER_SECRET (it protects no
-    # records, so it never decrypts anything). Placing it lets Wireshark export it
-    # like any other. NB: on a real capture only the application-phase secrets are
-    # memory-resident (the two *_TRAFFIC_SECRET_0 plus the exporter); the handshake
-    # traffic secrets are zeroized once the handshake completes, so the two app
-    # traffic secrets — not all four trial labels — are what a real group can show.
+    # The last unplaced secret of a group with both application traffic secrets placed can only be EXPORTER_SECRET; only application-phase secrets stay memory-resident (handshake secrets are zeroized), hence the two *_TRAFFIC_SECRET_0 gate.
     _place_exporter_by_elimination(records, client_randoms, group_to_stream,
                                    placements, placed_secrets, lines)
 
@@ -606,19 +500,13 @@ def _correlate_tls13(tshark_bin: str, pcap: str, records: List[dict],
     return sorted(lines), len(unplaced)
 
 
-# The application-phase traffic secrets — the only decryptable secrets that stay
-# memory-resident after the handshake, so the only ones a real group can present
-# for the EXPORTER-by-elimination gate (the handshake traffic secrets are gone).
+# The only decryptable secrets that stay memory-resident after the handshake.
 _APP_TLS13_LABELS = frozenset({"SERVER_TRAFFIC_SECRET_0", "CLIENT_TRAFFIC_SECRET_0"})
 
 
 def _unambiguous_group_streams(records: Iterable[dict],
                                secret_to_stream: dict[str, str]) -> dict[str, str]:
-    """:func:`group_connection_map` restricted to groups placed on ONE stream.
-
-    A group whose placed members decrypted different connections cannot say
-    which connection its remaining secrets belong to, so it pins nothing.
-    """
+    """Groups placed on ONE stream only; a group split across connections pins nothing."""
     records = list(records)
     streams_by_group: dict[str, set[str]] = {}
     for r in records:
@@ -632,15 +520,11 @@ def _unambiguous_group_streams(records: Iterable[dict],
 
 def _place_exporter_by_elimination(records, client_randoms, group_to_stream,
                                    placements, placed_secrets, lines) -> None:
-    """Place a group's last unplaced, unlabeled secret as ``EXPORTER_SECRET``.
+    """Place a group's last unplaced, unlabeled (or ``EXPORTER_SECRET``-hinted) secret as ``EXPORTER_SECRET``.
 
-    Only when that group's OWN members already placed both application traffic
-    secrets on the group's connection (so the exporter is the sole remaining
-    secret); a candidate may be unlabeled or carry the ``EXPORTER_SECRET`` hint.
-    Requiring both ``*_TRAFFIC_SECRET_0`` — rather than all four trial labels —
-    is what makes this fire on a real capture, where the two handshake traffic
-    secrets are no longer resident. Mutates *placed_secrets* and *lines* in place.
-    """
+    Only when the group's members already placed both application traffic secrets on its
+    connection. Mutates *placed_secrets* and *lines*.
+"""
     members_by_group: dict[str, List[dict]] = {}
     for r in records:
         if r["group"]:
@@ -682,9 +566,8 @@ def correlate_unpaired(tshark_bin: str, pcap: str, masters: List[str],
                        tls13_groups: "dict[str, str] | None" = None) -> List[str]:
     """Full correlation for the mem-scan sidecar: TLS 1.2 + TLS 1.3 -> keylog lines.
 
-    Builds the trial oracle once and shares it with both correlations so the pcap
-    is parsed a single time. Returns the de-duplicated, sorted union of both — a
-    standard NSS keylog ready for tshark/Wireshark.
+    Builds the oracle once for both correlations so the pcap is parsed once.
+    Returns the de-duplicated, sorted union as NSS keylog lines.
     """
     return correlate_unpaired_detailed(tshark_bin, pcap, masters, tls13_secrets,
                                        tls13_groups).lines

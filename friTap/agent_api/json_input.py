@@ -1,12 +1,9 @@
-"""
-Parsing of untrusted JSON input: REST request bodies and CLI ``--json`` / ``--params-file``.
+"""Parsing of untrusted JSON input: REST request bodies and CLI ``--json`` / ``--params-file``.
 
-Same contract as :func:`friTap.analysis._limits.safe_json_loads` (size cap,
-``RecursionError``/``ValueError`` caught) plus the iterative
-:func:`friTap.analysis._json_walk.exceeds_depth` guard: since CPython 3.14
-``json.loads`` accepts arbitrarily deep input, which would only fail later in
-recursive code (schema validation, the response cap, ``json.dumps``). Unlike
-``safe_json_loads`` it raises a :class:`ToolError` naming the problem.
+Same contract as :func:`friTap.analysis._limits.safe_json_loads` (size cap, ``RecursionError`` and
+``ValueError`` caught) plus the iterative ``exceeds_depth`` guard: since CPython 3.14 ``json.loads``
+accepts arbitrarily deep input, which would only fail later in recursive code (schema validation,
+the response cap, ``json.dumps``). Unlike ``safe_json_loads`` it raises a :class:`ToolError`.
 """
 
 from __future__ import annotations
@@ -23,9 +20,7 @@ def load_json(text: str | bytes, source: str, *, error_type: str = "bad_param",
               max_bytes: int = MAX_JSON_BYTES) -> Any:
     """Parse untrusted JSON ``text``; ``source`` prefixes error messages.
 
-    Raises:
-        ToolError: ``error_type`` when ``text`` is too large, not JSON, or
-            nested deeper than ``MAX_JSON_DEPTH``.
+    Raises ``ToolError(error_type)`` when too large, not JSON, or nested deeper than ``MAX_JSON_DEPTH``.
     """
     if len(text) > max_bytes:
         raise ToolError(f"{source}: JSON larger than {max_bytes} bytes", error_type)

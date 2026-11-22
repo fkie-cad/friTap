@@ -1,17 +1,13 @@
-"""MTProto (Telegram) offline-decrypt backend probe — a side-effect-free leaf.
+"""MTProto offline-decrypt backend probe (side-effect-free leaf).
 
-Holds the user-facing dependency hint and the availability probe for the
-optional ``cryptography`` backend, so the live protocol handlers can warn early
-WITHOUT importing :mod:`friTap.offline.mtproto` (whose import self-registers the
-offline decryptors). :mod:`friTap.offline.mtproto` re-exports both names.
+Lets live handlers warn early without importing :mod:`friTap.offline.mtproto`,
+whose import self-registers the offline decryptors. That package re-exports both names.
 """
 
 from __future__ import annotations
 
 from .crypto_backend import cryptography_ciphers_available
 
-# Single canonical, user-facing hint shown wherever MTProto is requested but the
-# optional crypto backend is absent (live CLI, offline CLI, and the TUI).
 MTPROTO_DEPENDENCY_HINT = (
     "Telegram/MTProto decryption needs the 'cryptography' backend, which is not "
     "installed. Install it with:  pip install cryptography  "
@@ -21,10 +17,8 @@ MTPROTO_DEPENDENCY_HINT = (
 )
 
 
-# Gates on the ``cryptography`` floor, exactly like
-# :func:`friTap.offline.mtproto.crypto.backend_available` (``tgcrypto`` alone
-# cannot do the transport AES-CTR). Never raises; used by CLI/TUI entry points to
-# decide whether to show :data:`MTPROTO_DEPENDENCY_HINT`.
+# Same gate as :func:`friTap.offline.mtproto.crypto.backend_available`
+# (``tgcrypto`` alone cannot do the transport AES-CTR). Never raises.
 mtproto_backend_available = cryptography_ciphers_available
 
 

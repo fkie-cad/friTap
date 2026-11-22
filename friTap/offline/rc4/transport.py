@@ -1,19 +1,15 @@
 """Per-direction RC4 ciphertext extraction for both offline modes.
 
-RC4 is a stream cipher: each direction's keystream runs continuously from the
-first byte, so this module hands the orchestrator ONE contiguous ciphertext blob
-per direction (client->server = ``"write"``, server->client = ``"read"``).
+Each direction's keystream runs continuously from the first byte, so this module
+yields one contiguous ciphertext blob per direction (client->server = ``"write"``,
+server->client = ``"read"``).
 
-  * **Nested (RC4-in-TLS)** — :func:`nested_rc4_streams` reuses the EXACT tshark
-    helpers the Signal emitter uses (``list_tls_streams`` + ``follow_tls_stream``
-    from :mod:`friTap.offline.tshark`) to obtain tshark's DECRYPTED TLS plaintext,
-    which is itself the RC4 ciphertext. No new tshark invocation is invented.
-
-  * **Standalone (RC4-over-raw-TCP)** — :func:`standalone_rc4_streams` reuses the
-    shared sequence-indexed TCP reassembler
-    (:func:`friTap.offline.net.tcp_reassembly.reassemble_pcap`), which anchors on
-    the first sequence number and exposes only a strictly in-order byte run —
-    exactly what a position-dependent stream cipher needs.
+  * Nested (RC4-in-TLS): :func:`nested_rc4_streams` takes tshark's decrypted TLS
+    plaintext (``list_tls_streams`` + ``follow_tls_stream``), which is the RC4
+    ciphertext.
+  * Standalone: :func:`standalone_rc4_streams` uses
+    :func:`friTap.offline.net.tcp_reassembly.reassemble_pcap`, which exposes only
+    a strictly in-order byte run, as a position-dependent cipher needs.
 """
 
 from __future__ import annotations

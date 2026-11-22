@@ -180,6 +180,28 @@ generic `blob_offset`/`blob_len` pair:
     Bodies that are *not* recoverable from chunks (e.g. WebSocket payloads, OHTTP
     inner messages, trailing data) are still stored as blobs as before.
 
+### Chunk keys and optional `stream_id`
+
+Each entry of the `chunks` list carries `direction`, `timestamp`, `function`,
+`blob_offset` and `blob_len`, plus an optional `stream_id`: the real transport
+stream id the chunk travelled on (HTTP/2 stream id, QUIC stream id).
+
+The chunk key is written only when set: an absent key means "unknown", and
+older readers skip it. On read it sets `FlowChunk.stream_id`. `Flow.stream_id`
+is derived from the chunk ids (the one id every id-carrying chunk shares; None
+when the chunks carry no ids or mixed ids).
+
+A flow with such an id also gets a top-level `stream_id` in its FLOW metadata,
+again only when set. The summary fast path reads it instead of scanning the
+chunks, and falls back to the chunk ids for records written without it. A
+decoded `Flow` ignores the top-level key and derives its id from the chunks.
+
+!!! note "HTTP/3 `request`/`response` `stream_id` is not the QUIC stream id"
+    The `stream_id` inside an HTTP/3 request or response parse result is a
+    collector-internal remapped id used to pair requests with responses. The
+    chunk-level `stream_id` key (and the ids derived from it) are the real
+    transport ids.
+
 ### Optional `truncated` flag
 
 The JSON metadata carries `"truncated": true` when the flow exceeded the
@@ -188,6 +210,14 @@ collector's per-flow retained-payload cap (`MAX_FLOW_CHUNK_BYTES`, 64 MiB, in
 past the cap were not retained, so the stored chunks and bodies are incomplete.
 The key is additive and **written only when true**: an absent key means
 `false`, and older readers ignore it. On read it sets `Flow.truncated`.
+
+### Optional `total_size`
+
+The JSON metadata carries `"total_size"`, the sum of every chunk's `blob_len`,
+when that sum is non-zero. The key is additive and written only when set:
+older readers ignore it. The summary fast path (`decode_flow_summary`) uses it
+when it is an integer `>= 0` and otherwise sums the chunks' `blob_len`, so
+records written without the key yield the same `FlowSummary.total_size`.
 
 !!! danger "Findings are NOT inline in FLOW records"
     Analysis findings are deliberately **not** embedded in the FLOW payload. They

@@ -8,6 +8,20 @@ import { Java } from "../../shared/javalib.js";
 import { resolveWithPipelineAsync } from "../../shared/pipeline_utils.js";
 import { DUMMY_SESSION_ID_NSS } from "../definitions/shared_constants.js";
 import { LruMap, FifoSet } from "../../shared/lru.js";
+import { nssClientRandomOffset } from "../../shared/nss_keylog_locator.js";
+import { registerDetachTeardown } from "../../shared/detach_teardown.js";
+import {
+    CLIENT_RANDOM_LENGTH, LEARNED_NSS_CLIENT_RANDOM_OFF, NssClientRandomLearner, addressOf, attachGeneratedRandomObserver,
+    isPlausibleClientRandomOffset, readClientRandomHex,
+} from "../../shared/nss_client_random_learner.js";
+import { NssEchRandomRecorder } from "../../shared/nss_ech_random_recorder.js";
+import { ALL_ZERO_RE, NssTrackedSockets } from "../../shared/nss_tracked_sockets.js";
+import { isCacheableModule, learnedLayout, rejectLearnedLayout, reportLearned } from "../../shared/learned_module_cache.js";
+import { copyPointer, isExecutable, isReadable } from "../../util/safe_memory.js";
+import { isPeImage } from "../../shared/pe_header.js";
+
+/** Names of modules that may export NSS (nss3) / ssl3 symbols. */
+const NSS_MODULE_NAME = /^(lib)?(nss3|ssl3)/i;
 
 /**
  *  Current Todo:
@@ -188,6 +202,27 @@ export enum PRDescType {
     PR_DESC_PIPE = 5
 } PRDescType;
 
+/** Resolved function addresses of one hooked NSS module (`addresses[moduleName]`). */
+export type NssFunctionAddresses = { [fn: string]: NativePointer };
+
+/** An app-registered SSLSecretCallback that friTap's secret_callback replaced and calls through to. */
+export interface OriginalSecretCallback {
+    cb: NativePointer;
+    arg: NativePointer;
+    fn: NativeFunction<void, [NativePointer, number, number, NativePointer, NativePointer]>;
+}
+
+// copyPointer lives in util/safe_memory (shared with the client_random learner); re-exported here.
+export { copyPointer };
+
+/** NSS detach-teardown counts, reported as the `teardown:nss-key-callbacks` step summary. */
+export type NssRestoreSummary = {
+    owned: number; toApp: number; toNull: number; stale: number; failed: number;
+    hsOwned: number; hsCleared: number;
+    /** tier-2 secret callbacks emitted for both the inner and the outer client_random (ECH accepted) */
+    echDual: number;
+};
+
 export class NSS {
 
     // global definitions
@@ -239,6 +274,9 @@ export class NSS {
 
         NSS.getsockname = new NativeFunction(this.addresses[this.moduleName]["PR_GetSockName"], "int", ["pointer", "pointer"]);
         NSS.getpeername = new NativeFunction(this.addresses[this.moduleName]["PR_GetPeerName"], "int", ["pointer", "pointer"]);
+        // The plaintext hooks call getDescType / PR_GetNameForIdentity per record; bind them
+        // here so they work even when key extraction is not installed (or not yet).
+        NSS.bindNativeHelpers(this.addresses[this.moduleName]);
 
        
 
@@ -256,38 +294,147 @@ export class NSS {
         ntohl: NativeFunction<number, [number]>;
     } | null = null;
     static secretCallbackReentryGuard: boolean = false;
-    static originalSecretCallbacks: { [key: string]: { cb: NativePointer, arg: NativePointer, fn: NativeFunction<void, [NativePointer, number, number, NativePointer, NativePointer]> } } = {};
+    /** The app's own secret callback per sslSocket (key: sslSocket address), called through by secret_callback. */
+    static originalSecretCallbacks = new Map<string, OriginalSecretCallback>();
+    /** sslSocket address -> PRFileDesc of every live socket on which friTap's secret_callback is registered. */
+    static ownedSecretCallbackFds = new Map<string, NativePointer>();
+    /** App SSLHandshakeCallback addresses already hooked (dedupe before Interceptor.attach). */
+    static hookedAppHandshakeCallbacks = new Set<string>();
 
     // Version-dependent ssl3 offset
     static SSL3_STATE_OFFSET: number = 1432;
 
-    static get_NSS_version(): number{
-        var getNSSversion = null;
-        var version_string = "0";
-        if(!Java.available){
-            getNSSversion = new NativeFunction(Module.getGlobalExportByName("NSSSSL_GetVersion"), "pointer", []);
-        }else{
-            // we are on Android
-            getNSSversion = new NativeFunction(Process.getModuleByName("libnss3.so").getExportByName("NSSSSL_GetVersion"), "pointer", []);
+    /** Tier-3 offset table is verified only below this version (major*1000+minor, exclusive). */
+    static TABLE_VERIFIED_BELOW = 3115;
+
+    /** Modules searched for NSS exports, in order (set by setExportScope). Never a global dlsym:
+     *  Gecko loads libnss3 RTLD_LOCAL, so dlsym(RTLD_DEFAULT) cannot see it (C1). */
+    static exportScope: Module[] = [];
+    private static cachedVersion: number | null = null;
+    private static tableDisabledLogged = false;
+
+    /** Set the modules used for module-scoped export lookup (duplicates and nulls dropped). */
+    static setExportScope(modules: Array<Module | null | undefined>): void {
+        const seen = new Set<string>();
+        NSS.exportScope = [];
+        for (const m of modules) {
+            if (!m || seen.has(m.base.toString())) continue;
+            seen.add(m.base.toString());
+            NSS.exportScope.push(m);
         }
-        if(!getNSSversion.isNull()){
-            var ptr_version_string = getNSSversion();
-            if(!ptr_version_string.isNull()){
-                version_string = ptr_version_string.readCString();
+        NSS.cachedVersion = null;
+    }
+
+    /** Module-scoped export lookup: the export scope, then any loaded libnss3* / libssl3*. */
+    static findNssExport(name: string): NativePointer | null {
+        return NSS.findExportIn([...NSS.exportScope, ...NSS.loadedModulesMatching(NSS_MODULE_NAME)], name);
+    }
+
+    /**
+     * findNssExport over ONE loaded-module snapshot: the module list is enumerated lazily, on
+     * the first name the export scope does not resolve, and reused for every later lookup.
+     * For a burst of lookups (one install) instead of an enumeration per name.
+     */
+    static nssExportFinder(): (name: string) => NativePointer | null {
+        let loaded: Module[] | null = null;
+        return (name) => {
+            const inScope = NSS.findExportIn(NSS.exportScope, name);
+            if (inScope !== null) return inScope;
+            if (loaded === null) loaded = NSS.loadedModulesMatching(NSS_MODULE_NAME);
+            return NSS.findExportIn(loaded, name);
+        };
+    }
+
+    /**
+     * NSPR export lookup: the export scope, then any loaded NSPR (libnspr4.so, nspr4.dll,
+     * libnspr4.dll, libnspr4.dylib) or folded NSS (libnss3.*, nss3.dll). Never a global dlsym.
+     */
+    static findNsprExport(name: string): NativePointer | null {
+        return NSS.findExportIn([...NSS.exportScope, ...NSS.loadedModulesMatching(/^(lib)?(nspr4|nss3)\./i)], name);
+    }
+
+    private static findExportIn(modules: Module[], name: string): NativePointer | null {
+        for (const m of modules) {
+            try {
+                const p = m.findExportByName(name);
+                if (p !== null && !p.isNull()) return p;
+            } catch (_e) { /* next module */ }
+        }
+        return null;
+    }
+
+    private static loadedModulesMatching(namePattern: RegExp): Module[] {
+        try {
+            return Process.enumerateModules().filter((m) => namePattern.test(m.name));
+        } catch (_e) {
+            return [];
+        }
+    }
+
+    /** NSS version as major*1000+minor (3.132 -> 3132), 0 when unknown. Resolved from the detected module. */
+    static get_NSS_version(): number {
+        if (NSS.cachedVersion !== null) return NSS.cachedVersion;
+        var version_string = "0";
+        for (const name of ["NSSSSL_GetVersion", "NSS_GetVersion"]) {
+            const fnAddr = NSS.findNssExport(name);
+            if (fnAddr === null) continue;
+            try {
+                const text = (new NativeFunction(fnAddr, "pointer", []) as () => NativePointer)();
+                if (!text.isNull()) {
+                    version_string = text.readCString() ?? "0";
+                    break;
+                }
+            } catch (e) {
+                devlog(`NSS: ${name} failed: ${e}`);
             }
         }
 
         // Extract only the numeric part (e.g., "3.108 BETA" → "3.108")
         var match = version_string.match(/^(\d+)\.(\d+)/);
-        if (!match) {
-            return 0; // Return 0 if the version string is not valid
-        }
-
         // Convert to a numeric version: major * 1000 + minor (e.g., 3.108 → 3108)
-        var major = parseInt(match[1], 10);
-        var minor = parseInt(match[2], 10);
+        var version = match ? parseInt(match[1], 10) * 1000 + parseInt(match[2], 10) : 0;
+        if (version > 0) NSS.cachedVersion = version;
+        return version;
+    }
 
-        return major * 1000 + minor;
+    /** Human-readable form of a get_NSS_version() value. */
+    static formatNssVersion(version: number): string {
+        return version > 0 ? `${Math.floor(version / 1000)}.${version % 1000}` : "unknown";
+    }
+
+    /**
+     * True iff the sslSocket/ssl3 offset table may be read (tier 3): only for NSS
+     * versions inside the verified range. Logs once when the layout is unverified.
+     */
+    static structReadsAllowed(): boolean {
+        const abiProblem = NSS.tableAbiMismatch();
+        if (abiProblem !== null) {
+            NSS.logTableDisabledOnce(`[!] NSS offset table is verified for LP64 Unix only (${abiProblem}), struct reads disabled`);
+            return false;
+        }
+        const version = NSS.get_NSS_version();
+        if (version > 0 && version < NSS.TABLE_VERIFIED_BELOW) return true;
+        NSS.logTableDisabledOnce(`[!] NSS ${NSS.formatNssVersion(version)} layout unverified, struct reads disabled`);
+        return false;
+    }
+
+    /**
+     * Why the SSL3_STATE_OFFSET / ssl3 table does not apply to this process, or null when it
+     * does. The table was measured on Linux LP64; Win64 is LLP64 (long is 4 bytes) and 32-bit
+     * targets change every pointer-sized member, so neither may read through it.
+     */
+    static tableAbiMismatch(): string | null {
+        if (Process.platform === "windows") return "Windows is LLP64";
+        if (Process.pointerSize !== 8) return `pointer size ${Process.pointerSize}`;
+        // Wine reports "linux" but a PE nss3.dll is still compiled LLP64.
+        if (NSS.exportScope.some((m) => isPeImage(m.base))) return "PE module under Wine is LLP64";
+        return null;
+    }
+
+    private static logTableDisabledOnce(message: string): void {
+        if (NSS.tableDisabledLogged) return;
+        NSS.tableDisabledLogged = true;
+        log(message);
     }
 
     static detectVersionOffsets() {
@@ -308,17 +455,21 @@ export class NSS {
         }
     }
 
-    static resolveExperimentalAPI() {
+    /**
+     * Resolve SSL_SecretCallback through SSL_GetExperimentalAPI.
+     * @param getExperimentalApiAddr the module-scoped address of SSL_GetExperimentalAPI
+     *        (from the hooked module's resolved addresses); falls back to findNssExport.
+     * @returns true when SSL_SecretCallback_fn is available
+     */
+    static resolveExperimentalAPI(getExperimentalApiAddr?: NativePointer | null): boolean {
         try {
-            var getExpApiAddr: NativePointer | null = null;
-            try {
-                getExpApiAddr = Module.getGlobalExportByName("SSL_GetExperimentalAPI");
-            } catch (_) {
-                // Not found
+            var getExpApiAddr = getExperimentalApiAddr ?? null;
+            if (getExpApiAddr === null || getExpApiAddr.isNull()) {
+                getExpApiAddr = NSS.findNssExport("SSL_GetExperimentalAPI");
             }
-            if (!getExpApiAddr || getExpApiAddr.isNull()) {
-                devlog("SSL_GetExperimentalAPI not found — secret callback will use struct-write fallback");
-                return;
+            if (getExpApiAddr === null || getExpApiAddr.isNull()) {
+                devlog("SSL_GetExperimentalAPI not found in the NSS module — SSL_SecretCallback unavailable");
+                return false;
             }
 
             var getExpApiFn = new NativeFunction(getExpApiAddr, "pointer", ["pointer"]);
@@ -328,10 +479,13 @@ export class NSS {
                 NSS.SSL_SecretCallback_fn = new NativeFunction(fnPtr, "int", ["pointer", "pointer", "pointer"]);
                 NSS.SSL_SecretCallback_ptr = fnPtr;
                 devlog("SSL_SecretCallback resolved via experimental API at " + fnPtr);
+                return true;
             }
+            devlog("SSL_GetExperimentalAPI returned NULL for SSL_SecretCallback");
         } catch (e) {
             devlog("SSL_GetExperimentalAPI resolution failed: " + e);
         }
+        return false;
     }
 
     /* PARSING functions */
@@ -357,8 +511,6 @@ export class NSS {
         return {
             "fd": sslSocketFD.readPointer(),
             "version": sslSocketFD.add(160),
-            "handshakeCallback": sslSocketFD.add(464),
-            "secretCallback": sslSocketFD.add(568),
             "ssl3": sslSocketFD.add(NSS.SSL3_STATE_OFFSET)
         }
     }
@@ -379,6 +531,11 @@ export class NSS {
         NSS.ssl3OffsetsInitialized = true;
     }
 
+    /**
+     * Lazy view of ssl3StateStr: every field is a getter, so only the fields a caller
+     * touches are read. Offsets come from the version table and are only trusted for
+     * NSS < 3.115 (see structReadsAllowed()); callers must check that first.
+     */
     static parse_struct_ssl3Str(ssl3_struct: NativePointer): sslSocketStr {
         NSS.initSsl3Offsets();
 
@@ -422,118 +579,118 @@ export class NSS {
         }
         */
         return {
-            "crSpec": ssl3_struct.readPointer(),
-            "prSpec": ssl3_struct.add(pointerSize).readPointer(),
-            "cwSpec": ssl3_struct.add(pointerSize * 2).readPointer(),
-            "pwSpec": ssl3_struct.add(pointerSize * 3).readPointer(),
-            "peerRequestedKeyUpdate": ssl3_struct.add(pointerSize * 4).readU32(),
-            "keyUpdateDeferred": ssl3_struct.add(pointerSize * 4 + 4).readU32(),
-            "deferredKeyUpdateRequest": ssl3_struct.add(pointerSize * 4 + 8).readU32(),
-            "clientCertRequested": ssl3_struct.add(pointerSize * 4 + 12).readU32(),
-            "clientCertificate": ssl3_struct.add(pointerSize * 4 + 16).readPointer(),
-            "clientPrivateKey": ssl3_struct.add(pointerSize * 5 + 16).readPointer(),
-            "clientCertChain": ssl3_struct.add(pointerSize * 6 + 16).readPointer(),
-            "sendEmptyCert": ssl3_struct.add(pointerSize * 7 + 16).readU32(),
-            "policy": ssl3_struct.add(pointerSize * 7 + 20).readU32(),
-            "peerCertArena": ssl3_struct.add(pointerSize * 7 + 24).readPointer(),
-            "peerCertChain": ssl3_struct.add(pointerSize * 8 + 24).readPointer(),
-            "ca_list": ssl3_struct.add(pointerSize * 9 + 24).readPointer(),
+            get crSpec() { return ssl3_struct.readPointer(); },
+            get prSpec() { return ssl3_struct.add(pointerSize).readPointer(); },
+            get cwSpec() { return ssl3_struct.add(pointerSize * 2).readPointer(); },
+            get pwSpec() { return ssl3_struct.add(pointerSize * 3).readPointer(); },
+            get peerRequestedKeyUpdate() { return ssl3_struct.add(pointerSize * 4).readU32(); },
+            get keyUpdateDeferred() { return ssl3_struct.add(pointerSize * 4 + 4).readU32(); },
+            get deferredKeyUpdateRequest() { return ssl3_struct.add(pointerSize * 4 + 8).readU32(); },
+            get clientCertRequested() { return ssl3_struct.add(pointerSize * 4 + 12).readU32(); },
+            get clientCertificate() { return ssl3_struct.add(pointerSize * 4 + 16).readPointer(); },
+            get clientPrivateKey() { return ssl3_struct.add(pointerSize * 5 + 16).readPointer(); },
+            get clientCertChain() { return ssl3_struct.add(pointerSize * 6 + 16).readPointer(); },
+            get sendEmptyCert() { return ssl3_struct.add(pointerSize * 7 + 16).readU32(); },
+            get policy() { return ssl3_struct.add(pointerSize * 7 + 20).readU32(); },
+            get peerCertArena() { return ssl3_struct.add(pointerSize * 7 + 24).readPointer(); },
+            get peerCertChain() { return ssl3_struct.add(pointerSize * 8 + 24).readPointer(); },
+            get ca_list() { return ssl3_struct.add(pointerSize * 9 + 24).readPointer(); },
             "hs": { // https://github.com/nss-dev/nss/blob/c277877bd8c01e107b097bbd57df094b34e37aab/lib/ssl/sslimpl.h#L615
-                "client_random": ssl3_struct.add(pointerSize * 10 + 24+ NSS.SS3_VERSIONS_CR_OFFSET),  //SSL3Random --> typedef PRUint8 SSL3Random[SSL3_RANDOM_LENGTH];
-                "server_random": ssl3_struct.add(pointerSize * 10 + 56+ NSS.SS3_VERSIONS_CR_OFFSET),
-                "client_inner_random": ssl3_struct.add(pointerSize * 10 + 88+ NSS.SS3_VERSIONS_CR_OFFSET),
-                "ws": ssl3_struct.add(pointerSize * 10 + 120+ NSS.SS3_VERSIONS_OFFSET).readU32(),
-                "hashType": ssl3_struct.add(pointerSize * 10 + 124+ NSS.SS3_VERSIONS_OFFSET).readU32(),
+                get client_random() { return ssl3_struct.add(pointerSize * 10 + 24+ NSS.SS3_VERSIONS_CR_OFFSET); },  //SSL3Random --> typedef PRUint8 SSL3Random[SSL3_RANDOM_LENGTH];
+                get server_random() { return ssl3_struct.add(pointerSize * 10 + 56+ NSS.SS3_VERSIONS_CR_OFFSET); },
+                get client_inner_random() { return ssl3_struct.add(pointerSize * 10 + 88+ NSS.SS3_VERSIONS_CR_OFFSET); },
+                get ws() { return ssl3_struct.add(pointerSize * 10 + 120+ NSS.SS3_VERSIONS_OFFSET).readU32(); },
+                get hashType() { return ssl3_struct.add(pointerSize * 10 + 124+ NSS.SS3_VERSIONS_OFFSET).readU32(); },
                 "messages": { // sslBuffer
-                    "data": ssl3_struct.add(pointerSize * 10 + 128+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
-                    "len": ssl3_struct.add(pointerSize * 11 + 128+ NSS.SS3_VERSIONS_OFFSET).readU32(),
-                    "space": ssl3_struct.add(pointerSize * 11 + 132+ NSS.SS3_VERSIONS_OFFSET).readU32(),
-                    "fixed": ssl3_struct.add(pointerSize * 11 + 136+ NSS.SS3_VERSIONS_OFFSET).readU32(),
+                    get data() { return ssl3_struct.add(pointerSize * 10 + 128+ NSS.SS3_VERSIONS_OFFSET).readPointer(); },
+                    get len() { return ssl3_struct.add(pointerSize * 11 + 128+ NSS.SS3_VERSIONS_OFFSET).readU32(); },
+                    get space() { return ssl3_struct.add(pointerSize * 11 + 132+ NSS.SS3_VERSIONS_OFFSET).readU32(); },
+                    get fixed() { return ssl3_struct.add(pointerSize * 11 + 136+ NSS.SS3_VERSIONS_OFFSET).readU32(); },
 
                 },
                 "echInnerMessages": { // sslBuffer
-                    "data": ssl3_struct.add(pointerSize * 11 + 140+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
-                    "len": ssl3_struct.add(pointerSize * 12 + 140+ NSS.SS3_VERSIONS_OFFSET).readU32(),
-                    "space": ssl3_struct.add(pointerSize * 12 + 144+ NSS.SS3_VERSIONS_OFFSET).readU32(),
-                    "fixed": ssl3_struct.add(pointerSize * 12 + 148+ NSS.SS3_VERSIONS_OFFSET).readU32(),
+                    get data() { return ssl3_struct.add(pointerSize * 11 + 140+ NSS.SS3_VERSIONS_OFFSET).readPointer(); },
+                    get len() { return ssl3_struct.add(pointerSize * 12 + 140+ NSS.SS3_VERSIONS_OFFSET).readU32(); },
+                    get space() { return ssl3_struct.add(pointerSize * 12 + 144+ NSS.SS3_VERSIONS_OFFSET).readU32(); },
+                    get fixed() { return ssl3_struct.add(pointerSize * 12 + 148+ NSS.SS3_VERSIONS_OFFSET).readU32(); },
 
                 },
-                "md5": ssl3_struct.add(pointerSize * 12 + 152+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
-                "sha": ssl3_struct.add(pointerSize * 13 + 152+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
-                "shaEchInner": ssl3_struct.add(pointerSize * 14 + 152+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
-                "shaPostHandshake": ssl3_struct.add(pointerSize * 15 + 152+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
-                "signatureScheme": ssl3_struct.add(pointerSize * 16 + 152+ NSS.SS3_VERSIONS_OFFSET).readU32(),
-                "kea_def": ssl3_struct.add(pointerSize * 16 + 156+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
-                "cipher_suite": ssl3_struct.add(pointerSize * 17 + 156+ NSS.SS3_VERSIONS_OFFSET).readU32(),
-                "suite_def": ssl3_struct.add(pointerSize * 17 + 160+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
+                get md5() { return ssl3_struct.add(pointerSize * 12 + 152+ NSS.SS3_VERSIONS_OFFSET).readPointer(); },
+                get sha() { return ssl3_struct.add(pointerSize * 13 + 152+ NSS.SS3_VERSIONS_OFFSET).readPointer(); },
+                get shaEchInner() { return ssl3_struct.add(pointerSize * 14 + 152+ NSS.SS3_VERSIONS_OFFSET).readPointer(); },
+                get shaPostHandshake() { return ssl3_struct.add(pointerSize * 15 + 152+ NSS.SS3_VERSIONS_OFFSET).readPointer(); },
+                get signatureScheme() { return ssl3_struct.add(pointerSize * 16 + 152+ NSS.SS3_VERSIONS_OFFSET).readU32(); },
+                get kea_def() { return ssl3_struct.add(pointerSize * 16 + 156+ NSS.SS3_VERSIONS_OFFSET).readPointer(); },
+                get cipher_suite() { return ssl3_struct.add(pointerSize * 17 + 156+ NSS.SS3_VERSIONS_OFFSET).readU32(); },
+                get suite_def() { return ssl3_struct.add(pointerSize * 17 + 160+ NSS.SS3_VERSIONS_OFFSET).readPointer(); },
                 "msg_body": { // sslBuffer
-                    "data": ssl3_struct.add(pointerSize * 18 + 160+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
-                    "len": ssl3_struct.add(pointerSize * 19 + 160+ NSS.SS3_VERSIONS_OFFSET).readU32(),
-                    "space": ssl3_struct.add(pointerSize * 19 + 164+ NSS.SS3_VERSIONS_OFFSET).readU32(),
-                    "fixed": ssl3_struct.add(pointerSize * 19 + 168+ NSS.SS3_VERSIONS_OFFSET).readU32(),
+                    get data() { return ssl3_struct.add(pointerSize * 18 + 160+ NSS.SS3_VERSIONS_OFFSET).readPointer(); },
+                    get len() { return ssl3_struct.add(pointerSize * 19 + 160+ NSS.SS3_VERSIONS_OFFSET).readU32(); },
+                    get space() { return ssl3_struct.add(pointerSize * 19 + 164+ NSS.SS3_VERSIONS_OFFSET).readU32(); },
+                    get fixed() { return ssl3_struct.add(pointerSize * 19 + 168+ NSS.SS3_VERSIONS_OFFSET).readU32(); },
 
                 },
-                "header_bytes": ssl3_struct.add(pointerSize * 19 + 172+ NSS.SS3_VERSIONS_OFFSET).readU32(),
-                "msg_type": ssl3_struct.add(pointerSize * 19 + 176+ NSS.SS3_VERSIONS_OFFSET).readU32(),
-                "msg_len": ssl3_struct.add(pointerSize * 19 + 180+ NSS.SS3_VERSIONS_OFFSET).readU32(),
-                "isResuming": ssl3_struct.add(pointerSize * 19 + 184+ NSS.SS3_VERSIONS_OFFSET).readU32(),
-                "sendingSCSV": ssl3_struct.add(pointerSize * 19 + 188+ NSS.SS3_VERSIONS_OFFSET).readU32(),
-                "receivedNewSessionTicket": ssl3_struct.add(pointerSize * 19 + 192+ NSS.SS3_VERSIONS_OFFSET).readU32(),
-                "newSessionTicket": ssl3_struct.add(pointerSize * 19 + 196+ NSS.SS3_VERSIONS_OFFSET),          // for now we calculate only its offset (44 bytes); detailes at https://github.com/nss-dev/nss/blob/master/lib/ssl/ssl3prot.h#L162
-                "finishedBytes": ssl3_struct.add(pointerSize * 19 + 240+ NSS.SS3_VERSIONS_OFFSET).readU32(),
-                "finishedMsgs": ssl3_struct.add(pointerSize * 19 + 244+ NSS.SS3_VERSIONS_OFFSET),
-                "authCertificatePending": ssl3_struct.add(pointerSize * 18 + 316+ NSS.SS3_VERSIONS_OFFSET).readU32(),
-                "restartTarget": ssl3_struct.add(pointerSize * 19 + 320+ NSS.SS3_VERSIONS_OFFSET).readU32(),
-                "canFalseStart": ssl3_struct.add(pointerSize * 19 + 324+ NSS.SS3_VERSIONS_OFFSET).readU32(),
-                "preliminaryInfo": ssl3_struct.add(pointerSize * 19 + 328+ NSS.SS3_VERSIONS_OFFSET).readU32(),
+                get header_bytes() { return ssl3_struct.add(pointerSize * 19 + 172+ NSS.SS3_VERSIONS_OFFSET).readU32(); },
+                get msg_type() { return ssl3_struct.add(pointerSize * 19 + 176+ NSS.SS3_VERSIONS_OFFSET).readU32(); },
+                get msg_len() { return ssl3_struct.add(pointerSize * 19 + 180+ NSS.SS3_VERSIONS_OFFSET).readU32(); },
+                get isResuming() { return ssl3_struct.add(pointerSize * 19 + 184+ NSS.SS3_VERSIONS_OFFSET).readU32(); },
+                get sendingSCSV() { return ssl3_struct.add(pointerSize * 19 + 188+ NSS.SS3_VERSIONS_OFFSET).readU32(); },
+                get receivedNewSessionTicket() { return ssl3_struct.add(pointerSize * 19 + 192+ NSS.SS3_VERSIONS_OFFSET).readU32(); },
+                get newSessionTicket() { return ssl3_struct.add(pointerSize * 19 + 196+ NSS.SS3_VERSIONS_OFFSET); },          // for now we calculate only its offset (44 bytes); detailes at https://github.com/nss-dev/nss/blob/master/lib/ssl/ssl3prot.h#L162
+                get finishedBytes() { return ssl3_struct.add(pointerSize * 19 + 240+ NSS.SS3_VERSIONS_OFFSET).readU32(); },
+                get finishedMsgs() { return ssl3_struct.add(pointerSize * 19 + 244+ NSS.SS3_VERSIONS_OFFSET); },
+                get authCertificatePending() { return ssl3_struct.add(pointerSize * 18 + 316+ NSS.SS3_VERSIONS_OFFSET).readU32(); },
+                get restartTarget() { return ssl3_struct.add(pointerSize * 19 + 320+ NSS.SS3_VERSIONS_OFFSET).readU32(); },
+                get canFalseStart() { return ssl3_struct.add(pointerSize * 19 + 324+ NSS.SS3_VERSIONS_OFFSET).readU32(); },
+                get preliminaryInfo() { return ssl3_struct.add(pointerSize * 19 + 328+ NSS.SS3_VERSIONS_OFFSET).readU32(); },
                 "remoteExtensions": {
-                    "next": ssl3_struct.add(pointerSize * 19 + 332+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
-                    "prev": ssl3_struct.add(pointerSize * 20 + 332+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
+                    get next() { return ssl3_struct.add(pointerSize * 19 + 332+ NSS.SS3_VERSIONS_OFFSET).readPointer(); },
+                    get prev() { return ssl3_struct.add(pointerSize * 20 + 332+ NSS.SS3_VERSIONS_OFFSET).readPointer(); },
                 },
                 "echOuterExtensions": {
-                    "next": ssl3_struct.add(pointerSize * 21 + 332+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
-                    "prev": ssl3_struct.add(pointerSize * 22 + 332+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
+                    get next() { return ssl3_struct.add(pointerSize * 21 + 332+ NSS.SS3_VERSIONS_OFFSET).readPointer(); },
+                    get prev() { return ssl3_struct.add(pointerSize * 22 + 332+ NSS.SS3_VERSIONS_OFFSET).readPointer(); },
                 },
-                "sendMessageSeq": ssl3_struct.add(pointerSize * 23 + 332+ NSS.SS3_VERSIONS_OFFSET).readU32(),  //u16 but through alignment  U32
+                get sendMessageSeq() { return ssl3_struct.add(pointerSize * 23 + 332+ NSS.SS3_VERSIONS_OFFSET).readU32(); },  //u16 but through alignment  U32
                 "lastMessageFlight": {
-                    "next": ssl3_struct.add(pointerSize * 23 + 336+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
-                    "prev": ssl3_struct.add(pointerSize * 24 + 336+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
+                    get next() { return ssl3_struct.add(pointerSize * 23 + 336+ NSS.SS3_VERSIONS_OFFSET).readPointer(); },
+                    get prev() { return ssl3_struct.add(pointerSize * 24 + 336+ NSS.SS3_VERSIONS_OFFSET).readPointer(); },
                 },
-                "maxMessageSent": ssl3_struct.add(pointerSize * 25 + 336+ NSS.SS3_VERSIONS_OFFSET).readU16(),  //u16
-                "recvMessageSeq": ssl3_struct.add(pointerSize * 25 + 338+ NSS.SS3_VERSIONS_OFFSET).readU16(),
+                get maxMessageSent() { return ssl3_struct.add(pointerSize * 25 + 336+ NSS.SS3_VERSIONS_OFFSET).readU16(); },  //u16
+                get recvMessageSeq() { return ssl3_struct.add(pointerSize * 25 + 338+ NSS.SS3_VERSIONS_OFFSET).readU16(); },
                 "recvdFragments": { // sslBuffer
-                    "data": ssl3_struct.add(pointerSize * 25 + 340+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
-                    "len": ssl3_struct.add(pointerSize * 26 + 340+ NSS.SS3_VERSIONS_OFFSET).readU32(),
-                    "space": ssl3_struct.add(pointerSize * 26 + 344+ NSS.SS3_VERSIONS_OFFSET).readU32(),
-                    "fixed": ssl3_struct.add(pointerSize * 26 + 348+ NSS.SS3_VERSIONS_OFFSET).readU32(),
+                    get data() { return ssl3_struct.add(pointerSize * 25 + 340+ NSS.SS3_VERSIONS_OFFSET).readPointer(); },
+                    get len() { return ssl3_struct.add(pointerSize * 26 + 340+ NSS.SS3_VERSIONS_OFFSET).readU32(); },
+                    get space() { return ssl3_struct.add(pointerSize * 26 + 344+ NSS.SS3_VERSIONS_OFFSET).readU32(); },
+                    get fixed() { return ssl3_struct.add(pointerSize * 26 + 348+ NSS.SS3_VERSIONS_OFFSET).readU32(); },
 
                 },
-                "recvdHighWater": ssl3_struct.add(pointerSize * 26 + 352+ NSS.SS3_VERSIONS_OFFSET).readU32(),
+                get recvdHighWater() { return ssl3_struct.add(pointerSize * 26 + 352+ NSS.SS3_VERSIONS_OFFSET).readU32(); },
                 "cookie": {
-                    "type": ssl3_struct.add(pointerSize * 26 + 356+ NSS.SS3_VERSIONS_OFFSET).readU64(),
-                    "data": ssl3_struct.add(pointerSize * 27 + 356+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
-                    "len": ssl3_struct.add(pointerSize * 28 + 356+ NSS.SS3_VERSIONS_OFFSET).readU32(),
+                    get type() { return ssl3_struct.add(pointerSize * 26 + 356+ NSS.SS3_VERSIONS_OFFSET).readU64(); },
+                    get data() { return ssl3_struct.add(pointerSize * 27 + 356+ NSS.SS3_VERSIONS_OFFSET).readPointer(); },
+                    get len() { return ssl3_struct.add(pointerSize * 28 + 356+ NSS.SS3_VERSIONS_OFFSET).readU32(); },
                 },
-                "times_array": ssl3_struct.add(pointerSize * 28 + 360+ NSS.SS3_VERSIONS_OFFSET).readU32(),
-                "rtTimer": ssl3_struct.add(pointerSize * 28 + 432+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
-                "ackTimer": ssl3_struct.add(pointerSize * 29 + 432+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
-                "hdTimer": ssl3_struct.add(pointerSize * 30 + 432+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
-                "rtRetries": ssl3_struct.add(pointerSize * 31 + 432+ NSS.SS3_VERSIONS_OFFSET).readU32(),
+                get times_array() { return ssl3_struct.add(pointerSize * 28 + 360+ NSS.SS3_VERSIONS_OFFSET).readU32(); },
+                get rtTimer() { return ssl3_struct.add(pointerSize * 28 + 432+ NSS.SS3_VERSIONS_OFFSET).readPointer(); },
+                get ackTimer() { return ssl3_struct.add(pointerSize * 29 + 432+ NSS.SS3_VERSIONS_OFFSET).readPointer(); },
+                get hdTimer() { return ssl3_struct.add(pointerSize * 30 + 432+ NSS.SS3_VERSIONS_OFFSET).readPointer(); },
+                get rtRetries() { return ssl3_struct.add(pointerSize * 31 + 432+ NSS.SS3_VERSIONS_OFFSET).readU32(); },
                 "srvVirtName": {
-                    "type": ssl3_struct.add(pointerSize * 31 + 436+ NSS.SS3_VERSIONS_OFFSET).readU64(),
-                    "data": ssl3_struct.add(pointerSize * 32 + 436+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
-                    "len": ssl3_struct.add(pointerSize * 33 + 436+ NSS.SS3_VERSIONS_OFFSET).readU32(),
+                    get type() { return ssl3_struct.add(pointerSize * 31 + 436+ NSS.SS3_VERSIONS_OFFSET).readU64(); },
+                    get data() { return ssl3_struct.add(pointerSize * 32 + 436+ NSS.SS3_VERSIONS_OFFSET).readPointer(); },
+                    get len() { return ssl3_struct.add(pointerSize * 33 + 436+ NSS.SS3_VERSIONS_OFFSET).readU32(); },
                 },
-                "currentSecret": ssl3_struct.add(pointerSize * 33 + 440+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
-                "resumptionMasterSecret": ssl3_struct.add(pointerSize * 34 + 440+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
-                "dheSecret": ssl3_struct.add(pointerSize * 35 + 440+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
-                "clientEarlyTrafficSecret": ssl3_struct.add(pointerSize * 36 + 440+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
-                "clientHsTrafficSecret": ssl3_struct.add(pointerSize * 37 + 440+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
-                "serverHsTrafficSecret": ssl3_struct.add(pointerSize * 38 + 440+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
-                "clientTrafficSecret": ssl3_struct.add(pointerSize * 39 + 440+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
-                "serverTrafficSecret": ssl3_struct.add(pointerSize * 40 + 440+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
-                "earlyExporterSecret": ssl3_struct.add(pointerSize * 41 + 440+ NSS.SS3_VERSIONS_OFFSET).readPointer(),
-                "exporterSecret": ssl3_struct.add(pointerSize * 42 + 440+ NSS.SS3_VERSIONS_OFFSET).readPointer()
+                get currentSecret() { return ssl3_struct.add(pointerSize * 33 + 440+ NSS.SS3_VERSIONS_OFFSET).readPointer(); },
+                get resumptionMasterSecret() { return ssl3_struct.add(pointerSize * 34 + 440+ NSS.SS3_VERSIONS_OFFSET).readPointer(); },
+                get dheSecret() { return ssl3_struct.add(pointerSize * 35 + 440+ NSS.SS3_VERSIONS_OFFSET).readPointer(); },
+                get clientEarlyTrafficSecret() { return ssl3_struct.add(pointerSize * 36 + 440+ NSS.SS3_VERSIONS_OFFSET).readPointer(); },
+                get clientHsTrafficSecret() { return ssl3_struct.add(pointerSize * 37 + 440+ NSS.SS3_VERSIONS_OFFSET).readPointer(); },
+                get serverHsTrafficSecret() { return ssl3_struct.add(pointerSize * 38 + 440+ NSS.SS3_VERSIONS_OFFSET).readPointer(); },
+                get clientTrafficSecret() { return ssl3_struct.add(pointerSize * 39 + 440+ NSS.SS3_VERSIONS_OFFSET).readPointer(); },
+                get serverTrafficSecret() { return ssl3_struct.add(pointerSize * 40 + 440+ NSS.SS3_VERSIONS_OFFSET).readPointer(); },
+                get earlyExporterSecret() { return ssl3_struct.add(pointerSize * 41 + 440+ NSS.SS3_VERSIONS_OFFSET).readPointer(); },
+                get exporterSecret() { return ssl3_struct.add(pointerSize * 42 + 440+ NSS.SS3_VERSIONS_OFFSET).readPointer(); },
 
             } // end of hs struct
 
@@ -723,39 +880,87 @@ export class NSS {
     };
 
     static secret_callback = new NativeCallback(function (fd: NativePointer, epoch: number, dir: number, secret: NativePointer, arg_ptr: NativePointer) {
+        NSS.onSecretCallback(fd, epoch, dir, secret);
+    }, "void", ["pointer", "uint16", "int", "pointer", "pointer"]);
+
+    /** Body of secret_callback: log the secret, then ALWAYS call through to the app's original. */
+    static onSecretCallback(fd: NativePointer, epoch: number, dir: number, secret: NativePointer): void {
+        var sslSocketFD: NativePointer = NULL;
         try {
-            var label = NSS.SECRET_LABEL_MAP[epoch + ":" + dir];
-            if (!label) return;
-            if (secret.isNull()) return;
-
-            // Extract key directly from PK11SymKey* parameter
-            var secretHex = NSS.get_Secret_As_HexString(secret);
-            if (!secretHex || secretHex.length === 0) return;
-
-            // Get client_random from ssl3 struct
-            var sslSocketFD = NSS.get_SSL_FD(fd);
-            if (sslSocketFD.isNull()) return;
-            var sslSocketStr = NSS.parse_struct_sslSocketStr(sslSocketFD);
-            var ssl3 = NSS.parse_struct_ssl3Str(sslSocketStr.ssl3);
-            var client_random = NSS.getClientRandom(ssl3);
-
-            devlog("invoking keylog from NSS (SSL_LOG_SECRETS)");
-            sendKeylog(NSS.get_Keylog_Dump(label, client_random, secretHex));
-
-            // Call through to original callback if one was saved
-            var sockKey = sslSocketFD.toString();
-            var orig = NSS.originalSecretCallbacks[sockKey];
-            if (orig && orig.cb && !orig.cb.isNull() && !orig.cb.equals(NSS.secret_callback)) {
-                try {
-                    orig.fn(fd, epoch, dir, secret, orig.arg);
-                } catch (e2) {
-                    devlog("secret_callback: original callback call-through failed: " + e2);
-                }
-            }
+            // NSS passes ss->fd, i.e. the SSL layer itself: its PRFileDesc.secret is the sslSocket.
+            sslSocketFD = NSS.get_SSL_Socket(fd);
+            NSS.logSecret(sslSocketFD, epoch, dir, secret);
         } catch (e) {
             devlog_error("secret_callback error: " + e);
+        } finally {
+            // Always hand the secret on to the app's own callback (e.g. Neqo needs it for QUIC).
+            NSS.callOriginalSecretCallback(sslSocketFD, fd, epoch, dir, secret);
         }
-    }, "void", ["pointer", "uint16", "uint16", "pointer", "pointer"]);
+    }
+
+    /** Emit one keylog line for an SSLSecretCallback invocation (read-only). */
+    static logSecret(sslSocketFD: NativePointer, epoch: number, dir: number, secret: NativePointer): void {
+        var label = NSS.SECRET_LABEL_MAP[epoch + ":" + dir];
+        if (!label || secret.isNull() || sslSocketFD.isNull()) return;
+
+        var client_random = NSS.clientRandomHexFromSocket(sslSocketFD, true);
+        if (!client_random) return;
+
+        // Extract key directly from PK11SymKey* parameter
+        var secretHex = NSS.get_Secret_As_HexString(secret);
+        if (!secretHex || secretHex.length === 0) return;
+
+        devlog("invoking keylog from NSS (SSL_SecretCallback)");
+        var randoms = NSS.keylogRandomsFor(sslSocketFD, client_random);
+        if (randoms.length === 1) {
+            sendKeylog(NSS.get_Keylog_Dump(label, client_random, secretHex));
+            return;
+        }
+        var sentAny = false;
+        for (var random of randoms) {
+            if (NSS.sendEchDualLine(NSS.get_Keylog_Dump(label, random, secretHex))) sentAny = true;
+        }
+        if (sentAny) NSS.echDualEmissions++;
+    }
+
+    /**
+     * client_randoms one tier-2 secret line is keyed with: [inner, outer] when the ECH
+     * recorder saw this socket accept ECH (NSS copied the inner random over client_random;
+     * Wireshark without ECH_SECRET only knows the outer one), else [live]. Never throws.
+     */
+    static keylogRandomsFor(sslSocketFD: NativePointer, liveHex: string): string[] {
+        var recorder = NSS.echRecorder;
+        if (recorder === null) return [liveHex];
+        try {
+            var offset = NSS.clientRandomOffsetFor(sslSocketFD, false);
+            if (offset === null) return [liveHex];
+            return recorder.keylogRandoms(addressOf(sslSocketFD), offset, liveHex);
+        } catch (_e) {
+            return [liveHex];
+        }
+    }
+
+    /**
+     * ECH-dual lines are deduplicated (bounded), so a repeated callback never doubles them.
+     * @returns true iff the line was sent (not a duplicate)
+     */
+    private static sendEchDualLine(line: string): boolean {
+        if (NSS.echDualLinesSent.has(line)) return false;
+        NSS.echDualLinesSent.add(line);
+        sendKeylog(line);
+        return true;
+    }
+
+    static callOriginalSecretCallback(sslSocketFD: NativePointer, fd: NativePointer, epoch: number, dir: number, secret: NativePointer): void {
+        if (sslSocketFD.isNull()) return;
+        var orig = NSS.originalSecretCallbacks.get(sslSocketFD.toString());
+        if (!orig || orig.cb.isNull() || orig.cb.equals(NSS.secret_callback)) return;
+        try {
+            orig.fn(fd, epoch, dir, secret, orig.arg);
+        } catch (e) {
+            devlog("secret_callback: original callback call-through failed: " + e);
+        }
+    }
 
 
     /********* NSS helper functions  ********/
@@ -851,7 +1056,8 @@ typedef union PRNetAddr PRNetAddr;
             }
 
             // PRNetAddr shares the sockaddr field layout, so the shared decoder applies.
-            const decoded = decodeSockaddr(addr, false, { ntohs, ntohl });
+            // A PE NSPR under Wine stores PR_AF_INET6 as 23; readSockaddrFamily maps it.
+            const decoded = decodeSockaddr(addr, false, { ntohs, ntohl }, false);
             if (!decoded) {
                 devlog("[-] PIPE descriptor error: Only supporting IPv4/6: "+addr.readU16());
                 //FIXME: Sometimes addr.readU16() will be 0 when a PIPE Read oder Write gets interpcepted, thus this error will be thrown.
@@ -869,22 +1075,6 @@ typedef union PRNetAddr PRNetAddr;
 
 
 
-
-    /**
-    * This functions tests if a given address is a readable pointer
-    * 
-    * @param {*} ptr_addr is a pointer to the memory location where we want to check if there is already an address
-    * @returns 1 to indicate that there is a ptr at 
-    */
-    static is_ptr_at_mem_location(ptr_addr: NativePointer) {
-        try {
-            // an exception is thrown if there isn't a readable address
-            ptr_addr.readPointer();
-            return 1;
-        } catch (error) {
-            return -1;
-        }
-    }
 
     /**
     * 
@@ -909,7 +1099,13 @@ typedef union PRNetAddr PRNetAddr;
      */
     static noSslLayerFDs = new FifoSet<string>(1024);
 
+    /** PR_GetDescType(fd), or -1 when PR_GetDescType was not resolved (never throws on a missing binding). */
+    static descTypeOf(pRFileDesc: NativePointer): number {
+        return typeof NSS.getDescType === "function" ? NSS.getDescType(pRFileDesc) : -1;
+    }
+
     static NSS_FindIdentityForName(pRFileDesc: NativePointer, layer_name: string): NativePointer {
+        if (typeof NSS.PR_GetNameForIdentity !== "function") return NULL;   // PR_GetNameForIdentity unresolved
         const fdKey = pRFileDesc.toString();
         if (NSS.noSslLayerFDs.has(fdKey)) {
             return NULL;
@@ -962,7 +1158,12 @@ typedef union PRNetAddr PRNetAddr;
     static getSSL_Layer(pRFileDesc: NativePointer) {
 
         var ssl_layer_id = 3 // SSL has the Layer ID 3 normally.
-        var getIdentitiesLayer = new NativeFunction(Process.getModuleByName('libnspr4.so').getExportByName('PR_GetIdentitiesLayer'), "pointer", ["pointer", "int"])
+        var getIdentitiesLayerAddr = NSS.findNsprExport('PR_GetIdentitiesLayer');
+        if (getIdentitiesLayerAddr === null) {
+            devlog("NSS: PR_GetIdentitiesLayer not found in the NSPR/NSS modules");
+            return -1;
+        }
+        var getIdentitiesLayer = new NativeFunction(getIdentitiesLayerAddr, "pointer", ["pointer", "int"])
 
         var ssl_layer = getIdentitiesLayer(pRFileDesc, ssl_layer_id);
         if (ptr(ssl_layer.toString()).isNull()) {
@@ -1050,7 +1251,7 @@ typedef union PRNetAddr PRNetAddr;
         // collapsed when the SSL layer cannot be resolved (e.g. Firefox IPC).
         var fdHex = pRFileDesc.toString(16).padStart(8, '0').slice(-8).toUpperCase();
         var dummySSL_SessionID = DUMMY_SESSION_ID_NSS.slice(0, -8) + fdHex;
-        var fdType = NSS.getDescType(pRFileDesc)
+        var fdType = NSS.descTypeOf(pRFileDesc)
         //log("pRFileDescType: "+ fdType)
         /*if(fdType == 4){ // LAYERED 
             pRFileDesc = ptr(getSSL_Layer(pRFileDesc).toString())
@@ -1071,19 +1272,19 @@ typedef union PRNetAddr PRNetAddr;
             try {
                 devlog_debug("---- getSslSessionIdFromFD -----")
                 devlog_debug("ERROR")
-                devlog_debug("pRFileDescType: " + NSS.getDescType(pRFileDesc))
+                devlog_debug("pRFileDescType: " + NSS.descTypeOf(pRFileDesc))
                 if (fdType == 2) {
                     var c = Memory.dup(pRFileDesc, 32)
                     //log(hexdump(c))
-                    var getLayersIdentity = null;
-                    var getNameOfIdentityLayer;
-                    try {
-                        getLayersIdentity = new NativeFunction(Process.getModuleByName('libnspr4.so').getExportByName('PR_GetLayersIdentity'), "uint32", ["pointer"])
-                        getNameOfIdentityLayer = new NativeFunction(Process.getModuleByName('libnspr4.so').getExportByName('PR_GetNameForIdentity'), "pointer", ["uint32"])
-                    }catch(e){
-                        getLayersIdentity = new NativeFunction(Process.getModuleByName('libnss3.so').getExportByName('PR_GetLayersIdentity'), "uint32", ["pointer"])
-                        getNameOfIdentityLayer = new NativeFunction(Process.getModuleByName('libnss3.so').getExportByName('PR_GetNameForIdentity'), "pointer", ["uint32"])
+                    // Resolved from the detected NSPR (libnspr4.so, nspr4.dll, ...) or a folded
+                    // libnss3 / nss3.dll, not a hard-coded Linux module name.
+                    var getLayersIdentityAddr = NSS.findNsprExport('PR_GetLayersIdentity');
+                    var getNameForIdentityAddr = NSS.findNsprExport('PR_GetNameForIdentity');
+                    if (getLayersIdentityAddr === null || getNameForIdentityAddr === null) {
+                        throw new Error("PR_GetLayersIdentity / PR_GetNameForIdentity not found");
                     }
+                    var getLayersIdentity = new NativeFunction(getLayersIdentityAddr, "uint32", ["pointer"])
+                    var getNameOfIdentityLayer = new NativeFunction(getNameForIdentityAddr, "pointer", ["uint32"])
                     var layerID = getLayersIdentity(pRFileDesc);
                     devlog_debug("LayerID: " + layerID);
                     var nameIDentity = getNameOfIdentityLayer(layerID)
@@ -1201,6 +1402,21 @@ typedef union PRNetAddr PRNetAddr;
     */
 
 
+    /**
+     * sslSocket of a PRFileDesc stack without the noSslLayerFDs cache: used by the key
+     * extraction paths, where a stale "no SSL layer" verdict for a reused fd pointer
+     * would break the secret-callback bookkeeping. NULL when there is no SSL layer.
+     */
+    static findSslSocketUncached(pRFileDesc: NativePointer): NativePointer {
+        try {
+            var ssl_layer = NSS._findIdentityForNameRecursive(pRFileDesc, 'SSL');
+            return ssl_layer.isNull() ? NULL : NSS.get_SSL_Socket(ssl_layer);
+        } catch (e) {
+            devlog_debug("NSS: findSslSocketUncached failed: " + e);
+            return NULL;
+        }
+    }
+
     static get_SSL_Socket(ssl_layer: NativePointer): NativePointer {
         var sslSocket = ssl_layer.add(pointerSize * 1).readPointer();
         return sslSocket;
@@ -1238,10 +1454,34 @@ typedef union PRNetAddr PRNetAddr;
      */
 
     static getClientRandom(ssl3: sslSocketStr): string {
-        var client_random = NSS.getHexString(ssl3.hs.client_random, NSS.SSL3_RANDOM_LENGTH);
+        var at = ssl3.hs.client_random;
+        if (!isReadable(at, NSS.SSL3_RANDOM_LENGTH)) return "";
+        return NSS.getHexString(at, NSS.SSL3_RANDOM_LENGTH);
+    }
 
-        return client_random;
-
+    /**
+     * ss->ssl3.hs.client_random as lower-case hex, "" when unknown or not yet set.
+     * Source order: the offset decoded from the keylog writer (tier 1), the learned /
+     * cached offset, this socket's offset validated by the client_random learner, and
+     * the version table only inside its verified range. Bytes are always read live
+     * (ECH replaces client_random with the inner random). Every read is range-checked.
+     *
+     * @param atSecretCallback true only from the secret callback: there a learner socket
+     *        is validated (first call decides); elsewhere only an already validated offset is used
+     */
+    static clientRandomHexFromSocket(sslSocketFD: NativePointer, atSecretCallback: boolean = false): string {
+        var at: NativePointer;
+        var offset = NSS.clientRandomOffsetFor(sslSocketFD, atSecretCallback);
+        if (offset !== null) {
+            at = sslSocketFD.add(offset);
+        } else if (NSS.structReadsAllowed()) {
+            at = NSS.parse_struct_ssl3Str(NSS.parse_struct_sslSocketStr(sslSocketFD).ssl3).hs.client_random;
+        } else {
+            return "";
+        }
+        if (!isReadable(at, NSS.SSL3_RANDOM_LENGTH)) return "";
+        var hex = NSS.getHexString(at, NSS.SSL3_RANDOM_LENGTH);
+        return /^0+$/.test(hex) ? "" : hex;
     }
 
     /**
@@ -1257,6 +1497,177 @@ typedef union PRNetAddr PRNetAddr;
      */
     static clientRandomCache = new LruMap<string, string>(1024);
 
+    /** client_random offset learned this run or loaded from the learned cache (tier-2 source). */
+    static learnedClientRandomOffset: number | null = null;
+    /** Sticky per process: once any learner saw sockets disagree, no learner ever starts again. */
+    static clientRandomLearnerDisagreed = false;
+    /** Tier-2 learner, while it runs (null with a known offset, or when PK11_GenerateRandom is missing). */
+    static clientRandomLearner: NssClientRandomLearner | null = null;
+    /** The read-only PK11_GenerateRandom hook feeding the learner and/or the ECH recorder. */
+    private static randomObserverHook: InvocationListener | null = null;
+    /** sslSockets the observer attributes randoms to, shared by the learner and the ECH recorder. */
+    private static randomTrackedSockets: NssTrackedSockets | null = null;
+    /** Tier-2 ECH recorder (outer/inner random per socket) while the PK11_GenerateRandom hook runs. */
+    static echRecorder: NssEchRandomRecorder | null = null;
+    /** Secret callbacks emitted for both the inner and the outer random (teardown `echDual`). */
+    static echDualEmissions = 0;
+    private static echDualLinesSent = new FifoSet<string>(4096);
+
+    /** Offset of ss->ssl3.hs.client_random per the source order above, or null (table or nothing). */
+    static clientRandomOffsetFor(sslSocketFD: NativePointer, atSecretCallback: boolean): number | null {
+        var decodedOffset = nssClientRandomOffset();
+        if (decodedOffset !== null) return decodedOffset;
+        if (NSS.learnedClientRandomOffset !== null) return NSS.learnedClientRandomOffset;
+        var learner = NSS.clientRandomLearner;
+        if (learner === null) return null;
+        var ss = addressOf(sslSocketFD);
+        if (!atSecretCallback) return learner.validatedOffset(ss);
+        return learner.validateSocket(ss, (off) => readClientRandomHex(sslSocketFD.add(off)));
+    }
+
+    /** The cached offset of this build, when the learned cache has a plausible one. */
+    static loadCachedClientRandomOffset(sslModule: Module | null): number | null {
+        if (sslModule === null) return null;
+        var cached = learnedLayout(sslModule, LEARNED_NSS_CLIENT_RANDOM_OFF);
+        if (cached === null) return null;
+        if (!isPlausibleClientRandomOffset(cached)) {
+            rejectLearnedLayout(sslModule, LEARNED_NSS_CLIENT_RANDOM_OFF);
+            devlog(`[-] NSS: cached client_random offset ${cached} implausible; ignored`);
+            return null;
+        }
+        log(`[*] ${sslModule.name}: NSS client_random +0x${cached.toString(16)} from the learned cache`);
+        return cached;
+    }
+
+    /**
+     * Start the read-only PK11_GenerateRandom observer of tier 2. It always records the
+     * outer/inner randoms per socket for ECH (NssEchRandomRecorder); with `learn` it also
+     * feeds the client_random learner, which learns until the offset is accepted (then
+     * cached for this build) or the sockets disagree (fail closed). One hook and one
+     * tracked-socket store serve both; the hook is detached on a learner disagreement and
+     * in the detach teardown.
+     */
+    static startRandomObserver(generateRandom: NativePointer, sslModule: Module | null, learn: boolean): boolean {
+        // One observer per process, shared across NSS copies: a later module never replaces
+        // the live hook nor its tracked-socket store.
+        if (NSS.randomObserverHook !== null) return true;
+        if (NSS.clientRandomLearnerDisagreed) {
+            // Fail closed for the rest of the process: never learn again, and only keep
+            // recording ECH randoms when an offset is known from elsewhere (table or cache).
+            if (NSS.knownClientRandomOffset() === null) {
+                devlog("[-] NSS: client_random learner disagreed earlier; observer not restarted (fail closed)");
+                return false;
+            }
+            learn = false;
+        }
+        var sockets = NSS.randomTrackedSockets ?? new NssTrackedSockets();
+        var learner = learn ? NSS.createClientRandomLearner(sslModule, sockets) : null;
+        var recorder = new NssEchRandomRecorder(sockets);
+        try {
+            NSS.randomObserverHook = attachGeneratedRandomObserver(generateRandom, (data) => {
+                NSS.onGeneratedRandom(sockets, learner, NSS.echRecorder, data);
+            });
+        } catch (e) {
+            devlog("[-] NSS: client_random learner could not hook PK11_GenerateRandom: " + e);
+            return false;
+        }
+        NSS.randomTrackedSockets = sockets;
+        if (learner !== null || !NSS.clientRandomLearnerDisagreed) NSS.clientRandomLearner = learner;
+        NSS.echRecorder = recorder;
+        var owner = Process.findModuleByAddress(generateRandom);
+        var where = owner ? owner.name : generateRandom;
+        if (learner !== null) log(`[*] NSS: client_random learner started (read-only PK11_GenerateRandom hook in ${where})`);
+        else NSS.logEchObserverStaysOn();
+        return true;
+    }
+
+    /**
+     * Observer body: attribute one 32-byte generation into `data` ONCE (nearest-socket scan
+     * while learning, two O(1) lookups once the client_random offset is known) and hand it
+     * to the learner and the ECH recorder. Most RNG calls hit no socket and read no memory.
+     */
+    private static onGeneratedRandom(sockets: NssTrackedSockets, learner: NssClientRandomLearner | null,
+                                     recorder: NssEchRandomRecorder | null, data: NativePointer): void {
+        var learning = learner !== null && !learner.settled;
+        if (!learning && recorder === null) return;
+        var hit = sockets.locate(addressOf(data), learning ? null : NSS.knownClientRandomOffset());
+        if (hit === null) return;
+        var generated = readClientRandomHex(data);
+        if (generated === null) return;
+        if (learning) {
+            var following = readClientRandomHex(data.add(CLIENT_RANDOM_LENGTH));
+            if (following !== null) learner!.attributeAt(hit, generated, ALL_ZERO_RE.test(following));
+        }
+        recorder?.recordAt(hit, generated);
+    }
+
+    /** The client_random offset valid for every socket (decoded or learned/cached), or null. */
+    private static knownClientRandomOffset(): number | null {
+        return nssClientRandomOffset() ?? NSS.learnedClientRandomOffset;
+    }
+
+    private static createClientRandomLearner(sslModule: Module | null, sockets: NssTrackedSockets): NssClientRandomLearner {
+        return new NssClientRandomLearner({
+            onAccepted: (offset, count) => NSS.onClientRandomOffsetAccepted(offset, count, sslModule),
+            onDisagreement: (offsets) => {
+                log("[-] NSS: client_random learner: sockets disagree (" +
+                    offsets.map((o) => "+0x" + o.toString(16)).join(" vs ") + "); fail closed, nothing cached");
+                NSS.clientRandomLearnerDisagreed = true;
+                NSS.stopRandomObserver();
+            },
+        }, undefined, sockets);
+    }
+
+    private static logEchObserverStaysOn(): void {
+        log("[*] NSS: read-only PK11_GenerateRandom observer stays on for ECH " +
+            "(records outer/inner client_random; ECH-accepted secrets are keyed with both)");
+    }
+
+    private static onClientRandomOffsetAccepted(offset: number, sockets: number, sslModule: Module | null): void {
+        NSS.learnedClientRandomOffset = offset;
+        // Keyed per module build (ELF build id or Mach-O LC_UUID); a module without one (PE) is not cacheable.
+        var cached = sslModule !== null && isCacheableModule(sslModule);
+        if (cached) reportLearned(sslModule!, { layout: { [LEARNED_NSS_CLIENT_RANDOM_OFF]: offset } });
+        log(`[*] NSS: client_random +0x${offset.toString(16)} learned from ${sockets} sockets; ` +
+            `${cached ? "cached" : "not cached (no build id)"}`);
+        // Learning is done; the hook keeps recording ECH randoms while tier 2 is the key source
+        // (onAccepted only fires from that hook, so the recorder exists here).
+        NSS.logEchObserverStaysOn();
+    }
+
+    /**
+     * Detach the PK11_GenerateRandom hook (the learner object stays for validated sockets)
+     * and drop the ECH recorder with it.
+     */
+    static stopRandomObserver(): void {
+        var hook = NSS.randomObserverHook;
+        NSS.randomObserverHook = null;
+        NSS.echRecorder?.clear();
+        NSS.echRecorder = null;
+        if (hook === null) return;
+        try {
+            hook.detach();
+        } catch (e) {
+            devlog("[-] NSS: detaching the client_random learner failed: " + e);
+        }
+    }
+
+    /** The shared tracked-socket store while the learner learns or the ECH recorder runs, else null. */
+    private static activeRandomTrackedSockets(): NssTrackedSockets | null {
+        var learner = NSS.clientRandomLearner;
+        var learning = learner !== null && !learner.settled;
+        return learning || NSS.echRecorder !== null ? NSS.randomTrackedSockets : null;
+    }
+
+    /** SSL_ImportFD: a new (or reused) sslSocket the learner / ECH recorder may attribute randoms to. */
+    static trackLearnerSocket(pRFileDesc: NativePointer): void {
+        var sockets = NSS.activeRandomTrackedSockets();
+        if (sockets === null) return;
+        var sslSocketFD = NSS.findSslSocketUncached(pRFileDesc);
+        if (sslSocketFD.isNull()) return;
+        sockets.track(addressOf(sslSocketFD));
+    }
+
     static extractClientRandom(fd: NativePointer): string {
         try {
             const sslSocketFD = NSS.get_SSL_FD(fd);
@@ -1266,11 +1677,9 @@ typedef union PRNetAddr PRNetAddr;
             const cached = NSS.clientRandomCache.get(cacheKey);
             if (cached !== undefined) return cached;
 
-            const sslSocketStr = NSS.parse_struct_sslSocketStr(sslSocketFD);
-            const ssl3 = NSS.parse_struct_ssl3Str(sslSocketStr.ssl3);
-            const clientRandom = NSS.getClientRandom(ssl3) || "";
-
-            NSS.clientRandomCache.set(cacheKey, clientRandom);
+            const clientRandom = NSS.clientRandomHexFromSocket(sslSocketFD);
+            // "" is not cached: the random may simply not be known yet (pre-ClientHello).
+            if (clientRandom) NSS.clientRandomCache.set(cacheKey, clientRandom);
             return clientRandom;
         } catch (e) {
             devlog(`NSS extractClientRandom error: ${e}`);
@@ -1447,6 +1856,10 @@ typedef union PRNetAddr PRNetAddr;
         if ((dumping_handshake_secrets == 1 || dumping_handshake_secrets == 2) && NSS.SSL_SecretCallback_fn) {
             return;
         }
+        // Everything below reads the version table: only inside the verified range (tier 3).
+        if (!NSS.structReadsAllowed()) {
+            return;
+        }
 
         var sslSocketFD = NSS.get_SSL_FD(pRFileDesc);
         if (sslSocketFD.isNull()) {
@@ -1458,7 +1871,10 @@ typedef union PRNetAddr PRNetAddr;
         var ssl3 = NSS.parse_struct_ssl3Str(ssl3_struct);
 
         // the client_random is used to identify the diffrent SSL streams with their corresponding secrets
-        var client_random = NSS.getClientRandom(ssl3);
+        var client_random = NSS.clientRandomHexFromSocket(sslSocketFD);
+        if (!client_random) {
+            return;
+        }
 
         if (NSS.doTLS13_RTT0 == 1) {
             var early_exporter_secret = NSS.get_Secret_As_HexString(ssl3.hs.earlyExporterSecret);
@@ -1588,7 +2004,7 @@ typedef union PRNetAddr PRNetAddr;
                 },
                 onLeave: function (retval: any) {
 
-                    if (retval.toInt32() <= 0 || NSS.getDescType(this.fd) == PRDescType.PR_DESC_FILE) {
+                    if (retval.toInt32() <= 0 || NSS.descTypeOf(this.fd) == PRDescType.PR_DESC_FILE) {
                         return
                     }
 
@@ -1694,130 +2110,364 @@ function tls13_RecordKeyLog(pRFileDesc, secret_label, secret){
 */
 
 
-    static parse_epoch_value_from_SSL_SetSecretCallback(sslSocketFD: NativePointer, epoch: number) {
-        if (epoch == 1) { // client_early_traffic_secret
-            NSS.getTLS_Keys(sslSocketFD, 2);
-        } else if (epoch == 2) { // client|server}_handshake_traffic_secret
-            NSS.getTLS_Keys(sslSocketFD, 1);
+    /***** Key extraction tiers 2/3 (tier 1 lives in shared/nss_keylog_locator.ts) *****/
 
+    /** SSL_ImportFD addresses whose tier-2/3 hooks are installed (one install per NSS copy). */
+    static fallbackInstalledFor = new Set<string>();
+    /** sslSocket address -> PRFileDesc of every live socket carrying friTap's handshake callback (tier 3). */
+    static ownedHandshakeCallbackFds = new Map<string, NativePointer>();
+    /** PRFileDesc (top of stack, stable across layer pushes) -> sslSocket key, for PR_Close bookkeeping. */
+    static ownedSocketByFd = new Map<string, string>();
+    private static teardownRegistered = false;
 
-            /* our old way to get the diffrent secrets from TLS 1.3 and above
-    
-            per default we assume we are intercepting a TLS client therefore 
-            dir == 1 --> SERVER_HANDSHAKE_TRAFFIC_SECRET
-            dir == 2 --> CLIENT_HANDSHAKE_TRAFFIC_SECRET
-            typedef enum {
-                ssl_secret_read = 1,
-                ssl_secret_write = 2,
-            } SSLSecretDirection;
-            
-            if(dir == 1){
-                tls13_RecordKeyLog(sslSocketFD,"SERVER_HANDSHAKE_TRAFFIC_SECRET",secret);
-            }else{
-                tls13_RecordKeyLog(sslSocketFD,"CLIENT_HANDSHAKE_TRAFFIC_SECRET",secret);
-            }*/
-        } else if (epoch >= 3) { // {client|server}_application_traffic_secret_{N}
-            return;
-            // we intercept this through the handshake_callback
-        } else {
-            devlog("[-] secret_callback invocation: UNKNOWN");
+    /** Bind the NSPR/NSS helpers both the plaintext and the key-extraction paths use. */
+    static bindNativeHelpers(fnAddrs: NssFunctionAddresses): void {
+        const bind = (name: string, ret: NativeFunctionReturnType, args: NativeFunctionArgumentType[]): any => {
+            const a = fnAddrs[name];
+            return a && !a.isNull() ? new NativeFunction(a, ret, args) : null;
+        };
+        NSS.getDescType = bind("PR_GetDescType", "int", ["pointer"]) ?? NSS.getDescType;
+        NSS.PR_GetNameForIdentity = bind("PR_GetNameForIdentity", "pointer", ["pointer"]) ?? NSS.PR_GetNameForIdentity;
+        NSS.get_SSL_Callback = bind("SSL_HandshakeCallback", "int", ["pointer", "pointer", "pointer"]) ?? NSS.get_SSL_Callback;
+        NSS.PK11_ExtractKeyValue = bind("PK11_ExtractKeyValue", "int", ["pointer"]) ?? NSS.PK11_ExtractKeyValue;
+        NSS.PK11_GetKeyData = bind("PK11_GetKeyData", "pointer", ["pointer"]) ?? NSS.PK11_GetKeyData;
+    }
+
+    /**
+     * Tiers 2 and 3, installed only after tier 1 missed. Tier 2: friTap's secret_callback
+     * via the supported SSL_SecretCallback API on every socket from SSL_ImportFD, with
+     * call-through to the app's callback and restore on detach. Tier 3: read-only version
+     * table, only for NSS < TABLE_VERIFIED_BELOW. Nothing here writes target memory.
+     *
+     * @param fnAddrs resolved, module-scoped addresses (SSL_ImportFD, SSL_HandshakeCallback,
+     *        SSL_GetExperimentalAPI, PR_Close, ...); bindNativeHelpers must have run
+     * @returns true iff at least one key-extraction hook was installed
+     */
+    static installFallbackKeyHooks(fnAddrs: NssFunctionAddresses): boolean {
+        const importFd = fnAddrs["SSL_ImportFD"];
+        if (!importFd || importFd.isNull()) {
+            devlog("[-] NSS: SSL_ImportFD not resolved — no fallback key extraction");
+            return false;
+        }
+        if (NSS.fallbackInstalledFor.has(importFd.toString())) return true;
+
+        NSS.detectVersionOffsets();
+        const tableTier = NSS.structReadsAllowed();
+        const sslModule = Process.findModuleByAddress(importFd);
+        if (nssClientRandomOffset() === null && NSS.learnedClientRandomOffset === null) {
+            NSS.learnedClientRandomOffset = NSS.loadCachedClientRandomOffset(sslModule);
+        }
+        const secretTier = NSS.useSecretCallbackTier(fnAddrs, tableTier);
+        // Tier 2 is the key source: the observer learns the offset when none is known, and
+        // always records the ECH outer/inner randoms (tier 2 has no ECH_SECRET line).
+        if (secretTier && NSS.learnerResolvable(fnAddrs)) {
+            NSS.startRandomObserver(fnAddrs["PK11_GenerateRandom"], sslModule, NSS.needsClientRandomLearner());
+        }
+        if (!secretTier && !tableTier) {
+            log("[-] NSS: no usable key-extraction tier (keylog writer not located, layout unverified)");
+            return false;
         }
 
+        NSS.fallbackInstalledFor.add(importFd.toString());
+        NSS.installImportFdHook(importFd, secretTier, tableTier);
+        if (secretTier) {
+            NSS.installSecretCallbackInterceptor();
+        }
+        if (tableTier) {
+            NSS.installHandshakeCallbackInterceptor(fnAddrs["SSL_HandshakeCallback"]);
+        }
+        NSS.installCloseHook(fnAddrs["PR_Close"]);
+        NSS.registerSecretCallbackTeardown();
+        log(`[*] NSS: key extraction via ${secretTier ? "SSL_SecretCallback API" : ""}` +
+            `${secretTier && tableTier ? " + " : ""}${tableTier ? "read-only struct table" : ""}`);
+        return true;
     }
 
-    static insert_hook_into_secretCallback(addr_of_installed_secretCallback: NativePointer) {
-        Interceptor.attach(addr_of_installed_secretCallback,
-            {
-                onEnter(args: any) {
-                    this.sslSocketFD = args[0];
-                    this.epoch = args[1];
-                    NSS.parse_epoch_value_from_SSL_SetSecretCallback(this.sslSocketFD, this.epoch);
-                },
-                onLeave(retval: any) {
+    /** No decoded and no learned/cached client_random offset: tier 2 needs the learner. */
+    private static needsClientRandomLearner(): boolean {
+        return nssClientRandomOffset() === null && NSS.learnedClientRandomOffset === null;
+    }
+
+    /** The learner can run: PK11_GenerateRandom was resolved module-scoped. */
+    private static learnerResolvable(fnAddrs: NssFunctionAddresses): boolean {
+        const generateRandom = fnAddrs["PK11_GenerateRandom"];
+        return !!generateRandom && !generateRandom.isNull();
+    }
+
+    /** Tier 2 needs the API, a client_random source and PR_Close (to know which sockets are still alive on detach). */
+    private static useSecretCallbackTier(fnAddrs: NssFunctionAddresses, tableTier: boolean): boolean {
+        let usable = NSS.resolveExperimentalAPI(fnAddrs["SSL_GetExperimentalAPI"]);
+        if (usable && NSS.needsClientRandomLearner() && !NSS.learnerResolvable(fnAddrs) && !tableTier) {
+            devlog("NSS: SSL_SecretCallback skipped — no client_random source (offset not decoded or cached, " +
+                "PK11_GenerateRandom not resolved, table unverified)");
+            usable = false;
+        }
+        const prClose = fnAddrs["PR_Close"];
+        if (usable && (!prClose || prClose.isNull())) {
+            devlog("NSS: SSL_SecretCallback skipped — PR_Close not resolved, callbacks could not be restored safely");
+            usable = false;
+        }
+        if (!usable) {
+            NSS.SSL_SecretCallback_fn = null;
+            NSS.SSL_SecretCallback_ptr = null;
+        }
+        return usable;
+    }
+
+    private static installImportFdHook(importFd: NativePointer, secretTier: boolean, tableTier: boolean): void {
+        Interceptor.attach(importFd, {
+            onLeave(retval: InvocationReturnValue) {
+                if (retval.isNull()) return;
+                // Copy the value: Frida's InvocationReturnValue is only valid inside this callback,
+                // and the fd is kept in the ownership maps for PR_Close and the detach restore.
+                const fd = copyPointer(retval);
+                try {
+                    if (secretTier) NSS.trackLearnerSocket(fd);
+                    if (tableTier) NSS.register_handshake_callback(fd);
+                    if (secretTier) NSS.register_secret_callback(fd);
+                } catch (e) {
+                    devlog("[-] NSS SSL_ImportFD hook: " + e);
                 }
-
-            });
-
+            }
+        });
     }
 
+    /** Tier 3: friTap's handshake callback on a new socket (the app's own registration replaces it later). */
+    static register_handshake_callback(pRFileDesc: NativePointer): boolean {
+        if (!NSS.get_SSL_Callback) return false;
+        var sslSocketFD = NSS.findSslSocketUncached(pRFileDesc);
+        if (sslSocketFD.isNull()) return false;
+        if (NSS.get_SSL_Callback(pRFileDesc, NSS.keylog_callback, NULL) < 0) {
+            devlog("[-] NSS: SSL_HandshakeCallback registration failed");
+            return false;
+        }
+        NSS.trackOwnedSocket(NSS.ownedHandshakeCallbackFds, sslSocketFD, pRFileDesc);
+        devlog("[*] NSS keylog handshake callback installed");
+        return true;
+    }
+
+    /** Tier 3: hook each distinct app SSLHandshakeCallback (TLS 1.2 keys after the handshake). */
+    private static installHandshakeCallbackInterceptor(sslHandshakeCallback: NativePointer | undefined): void {
+        if (!sslHandshakeCallback || sslHandshakeCallback.isNull()) return;
+        Interceptor.attach(sslHandshakeCallback, {
+            onEnter(args: InvocationArguments) {
+                try {
+                    var sslSocketFD = NSS.findSslSocketUncached(args[0]);
+                    // The app replaces ours on this socket: nothing to reset on detach any more.
+                    if (!sslSocketFD.isNull()) NSS.ownedHandshakeCallbackFds.delete(sslSocketFD.toString());
+                    NSS.hookAppHandshakeCallback(args[1]);
+                } catch (e) {
+                    devlog("[-] NSS SSL_HandshakeCallback hook: " + e);
+                }
+            }
+        });
+    }
+
+    /** Attach once per distinct, executable app callback; the dedupe entry is added before attaching. */
+    static hookAppHandshakeCallback(cb: NativePointer): void {
+        if (cb.isNull() || cb.equals(NSS.keylog_callback)) return;
+        var key = cb.toString();
+        if (NSS.hookedAppHandshakeCallbacks.has(key)) return;
+        NSS.hookedAppHandshakeCallbacks.add(key);
+        if (!isExecutable(cb)) {
+            devlog("[-] NSS: app handshake callback " + cb + " is not executable — not hooked");
+            return;
+        }
+        try {
+            Interceptor.attach(cb, {
+                onEnter(args: InvocationArguments) {
+                    devlog("[*] NSS keylog via the application's handshake callback");
+                    NSS.ssl_RecordKeyLog(args[0]);
+                },
+            });
+        } catch (e) {
+            devlog("[-] NSS: unable to hook app handshake callback " + cb + ": " + e);
+        }
+    }
+
+    /**
+     * Hook SSL_SecretCallback so an app registration on a socket that carries friTap's
+     * callback (e.g. Neqo right after SSL_ImportFD) becomes the original we call through
+     * to, and friTap's callback is registered again on top.
+     */
     static installSecretCallbackInterceptor() {
         if (!NSS.SSL_SecretCallback_ptr) return;
 
         Interceptor.attach(NSS.SSL_SecretCallback_ptr, {
             onEnter(args: any) {
-                this.fd = args[0];
-                this.cb = args[1];
-                this.arg = args[2];
-                this.isOurs = args[1].equals(NSS.secret_callback);
+                this.fd = copyPointer(args[0]);
+                this.cb = copyPointer(args[1]);
+                this.arg = copyPointer(args[2]);
             },
             onLeave(retval: any) {
-                if (this.isOurs || NSS.secretCallbackReentryGuard) return;
-                if (retval.toInt32() < 0) return;
-
-                // External registration detected — save original and re-register ours
+                if (NSS.secretCallbackReentryGuard || retval.toInt32() < 0) return;
+                if (this.cb.equals(NSS.secret_callback)) return;
                 try {
-                    var sslSocketFD = NSS.get_SSL_FD(this.fd);
-                    if (sslSocketFD && !sslSocketFD.isNull()) {
-                        NSS.originalSecretCallbacks[sslSocketFD.toString()] = {
-                            cb: this.cb, arg: this.arg,
-                            fn: new NativeFunction(this.cb, "void", [
-                                "pointer", "uint16", "uint16", "pointer", "pointer"
-                            ])
-                        };
-                    }
-                } catch (e) { /* ignore */ }
-
-                NSS.secretCallbackReentryGuard = true;
-                try {
-                    NSS.SSL_SecretCallback_fn!(this.fd, NSS.secret_callback, NULL);
-                } finally {
-                    NSS.secretCallbackReentryGuard = false;
+                    NSS.adoptAppSecretCallback(this.fd, this.cb, this.arg);
+                } catch (e) {
+                    devlog("[-] NSS SSL_SecretCallback hook: " + e);
                 }
-                devlog("Re-registered secret callback after external override");
             }
         });
         devlog("SSL_SecretCallback interceptor installed");
     }
 
-    /**
-         * Registers a secret_callback through inserting the address to our TLS 1.3 callback function at the apprioate offset of the  SSL Socket struct
-         * This is neccassy because the computed handshake secrets are already freed after the handshake is completed.
-         *
-         *
-         * @param {*} pRFileDesc a file descriptor (NSS PRFileDesc) to a SSL socket
-         * @returns
-         */
-    static register_secret_callback(pRFileDesc: NativePointer) {
-        var sslSocketFD = NSS.get_SSL_FD(pRFileDesc);
-        if (sslSocketFD.isNull()) {
-            devlog("[-] register_secret_callback: unable to get SSL socket descriptor");
+    /** The app registered its own secret callback on `fd`: keep it as the call-through target, put ours back. */
+    static adoptAppSecretCallback(fd: NativePointer, cb: NativePointer, arg: NativePointer): void {
+        var sslSocketFD = NSS.findSslSocketUncached(fd);
+        if (sslSocketFD.isNull()) return;
+        var key = sslSocketFD.toString();
+        if (!NSS.ownedSecretCallbackFds.has(key)) return; // not a socket friTap registered on: leave it alone
+        if (cb.isNull()) {
+            NSS.originalSecretCallbacks.delete(key);
+        } else {
+            NSS.originalSecretCallbacks.set(key, {
+                cb: cb, arg: arg,
+                fn: new NativeFunction(cb, "void", ["pointer", "uint16", "int", "pointer", "pointer"]),
+            });
+        }
+        if (NSS.setSecretCallback(fd, NSS.secret_callback, NULL) < 0) {
+            // The app's registration stands; friTap no longer owns this socket.
+            NSS.forgetOwnedSocket(key);
             return;
         }
+        devlog("Re-registered secret callback after the app's registration (call-through kept)");
+    }
 
-        // Preferred: use SSL_SecretCallback API (works on macOS Firefox)
-        if (NSS.SSL_SecretCallback_fn) {
-            NSS.secretCallbackReentryGuard = true;
-            var rv: number;
+    /** SSL_SecretCallback(fd, cb, arg) with the interceptor's re-entry guard set. */
+    static setSecretCallback(fd: NativePointer, cb: NativePointer, arg: NativePointer): number {
+        if (!NSS.SSL_SecretCallback_fn) return -1;
+        NSS.secretCallbackReentryGuard = true;
+        try {
+            return NSS.SSL_SecretCallback_fn(fd, cb, arg);
+        } finally {
+            NSS.secretCallbackReentryGuard = false;
+        }
+    }
+
+    /**
+     * Register friTap's secret_callback on a new socket through the SSL_SecretCallback API
+     * (tier 2). A socket fresh from SSL_ImportFD has no secret callback (ssl_DupSocket does
+     * not copy it), so any entry under its address belongs to a freed socket and is dropped.
+     *
+     * @param {*} pRFileDesc a file descriptor (NSS PRFileDesc) to a SSL socket
+     * @returns true iff friTap's callback is registered on the socket
+     */
+    static register_secret_callback(pRFileDesc: NativePointer): boolean {
+        if (!NSS.SSL_SecretCallback_fn) return false;
+        var sslSocketFD = NSS.findSslSocketUncached(pRFileDesc);
+        if (sslSocketFD.isNull()) {
+            devlog("[-] register_secret_callback: unable to get SSL socket descriptor");
+            return false;
+        }
+        var key = sslSocketFD.toString();
+        NSS.originalSecretCallbacks.delete(key);
+        if (NSS.setSecretCallback(pRFileDesc, NSS.secret_callback, NULL) < 0) {
+            devlog("[-] SSL_SecretCallback API call failed for " + pRFileDesc);
+            NSS.ownedSecretCallbackFds.delete(key);
+            return false;
+        }
+        NSS.trackOwnedSocket(NSS.ownedSecretCallbackFds, sslSocketFD, pRFileDesc);
+        devlog("secret_callback registered via SSL_SecretCallback API");
+        return true;
+    }
+
+    private static trackOwnedSocket(owned: Map<string, NativePointer>, sslSocketFD: NativePointer, pRFileDesc: NativePointer): void {
+        owned.set(sslSocketFD.toString(), copyPointer(pRFileDesc));
+        NSS.ownedSocketByFd.set(pRFileDesc.toString(), sslSocketFD.toString());
+    }
+
+    /** Drop every bookkeeping entry of a socket (closed, or no longer carrying friTap's callbacks). */
+    static forgetOwnedSocket(sslSocketKey: string): void {
+        NSS.ownedSecretCallbackFds.delete(sslSocketKey);
+        NSS.ownedHandshakeCallbackFds.delete(sslSocketKey);
+        NSS.originalSecretCallbacks.delete(sslSocketKey);
+    }
+
+    /** A closed socket's memory may be reused: the learner must not attribute randoms to it. */
+    static forgetLearnerSocket(sslSocketKey: string): void {
+        var sockets = NSS.activeRandomTrackedSockets();
+        if (sockets === null) return;
+        try {
+            sockets.forget(addressOf(ptr(sslSocketKey)));
+        } catch (_e) { /* malformed key: nothing tracked under it */ }
+    }
+
+    /** PR_Close of an owned socket clears its entries, so detach never touches a freed socket. */
+    private static installCloseHook(prClose: NativePointer | undefined): void {
+        if (!prClose || prClose.isNull()) return;
+        Interceptor.attach(prClose, {
+            onEnter(args: InvocationArguments) {
+                if (NSS.ownedSocketByFd.size === 0) return;
+                var fdKey = args[0].toString();
+                var sslSocketKey = NSS.ownedSocketByFd.get(fdKey);
+                if (sslSocketKey === undefined) return;
+                NSS.ownedSocketByFd.delete(fdKey);
+                NSS.forgetOwnedSocket(sslSocketKey);
+                NSS.forgetLearnerSocket(sslSocketKey);
+            }
+        });
+    }
+
+    private static registerSecretCallbackTeardown(): void {
+        if (NSS.teardownRegistered) return;
+        NSS.teardownRegistered = true;
+        registerDetachTeardown("nss-key-callbacks", NSS.restoreAppCallbacks);
+    }
+
+    /**
+     * Detach teardown: put the app's own secret callback (or NULL) back on every live socket
+     * that still carries friTap's secret_callback, and clear friTap's handshake callback, so
+     * no socket keeps a pointer into the unloaded agent. Never throws.
+     *
+     * Returns the counts for the DetachReport: `owned` sockets, restored `toApp` (the app's
+     * callback) or `toNull`, `stale` (no longer the same live socket, left alone), `failed`
+     * (negative rv or threw); `hsOwned` / `hsCleared` for the handshake callback.
+     */
+    static restoreAppCallbacks(): NssRestoreSummary {
+        var summary: NssRestoreSummary = {
+            owned: NSS.ownedSecretCallbackFds.size, toApp: 0, toNull: 0, stale: 0, failed: 0,
+            hsOwned: NSS.ownedHandshakeCallbackFds.size, hsCleared: 0,
+            echDual: NSS.echDualEmissions,
+        };
+        // The read-only PK11_GenerateRandom observer (learner / ECH recorder) goes first.
+        NSS.stopRandomObserver();
+        NSS.ownedSecretCallbackFds.forEach((fd, key) => {
+            if (!NSS.isSameLiveSocket(fd, key)) { summary.stale++; return; }
+            var orig = NSS.originalSecretCallbacks.get(key);
             try {
-                rv = NSS.SSL_SecretCallback_fn(pRFileDesc, NSS.secret_callback, NULL);
-            } finally {
-                NSS.secretCallbackReentryGuard = false;
+                var rv = NSS.setSecretCallback(fd, orig ? orig.cb : NULL, orig ? orig.arg : NULL);
+                if (rv < 0) summary.failed++;
+                else if (orig) summary.toApp++;
+                else summary.toNull++;
+            } catch (e) {
+                summary.failed++;
+                devlog("[-] NSS: restoring the secret callback failed: " + e);
             }
-            if (rv >= 0) {
-                devlog("secret_callback registered via SSL_SecretCallback API");
-                return;
+        });
+        NSS.ownedHandshakeCallbackFds.forEach((fd, key) => {
+            if (!NSS.isSameLiveSocket(fd, key) || !NSS.get_SSL_Callback) return;
+            try {
+                NSS.get_SSL_Callback(fd, NULL, NULL);
+                summary.hsCleared++;
+            } catch (e) {
+                devlog("[-] NSS: clearing the handshake callback failed: " + e);
             }
-            devlog("SSL_SecretCallback API call failed (rv=" + rv + "), falling back to struct write");
-        }
+        });
+        NSS.ownedSecretCallbackFds.clear();
+        NSS.ownedHandshakeCallbackFds.clear();
+        NSS.originalSecretCallbacks.clear();
+        NSS.ownedSocketByFd.clear();
+        return summary;
+    }
 
-        // Fallback: write directly to struct offset (old approach)
-        var sslSocketStr = NSS.parse_struct_sslSocketStr(sslSocketFD);
-        if (NSS.is_ptr_at_mem_location(sslSocketStr.secretCallback.readPointer()) == 1) {
-            NSS.insert_hook_into_secretCallback(sslSocketStr.secretCallback.readPointer());
-        } else {
-            sslSocketStr.secretCallback.writePointer(NSS.secret_callback);
+    /** Defensive re-check before a teardown call: the fd is readable and still resolves to the same sslSocket. */
+    private static isSameLiveSocket(fd: NativePointer, sslSocketKey: string): boolean {
+        try {
+            return isReadable(fd, Process.pointerSize * 6) && NSS.findSslSocketUncached(fd).toString() === sslSocketKey;
+        } catch (_e) {
+            return false;
         }
-        devlog("secret_callback installed via struct write at: " + sslSocketStr.secretCallback);
     }
 
 

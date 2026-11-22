@@ -1,21 +1,14 @@
-"""
-REST adapter: the tool registry over plain HTTP/JSON (stdlib only).
+"""REST adapter: the tool registry over plain HTTP/JSON (stdlib only).
 
-Routes::
+    GET  /healthz          -> {"status": "ok"}  (bare liveness probe, never needs the token)
+    GET  /v1/tools         -> {"tools": [descriptor, ...]}
+    GET  /openapi.json     -> OpenAPI 3.1 document
+    POST /v1/tools/{name}  -> tool result (JSON body = params, empty = {})
 
-    GET  /healthz            -> {"status": "ok"}   (never needs the token)
-    GET  /v1/tools           -> {"tools": [descriptor, ...]}
-    GET  /openapi.json       -> OpenAPI 3.1 document
-    POST /v1/tools/{name}    -> tool result (JSON body = params, empty = {})
-
-Errors use the :class:`ToolError` JSON shape. Status codes: usage errors 400,
-``forbidden`` 403, ``not_found``/``unknown_tool`` 404, ``capture_running``
-409, runtime errors 500. Binds 127.0.0.1 by default; if a token is set every
-request except ``GET /healthz`` needs ``Authorization: Bearer <token>``.
-``/healthz`` is a bare liveness probe: it only ever returns
-``{"status": "ok"}`` (no tool or version info). No CORS headers are sent;
-without a token, requests with a non-loopback ``Host`` or ``Origin`` are
-refused (403) so web pages cannot drive the tools (CSRF / DNS rebinding).
+Errors use the ToolError JSON shape (400 usage, 403 forbidden, 404 not_found/unknown_tool, 409
+capture_running, 500 runtime). Binds 127.0.0.1 by default; with a token every request except
+``/healthz`` needs ``Authorization: Bearer <token>``. No CORS headers are sent; without a token a
+non-loopback ``Host`` or ``Origin`` is refused (403) against CSRF and DNS rebinding.
 """
 
 from __future__ import annotations
@@ -134,12 +127,11 @@ class _Handler(BaseHTTPRequestHandler):
                             hint="send 'Authorization: Bearer <token>'")
 
     def _check_local_request(self) -> None:
-        """Token-less (loopback-only) server: refuse what a web page can send.
+        """Token-less (loopback-only) server: refuse requests a web page can send.
 
-        Without this a page in the user's browser could drive the tools: a
-        cross-site "simple" POST (``text/plain`` body, no preflight) carries
-        a foreign ``Origin``, a DNS-rebinding request a foreign ``Host``. Same
-        protection the MCP server gets from its transport security settings.
+        A cross-site "simple" POST (``text/plain``, no preflight) carries a foreign ``Origin``; a
+        DNS-rebinding request a foreign ``Host``. The MCP server gets the same protection from its
+        transport security settings.
         """
         if not _is_loopback_authority(self.headers.get("Host")):
             raise ToolError("request Host is not a loopback address", "forbidden",

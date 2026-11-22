@@ -51,6 +51,8 @@ export interface ReassembledChunk {
     /** Stream offset of `data[0]`. */
     offset: number;
     data: Uint8Array;
+    /** Set on the chunk whose end reaches the stream's FIN offset. */
+    fin?: true;
 }
 
 /**
@@ -107,6 +109,7 @@ export class QuicStreamReassembler {
             this.drain(state, out);
         }
         if (state.next !== IGNORED && state.finalSize !== null && state.next >= state.finalSize) {
+            if (out.length > 0) out[out.length - 1].fin = true;
             // Complete: forget it (late retransmissions then look like a late join and are dropped).
             this.ignore(state);
         }

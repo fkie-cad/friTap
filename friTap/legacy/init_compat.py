@@ -1,16 +1,9 @@
 #!/usr/bin/env python3
 
-"""Legacy inline file initialization from ssl_logger.py.
-
-Used when output handlers are not active (_handlers_active is False).
-"""
+"""Output-file setup for the non-handler path (``_handlers_active`` is False)."""
 
 def init_output_files_legacy(logger_instance):
-    """Legacy inline file initialization extracted from ssl_logger.py init_fritap().
-
-    Args:
-        logger_instance: The SSL_Logger instance (self)
-    """
+    """Open the keylog/JSON files and, for ``--live``, the Wireshark named pipe."""
     from ..pcap import PCAP
     from ..ssl_logger import SSL_READ, SSL_WRITE
 

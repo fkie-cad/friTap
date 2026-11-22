@@ -1,18 +1,10 @@
-"""
-Canary known-value search — prove that a *specific* user-supplied value leaks.
+"""Canary known-value search: prove that a specific planted value leaks.
 
-Unlike the generic PII / credential detectors (which flag anything that *looks*
-like an email, token or coordinate), this module answers a narrower, stronger
-question: "does *this exact* value — the one I planted — leave the device, and
-in what shape?". The operator supplies one or more canaries (an email, an
-advertising id, a GPS fix, a free string, ...); the module normalizes each one
-the way apps commonly do, derives the obvious obfuscations an app might apply
-(URL-encoding, base64, hex, md5/sha1/sha256) and then searches decoded,
-decompressed request/response traffic for any of those forms.
-
-Everything here is pure, offline and host-side: it never touches a device and
-never performs capture. It only consumes already-captured :class:`Flow`
-objects.
+Unlike the generic PII / credential detectors, this answers "does this exact
+value leave the device, and in what shape?". Each canary (email, advertising
+id, GPS fix, free string, ...) is normalized, expanded into common obfuscations
+(URL-encoding, base64, hex, md5/sha1/sha256) and searched in decoded request and
+response traffic. Pure and offline: it only consumes captured :class:`Flow` objects.
 
 Security / privacy contract (see ``AGENTS.md``):
   * Raw canary values are *never* logged or printed.
@@ -42,28 +34,19 @@ from friTap.analysis.credentials import _shannon_entropy
 if TYPE_CHECKING:
     from friTap.flow.models import Flow
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
 #: Canary ``kind`` values understood by :func:`expand` (the canonical vocabulary).
 CANARY_KINDS: frozenset[str] = frozenset(
     {"email", "phone", "aaid", "android_id", "imei", "gps", "ip", "free"}
 )
 
-#: Accepted ``kind`` aliases -> canonical kind, so a caller may use the names the
-#: PII detector (:mod:`friTap.analysis.privacy`) uses for the same concept. The
-#: advertising-id names mirror ``privacy._AD_ID_KEYS`` and the geolocation names
-#: mirror its geo vocabulary; both resolve to an existing canonical kind, so no
-#: behaviour changes for callers already using ``aaid`` / ``gps``.
+#: Aliases -> canonical kind, mirroring the PII detector's names
+#: (``privacy._AD_ID_KEYS`` and its geo vocabulary).
 CANARY_KIND_ALIASES: dict[str, str] = {
-    # Advertising identifier (AAID / GAID / IDFA / IDFV) -> "aaid".
     "advertising_id": "aaid",
     "idfa": "aaid",
     "gaid": "aaid",
     "adid": "aaid",
     "idfv": "aaid",
-    # Geolocation vocabulary -> "gps".
     "geo": "gps",
     "geolocation": "gps",
     "location": "gps",
@@ -71,12 +54,7 @@ CANARY_KIND_ALIASES: dict[str, str] = {
 
 
 def canonical_kind(kind: str) -> str:
-    """Normalize a canary *kind* to its canonical form, resolving aliases.
-
-    Lower-cases and strips the input, then maps any accepted alias (see
-    :data:`CANARY_KIND_ALIASES`) to its canonical kind. Unknown values are
-    returned unchanged (and coerced to ``free`` by :func:`parse_canaries`).
-    """
+    """Lower-case, strip and alias-resolve a canary *kind*; unknown values pass through (:func:`parse_canaries` coerces them to ``free``)."""
     kind = str(kind or "").strip().lower()
     return CANARY_KIND_ALIASES.get(kind, kind)
 
@@ -100,9 +78,7 @@ _LONG_PLAINTEXT_LEN = 12
 _LOW_ENTROPY_THRESHOLD = 2.5
 _HIGH_ENTROPY_THRESHOLD = 3.0
 
-#: Needles shorter than this are too short to scan for without rampant false
-#: positives (hashes and encodings are always far longer; only truncated GPS
-#: coordinates approach it).
+#: Shorter needles give rampant false positives (only truncated GPS approaches it).
 _MIN_NEEDLE_LEN = 3
 
 #: Context captured on either side of a match (held internally only).
@@ -112,19 +88,10 @@ _SPAN_CONTEXT = 16
 _GPS_PRECISIONS = (1, 2, 3, 4, 5)
 
 
-# ---------------------------------------------------------------------------
-# Data model
-# ---------------------------------------------------------------------------
-
 
 @dataclass(frozen=True)
 class Canary:
-    """A specific known value the operator wants to trace through traffic.
-
-    ``warning`` is a non-empty, human-readable note when the plaintext value is
-    short or low-entropy (and therefore prone to false positives); it is empty
-    for a well-formed canary.
-    """
+    """A known value to trace through traffic; ``warning`` is set for short or low-entropy values (false-positive prone)."""
 
     value: str
     kind: str
@@ -134,11 +101,7 @@ class Canary:
 
 @dataclass(frozen=True)
 class Candidate:
-    """One concrete needle derived from a canary, plus how it was derived.
-
-    ``transform`` names the derivation (``plain``, ``base64``, ``sha256`` ...);
-    ``confidence`` is one of ``high`` / ``medium`` / ``low``.
-    """
+    """A needle derived from a canary; ``transform`` is ``plain``, ``base64``, ``sha256`` ...; ``confidence`` is high/medium/low."""
 
     needle: str
     transform: str
@@ -147,12 +110,7 @@ class Candidate:
 
 @dataclass(frozen=True)
 class CanaryHit:
-    """A single place where a canary candidate was found in a flow.
-
-    ``raw_span`` is the matched text with a little surrounding context. It is
-    held here for the caller but is *not* serialized by default — see
-    :func:`hit_to_row`.
-    """
+    """One place a canary candidate was found; ``raw_span`` (match plus context) is not serialized by default, see :func:`hit_to_row`."""
 
     label: str
     kind: str
@@ -165,13 +123,9 @@ class CanaryHit:
     raw_span: str = field(repr=False, default="")
 
 
-# ---------------------------------------------------------------------------
-# Parsing / validation
-# ---------------------------------------------------------------------------
-
 
 def _canary_warning(value: str) -> str:
-    """Return a warning note for a noisy plaintext canary, else ``""``."""
+    """Warning for a noisy plaintext canary, else ``""``."""
     if len(value) < _MIN_UNIQUE_PLAINTEXT_LEN:
         return "short plaintext canary (prone to false positives)"
     if _shannon_entropy(value) < _LOW_ENTROPY_THRESHOLD:
@@ -180,13 +134,12 @@ def _canary_warning(value: str) -> str:
 
 
 def canary_spec_from_text(text: str, position: int) -> dict:
-    """Expand the string shorthand of a canary into its ``{value, kind, label}`` spec.
+    """Expand the string shorthand into a ``{value, kind, label}`` spec.
 
-    ``"KIND=VALUE"`` (``email=alice@example.com``, alias kinds included) sets
-    the kind; any other string -- including one whose text before the first
-    ``=`` is not a known kind (``token=abc``, ``a=b&c=d``) -- is a whole
-    :data:`DEFAULT_CANARY_KIND` value. The label is ``<kind>-<position>``, so
-    the value itself never appears in results.
+    ``"KIND=VALUE"`` (aliases included) sets the kind; any other string, even
+    one like ``token=abc`` with an unknown prefix, is a whole
+    :data:`DEFAULT_CANARY_KIND` value. The label is ``<kind>-<position>`` so the
+    value never appears in results.
     """
     prefix, sep, rest = text.partition(CANARY_SHORTHAND_SEP)
     kind = canonical_kind(prefix) if sep else ""
@@ -196,15 +149,11 @@ def canary_spec_from_text(text: str, position: int) -> dict:
 
 
 def parse_canaries(specs: list[dict | str]) -> list[Canary]:
-    """Validate raw canary specs into :class:`Canary` objects.
+    """Validate raw specs (mapping with ``value``/``kind``/``label``, or the shorthand string) into :class:`Canary` objects.
 
-    Each spec is a mapping with ``value``, ``kind`` and ``label``, or a string
-    in the shorthand of :func:`canary_spec_from_text`. Specs with an
-    empty ``value`` or ``label`` are dropped; ``kind`` is normalized through
-    :func:`canonical_kind` (so aliases like ``advertising_id`` or ``geo`` resolve
-    to ``aaid`` / ``gps``) and an unknown ``kind`` is coerced to ``free``; the
-    list is capped at :data:`MAX_CANARIES`. Noisy plaintext values are kept but
-    flagged via :attr:`Canary.warning`.
+    Empty ``value``/``label`` specs are dropped, kind goes through
+    :func:`canonical_kind` (unknown becomes ``free``), the list is capped at
+    :data:`MAX_CANARIES`, and noisy values are kept with :attr:`Canary.warning`.
     """
     canaries: list[Canary] = []
     for position, spec in enumerate(specs or [], start=1):
@@ -224,10 +173,6 @@ def parse_canaries(specs: list[dict | str]) -> list[Canary]:
             break
     return canaries
 
-
-# ---------------------------------------------------------------------------
-# Normalization (per kind) — run BEFORE transforming
-# ---------------------------------------------------------------------------
 
 
 def _ordered_unique(values: Iterable[str]) -> list[str]:
@@ -313,10 +258,6 @@ def _normalize(value: str, kind: str) -> list[str]:
     return normalizer(value)
 
 
-# ---------------------------------------------------------------------------
-# Transforms — applied to every normalized variant
-# ---------------------------------------------------------------------------
-
 
 def _plaintext_confidence(needle: str) -> str:
     """Confidence for a plaintext needle: long+unique is high, short/flat is low."""
@@ -332,11 +273,7 @@ def _plaintext_confidence(needle: str) -> str:
 
 
 def _transforms(variant: str) -> list[tuple[str, str, str]]:
-    """Return ``(needle, transform, confidence)`` triples for one variant.
-
-    Hashes and encoded forms are unambiguous once matched, so they are always
-    ``high`` confidence; plaintext confidence depends on the value itself.
-    """
+    """``(needle, transform, confidence)`` triples for one variant; hashes and encodings are always ``high``."""
     data = variant.encode("utf-8")
     standard_b64 = base64.b64encode(data).decode("ascii")
     urlsafe_b64 = base64.urlsafe_b64encode(data).decode("ascii")
@@ -358,12 +295,7 @@ def _transforms(variant: str) -> list[tuple[str, str, str]]:
 
 
 def expand(value: str, kind: str) -> list[Candidate]:
-    """Expand a canary value into concrete :class:`Candidate` needles.
-
-    Normalizes per *kind* first, then applies every transform to each normalized
-    variant. Identical needles are de-duplicated, keeping the highest-confidence
-    labelling.
-    """
+    """Expand a canary into :class:`Candidate` needles (normalize per *kind*, then every transform); duplicates keep the highest confidence."""
     best: dict[str, Candidate] = {}
     for variant in _normalize(value, kind):
         for needle, transform, confidence in _transforms(variant):
@@ -376,10 +308,6 @@ def expand(value: str, kind: str) -> list[Candidate]:
                 break
     return list(best.values())
 
-
-# ---------------------------------------------------------------------------
-# Scanning
-# ---------------------------------------------------------------------------
 
 
 def _context_bounds(total: int, offset: int, length: int) -> tuple[int, int]:
@@ -394,11 +322,7 @@ def _window(text: str, index: int, length: int) -> str:
 
 
 def _match_span(needle: str, text: str, data: bytes | None) -> str | None:
-    """Return the matched span (with context) if *needle* is in text or bytes.
-
-    Scans text first (the common case); bodies are additionally scanned as raw
-    bytes so hashes/hex/base64 embedded in binary or protobuf payloads are found.
-    """
+    """Matched span with context if *needle* is in the text, else in the raw bytes (finds hashes/hex/base64 inside binary or protobuf bodies)."""
     index = text.find(needle)
     if index != -1:
         return _window(text, index, len(needle))
@@ -475,13 +399,11 @@ def _safe_parse_qs(query: str) -> dict[str, list[str]]:
 
 
 def _hit_host(flow: "Flow") -> str:
-    """Destination host of *flow* only (never the request line).
+    """Destination host only, never the request line.
 
-    ``flow.display_host`` appends the request URL (``host/path?query``), which
-    would echo a canary found in the path/query straight into the ``host``
-    field even in redacted mode. The matched text belongs in ``raw_span``
-    (gated by ``show_values``), so hits record just the host, falling back to
-    ``display_host`` (``addr:port``) for non-HTTP flows that carry no host.
+    ``flow.display_host`` appends ``host/path?query``, which would echo a canary
+    from the path/query into ``host`` even when redacted. Matched text belongs in
+    ``raw_span`` (gated by ``show_values``); non-HTTP flows fall back to ``display_host``.
     """
     request = flow.request
     host = getattr(request, "host", "") if request is not None else ""
@@ -551,10 +473,6 @@ def search_flows(
         hits.extend(scan_flow(flow, candidates_by_canary))
     return hits
 
-
-# ---------------------------------------------------------------------------
-# Serialization
-# ---------------------------------------------------------------------------
 
 
 def hit_to_row(hit: CanaryHit, show_values: bool = False) -> dict:

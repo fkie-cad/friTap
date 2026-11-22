@@ -81,9 +81,8 @@ def kind_for_uni_type(stream_type: Optional[int]) -> str:
 class UniStreamState:
     """Per unidirectional stream state.
 
-    ``stype`` is None until the stream-type varint has fully arrived; ``buf``
-    holds bytes not consumed yet (type/push-id prefix or partial frames).
-    ``push_id`` is set once a push stream's push id has been read.
+    ``stype`` is None until the stream-type varint arrived; ``buf`` holds unconsumed bytes
+    (type/push-id prefix or partial frames); ``push_id`` is set once a push stream's id is read.
     """
 
     stype: Optional[int] = None
@@ -93,10 +92,7 @@ class UniStreamState:
 
 
 def parse_settings(payload: bytes) -> dict[int, int]:
-    """Decode a SETTINGS frame payload into ``{identifier: value}``.
-
-    A truncated trailing pair is ignored rather than raising.
-    """
+    """Decode a SETTINGS payload into ``{identifier: value}``; a truncated trailing pair is ignored."""
     settings: dict[int, int] = {}
     offset = 0
     while offset < len(payload):

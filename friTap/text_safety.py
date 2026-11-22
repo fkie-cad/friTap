@@ -6,8 +6,8 @@ Written raw to the analyst's terminal or log file, ``ESC [ ... m`` (ANSI/CSI)
 and ``ESC ] ... BEL`` (OSC) sequences can recolour or clear the screen, forge
 log lines, set the window title or plant clickable hyperlinks.
 
-This is the core (TUI-independent) twin of
-``friTap.tui.widgets.wire_text.visible_controls``: every C0/C1 control, the
+``friTap.tui.widgets.wire_text.visible_controls`` re-exports this
+TUI-independent function: every C0/C1 control, the
 Unicode line/paragraph separators and the bidi override/isolate controls are
 rendered as visible ``\\xNN`` / ``\\uNNNN`` escapes, so they cannot act on a
 terminal.
@@ -60,6 +60,6 @@ def safe_terminal_text(value) -> str:
 def visible_controls(value) -> str:
     """Return *value* with every control character -- including ``\\n`` -- escaped.
 
-    TAB is kept. Behaviour matches the TUI's ``wire_text.visible_controls``.
+    TAB is kept. ``wire_text.visible_controls`` re-exports this function.
     """
     return _TERMINAL_UNSAFE_SINGLE_LINE.sub(_escape_control, str(value))

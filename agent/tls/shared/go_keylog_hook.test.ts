@@ -22,6 +22,7 @@ import { installGoKeylogByPattern } from "./go_keylog_hook.js";
 import { PatternBasedHooking } from "./pattern_based_hooking.js";
 import { PatternBasedHooking as LegacyPatternBasedHooking } from "../../legacy/tls/shared/pattern_based_hooking.js";
 import { isGoArm64StackGuardLoad } from "../../shared/go_attach.js";
+import { _resetKeylogOutcomeReportsForTests } from "../../shared/boringssl_keylog_outcome.js";
 import { GoTLS_Linux } from "../../legacy/tls/platforms/linux/gotls_linux.js";
 import { GoTLS_Android } from "../../legacy/tls/platforms/android/gotls_android.js";
 import { GoTLS as LegacyGoTLS } from "../../legacy/tls/libs/gotls.js";
@@ -192,6 +193,7 @@ test("pattern hooks on arm64: a Go entry is hooked after its stack check, a C ma
     for (const match of [0x1000, 0x2000]) {
         G.Memory.scan = (_b: any, _s: number, _p: string, cb: any) => { cb.onMatch(P(match), 4); cb.onComplete(); };
         for (const Hooker of [PatternBasedHooking, LegacyPatternBasedHooking]) {
+            _resetKeylogOutcomeReportsForTests(); // each copy hooks the same entry; one hook per entry otherwise
             G.Process.arch = "arm64";
             try {
                 new (Hooker as any)(fakeModule("app_arm64")).hookModuleByPattern({ primary: "AA", fallback: "" }, () => { });

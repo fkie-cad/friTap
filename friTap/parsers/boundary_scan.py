@@ -1,14 +1,9 @@
 """Protocol boundary scanner for trailing data detection.
 
-When a parser (e.g. WebSocket) consumes part of a buffer and leaves
-unconsumed trailing bytes, and those bytes don't start with a
-recognizable protocol signature at offset 0 (due to null padding,
-binary metadata, etc.), this module scans forward to find the first
-plausible protocol boundary.
-
-The scan uses an anchor-byte pre-filter to avoid calling expensive
-``can_parse()`` at every offset. Each candidate position is validated
-with multi-byte context to prevent false positives.
+When a parser (e.g. WebSocket) leaves trailing bytes that do not start with a
+protocol signature at offset 0 (null padding, binary metadata), scan forward for
+the first plausible boundary. An anchor-byte pre-filter avoids calling
+``can_parse()`` at every offset; candidates are validated with multi-byte context.
 """
 
 from __future__ import annotations
@@ -28,11 +23,6 @@ class BoundaryScanResult:
 
 
 # ---------------------------------------------------------------------------
-# HTTP/1.x signatures — method + space + path-start
-# We require the path to start with '/' or 'h' (absolute-form URI)
-# to reject random occurrences of method names in binary data.
-# ---------------------------------------------------------------------------
-
 _HTTP_REQUEST_SIGS: tuple[bytes, ...] = (
     b"GET /", b"GET h",
     b"POST /", b"POST h",
@@ -54,14 +44,8 @@ _HTTP_ANCHOR_BYTES = frozenset(b"CDGHOPT")
 
 
 # ---------------------------------------------------------------------------
-# Structural validation helpers
-# ---------------------------------------------------------------------------
-
 def _try_http_at(data: bytes, offset: int) -> BoundaryScanResult | None:
-    """Check for HTTP/1.x or HTTP/2 signature at *offset*.
-
-    Uses ``bytes.startswith(prefix, start)`` to avoid allocating slices.
-    """
+    """Check for an HTTP/1.x or HTTP/2 signature at *offset* (``startswith(prefix, start)``, no slices)."""
     # HTTP/2 connection preface (24 bytes — very low false-positive rate)
     if data.startswith(_H2_PREFACE, offset):
         return BoundaryScanResult(offset, PROTOCOL_HTTP2)
@@ -85,23 +69,13 @@ def _try_http_at(data: bytes, offset: int) -> BoundaryScanResult | None:
 
 
 # ---------------------------------------------------------------------------
-# Main scan function
-# ---------------------------------------------------------------------------
-
 def scan_protocol_boundary(
     data: bytes,
     max_scan: int = 1024,
 ) -> BoundaryScanResult | None:
-    """Scan *data* for the first plausible protocol boundary.
+    """Scan *data* for the first plausible protocol boundary, or ``None`` within *max_scan* bytes.
 
-    Skips null bytes and other garbage, then checks for HTTP/1.x
-    and HTTP/2 signatures at each position.
-
-    Returns ``None`` if no boundary is found within *max_scan* bytes.
-
-    Performance: O(n) where n = min(len(data), max_scan).
-    The anchor-byte pre-filter means only ~3% of positions trigger
-    the more expensive validation checks.
+    O(min(len, max_scan)); the anchor filter triggers validation at only ~3% of positions.
     """
     limit = min(len(data), max_scan)
     i = 0

@@ -21,6 +21,20 @@ class UnsupportedProtocolBackendError(ValueError):
     pass
 
 
+def resolve_follow_exec(device) -> bool:
+    """The single place the tri-state ``follow_exec`` becomes a yes/no.
+
+    Auto (None) is OFF on every platform: child gating makes Frida install its
+    fork hook, and Frida 17.24.3-17.27.x crashes the fork child of the target
+    (Android apps forking via ProcessBuilder, desktop Firefox on Linux; see
+    research/frida_fork_child_crash). An explicit True/False always wins.
+    """
+    requested = getattr(device, "follow_exec", None)
+    if requested is not None:
+        return bool(requested)
+    return False
+
+
 @dataclass
 class DeviceConfig:
     """Configuration for target device connection."""
@@ -33,9 +47,10 @@ class DeviceConfig:
     enable_child_gating: bool = False
     # Follow every instrumented process across exec() (e.g. Homebrew's python3
     # launcher exec()ing the real binary), in spawn and attach mode. It needs
-    # Frida child gating, which costs ~40-50 ms per fork; --no-follow-exec
-    # turns it off.
-    follow_exec: bool = True
+    # Frida child gating, which costs ~40-50 ms per fork. Tri-state: None =
+    # auto (off everywhere), True = --follow-exec, False =
+    # --no-follow-exec. Read it through :func:`resolve_follow_exec`.
+    follow_exec: Optional[bool] = None
     timeout: Optional[int] = None
     # Upper bound (seconds) for the agent's blocking ``script.load()``. Without
     # it a wedged agent hangs the session silently. ``0`` disables the bound.
@@ -166,7 +181,7 @@ class HookingConfig:
     quic_only: bool = False
     # When True, the agent skips the inline android_dlopen_ext loader hook. This
     # is the hook PairIP / anti-tamper runtimes detect and SIGSEGV on during a
-    # spawn-time integrity scan (fkie-cad/friTap#64). Only already-loaded /
+    # spawn-time integrity scan. Only already-loaded /
     # explicitly-selected TLS libraries are then hooked. The agent also auto-
     # skips it in spawn mode when an anti-tamper library is detected.
     no_loader_hook: bool = False
@@ -181,16 +196,15 @@ class HookingConfig:
     # libcommerce_http_client.so, offset-based libwebviewchromium.so; libunity.so
     # is opt-in via --offsets), resolved WITHOUT any Memory.scan (exports ->
     # symbols -> offsets). Skips the loader hook, WebView/Cronet pattern scan,
-    # Java hooks, OHTTP and the library-scan pass — the broad footprint that trips
+    # Java hooks, OHTTP and the library-scan pass: the broad footprint that trips
     # PairIP's periodic integrity check (an in-process SIGSEGV). Keys persist via
-    # "blink" (hooks toggled so .text stays pristine between scans).
-    # (fkie-cad/friTap#64). Default OFF.
+    # "blink" (hooks toggled so .text stays pristine between scans). Default OFF.
     pairip_safe: bool = False
     # --probe. Dry-run diagnostic: the agent reports which platform branch it
     # selected and then stops BEFORE installing any hook. Exists because a
-    # target that dies during instrumentation (fkie-cad/friTap#65) leaves the
-    # user with no way to learn how far friTap got. Boolean on purpose — staged
-    # verbosity levels would be a second, redundant knob next to -v/-do.
+    # target that dies during instrumentation leaves the user with no way to
+    # learn how far friTap got. Boolean on purpose: staged verbosity
+    # levels would duplicate -v/-do.
     probe: bool = False
     # --boringssl-anchor-only (Android arm64; debugging aid). Force friTap's
     # last-resort BoringSSL keylog tier (the "anchor locator") by skipping the
@@ -199,11 +213,9 @@ class HookingConfig:
     # the anchor locator be exercised on modules a pattern would otherwise win.
     # Still honours --pairip-safe (tier 4 is a memory scan). Default OFF.
     force_anchor_locator: bool = False
-    # --attribute-sdk (Phase 3b; opt-in, OFF by default). Ask the agent to
-    # capture the calling thread's backtrace once per connection at the first
-    # TLS plaintext hook and emit it as an additive `caller_stack` message for
-    # SDK / app attribution. Adds per-connection attribution metadata only; it
-    # never changes, delays or drops captured traffic. Default OFF.
+    # --attribute-sdk: capture the calling thread's backtrace once per connection
+    # at the first TLS plaintext hook and emit it as a `caller_stack` message for
+    # SDK / app attribution. Metadata only; never alters captured traffic.
     attribute_sdk: bool = False
     # Override which layer of the HTTP/3 egress-headers fallback chain the
     # agent actually attaches to. "auto" (default) keeps the winner-takes-all
@@ -211,7 +223,7 @@ class HookingConfig:
     # net::QuicChromiumClientStream::WriteHeaders, then
     # quic::QuicSpdySession::WriteHeadersOnHeadersStream as a last-resort gQUIC
     # fallback. Set to "chrome-shim" or "session-level" to FORCE a fallback
-    # layer for testing — useful for validating chain behavior on builds where
+    # layer for testing, e.g. to validate the chain on builds where
     # the quiche-internal layer still resolves. Only effective in app-api mode.
     quic_egress_headers_layer: str = "auto"
     # Generic memory-region key-scan target (--scan-keys-region). None disables
@@ -227,9 +239,9 @@ class HookingConfig:
     # combined with -k/-p/-c it runs alongside them. memory_scan_patterns is the
     # optional -ms value: either a path to a user profile file that
     # overrides/extends the shipped friTap/memory_scanning/patterns.json,
-    # OR a targeted engine name (boringssl | schannel | rc4) / profile id (F3).
+    # OR a targeted engine name (boringssl | schannel | rc4) / profile id.
     # The resolver (memory_scanning.loader.select_profiles) disambiguates by
-    # resolution order — an existing file wins, then a known engine/id — so this
+    # resolution order: an existing file wins, then a known engine/id, so this
     # single field carries both meanings. memory_scan_interval is the poll
     # cadence (seconds) at which the host drives the scanner's scanOnce().
     memory_scan: bool = False
@@ -289,18 +301,16 @@ class FriTapConfig:
     # Original argv tokens for spawn mode (e.g. ["wine", "/p/My Game/app.exe"]).
     # Kept separate from `target` (which stays a single string for attach-by-name
     # / display) so spawn passes the real argv to device.spawn() instead of
-    # re-splitting the joined string on spaces — which corrupts paths containing
-    # spaces (issue #66 follow-up). None for attach mode / programmatic configs.
+    # re-splitting the joined string on spaces, which corrupts paths containing
+    # spaces. None for attach mode / programmatic configs.
     target_argv: Optional[List[str]] = None
     device: DeviceConfig = field(default_factory=DeviceConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     hooking: HookingConfig = field(default_factory=HookingConfig)
     protocol: str = "tls"
-    # Foundation F1 — multi-protocol selection. `protocols` is the CANONICAL
-    # selection: an ordered, de-duplicated list of the protocols the user asked
-    # for (e.g. ["tls", "rc4"]). `protocol` above is kept as the PRIMARY (first)
-    # element so the many existing call sites that read a single `config.protocol`
-    # string keep working unchanged. __post_init__ keeps the two in sync.
+    # `protocols` is the canonical selection: an ordered, de-duplicated list
+    # (e.g. ["tls", "rc4"]). `protocol` mirrors its first element for callers that
+    # read a single string; __post_init__ keeps the two in sync.
     protocols: List[str] = field(default_factory=list)
     backend: str = BackendName.FRIDA
     # True when the user explicitly passed --backend (vs. the default). In "auto"
@@ -317,12 +327,9 @@ class FriTapConfig:
     def __post_init__(self):
         if self.debug:
             self.debug_output = True
-        # Keep the canonical `protocols` list and the primary `protocol` string
-        # consistent regardless of which one the caller supplied. When only the
-        # legacy `protocol` was set, derive the list from it; otherwise the list
-        # is canonical and `protocol` becomes its first (primary) element. This
-        # makes the default (`protocols == ["tls"]`, `protocol == "tls"`) and the
-        # single-protocol case byte-for-byte identical to before.
+        # Whichever of `protocols`/`protocol` the caller supplied, keep both
+        # consistent: derive the list from `protocol` when only that was set,
+        # otherwise `protocol` becomes the list's first element.
         if not self.protocols:
             self.protocols = [self.protocol]
         else:
@@ -388,7 +395,7 @@ class FriTapConfig:
         enable_spawn_gating: bool = False,
         spawn_gating_all: bool = False,
         enable_child_gating: bool = False,
-        follow_exec: bool = True,
+        follow_exec: Optional[bool] = None,
         mobile: bool | str = False,
         live: bool = False,
         environment_file: Optional[str] = None,
@@ -452,79 +459,14 @@ class FriTapConfig:
         scan_show_pii: bool = False,
         scan_analyzer_path: Optional[List[str]] = None,
     ) -> "FriTapConfig":
-        """
-        Build a FriTapConfig from the legacy SSL_Logger constructor parameters.
-        Ensures full backward compatibility.
-        """
+        """Build a FriTapConfig from the legacy SSL_Logger constructor parameters."""
+        params = dict(locals())
         return cls(
             target=app,
             target_argv=spawn_argv,
-            device=DeviceConfig(
-                mobile=mobile,
-                host=host if host else None,
-                spawn=spawn,
-                enable_spawn_gating=enable_spawn_gating,
-                spawn_gating_all=spawn_gating_all,
-                enable_child_gating=enable_child_gating,
-                follow_exec=follow_exec,
-                timeout=timeout,
-                script_load_timeout=script_load_timeout,
-            ),
-            output=OutputConfig(
-                pcap=pcap_name,
-                keylog=keylog if isinstance(keylog, str) else (keylog or None),
-                json_output=json_output,
-                json_keys=json_keys,
-                output_format=output_format,
-                live=live,
-                verbose=verbose,
-                full_capture=full_capture,
-                socket_trace=socket_trace,
-                owner_capture=owner_capture,
-                owner_strict=owner_strict,
-                owner_no_dns=owner_no_dns,
-                owner_nflog_group=owner_nflog_group,
-                filter_expression=filter_expression,
-                filter_infrastructure=filter_infrastructure,
-                include_loopback=include_loopback,
-                auto_relabel=auto_relabel,
-                scan=scan,
-                scan_report=scan_report,
-                scan_report_out=scan_report_out,
-                scan_min_severity=scan_min_severity,
-                scan_min_confidence=scan_min_confidence,
-                scan_source=scan_source,
-                scan_category=scan_category,
-                scan_show_pii=scan_show_pii,
-                scan_analyzer_path=scan_analyzer_path,
-            ),
-            hooking=HookingConfig(
-                offsets=offsets,
-                patterns=patterns,
-                experimental=experimental,
-                wine_mode=wine_mode,
-                enable_default_fd=enable_default_fd,
-                anti_root=anti_root,
-                payload_modification=payload_modification,
-                library_scan=library_scan,
-                force_scan_modules=list(force_scan_modules or []),
-                quic_capture_mode=quic_capture_mode,
-                quic_only=quic_only,
-                no_loader_hook=no_loader_hook,
-                stealth_loader=stealth_loader,
-                pairip_safe=pairip_safe,
-                probe=probe,
-                force_anchor_locator=force_anchor_locator,
-                attribute_sdk=attribute_sdk,
-                quic_egress_headers_layer=quic_egress_headers_layer,
-                scan_keys_region=scan_keys_region,
-                memory_scan=memory_scan,
-                memory_scan_patterns=memory_scan_patterns,
-                memory_scan_interval=memory_scan_interval,
-                memory_scan_emit_unconfirmed=memory_scan_emit_unconfirmed,
-                memory_scan_rc4_known_plaintext=memory_scan_rc4_known_plaintext,
-                memory_scan_rc4_ciphertext=memory_scan_rc4_ciphertext,
-            ),
+            device=_legacy_device_config(params),
+            output=_legacy_output_config(params),
+            hooking=_legacy_hooking_config(params),
             protocol=protocol,
             protocols=list(protocols) if protocols else [protocol],
             backend=backend,
@@ -536,6 +478,61 @@ class FriTapConfig:
             install_lsass_hook=install_lsass_hook,
             proxy=proxy,
         )
+
+
+def _pick(params: dict, names: tuple) -> dict:
+    """Return the entries of *params* named in *names*."""
+    return {name: params[name] for name in names}
+
+
+_LEGACY_DEVICE_FIELDS = (
+    "mobile", "spawn", "enable_spawn_gating", "spawn_gating_all",
+    "enable_child_gating", "follow_exec", "timeout", "script_load_timeout",
+)
+
+_LEGACY_OUTPUT_FIELDS = (
+    "json_output", "json_keys", "output_format", "live", "verbose",
+    "full_capture", "socket_trace", "owner_capture", "owner_strict",
+    "owner_no_dns", "owner_nflog_group", "filter_expression",
+    "filter_infrastructure", "include_loopback", "auto_relabel", "scan",
+    "scan_report", "scan_report_out", "scan_min_severity",
+    "scan_min_confidence", "scan_source", "scan_category", "scan_show_pii",
+    "scan_analyzer_path",
+)
+
+_LEGACY_HOOKING_FIELDS = (
+    "offsets", "patterns", "experimental", "wine_mode", "enable_default_fd",
+    "anti_root", "payload_modification", "library_scan", "quic_capture_mode",
+    "quic_only", "no_loader_hook", "stealth_loader", "pairip_safe", "probe",
+    "force_anchor_locator", "attribute_sdk", "quic_egress_headers_layer",
+    "scan_keys_region", "memory_scan", "memory_scan_patterns",
+    "memory_scan_interval", "memory_scan_emit_unconfirmed",
+    "memory_scan_rc4_known_plaintext", "memory_scan_rc4_ciphertext",
+)
+
+
+def _legacy_device_config(params: dict) -> "DeviceConfig":
+    host = params["host"]
+    return DeviceConfig(
+        host=host if host else None,
+        **_pick(params, _LEGACY_DEVICE_FIELDS),
+    )
+
+
+def _legacy_output_config(params: dict) -> "OutputConfig":
+    keylog = params["keylog"]
+    return OutputConfig(
+        pcap=params["pcap_name"],
+        keylog=keylog if isinstance(keylog, str) else (keylog or None),
+        **_pick(params, _LEGACY_OUTPUT_FIELDS),
+    )
+
+
+def _legacy_hooking_config(params: dict) -> "HookingConfig":
+    return HookingConfig(
+        force_scan_modules=list(params["force_scan_modules"] or []),
+        **_pick(params, _LEGACY_HOOKING_FIELDS),
+    )
 
 
 # Scan-heavy hooking modes legitimately spend far longer inside the agent's
@@ -571,8 +568,8 @@ def effective_script_load_timeout(config: "FriTapConfig") -> float | None:
 def memory_scan_only(config: "FriTapConfig") -> bool:
     """True when ``-ms`` was requested with no other capture/hook surface.
 
-    In that case the main TLS-hooking agent produces nothing — only the heap
-    secret-scanner does — so ``instrument()`` skips creating and loading the
+    In that case the main TLS-hooking agent produces nothing; only the heap
+    secret-scanner does, so ``instrument()`` skips creating and loading the
     main agent and runs the memory-scan plugin alone. An explicit
     ``hooking.intercept = False`` (the TUI's "memory only" extraction method)
     forces this mode. Otherwise any normal capture surface

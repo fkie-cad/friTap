@@ -1,9 +1,4 @@
-"""
-Reporters — format analysis findings into various output formats.
-
-Reporters are separate from analyzers (SRP): analyzers produce findings,
-reporters format them. This module provides JSON, CSV, Markdown, and
-a base Reporter protocol for custom implementations.
+"""Reporters: format analysis findings as JSON, CSV or Markdown (plus a Reporter protocol).
 
 Usage::
 
@@ -26,10 +21,6 @@ from typing import Any, Protocol, runtime_checkable
 from friTap.analysis import Finding, Severity
 from friTap.analysis.masvs import classify_masvs
 from friTap.analysis.redaction import redact_finding
-
-# ---------------------------------------------------------------------------
-# Output sanitisation (finding text is attacker-controlled)
-# ---------------------------------------------------------------------------
 
 # C0 controls, DEL and C1 controls. Tab/newline are excluded here and handled
 # per call site, since some formats need them structurally.

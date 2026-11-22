@@ -2,17 +2,9 @@
 
 """Heap memory-scan secret formatter.
 
-Renders the NSS keylog lines recovered by the heap secret-scanner
-(``--memory-scan`` / ``-ms``). The plugin forwards each finding as a
-``KeylogEvent(protocol="memscan")`` whose ``key_data`` is already a complete
-``LABEL <client_random> <secret>`` line, so this formatter follows the same
-tagged-``KeylogEvent`` path the ``--scan-keys-region`` candidates use
-(:class:`ScanCandidateKeylogFormatter`) and reuses the shared
-:class:`~friTap.output.keylog_handler.KeylogOutputHandler` — no bespoke handler.
-
-The base :meth:`KeylogFormatter.format` already returns ``[event.key_data]``,
-which is exactly right here; only ``protocol``, a provenance header, and a cheap
-dedup key are specialised.
+Each finding is a ``KeylogEvent(protocol="memscan")`` whose ``key_data`` is
+already a complete NSS keylog line, so the base ``format`` is reused. Only
+``protocol``, the header and the dedup key are specialised.
 """
 
 from __future__ import annotations

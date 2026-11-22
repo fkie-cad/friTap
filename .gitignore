@@ -6,6 +6,7 @@ dist/
 *.pcap
 *.txt
 *.trace
+*.pid
 tlslib_research/ # research for certain TLS implementations
 tlslib\_research/
 site/
@@ -149,6 +150,8 @@ ExampleLinux/wolfssl/*
 !tests/fixtures/*.tls.log
 !tests/fixtures/*.signal.log
 !tests/fixtures/*.keylog
+# Shared cache-key cases for the Python and TypeScript tests.
+!tests/fixtures/learned_offsets_key_cases.json
 # Golden regression harness (dev/golden/run_golden.py): corpus + recorded
 # baselines, which the broad *.json rule above would otherwise exclude.
 !dev/golden/corpus.json
@@ -209,6 +212,7 @@ tls_libs_Chrome/
 !readmod.bin
 !writemod.bin
 !integrations/wireshark/*.sh
+!dev/macos_verify/chromium_checks.sh
 # explicitly-published top-level .md docs (the broad *.md rule hides them):
 !DEVELOPMENT.md
 !EXAMPLE.md
@@ -242,3 +246,6 @@ friTap/analysis/attribution/data/trackers_full.json
 
 # claude plugin eval run output
 evals/results/
+
+# Fizz dev tooling + pulled Meta/Fizz libraries stay local (never committed)
+dev/fizz/

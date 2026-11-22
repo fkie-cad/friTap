@@ -12,6 +12,7 @@ import logging
 
 import pytest
 
+from friTap._warn_once import reset_warn_once
 from friTap.events import KeylogEvent
 from friTap.protocols import mtproto_keylog_spec as spec
 from friTap.protocols import telegram_handler
@@ -24,8 +25,8 @@ _INT64_MIN = -(2 ** 63)
 
 
 @pytest.fixture(autouse=True)
-def _reset_warn_once(monkeypatch):
-    monkeypatch.setattr(telegram_handler, "_invalid_chat_id_logged", False)
+def _reset_once_warnings():
+    reset_warn_once()
 
 
 def _format_with_chat_id(chat_id):

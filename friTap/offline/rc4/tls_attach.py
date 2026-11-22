@@ -28,8 +28,8 @@ from friTap.offline.tls_spans import spans_covering
 
 from .state import RC4_STATE
 
-# Metadata of each RC4 record exposed on ``Rc4Layer.records``; the provenance
-# additionally carries key identity/framing, which lands on the layer itself.
+# Fields of each RC4 record exposed on ``Rc4Layer.records``; key identity and
+# framing from the provenance land on the layer itself.
 _LAYER_RECORD_FIELDS = ("direction", "length", "tls_frames", "timestamp",
                         "cipher_offset", "frame_header_len")
 _TLS_META_FIELDS = ("library", "version", "sni", "alpn", "cipher")
@@ -121,7 +121,7 @@ def _layer_direction(records: List[dict]) -> str:
 
 
 def _set_if_present(layer, name: str, value) -> None:
-    """Set *name* only on a layer class that declares it (tolerates older layers)."""
+    """Set *name* only on a layer class that declares it."""
     if hasattr(layer, name):
         setattr(layer, name, value)
 

@@ -4,13 +4,13 @@
 
 from __future__ import annotations
 
-import importlib
+import importlib.metadata
+import importlib.util
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional
 
-import platformdirs
-
+from ..discovery_base import get_entry_points, resolve_dropin_dir
 from .base import FriTapPlugin
 
 if TYPE_CHECKING:
@@ -22,29 +22,8 @@ logger = logging.getLogger("friTap.plugins")
 
 
 def _resolve_plugin_dir() -> Path:
-    """Resolve plugin directory with platform-native paths and legacy fallback.
-
-    Platform paths:
-      - Linux:   ~/.local/share/friTap/plugins/  (XDG)
-      - macOS:   ~/Library/Application Support/friTap/plugins/
-      - Windows: C:\\Users\\<user>\\AppData\\Local\\friTap\\plugins\\
-
-    If the legacy ``~/.fritap/plugins/`` directory exists and the native
-    path does not, the legacy location is used for backwards compatibility.
-    """
-    native_dir = Path(platformdirs.user_data_dir("friTap")) / "plugins"
-    legacy_dir = Path.home() / ".fritap" / "plugins"
-
-    # Prefer legacy if it exists and native doesn't (backwards compat)
-    if legacy_dir.exists() and not native_dir.exists():
-        return legacy_dir
-
-    # Auto-create native directory
-    try:
-        native_dir.mkdir(parents=True, exist_ok=True)
-    except OSError as e:
-        logger.warning("Could not create plugin directory %s: %s", native_dir, e)
-    return native_dir
+    """Resolve and create the plugin directory (platform-native + legacy ``~/.fritap``)."""
+    return resolve_dropin_dir("plugins", logger, label="plugin")
 
 
 _PLUGIN_DIR: Optional[Path] = None
@@ -67,13 +46,7 @@ class PluginLoader:
     @staticmethod
     def _get_fritap_entry_points(**kwargs: str) -> list:
         """Return fritap.plugins entry points, compatible with Python 3.9+."""
-        eps = importlib.metadata.entry_points()
-        if hasattr(eps, "select"):
-            return list(eps.select(group="fritap.plugins", **kwargs))
-        matches = eps.get("fritap.plugins", [])
-        if kwargs.get("name"):
-            matches = [ep for ep in matches if ep.name == kwargs["name"]]
-        return list(matches)
+        return get_entry_points("fritap.plugins", **kwargs)
 
     def _activate_plugin(self, plugin: FriTapPlugin, session: "Session") -> None:
         """Call on_load, register, and log a loaded plugin."""
@@ -146,10 +119,6 @@ class PluginLoader:
 
     def list_plugins(self) -> List[str]:
         return list(self._plugins.keys())
-
-    # ------------------------------------------------------------------
-    # ScriptPlugin support
-    # ------------------------------------------------------------------
 
     def register_builtin(self, plugin: FriTapPlugin, session: "Session") -> None:
         """Register a built-in plugin (not from file discovery).

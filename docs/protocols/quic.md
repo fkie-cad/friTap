@@ -214,6 +214,25 @@ this layer wins. This is acceptable because the session-level hook is
 the last-resort tier that only fires when both higher layers have
 already missed; it's defense-in-depth, not a primary path.
 
+## Stream ids in `.tap` files
+
+The `streamId` above is a correlation surrogate, and the collector remaps it
+before it lands in an HTTP/3 `request`/`response` `stream_id`. The real QUIC
+stream id, when the agent knows it, is stored per chunk (`FlowChunk.stream_id`)
+and, for a single-stream flow, as `Flow.stream_id`. It is shown in the TUI
+detail view, filterable as `stream_id`, exported to HAR as `_streamId`, and
+written to `.tap` only when set (see
+[FLOW record body](../api/tap-format.md#chunk-keys-and-optional-stream_id)).
+
+### Unattributed-body flow
+
+De-framed HTTP/3 body bytes whose stream id is unknown cannot be tied to a
+request, so they go into one per-connection **unattributed-body flow**. They
+are not merged into another flow of the connection or parsed as HTTP/3 frames.
+On a cold run, before the stream id offset is learned, the agent holds such
+bodies back (up to 3 s, 256 records or 1 MiB) so most of them still get their
+stream id.
+
 ## Limitations
 
 - **`stream` mode shows ciphertext-shaped bytes only.** No header parsing,
@@ -238,3 +257,8 @@ already missed; it's defense-in-depth, not a primary path.
   resolution strategy SIGSEGV'd Cronet during attach. The current agent
   avoids it; if you write a new friTap-style agent against stripped
   Cronet, do not enumerate debug symbols — use byte patterns instead.
+- **Attaching to Chrome misses its preconnected connections.** Chrome opens
+  its first QUIC connections before an attach can install hooks; those have
+  no keys, and later requests on them are only partly decoded. Use spawn
+  mode for full coverage. See
+  [Chrome: attach vs spawn](../platforms/android.md#chrome-attach-vs-spawn).

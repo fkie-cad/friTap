@@ -1,13 +1,10 @@
-"""
-Bounded, iterative JSON traversal shared by analyzers.
+"""Bounded, iterative JSON traversal shared by analyzers.
 
-Replaces recursive walkers so attacker-controlled JSON can neither exhaust the
-Python stack nor burn unbounded CPU: traversal stops descending past
-``MAX_JSON_DEPTH`` and stops entirely after ``MAX_JSON_NODES`` visited nodes.
+Attacker-controlled JSON can neither exhaust the stack nor burn unbounded CPU:
+descent stops past ``MAX_JSON_DEPTH`` and the walk after ``MAX_JSON_NODES`` nodes.
 
-Events are yielded in the same pre-order a naive recursive walk would use:
-a ``"container"`` event when a dict/list is entered, and a ``"field"`` event
-for each dict entry whose value is a scalar (list scalars are not reported).
+Events come in recursive pre-order: ``"container"`` on entering a dict/list and
+``"field"`` per dict entry with a scalar value (list scalars are not reported).
 """
 
 from __future__ import annotations
@@ -79,11 +76,10 @@ def iter_json(
 
 
 def exceeds_depth(root: Any, max_depth: int = MAX_JSON_DEPTH) -> bool:
-    """True when *root* nests dicts/lists more than *max_depth* levels deep.
+    """True when *root* nests dicts/lists deeper than *max_depth* (container = 1, scalar = 0).
 
-    A container counts as depth 1 and a scalar as 0. Iterative (explicit
-    stack), so it is safe on any depth ``json.loads`` accepts: since CPython
-    3.14 that depth is limited by the real C stack, not ``RecursionError``.
+    Iterative: since CPython 3.14 ``json.loads`` depth is limited by the C stack,
+    not ``RecursionError``.
     """
     if not isinstance(root, (dict, list)):
         return False

@@ -66,8 +66,6 @@ class CaptureSession:
     def session_dir(self) -> Path:
         return self.request.session_dir
 
-    # -- lifecycle -----------------------------------------------------------
-
     def start(self) -> "CaptureSession":
         """Launch the child and the stdout reader thread."""
         self.session_dir.mkdir(parents=True, exist_ok=True)
@@ -108,14 +106,8 @@ class CaptureSession:
             self._reader.join(timeout=_KILL_GRACE_S)
         return self.status()
 
-    # -- phases --------------------------------------------------------------
-
     def mark_phase(self, label: str) -> dict[str, Any]:
-        """Record a timestamped phase marker (also appended to phases.jsonl).
-
-        Raises:
-            ToolError: ``bad_param`` when the session already ended.
-        """
+        """Record a timestamped phase marker (also appended to phases.jsonl); ``bad_param`` once the session ended."""
         entry = self._phase_entry(label)
         with self._lock:
             self._reject_if_ended()
@@ -136,8 +128,6 @@ class CaptureSession:
             raise ToolError(f"capture session {self.session_id!r} is {state}; "
                             "phases can only be marked while it runs", "bad_param",
                             hint="start a new capture with start_capture", param="session_id")
-
-    # -- status --------------------------------------------------------------
 
     def status(self) -> dict[str, Any]:
         """JSON-safe status: state, counters, files, phases, timing."""
@@ -192,8 +182,6 @@ class CaptureSession:
         except OSError:
             return ""
 
-    # -- reader thread -------------------------------------------------------
-
     def _read_stream(self) -> None:
         process = self._process
         assert process is not None and process.stdout is not None
@@ -217,8 +205,8 @@ class CaptureSession:
 def _decode(raw: bytes) -> Optional[dict]:
     """One stream line as a dict (``None`` if not a JSON object).
 
-    The plaintext of a ``data`` record is never decoded or kept: the hex
-    string is replaced by its byte length (``data_len``) before parsing.
+    The plaintext of a ``data`` record is never decoded or kept: its hex string is replaced by
+    its byte length (``data_len``) before parsing.
     """
     if raw.startswith(_DATA_RECORD_PREFIX):
         raw = _DATA_HEX.sub(_data_len_field, raw, count=1)

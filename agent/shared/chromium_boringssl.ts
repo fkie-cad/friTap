@@ -12,8 +12,10 @@
 // anchor locator (boringssl_anchor_locator.ts) — the same ssl_log_secret hook
 // used for stripped Android libchrome.so — which finds ssl_log_secret by the
 // keylog-label xrefs and installs friTap's keylog callback into
-// ctx->keylog_callback. Under Wine the module is PE (Win64 ABI) code inside a
-// Linux-host Frida, so its ABI is pinned to win64 first (see call_abi.ts).
+// ctx->keylog_callback. macOS reuses chromium_boringssl_execute for the
+// "Google Chrome Framework" / "Electron Framework" binaries. Under Wine the
+// module is PE (Win64 ABI) code inside a Linux-host Frida, so its ABI is
+// pinned to win64 first (see call_abi.ts).
 
 import { keylog_enabled } from "../fritap_agent.js";
 import { devlog, log } from "../util/log.js";

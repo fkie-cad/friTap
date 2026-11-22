@@ -9,11 +9,9 @@ verbatim from strongSwan's own ``save-keys`` plugin
 (``save_keys_listener.c``) — that file is the ground truth tshark consumes, so
 the exact Wireshark strings must match byte-for-byte.
 
-Unlike the TLS/SSH formatters this one does NOT emit NSS keylog lines: it emits
-CSV rows for two separate files. The output factory therefore wires it to the
-dedicated :class:`~friTap.output.ipsec_decryption_tables.IPsecDecryptionTableHandler`
-instead of the generic :class:`~friTap.output.keylog_handler.KeylogOutputHandler`;
-the ``writes_decryption_tables`` marker on the formatter selects that path.
+Unlike TLS/SSH this emits CSV rows for two files, not NSS keylog lines. The
+``writes_decryption_tables`` marker routes it to
+:class:`~friTap.output.ipsec_decryption_tables.IPsecDecryptionTableHandler`.
 """
 
 from __future__ import annotations
@@ -37,11 +35,8 @@ IPSEC_LIBRARY_PATTERNS = [
 IKEV2_TABLE = "ikev2_decryption_table"
 ESP_TABLE = "esp_sa"
 
-# ---------------------------------------------------------------------------
-# IANA transform ids (mirror strongSwan's ENCR_*/AUTH_* enum values, which use
-# the IANA IKEv2 transform numbers directly). AUTH_UNDEFINED is strongSwan's
-# internal "no integrity" marker used for AEAD ciphers.
-# ---------------------------------------------------------------------------
+# IANA IKEv2 transform ids (as strongSwan's ENCR_*/AUTH_* enums). AUTH_UNDEFINED
+# is strongSwan's internal "no integrity" marker for AEAD ciphers.
 ENCR_AES_GCM_ICV8 = 18
 ENCR_AES_GCM_ICV12 = 19
 ENCR_AES_GCM_ICV16 = 20
@@ -51,16 +46,12 @@ AUTH_UNDEFINED = 1024
 # transform): AES-CCM (14/15/16), AES-GCM (18/19/20), ChaCha20-Poly1305 (28).
 _AEAD_ENC_ALGS = frozenset({14, 15, 16, 18, 19, 20, 28})
 
-# Per-GCM-variant ESP ICV length (bits) for the AUTH_UNDEFINED lookup — the
-# ``esp_names`` switch in save_keys_listener.c (GCM_ICV8->64, 12->96, 16->128).
+# Per-GCM-variant ESP ICV length (bits), from ``esp_names`` in save_keys_listener.c.
 _GCM_ICV_BITS = {ENCR_AES_GCM_ICV8: 64, ENCR_AES_GCM_ICV12: 96, ENCR_AES_GCM_ICV16: 128}
 
 
-# ---------------------------------------------------------------------------
-# Algorithm-name maps — copied VERBATIM from save_keys_listener.c. Each entry
-# is ``(alg_id, key_len_bits, wireshark_name)``; ``key_len_bits == -1`` matches
-# any key length (see :func:`_algo_name`, mirroring the plugin's ``algo_name``).
-# ---------------------------------------------------------------------------
+# Algorithm-name maps, verbatim from save_keys_listener.c. Entries are
+# ``(alg_id, key_len_bits, wireshark_name)``; key_len ``-1`` matches any length.
 _IKE_ENCR: Tuple[Tuple[int, int, str], ...] = (
     (3,   -1, "3DES [RFC2451]"),
     (11,  -1, "NULL [RFC2410]"),
@@ -140,11 +131,7 @@ _ENDPOINT_RE = re.compile(r"\*|[0-9A-Fa-f:.]{1,45}")
 
 def _algo_name(table: Tuple[Tuple[int, int, str], ...],
                alg: Optional[int], key_len: int) -> Optional[str]:
-    """Wireshark name for *alg*/*key_len*, or ``None`` (mirrors ``algo_name``).
-
-    Iterates the table in order and returns the first entry whose id matches and
-    whose key length is wildcard (``-1``) or equal to *key_len*.
-    """
+    """First table entry matching *alg* and *key_len* (or wildcard), else ``None``."""
     if alg is None:
         return None
     for entry_alg, entry_len, name in table:
@@ -155,11 +142,7 @@ def _algo_name(table: Tuple[Tuple[int, int, str], ...],
 
 def ike_names(enc_alg: Optional[int], enc_key_len_bits: int,
               int_alg: Optional[int]) -> Tuple[Optional[str], Optional[str]]:
-    """(encryption name, integrity name) for an IKE_SA — mirrors ``ike_names``.
-
-    For an AEAD cipher the integrity transform is forced to ``AUTH_UNDEFINED``
-    (rendered as ``"NONE [RFC4306]"``), exactly like the save_keys plugin.
-    """
+    """(encryption, integrity) names for an IKE_SA; AEAD forces ``AUTH_UNDEFINED``."""
     enc = _algo_name(_IKE_ENCR, enc_alg, enc_key_len_bits)
     if enc_alg in _AEAD_ENC_ALGS:
         int_alg = AUTH_UNDEFINED
@@ -169,22 +152,12 @@ def ike_names(enc_alg: Optional[int], enc_key_len_bits: int,
 
 def esp_names(enc_alg: Optional[int], int_alg: Optional[int]
               ) -> Tuple[Optional[str], Optional[str]]:
-    """(encryption name, integrity name) for a CHILD_SA — mirrors ``esp_names``.
-
-    When there is no separate integrity transform (AEAD cipher, i.e. *int_alg*
-    is absent / ``0`` / ``AUTH_UNDEFINED``) the integrity name comes from the
-    AUTH_UNDEFINED rows keyed by the derived ICV length (GCM-8/12/16 ->
-    64/96/128 bit), and any other AEAD falls through to ``"NULL"``.
-    """
+    """(encryption, integrity) names for a CHILD_SA."""
     enc = _algo_name(_ESP_ENCR, enc_alg, -1)
     if int_alg in (None, 0, AUTH_UNDEFINED):
-        # AEAD cipher (GCM/CCM): there is no separate integrity transform.
-        # strongSwan's save_keys plugin writes "ANY <N> bit authentication
-        # [no checking]" here, but current Wireshark (confirmed 4.2.2) REFUSES
-        # such an esp_sa row for AES-GCM/CCM — it errors "AES-GCM encryption can
-        # only be used with NULL authentication" and decrypts nothing. Emit the
-        # exact "NULL" the dissector requires so the row actually decrypts; the
-        # ICV length is implied by the GCM/CCM encryption transform itself.
+        # AEAD (GCM/CCM): no separate integrity transform. strongSwan writes
+        # "ANY <N> bit authentication", but Wireshark 4.2.2 rejects that for
+        # AES-GCM/CCM ("can only be used with NULL authentication"), so emit "NULL".
         integ = "NULL"
     else:
         integ = _algo_name(_ESP_INTEG, int_alg, -1)
@@ -210,19 +183,16 @@ def _opt_int(value) -> Optional[int]:
 class IPsecKeylogFormatter(KeylogFormatter):
     """Builds Wireshark UAT rows for IKEv2 / ESP from :class:`KeylogEvent`.
 
-    This formatter produces CSV table rows, not NSS keylog lines, so it carries
-    the ``writes_decryption_tables`` marker and :meth:`format` returns no lines.
-    The output factory routes it to
-    :class:`~friTap.output.ipsec_decryption_tables.IPsecDecryptionTableHandler`,
-    which calls :meth:`format_rows` and appends each row to the matching file.
+    Produces CSV table rows, so :meth:`format` returns no lines and
+    :meth:`format_rows` feeds
+    :class:`~friTap.output.ipsec_decryption_tables.IPsecDecryptionTableHandler`.
 
-    Every field originates in an untrusted target process: SPIs/keys must be hex
-    and endpoints must be ``*`` or an IP literal, else the whole row is dropped
-    with a once-per-reason warning (no partial/forged row is ever written).
+    Every field comes from an untrusted target process: SPIs/keys must be hex and
+    endpoints ``*`` or an IP literal, else the whole row is dropped with a
+    once-per-reason warning (no partial row is written).
     """
 
-    #: Marks this formatter as writing Wireshark UAT files (two CSV tables),
-    #: not NSS keylog lines — the factory wires it to the dedicated UAT handler.
+    #: Selects the UAT table handler instead of the NSS keylog handler.
     writes_decryption_tables: bool = True
 
     @property
@@ -234,11 +204,7 @@ class IPsecKeylogFormatter(KeylogFormatter):
         return []
 
     def format_rows(self, event) -> List[Tuple[str, str]]:
-        """Return ``[(table_file_name, csv_row), ...]`` for *event*.
-
-        One row per event in practice; an empty list when the record is missing
-        or malformed.
-        """
+        """Return ``[(table_file_name, csv_row), ...]``; empty when missing or malformed."""
         payload = event.payload or {}
         record = payload.get("record")
         if record == "ike":
@@ -286,9 +252,7 @@ class IPsecKeylogFormatter(KeylogFormatter):
         if family not in ("IPv4", "IPv6") or not _is_endpoint(src) or not _is_endpoint(dst):
             warn_dropped_keylog_line("ipsec esp", "invalid family/endpoint")
             return []
-        # enc_key is always present; the ESP integrity key is empty for AEAD
-        # ciphers (rendered as a bare "0x", matching save_keys' %+B on an empty
-        # chunk). A non-empty int_key must be valid hex.
+        # The ESP integrity key is empty for AEAD (rendered "0x", as save_keys does).
         if not is_hex_field(spi) or not is_hex_field(enc_key) \
                 or (int_key and not is_hex_field(int_key)):
             warn_dropped_keylog_line("ipsec esp", "spi and keys must be hex")

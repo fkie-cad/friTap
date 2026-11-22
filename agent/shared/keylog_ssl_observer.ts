@@ -19,10 +19,18 @@ export type KeylogSslObserver = (ssl: NativePointer, clientRandomHex: string, mo
 const CLIENT_RANDOM_TOKEN_RE = /^[0-9a-fA-F]{64}$/;
 
 let keylogSslObserver: KeylogSslObserver | null = null;
+// Extra receivers beside the identity cache (e.g. agent/quic binding a
+// QuicConnection to its handshake). Registered, never imported from here.
+const keylogSslListeners: KeylogSslObserver[] = [];
 
 /** Register (or with null, clear) the observer. The last registration wins. */
 export function setKeylogSslObserver(observer: KeylogSslObserver | null): void {
     keylogSslObserver = observer;
+}
+
+/** Add a receiver that gets every (SSL*, client_random, module?) the observer gets. */
+export function addKeylogSslListener(listener: KeylogSslObserver): void {
+    if (!keylogSslListeners.includes(listener)) keylogSslListeners.push(listener);
 }
 
 /**
@@ -45,11 +53,23 @@ function isUsableSslPointer(ssl: unknown): ssl is NativePointer {
 
 /** Forward the line's client_random for `ssl` to the observer. Never throws. */
 export function observeKeylogSsl(line: unknown, ssl?: NativePointer | null, module?: string): void {
-    if (!keylogSslObserver || !isUsableSslPointer(ssl)) return;
+    if ((!keylogSslObserver && keylogSslListeners.length === 0) || !isUsableSslPointer(ssl)) return;
+    let clientRandom = "";
     try {
-        const clientRandom = extractKeylogClientRandom(line);
-        if (clientRandom) keylogSslObserver(ssl, clientRandom, module);
+        clientRandom = extractKeylogClientRandom(line);
+        if (clientRandom && keylogSslObserver) keylogSslObserver(ssl, clientRandom, module);
     } catch (_) {
         // Identity tracking is best-effort; it must never break keylog emission.
+    }
+    if (clientRandom) notifyListeners(ssl, clientRandom, module);
+}
+
+function notifyListeners(ssl: NativePointer, clientRandom: string, module?: string): void {
+    for (const listener of keylogSslListeners) {
+        try {
+            listener(ssl, clientRandom, module);
+        } catch (_) {
+            // Same contract as the observer: never break keylog emission.
+        }
     }
 }

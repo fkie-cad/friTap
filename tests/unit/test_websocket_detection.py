@@ -23,7 +23,7 @@ from friTap.flow.tap_format import decode_flow, encode_flow
 from friTap.parsers.base import ParseResult
 from friTap.parsers.registry import get_default_registry
 from friTap.parsers.websocket import WebSocketParser, _is_websocket_data
-from tests.unit._render_helpers import RenderingFakeLog as _FakeLog
+from tests.unit._tui_flow_helpers import make_flow_detail_widget
 
 _TELEGRAM_LAYER_BLOB = bytes.fromhex(
     "8917e31b0fc1a2e4f91e39178d0905d8cb6391229700000014000000390000007446cc91"
@@ -334,15 +334,7 @@ def test_clear_trailing_data_clears_both_slots():
 # --------------------------------------------------------------------------- #
 
 def _widget():
-    from friTap.tui.widgets.flow_detail import FlowDetailWidget
-    w = FlowDetailWidget.__new__(FlowDetailWidget)
-    for name in ("_request_log", "_response_log", "_detail_log", "_message_log"):
-        setattr(w, name, _FakeLog())
-    w._raw_request = w._raw_response = False
-    w._active_processing = None
-    w._segment_offsets = []
-    w._conversation_siblings = []
-    return w
+    return make_flow_detail_widget()
 
 
 def _response_only_trailing_flow() -> Flow:

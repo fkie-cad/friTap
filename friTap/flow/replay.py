@@ -1,23 +1,17 @@
 #!/usr/bin/env python3
 
-"""
-Flow replay / overview source for ``.tap`` files.
+"""Flow replay / overview source for ``.tap`` files.
 
-Provides the :class:`IFlowSource` protocol and a :class:`ReplayController` that
-loads flows from a ``.tap`` file for a high-level overview (lightweight flow
-summaries) plus on-demand full-flow detail. This is presentation-agnostic — it
-wraps :class:`~friTap.flow.tap_reader.TapReader` and has **no** TUI dependency —
-so external tools (web UIs, TUIs, plain CLIs, Sandroid) can consume it directly.
-
-The friTap TUI imports these symbols from here via a thin back-compat shim at
-:mod:`friTap.tui.replay_controller`.
+Provides :class:`IFlowSource` and :class:`ReplayController`: lightweight flow
+summaries plus on-demand full-flow detail, wrapping
+:class:`~friTap.flow.tap_reader.TapReader` with no TUI dependency.
 """
 
 from __future__ import annotations
 
 import logging
 from collections import OrderedDict
-from typing import TYPE_CHECKING, Optional, Protocol
+from typing import TYPE_CHECKING, Optional, Protocol, runtime_checkable
 
 from friTap.flow.tap_format import FlowSummary, TapMeta
 from friTap.flow.tap_reader import TapReader
@@ -31,6 +25,8 @@ logger = logging.getLogger(__name__)
 
 class _LRUCache(OrderedDict):
     """OrderedDict-based LRU cache with a fixed maximum size."""
+
+    # Not output.bounded_lru.BoundedLRU: callers need dict assignment, move_to_end and clear().
 
     def __init__(self, maxsize: int = 128) -> None:
         super().__init__()
@@ -58,12 +54,38 @@ class IFlowSource(Protocol):
     def get_flow(self, flow_id: str) -> Optional["Flow"]: ...
 
 
-class ReplayController:
-    """Loads and serves flows from a .tap file for TUI replay mode.
+@runtime_checkable
+class TapSource(Protocol):
+    """Contract a host can implement to feed the replay viewer (the members the viewer calls).
 
-    Satisfies the IFlowSource protocol so MainScreen can use it
-    interchangeably with FlowCollector via CaptureController.
+    :class:`ReplayController` is the reference implementation. The source must
+    already be **loaded**: the viewer reads ``flow_count`` and ``get_summaries()``
+    on mount and never loads it. ``close()`` is deliberately not a member: the
+    viewer never closes a host-passed source, only controllers it opened itself.
     """
+
+    @property
+    def header(self): ...
+
+    @property
+    def flow_count(self) -> int: ...
+
+    def get_summaries(self) -> list[FlowSummary]: ...
+    def get_flow(self, flow_id: str) -> Optional["Flow"]: ...
+    def get_flows(self) -> list["Flow"]: ...
+    def store_reparse(
+        self,
+        flow_id: str,
+        request: Optional["ParseResult"],
+        response: Optional["ParseResult"],
+        clear_trailing: bool = False,
+    ) -> None: ...
+    def read_all_findings(self) -> list: ...
+    def read_request_contexts(self) -> list: ...
+
+
+class ReplayController:
+    """Loads and serves flows from a .tap file for replay mode (satisfies :class:`IFlowSource`)."""
 
     def __init__(self, path: str) -> None:
         self._path = path
@@ -72,8 +94,8 @@ class ReplayController:
         self._summaries: list[FlowSummary] = []
         self._flow_cache: _LRUCache = _LRUCache(maxsize=128)
         self._reparse_results: dict[str, tuple[Optional["ParseResult"], Optional["ParseResult"]]] = {}
-        # Flow ids whose stale trailing-data segments must be dropped on every
-        # (re)load, e.g. decrypted TL flows once mis-parsed as WebSocket.
+        # Flow ids whose stale trailing-data segments are dropped on every (re)load
+        # (e.g. decrypted TL flows once mis-parsed as WebSocket).
         self._clear_trailing_ids: set[str] = set()
 
     @property
@@ -93,10 +115,7 @@ class ReplayController:
         return self._reader.header if self._reader else None
 
     def load(self) -> TapMeta:
-        """Open the .tap file and load flow summaries.
-
-        Returns the file-level TapMeta.
-        """
+        """Open the .tap file, load flow summaries and return the file-level TapMeta."""
         self._reader = TapReader(self._path)
         self._meta = self._reader.open()
         self._summaries = self._reader.read_flow_summaries()
@@ -110,11 +129,7 @@ class ReplayController:
         return list(self._summaries)
 
     def get_flows(self) -> list["Flow"]:
-        """Return all flows as full Flow objects.
-
-        Note: For large captures this loads everything into memory.
-        Prefer get_summaries() + get_flow() for on-demand loading.
-        """
+        """Return all flows as full Flow objects (loads everything; prefer summaries + :meth:`get_flow`)."""
         if self._reader is None:
             return []
         return self._reader.read_all_flows()
@@ -129,7 +144,7 @@ class ReplayController:
             if flow is None:
                 return None
             self._flow_cache[flow_id] = flow
-        # Re-apply reparse results that survive cache eviction
+        # Re-apply reparse results that survive cache eviction.
         if flow_id in self._reparse_results:
             req, resp = self._reparse_results[flow_id]
             if req is not None:
@@ -150,21 +165,14 @@ class ReplayController:
     ) -> None:
         """Store reparse results so they survive cache eviction.
 
-        With *clear_trailing*, every later :meth:`get_flow` also drops the
-        flow's trailing-data state (re-read from disk after eviction).
+        With *clear_trailing*, every later :meth:`get_flow` also drops trailing-data state.
         """
         self._reparse_results[flow_id] = (request, response)
         if clear_trailing:
             self._clear_trailing_ids.add(flow_id)
 
     def read_all_findings(self) -> list:
-        """Return persisted findings (as dicts) across all flows in the .tap.
-
-        Passthrough over :class:`~friTap.flow.tap_reader.TapReader` so callers
-        (e.g. the TUI findings viewer) don't reach into the private reader.
-        Iterates the loaded summaries and collects each flow's REC_FINDING
-        records. Returns an empty list if the file carries none.
-        """
+        """Return persisted findings (dicts) across all flows (REC_FINDING records); empty if none."""
         if self._reader is None:
             return []
         findings: list = []
@@ -173,12 +181,7 @@ class ReplayController:
         return findings
 
     def read_request_contexts(self) -> list:
-        """Return the persisted Java request contexts (REC_REQUEST_CONTEXT
-        records, as dicts) of the .tap; empty when none or not loaded.
-
-        Passthrough over :meth:`TapReader.iter_request_contexts` so callers
-        (e.g. the TUI re-export) don't reach into the private reader.
-        """
+        """Return the persisted Java request contexts (REC_REQUEST_CONTEXT dicts); empty when none or not loaded."""
         if self._reader is None:
             return []
         return list(self._reader.iter_request_contexts())

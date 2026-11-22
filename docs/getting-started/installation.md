@@ -281,7 +281,7 @@ friTap automatically installs the following dependencies:
 - **hexdump**: Binary data display
 - **watchdog**: File system monitoring
 - **psutil**: System and process utilities
-- **textual** (>= 0.80.0): Powers the interactive [terminal UI](tui.md) (ships by default; no extra install needed)
+- **textual** (>= 0.86.0): Powers the interactive [terminal UI](tui.md) (ships by default; no extra install needed)
 - **tlsLibHunter**: TLS/SSL library detection — powers `--library-scan`, `-ll/--list-libraries` and `--extract-libraries` (imported as `tlslibhunter`)
 - **platformdirs**, **pydantic** (>= 2.0): Configuration and platform-aware paths
 - **h11**, **hpack**, **pylsqpack**: HTTP/1, HTTP/2 and HTTP/3 (QPACK) parsing

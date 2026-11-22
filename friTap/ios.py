@@ -2,26 +2,18 @@
 
 """iOS crash-report retrieval and decoding.
 
-The iOS counterpart of the device plumbing in :mod:`friTap.android`: when an
-instrumented target dies, the Android path pulls the tombstone plus
-``logcat -b crash`` (see ``Android.get_crash_logcat`` /
-``Android.get_latest_tombstone``); on iOS the equivalent post-mortem artifact is
-the ReportCrash ``.ips`` report. This module owns the host-side tooling
-knowledge (libimobiledevice invocation, report layout, ``.ips`` formats) so a
-crash handler only has to correlate, record and present.
+Counterpart of :mod:`friTap.android`'s tombstone pull: the post-mortem artifact
+on iOS is the ReportCrash ``.ips`` report. This module owns the host-side
+knowledge (libimobiledevice invocation, report layout, ``.ips`` formats).
 
-Everything here runs on an already-dead process as best-effort forensics and is
-therefore written to *never raise* and to *never destroy evidence*: reports are
-pulled with ``idevicecrashreport -k`` (keep on device) and every public entry
-point catches its own errors and returns ``None`` / an empty result.
+Best-effort forensics on a dead process: every public entry point catches its
+own errors and returns ``None`` / an empty result, and reports are pulled with
+``idevicecrashreport -k`` (keep on device) so no evidence is destroyed.
 
-Device-side layout, because it is easy to get wrong: even on a **rootless**
-jailbreak (palera1n, Dopamine) the crash reports live at
-``/var/mobile/Library/Logs/CrashReporter`` — that path does **NOT** move under
-``/var/jb``. ``/var/jb`` only shadows the bootstrap prefix (``/usr``, ``/etc``,
-``/Library`` …), not ``/var/mobile``. We never read that directory directly
-anyway: retrieval goes exclusively through ``idevicecrashreport`` (usbmuxd), so
-no SSH/root shell on the device is required or attempted.
+Even on rootless jailbreaks (palera1n, Dopamine) reports live at
+``/var/mobile/Library/Logs/CrashReporter``; that path does not move under
+``/var/jb``. Retrieval goes only through ``idevicecrashreport`` (usbmuxd), so no
+SSH/root shell is needed.
 """
 
 import json

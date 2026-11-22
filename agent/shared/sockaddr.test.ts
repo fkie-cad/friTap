@@ -102,3 +102,46 @@ test("decodeSockaddr: null pointer and unsupported family return null", () => {
     assert.equal(decodeSockaddr(fakeNull(), false, undefined, false), null);
     assert.equal(decodeSockaddr(sa([0x01, 0x00, 0, 0, 0, 0, 0, 0]), false, undefined, false), null); // AF_UNIX
 });
+
+// Windows: PR_AF_INET6 == AF_INET6 == 23 (NSPR _win95.cfg/_winnt.cfg), for both
+// PRNetAddr and native sockaddr_in6; family stays 2-byte @0.
+const WIN_V6 = [0x17, 0x00, 0x01, 0xBB, 0,0,0,0, ...V6_ADDR];   // family@0 = 23 (LE)
+
+test("readSockaddrFamily: windows PRNetAddr/sockaddr normalizes AF_INET6 23->10", () => {
+    setPlatform("windows");
+    assert.equal(readSockaddrFamily(sa(WIN_V6), false), AF_INET6);
+    assert.equal(readSockaddrFamily(sa(LINUX_V4), false), AF_INET);
+    assert.equal(readSockaddrFamily(sa(PRNET_V6), false), 30);       // darwin value is not remapped on windows
+    assert.deepEqual(decodeSockaddr(sa(WIN_V6), false, undefined, false),
+        { family: "AF_INET6", port: 443, addr: V6_HEX });
+});
+
+test("readSockaddrFamily: 23 is NOT remapped on darwin (PR_AF_INET6 there is 30)", () => {
+    setPlatform("darwin");
+    assert.equal(readSockaddrFamily(sa(WIN_V6), false), 23);
+    assert.equal(decodeSockaddr(sa(WIN_V6), false, undefined, false), null);
+    setPlatform("linux");
+});
+
+// Wine: a PE NSPR / Winsock reports PR_AF_INET6 = 23 while Process.platform is "linux".
+// On Linux/Android 23 is the obsolete AF_IRDA (never a TCP/UDP peer), so 23 -> 10 applies
+// on every non-Darwin platform.
+test("readSockaddrFamily: 23 -> AF_INET6 on linux/android/windows (Wine reports linux)", () => {
+    for (const p of ["linux", "android", "windows"]) {
+        setPlatform(p);
+        assert.equal(readSockaddrFamily(sa(WIN_V6), false), AF_INET6, p);
+        assert.equal(readSockaddrFamily(sa(LINUX_V4), false), AF_INET, p);    // 2 unchanged
+        assert.equal(readSockaddrFamily(sa(LINUX_V6), false), AF_INET6, p);   // 10 unchanged
+        assert.deepEqual(decodeSockaddr(sa(WIN_V6), false, undefined, false),
+            { family: "AF_INET6", port: 443, addr: V6_HEX }, p);
+    }
+    setPlatform("linux");
+});
+
+test("readSockaddrFamily: darwin's 30 is not remapped off darwin; BSD sockaddrs unchanged", () => {
+    setPlatform("linux");
+    assert.equal(readSockaddrFamily(sa(PRNET_V6), false), 30);
+    setPlatform("darwin");
+    assert.equal(readSockaddrFamily(sa(BSD_V6), true), AF_INET6);
+    setPlatform("linux");
+});

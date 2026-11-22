@@ -1,11 +1,9 @@
 """Hand-rolled, sequence-indexed TCP reassembly shared by the offline decryptors.
 
-We deliberately do NOT use scapy's ``tcp_reassemble``: position-dependent stream
-ciphers such as AES-CTR (MTProto obfuscation) and RC4 have a keystream whose
-position matters, so a single missing or misordered byte corrupts everything
-after it. We therefore anchor on the first observed sequence number, buffer
-segments by ``seq``, dedupe retransmits, and only expose a strictly contiguous
-in-order byte run. Any gap at the stream start, or a gap that the available
+Not scapy's ``tcp_reassemble``: stream ciphers (AES-CTR in MTProto, RC4) are
+position-dependent, so one missing or misordered byte corrupts the rest.
+Segments are anchored on the first observed seq, buffered, deduped, and only a
+strictly contiguous in-order run is exposed. A gap at the start, or one the
 segments cannot fill, marks the direction ``degraded``.
 """
 
@@ -20,23 +18,19 @@ from .capture_validation import capture_read_guard, validate_capture_file
 
 
 class TcpStreamReassembler:
-    """Reassemble ONE TCP direction into a contiguous byte stream.
-
-    Feed each segment with :meth:`feed`. The anchor (initial sequence number) is
-    taken from the SYN if seen, otherwise from the lowest sequence number fed.
-    """
+    """Reassemble one TCP direction; the anchor is the SYN's seq if seen, else the lowest seq fed."""
 
     def __init__(self) -> None:
         self._segments: Dict[int, bytes] = {}  # seq -> payload (deduped/longest)
         self._anchor: Optional[int] = None
         self._saw_syn = False
-        # Derived views, all invalidated on feed(); read repeatedly afterwards.
+        # Derived views, invalidated on feed() and read repeatedly afterwards.
         self._contig_cache: Optional[bytes] = None
         self._ordered_cache: Optional[List[Tuple[int, bytes]]] = None
         self._after_gap_cache: Optional[bytes] = None
         # seq -> earliest capture time seen for that seq (retransmits never move it).
         self._seq_ts: Dict[int, float] = {}
-        # [(start offset within the contiguous run, capture ts)] — built with the run.
+        # (start offset within the contiguous run, capture ts), built with the run.
         self._span_starts: List[int] = []
         self._span_ts: List[float] = []
 
@@ -48,14 +42,11 @@ class TcpStreamReassembler:
         fin: bool = False,
         ts: float = 0.0,
     ) -> None:
-        """Buffer one segment. SYN consumes one sequence number (data starts at seq+1).
+        """Buffer one segment (SYN consumes one seq, data starts at seq+1).
 
-        ``ts`` is the segment's capture time (pcap epoch seconds; 0.0 = unknown).
-        The earliest time seen for a sequence number is kept, so a retransmit
-        never moves a byte's timestamp later.
-        """
-        # Any new segment can change the anchor or the contiguous run; the run is
-        # read repeatedly afterwards (degraded checks + the decryptor), so cache it.
+        ``ts`` is the capture time (0.0 = unknown); the earliest time per seq is kept so a retransmit never moves it later.
+"""
+        # A new segment can change the anchor or the run; cached because degraded checks and the decryptor read it repeatedly.
         self._contig_cache = None
         self._ordered_cache = None
         self._after_gap_cache = None
@@ -91,40 +82,21 @@ class TcpStreamReassembler:
 
     @property
     def saw_syn(self) -> bool:
-        """True when the opening SYN was observed, so the anchor is the REAL start.
-
-        Without a SYN the anchor is merely the lowest sequence number seen, which
-        for a capture that began mid-flow is NOT the connection start — the first
-        contiguous bytes are then not guaranteed to be the stream's opening bytes
-        (e.g. MTProto's obfuscation init block).
-        """
+        """True when the opening SYN was seen. Without it the anchor is the lowest seq, so a mid-flow capture's first bytes need not be the stream's opening bytes."""
         return self._saw_syn
 
     @property
     def has_start_gap(self) -> bool:
-        """True when the earliest observed byte begins after the anchor.
-
-        A start gap means the opening bytes were never captured. It is distinct
-        from a later mid-stream gap, where the opening bytes are intact and a
-        contiguous prefix is still decryptable.
-        """
+        """True when the earliest observed byte begins after the anchor (a start gap, unlike a later mid-stream gap where the prefix is still decryptable)."""
         if self._anchor is None:
             return True
         ordered = self._ordered()
         if not ordered:
-            return False  # no data yet (handshake only) — not a start gap per se
+            return False  # no data yet (handshake only)
         return self._rel(ordered[0][0]) > 0
 
     def _rel(self, seq: int) -> int:
-        """Signed distance of *seq* from the anchor, wrap-safe (RFC 1982 serial math).
-
-        TCP sequence numbers are mod 2^32; comparing them with plain ``<``/``+``
-        breaks across the 32-bit wrap (a long-lived stream that wraps would treat
-        the post-wrap bytes as a giant gap and drop the rest). Returns a small
-        NEGATIVE value for bytes before the anchor (old retransmits) and a small
-        POSITIVE value for bytes after, so the contiguous-run logic below behaves
-        identically with or without a wrap. Caller guarantees ``_anchor`` is set.
-        """
+        """Signed distance of *seq* from the anchor, wrap-safe (RFC 1982 serial math); negative before the anchor. Requires ``_anchor``."""
         d = (seq - self._anchor) & 0xFFFFFFFF
         return d - 0x100000000 if d > 0x80000000 else d
 
@@ -140,12 +112,7 @@ class TcpStreamReassembler:
         return self._ordered_cache
 
     def contiguous_bytes(self) -> bytes:
-        """Return the in-order byte run starting at the anchor, stopping at the first gap.
-
-        Memoized: the result is reused across the repeated reads (``degraded``,
-        a pair's ``degraded``, the decryptor) and invalidated whenever
-        :meth:`feed` buffers a new segment.
-        """
+        """The in-order byte run from the anchor to the first gap; memoized until :meth:`feed`."""
         if self._contig_cache is not None:
             return self._contig_cache
         self._span_starts = []
@@ -159,37 +126,28 @@ class TcpStreamReassembler:
     def _collect_run(
         self, start_rel: int, span_starts: List[int], span_ts: List[float]
     ) -> bytes:
-        """In-order bytes from *start_rel* (anchor-relative) up to the first gap.
-
-        Appends each contributing segment's run offset and capture time to
-        *span_starts* / *span_ts*. Caller guarantees ``_anchor`` is set.
-        """
+        """In-order bytes from *start_rel* (anchor-relative) to the first gap; appends segment offsets and times to *span_starts* / *span_ts*. Requires ``_anchor``."""
         next_rel = start_rel  # offset (from the anchor) of the next expected byte
         out = bytearray()
         for seq, payload in self._ordered():
             rel = self._rel(seq)
             if rel > next_rel:
-                break  # gap — stop the contiguous run
+                break  # gap ends the contiguous run
             end_rel = rel + len(payload)
             if end_rel <= next_rel:
                 continue  # fully-overlapping retransmit already covered
-            # The bytes this segment contributes start at the current run end.
             span_starts.append(next_rel - start_rel)
             span_ts.append(self._seq_ts.get(seq, 0.0))
-            # Trim any overlap with what we've already emitted.
+            # Trim overlap with bytes already emitted.
             out += payload[next_rel - rel:]
             next_rel = end_rel
         return bytes(out)
 
     def bytes_after_start_gap(self) -> bytes:
-        """The contiguous run starting at the EARLIEST buffered byte, past a start gap.
+        """The contiguous run from the earliest buffered byte, past a start gap.
 
-        :meth:`contiguous_bytes` is empty when the opening bytes were lost
-        (:attr:`has_start_gap`), because its run must begin at the anchor. A
-        record-framed protocol that can resync (e.g. mid-stream TLS) can still
-        use the bytes that follow the gap; this returns them, up to the next gap.
-        Equals :meth:`contiguous_bytes` when there is no start gap.
-        """
+        For record-framed protocols that can resync (mid-stream TLS); equals :meth:`contiguous_bytes` without a start gap.
+"""
         if not self.has_start_gap or not self._segments:
             return self.contiguous_bytes()
         if self._after_gap_cache is None:
@@ -198,11 +156,7 @@ class TcpStreamReassembler:
         return self._after_gap_cache
 
     def timestamp_at(self, offset: int) -> float:
-        """Capture time of the segment that delivered byte *offset* of the run.
-
-        *offset* indexes :meth:`contiguous_bytes` (0 = the anchor byte). Returns
-        0.0 when the offset lies outside the run or its segment had no timestamp.
-        """
+        """Capture time of the segment delivering byte *offset* of :meth:`contiguous_bytes`; 0.0 if outside the run or untimed."""
         run = self.contiguous_bytes()
         if offset < 0 or offset >= len(run) or not self._span_starts:
             return 0.0
@@ -211,21 +165,15 @@ class TcpStreamReassembler:
 
     @property
     def degraded(self) -> bool:
-        """True if the stream start is missing or a gap interrupts the data.
-
-        A start gap means the very first segment's seq is past the anchor (we
-        never observed the opening bytes). A mid-stream gap means buffered
-        segments exist beyond the contiguous run that we could not reach.
-        """
+        """True if the start is missing (first segment past the anchor) or buffered segments exist beyond the contiguous run."""
         if self._anchor is None:
             return True
         ordered = self._ordered()
         if not ordered:
-            return False  # no data yet (e.g. handshake only) — not degraded per se
+            return False  # no data yet (e.g. handshake only)
         if self._rel(ordered[0][0]) > 0:
-            return True  # start gap (earliest segment begins after the anchor)
-        # Detect a mid-stream gap: bytes buffered beyond the contiguous reach. The
-        # run starts at the anchor (rel 0), so its end offset == its length.
+            return True  # start gap
+        # Mid-stream gap: the run starts at the anchor, so its end offset is its length.
         contiguous_end_rel = len(self.contiguous_bytes())
         last_seq, last_payload = ordered[-1]
         if self._rel(last_seq) + len(last_payload) > contiguous_end_rel:
@@ -235,11 +183,7 @@ class TcpStreamReassembler:
 
 @dataclass
 class TcpStreamPair:
-    """Both directions of one TCP conversation.
-
-    ``client`` is the client->server direction; ``server`` is server->client.
-    ``client_addr``/``server_addr`` are the normalized endpoint tuples.
-    """
+    """Both directions of one TCP conversation (``client`` is client->server); ``client_addr``/``server_addr`` are normalized endpoints."""
 
     client_addr: Tuple[str, int]
     server_addr: Tuple[str, int]
@@ -259,16 +203,12 @@ def normalized_key(
 
 
 def tcp_payload(ip, tcp, raw_cls) -> bytes:
-    """Return the raw TCP payload bytes, independent of scapy's dissection.
+    """Raw TCP payload bytes, independent of scapy's dissection.
 
-    ``pkt[Raw]`` is not enough: once any code in the process imports
-    ``scapy.layers.tls`` (bound to TCP/443), scapy dissects port-443 payloads
-    as TLS records, so the bytes end up in TLS layers instead of a ``Raw``
-    layer and would be silently dropped (MTProto's DCs listen on 443 too).
-    Rebuilding ``tcp.payload`` returns the original bytes (scapy caches the
-    raw bytes of every dissected layer); link-layer padding is trimmed via
-    the IP length fields.
-    """
+    ``pkt[Raw]`` is not enough: with ``scapy.layers.tls`` imported (bound to TCP/443),
+    port-443 payloads are dissected as TLS and dropped (MTProto's DCs use 443 too).
+    Rebuilding ``tcp.payload`` returns the original bytes; link-layer padding is trimmed via IP length.
+"""
     payload_layer = tcp.payload
     if isinstance(payload_layer, raw_cls):
         return bytes(payload_layer.load)
@@ -300,23 +240,15 @@ def reassemble_pcap(
     pair_cls: Type[TcpStreamPair] = TcpStreamPair,
     parsed: Optional["ParsedCapture"] = None,
 ) -> Dict[Tuple[str, int, str, int], TcpStreamPair]:
-    """Reassemble all TCP conversations in ``pcap_path`` into per-direction streams.
+    """Reassemble all TCP conversations in ``pcap_path``; returns ``{normalized_4tuple: pair}`` built as *pair_cls*.
 
-    Returns ``{normalized_4tuple: pair}``, each pair built as ``pair_cls`` (a
-    :class:`TcpStreamPair` subclass lets a protocol add its own checks).
+    The client is the endpoint that dialed a ``server_ports`` port (reliable for
+    mid-stream captures); else the first payload sender, then the first-seen endpoint.
 
-    The CLIENT is the endpoint that dialed a ``server_ports`` port (reliable for
-    mid-stream / no-handshake
-    captures, where either side may be seen first); if neither side's destination
-    port is a server port, the endpoint that sent the first payload byte is used,
-    then the first-seen endpoint.
-
-    The scapy parse is shared: an explicit *parsed* capture is used as is;
-    otherwise, inside a :func:`~friTap.offline.net.capture_cache.capture_cache_scope`
-    for this file, the scope's single parse is reused; otherwise the file is
-    parsed here. The returned pairs share their reassemblers with every other
-    caller of the same parse (see :meth:`ParsedCapture.pairs`).
-    """
+    The parse is shared: an explicit *parsed* capture is used as is, else the active
+    :func:`~friTap.offline.net.capture_cache.capture_cache_scope` parse, else it is
+    parsed here. Pairs share reassemblers with other callers (:meth:`ParsedCapture.pairs`).
+"""
     if parsed is None:
         from .capture_cache import active_parsed_capture
 
@@ -329,13 +261,10 @@ def reassemble_pcap(
 class ParsedCapture:
     """Every TCP conversation of one capture, parsed once, roles not yet fixed.
 
-    :meth:`pairs` orients the conversations for a given server-port set; it can be
-    called any number of times with different ports. Each call returns a fresh
-    dict of fresh pair objects, but the :class:`TcpStreamReassembler` objects
-    inside them are SHARED between calls (and between the decryptors of one
-    conversion). They are complete once :func:`parse_pcap` returns and must be
-    treated as read-only: never :meth:`~TcpStreamReassembler.feed` them.
-    """
+    :meth:`pairs` orients them for a server-port set and may be called repeatedly;
+    each call returns fresh pairs, but the reassemblers inside are shared and
+    read-only (never feed them).
+"""
 
     def __init__(self, builders: Dict[Tuple[str, int, str, int], "ConvBuilder"]):
         self._builders = builders
@@ -355,8 +284,7 @@ class ParsedCapture:
         }
 
 
-#: Environment switch: ``FRITAP_PCAP_PARSER=scapy`` forces the legacy
-#: scapy-dissection parser (:func:`parse_pcap_scapy`) instead of the fast one.
+#: ``FRITAP_PCAP_PARSER=scapy`` selects :func:`parse_pcap_scapy` over the fast parser.
 PCAP_PARSER_ENV = "FRITAP_PCAP_PARSER"
 
 #: One TCP segment as both parsers yield it:
@@ -367,14 +295,11 @@ Segment = Tuple[str, str, int, str, int, int, bytes, bool, bool, float]
 def parse_pcap(pcap_path: str) -> ParsedCapture:
     """Read ``pcap_path`` and buffer every TCP segment per conversation.
 
-    Uses the scapy-free fast parser (:mod:`.pcap_fast`), which hands the rare
-    packets it does not decode itself (tunnels, PPPoE, IPv6 extension
-    headers, ...) to :func:`_scapy_fallback_segment`. ``FRITAP_PCAP_PARSER=scapy``
-    selects the legacy :func:`parse_pcap_scapy` instead.
-
-    Client/server roles are NOT decided here (see :meth:`ParsedCapture.pairs`), so
-    one parse serves every decryptor whatever its server ports.
-    """
+    Uses the scapy-free :mod:`.pcap_fast`, which hands packets it cannot decode
+    (tunnels, PPPoE, IPv6 extension headers) to :func:`_scapy_fallback_segment`.
+    ``FRITAP_PCAP_PARSER=scapy`` selects :func:`parse_pcap_scapy`. Roles are decided
+    later, so one parse serves every decryptor.
+"""
     if os.environ.get(PCAP_PARSER_ENV, "").strip().lower() == "scapy":
         return parse_pcap_scapy(pcap_path)
     from .pcap_fast import iter_tcp_segments
@@ -388,9 +313,7 @@ def parse_pcap_scapy(pcap_path: str) -> ParsedCapture:
 
 
 def _iter_scapy_segments(pcap_path: str) -> Iterator[Segment]:
-    # Import the IP layers BEFORE opening the reader: PcapReader resolves its
-    # link-layer class at open time, and the raw-IP link types are only
-    # registered once these modules are loaded.
+    # Import the IP layers first: PcapReader resolves its link-layer class at open time and raw-IP link types register on import.
     import scapy.layers.inet  # noqa: F401
     import scapy.layers.inet6  # noqa: F401
     from scapy.utils import PcapReader
@@ -431,13 +354,10 @@ def _scapy_segment(pkt) -> Optional[Segment]:
 def _scapy_fallback_segment(pkt) -> Optional[Segment]:
     """:func:`_scapy_segment` for the fast parser's fallback packets, minus padding.
 
-    scapy attaches link-layer padding to an EMPTY TCP segment as a ``Padding``
-    layer (a ``Raw`` subclass), which :func:`tcp_payload` returns as payload.
-    The fast parser never does that, so its fallback must not either: a packet
-    routed to scapy (MPLS, IPv4 options, ...) would otherwise leak phantom zero
-    bytes into the reassembled stream. :func:`_scapy_segment` itself stays the
-    unchanged reference of :func:`parse_pcap_scapy`.
-    """
+    scapy attaches link-layer padding to an empty segment as a ``Padding`` layer that
+    :func:`tcp_payload` returns; the fast parser never does, so phantom zero bytes
+    must not leak into the stream. :func:`_scapy_segment` stays the reference.
+"""
     segment = _scapy_segment(pkt)
     if segment is None or not segment[6] or not _tcp_payload_is_padding(pkt):
         return segment
@@ -500,14 +420,7 @@ class ConvBuilder:
     def _choose_client(
         self, server_ports: Optional[Tuple[int, ...]] = None,
     ) -> Tuple[str, int]:
-        # A mid-stream capture (attach / no handshake) can begin with the SERVER's
-        # bytes -- e.g. an inbound delivery arriving on a receiving connection
-        # before the client writes anything -- so "first payload sender" misorients
-        # the roles, which then makes mid-stream TLS binding apply the client/server
-        # traffic secrets to the wrong directions and silently drop the stream.
-        # Prefer the reliable signal first: the endpoint that dialed a server port
-        # is the client. Fall back to first-payload only when no server port is
-        # involved (non-standard ports), then to the first-seen endpoint.
+        # A mid-stream capture can begin with the server's bytes, so "first payload sender" can misorient roles and apply traffic secrets to the wrong directions; the endpoint that dialed a server port is reliable, the others are fallbacks.
         if server_ports is None:
             server_ports = self.server_ports
         for ep in self._endpoints:
@@ -522,12 +435,7 @@ class ConvBuilder:
         server_ports: Optional[Tuple[int, ...]] = None,
         pair_cls: Optional[Type[TcpStreamPair]] = None,
     ) -> TcpStreamPair:
-        """Orient the conversation and wrap its reassemblers in a new pair.
-
-        Pure and repeatable: *server_ports* / *pair_cls* default to the
-        constructor's, and every call returns a fresh pair around the SAME
-        reassembler objects.
-        """
+        """Orient the conversation and wrap its reassemblers in a new pair; pure and repeatable (*server_ports* / *pair_cls* default to the constructor's)."""
         client_ep = self._choose_client(server_ports)
         server_ep = next((ep for ep in self._endpoints if ep != client_ep), ("", 0))
         pair = (pair_cls or self.pair_cls)(

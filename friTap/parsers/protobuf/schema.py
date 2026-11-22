@@ -1,21 +1,11 @@
 """Optional schema-based protobuf decoding.
 
-Requires the ``google-protobuf`` package (``pip install protobuf``).
-An :class:`ImportError` is raised at construction time if the package
-is not installed, so callers can gracefully fall back to schema-less
-decoding.
+Needs ``google-protobuf``; ``ImportError`` at construction lets callers fall
+back to schema-less decoding. ``.proto`` sources compile via ``protoc`` (on PATH).
 
-Usage::
-
-    from friTap.parsers.protobuf.schema import SchemaDecoder
-
-    decoder = SchemaDecoder()  # raises ImportError if protobuf missing
-    decoder.load_descriptor("api_descriptor.desc", "mypackage.MyMessage")
+    decoder = SchemaDecoder()
+    decoder.load_descriptor("api.desc", "mypackage.MyMessage")   # or load_schema("api.proto", ...)
     result = decoder.decode(raw_bytes)
-
-    # .proto sources are compiled with ``protoc`` (must be on PATH):
-    decoder.load_schema("api.proto", "mypackage.MyMessage")
-    print(decoder.decode_text(raw_bytes))
 """
 
 from __future__ import annotations
@@ -52,20 +42,13 @@ def compile_proto(
     include_paths: Sequence[str | Path] = (),
     timeout: float = 5.0,
 ) -> bytes:
-    """Compile a ``.proto`` file into serialized ``FileDescriptorSet`` bytes.
+    """Compile a ``.proto`` into serialized ``FileDescriptorSet`` bytes (``protoc --include_imports``).
 
-    Runs ``protoc --include_imports`` (so imported files are part of the
-    set), with the file's own directory plus *include_paths* as proto paths.
-    Results are cached per (real path, include paths) and stay valid only
-    while every input file is unchanged: the schema itself and each file it
-    imports (by mtime and size), so editing an imported ``.proto`` recompiles
-    too. A protoc failure is cached the same way and re-raised as an equal
-    :class:`SchemaError` until one of the files involved changes, so a broken
-    schema is not recompiled on every preview.
-
-    Raises:
-        SchemaError: protoc is missing, fails, or times out (``stderr`` set).
-        FileNotFoundError: *path* does not exist.
+    The file's directory plus *include_paths* are proto paths. Results, and protoc
+    failures (re-raised as an equal :class:`SchemaError`), are cached per (real path,
+    include paths) and stay valid while the schema and every imported file keep
+    their mtime and size.
+    Raises SchemaError (protoc missing/failed/timeout) or FileNotFoundError.
     """
     real = os.path.realpath(path)
     os.stat(real)  # FileNotFoundError for a missing schema, before protoc runs
@@ -86,7 +69,6 @@ _STDERR_PROTO_NAME = re.compile(r'"([^"\n]+\.proto)"|^([^:\n]+\.proto):', re.MUL
 _IMPORT_STATEMENT = re.compile(
     r'^\s*import\s+(?:public\s+|weak\s+)?"([^"\n]+)"\s*;', re.MULTILINE)
 
-# Upper bound on files read while following imports of a failed compile.
 _MAX_IMPORT_SCAN = 256
 
 
@@ -119,11 +101,10 @@ class _CompileOutcome:
 
 
 class _ProtoCompileCache:
-    """LRU cache of protoc outcomes, validated against input-file stats.
+    """LRU of protoc outcomes validated against input-file stats.
 
-    ``functools.lru_cache`` cannot express this: imported files are only
-    known after compiling, so their stats cannot be part of the key. Keeps
-    the ``cache_clear()`` / ``cache_info()`` interface of an ``lru_cache``.
+    ``lru_cache`` cannot do this: imports are only known after compiling, so their
+    stats cannot be in the key. Keeps its ``cache_clear()`` / ``cache_info()`` interface.
     """
 
     def __init__(self, maxsize: int) -> None:
@@ -179,9 +160,8 @@ def _compile_outcome(
 ) -> _CompileOutcome:
     """Run protoc once and record which files the result depends on.
 
-    A missing protoc or a timeout raises directly (not cached: both can go
-    away without any ``.proto`` changing); a protoc error is returned as a
-    cacheable outcome.
+    A missing protoc or timeout raises uncached (both can clear without a ``.proto``
+    change); a protoc error is returned as a cacheable outcome.
     """
     protoc = shutil.which("protoc")
     if protoc is None:
@@ -222,11 +202,9 @@ def _input_stats(
 ) -> tuple[_FileStat, ...]:
     """Stats of the schema plus every file protoc could have read for *names*.
 
-    A relative name is looked up along *proto_paths* like protoc does; every
-    candidate up to the first existing one is recorded (absent ones as
-    ``None``), so a file appearing earlier on the path, i.e. shadowing the
-    one used, also invalidates. Names never on disk (protoc's built-in
-    well-known types) stay ``None`` and so never invalidate.
+    Relative names are looked up along *proto_paths*; every candidate up to the first
+    existing one is recorded (absent as ``None``) so a shadowing file also invalidates.
+    Built-in well-known types stay ``None`` and never invalidate.
     """
     stats: dict[str, Optional[tuple[int, int]]] = {real_path: top_stat}
     for name in names:
@@ -251,12 +229,7 @@ def _proto_names_in_stderr(stderr: str) -> list[str]:
 
 
 def _imported_names(real_path: str, proto_paths: Sequence[str]) -> list[str]:
-    """Transitive ``import`` names of *real_path*, read from the sources.
-
-    Used when protoc failed and left no descriptor set. Best effort: an
-    unreadable file contributes nothing; at most :data:`_MAX_IMPORT_SCAN`
-    files are read.
-    """
+    """Transitive ``import`` names of *real_path* read from sources, for a failed compile; best effort, at most :data:`_MAX_IMPORT_SCAN` files."""
     names: list[str] = []
     pending = [real_path]
     seen = {real_path}
@@ -278,9 +251,8 @@ def _imported_names(real_path: str, proto_paths: Sequence[str]) -> list[str]:
 def _proto_names_in_descriptor_set(descriptor: bytes) -> list[str]:
     """``FileDescriptorProto.name`` of every file in a ``FileDescriptorSet``.
 
-    Walks the wire format directly (``FileDescriptorSet.file`` = 1,
-    ``FileDescriptorProto.name`` = 1) so no ``google.protobuf`` is needed.
-    Malformed input yields the names read so far.
+    Walks the wire format directly (set.file = 1, file.name = 1), no ``google.protobuf``
+    needed; malformed input yields the names read so far.
     """
     names: list[str] = []
     try:
@@ -341,17 +313,7 @@ def _check_protobuf_available() -> None:
 
 
 class SchemaDecoder:
-    """Decode protobuf messages using compiled descriptor sets.
-
-    Parameters
-    ----------
-    None
-
-    Raises
-    ------
-    ImportError
-        If ``google-protobuf`` is not installed.
-    """
+    """Decode protobuf messages using compiled descriptor sets; raises ImportError if ``google-protobuf`` is missing."""
 
     def __init__(self) -> None:
         _check_protobuf_available()
@@ -362,16 +324,7 @@ class SchemaDecoder:
         self._loaded_types: list[str] = []
 
     def load_descriptor(self, path: str | Path, message_type: str) -> None:
-        """Load a compiled descriptor set (.desc) file and select a message type.
-
-        Generate a descriptor set with::
-
-            protoc --descriptor_set_out=api.desc --include_imports api.proto
-
-        Args:
-            path: Path to the ``.desc`` file.
-            message_type: Fully qualified message type name (e.g. ``mypackage.MyMessage``).
-        """
+        """Load a ``.desc`` descriptor set (``protoc --descriptor_set_out=api.desc --include_imports api.proto``) and select *message_type* (fully qualified)."""
         self._load_from_bytes(Path(path).read_bytes(), message_type)
         _log.debug("Loaded schema for %s from %s", message_type, path)
 
@@ -435,11 +388,7 @@ class SchemaDecoder:
         return list(self._loaded_types)
 
     def decode_text(self, data: bytes) -> str:
-        """Decode *data* and render it in protobuf text format.
-
-        Fields the schema does not know are printed by number, so nothing in
-        the payload is hidden. Raises like :meth:`decode`.
-        """
+        """Decode *data* to protobuf text format; unknown fields are printed by number. Raises like :meth:`decode`."""
         from google.protobuf import text_format
 
         msg = self._parse(data)
@@ -457,17 +406,9 @@ class SchemaDecoder:
         return msg
 
     def decode(self, data: bytes) -> dict[str, Any]:
-        """Decode *data* using the loaded schema.
+        """Decode raw protobuf *data* with the loaded schema into a dict.
 
-        Args:
-            data: Raw protobuf bytes.
-
-        Returns:
-            Dictionary representation of the decoded message.
-
-        Raises:
-            RuntimeError: If no schema has been loaded.
-            google.protobuf.message.DecodeError: If the data is malformed.
+        Raises RuntimeError if no schema is loaded, ``DecodeError`` if malformed.
         """
         from google.protobuf.json_format import MessageToDict
 
@@ -490,11 +431,7 @@ class SchemaDecoder:
 
 
 def _message_class_for(desc: Any, factory: Any) -> Any:
-    """Concrete message class for *desc* across protobuf versions.
-
-    ``message_factory.GetMessageClass`` replaced
-    ``MessageFactory.GetPrototype``, which newer releases removed.
-    """
+    """Concrete message class for *desc* (``GetMessageClass`` replaced the removed ``GetPrototype``)."""
     from google.protobuf import message_factory
 
     get_message_class = getattr(message_factory, "GetMessageClass", None)

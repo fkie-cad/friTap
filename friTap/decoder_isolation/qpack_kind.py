@@ -14,7 +14,8 @@ pylsqpack exceptions travel as statuses / reply flags:
 * ``DecompressionFailed``  -> ``CONTEXT_ERROR`` + ``REPLY_QPACK_DECOMPRESSION_FAILED``
 * ``EncoderStreamError``   -> ``CONTEXT_ERROR`` + ``REPLY_QPACK_ENCODER_STREAM_ERROR``
 * anything else            -> ``CONTEXT_ERROR`` without flags
-* header list over the caps -> ``LIMIT_ERROR`` (the context stays usable)
+* header list over the caps -> ``LIMIT_ERROR`` (the context stays usable),
+  including pylsqpack >= 1.0's ``FieldSectionTooLarge``
 """
 
 import struct
@@ -29,6 +30,25 @@ KIND = "qpack_decoder"
 PARAMS = struct.Struct("!qqqq")
 # Most stream ids one feed_encoder reply may list (pylsqpack blocks <= 128).
 MAX_UNBLOCKED_IDS = 1024
+# pylsqpack >= 1.0 enforces a field-section limit itself; 0.3.x has none.
+# Shared with friTap.parsers.qpack_context (this file must stay standalone).
+FIELD_SECTION_TOO_LARGE = getattr(pylsqpack, "FieldSectionTooLarge", None)
+# RFC 9114 field-section size adds this per field (see Decoder docs)
+_FIELD_SIZE_OVERHEAD = 32
+# pylsqpack rejects values above the QUIC varint maximum
+_MAX_FIELD_SECTION_SIZE = 2 ** 62 - 1
+
+
+def field_section_limit(max_bytes, max_count):
+    """``pylsqpack.Decoder`` kwargs for pylsqpack >= 1.0 (``{}`` on 0.3.x).
+
+    Loose enough that only lists over *max_bytes* / *max_count* hit it, so
+    the callers' own count/byte caps stay the policy.
+    """
+    if FIELD_SECTION_TOO_LARGE is None:
+        return {}
+    limit = min(max_bytes + _FIELD_SIZE_OVERHEAD * max_count, _MAX_FIELD_SECTION_SIZE)
+    return {"max_field_section_size": limit}
 
 
 def available():
@@ -59,7 +79,8 @@ class QpackDecoderContext:
         capacity, blocked, self._max_count, self._max_bytes = PARAMS.unpack(params)
         if min(capacity, blocked, self._max_count, self._max_bytes) < 0:
             raise ValueError("negative qpack_decoder parameter")
-        self._decoder = pylsqpack.Decoder(capacity, blocked)
+        self._decoder = pylsqpack.Decoder(
+            capacity, blocked, **field_section_limit(self._max_bytes, self._max_count))
 
     def call(self, op, data, max_out, protocol):
         """Dispatch one context op -> ``(status, flags, data, text)``."""
@@ -96,6 +117,8 @@ class QpackDecoderContext:
         except pylsqpack.StreamBlocked:
             return S.BLOCKED, 0, b"", b""
         except Exception as exc:
+            if FIELD_SECTION_TOO_LARGE is not None and isinstance(exc, FIELD_SECTION_TOO_LARGE):
+                return S.LIMIT_ERROR, 0, b"", b"header list exceeds the caps"
             return self._error(exc, protocol)
         if self._too_large(headers):
             return S.LIMIT_ERROR, 0, b"", b"header list exceeds the caps"

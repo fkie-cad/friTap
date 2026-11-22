@@ -1,22 +1,17 @@
 """Bounded stash of caller stacks that arrived before their flow.
 
-A ``CallerStackEvent`` can reach the collector before the first data record of
-its connection. It is parked here under a join key -- ``("cr", client_random)``,
-an unordered 4-tuple, or ``("sid", ssl_session_id)`` -- and drained when the
-connection's first flow is born. The stash holds at most :data:`MAX_STASHED`
-entries in total, and entries expire :data:`STASH_TTL_SECONDS` after they were
-parked. Time always comes from the caller (the collector's ``_now()``), never
-from the wall clock here: offline conversion runs on the event clock.
+A ``CallerStackEvent`` can reach the collector before its connection's first data
+record. It is parked under a join key (``("cr", client_random)``, an unordered
+4-tuple, or ``("sid", ssl_session_id)``) and drained when the first flow is born.
+At most :data:`MAX_STASHED` entries; they expire :data:`STASH_TTL_SECONDS` after
+parking. Time comes from the caller (``_now()``), never the wall clock: offline
+conversion runs on the event clock.
 
-Entries arrive in time order, so one global FIFO (``_arrivals``) is also the
-expiry order: expiry and the over-cap drop work from its front in amortized
-O(1). Each key keeps its own FIFO for :meth:`CallerStackStash.take`; a taken
-entry is only flagged dead in the global FIFO and skipped when it reaches the
-front.
-
-One entry may be indexed under SEVERAL keys (:meth:`CallerStackStash.put_under`,
-e.g. its client_random and its 4-tuple): whichever key drains first consumes it,
-and the other keys skip the dead slot. It counts once against the cap.
+Entries arrive in time order, so one global FIFO (``_arrivals``) is also the expiry
+order (amortized O(1)). Each key keeps its own FIFO for :meth:`CallerStackStash.take`;
+a taken entry is only flagged dead globally and skipped at the front. One entry may
+be indexed under several keys (:meth:`CallerStackStash.put_under`): whichever key
+drains first consumes it, and it counts once against the cap.
 """
 
 from __future__ import annotations
@@ -106,10 +101,9 @@ class CallerStackStash:
             self._drop_front()
 
     def _drop_front(self) -> None:
-        """Remove the oldest slot of the global FIFO (live or already taken).
+        """Remove the oldest slot of the global FIFO (live or taken).
 
-        FIFO per key and globally: every older slot already left its key
-        queues, so this slot heads each queue it is still in.
+        Every older slot already left its key queues, so this one heads each queue it is still in.
         """
         slot = self._arrivals.popleft()
         if slot.live:

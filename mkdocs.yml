@@ -111,9 +111,11 @@ nav:
     - Overview: libraries/index.md
     - BoringSSL: libraries/boringssl.md
     - Cronet & Mainline Cronet: libraries/cronet.md
+    - Flutter: libraries/flutter.md
     - Other Libraries: libraries/others.md
   - API Reference:
     - Python API: api/python.md
+    - Embedding the .tap viewer: api/embedding.md
     - CLI Reference: api/cli.md
     - .tap File Format: api/tap-format.md
     - AI Agents (MCP / REST / CLI): api/agent.md

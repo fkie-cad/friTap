@@ -2,18 +2,12 @@
 
 """MemoryScanScriptPlugin — thin plugin adapter over :class:`MemoryScanEngine`.
 
-Memory scanning is a first-class friTap capability driven directly by the core
-(see :mod:`friTap.memory_scanning.engine`), **not** a plugin. This adapter exists
-so the *plugin system* can still reach the engine: a third-party plugin (or a
-user dropping this into their plugin directory) can drive the exact same heap
-secret-scanner through the standard :class:`~friTap.plugins.script_plugin.ScriptPlugin`
-lifecycle. The core does **not** register this adapter — it constructs a
-``MemoryScanEngine`` directly.
+Lets the plugin system drive the heap scanner through the standard
+``ScriptPlugin`` lifecycle. The core does not register this adapter; it builds
+a ``MemoryScanEngine`` directly.
 
-The adapter is deliberately thin: it forwards each lifecycle callback to a
-wrapped ``MemoryScanEngine``. The engine owns script injection and message
-routing, so the adapter never calls ``super().on_instrument`` — there is a
-single injection path, inside the engine.
+Each lifecycle callback is forwarded to the wrapped engine. The engine owns
+script injection, so the adapter never calls ``super().on_instrument``.
 """
 
 from __future__ import annotations
@@ -44,8 +38,6 @@ class MemoryScanScriptPlugin(ScriptPlugin):
         engine: Optional[MemoryScanEngine] = None,
     ) -> None:
         super().__init__()
-        # Accept a prebuilt engine (e.g. from build_memory_scan_engine) or build
-        # one from the same parameters the engine takes.
         self._engine = engine or MemoryScanEngine(
             patterns_path=patterns_path,
             interval=interval,
@@ -77,8 +69,7 @@ class MemoryScanScriptPlugin(ScriptPlugin):
 
     @property
     def load_order(self) -> ScriptLoadOrder:
-        # AFTER_MAIN: when combined with the main agent, let it install its hooks
-        # first; the scan loop is independent and starts once its own script is up.
+        # The main agent installs its hooks first; the scan loop is independent.
         return ScriptLoadOrder.AFTER_MAIN
 
     @property
@@ -86,7 +77,6 @@ class MemoryScanScriptPlugin(ScriptPlugin):
         return list(self._engine.supported_backends)
 
     def get_script_source(self, context: "ScriptContext") -> str:
-        # The engine injects its own script(s); the base injection path is unused.
         return ""
 
     def on_instrument(self, context: "ScriptContext") -> None:

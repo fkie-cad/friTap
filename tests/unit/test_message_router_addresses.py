@@ -11,7 +11,7 @@ import types
 import pytest
 
 from friTap.events import DatalogEvent
-from friTap.legacy import ssl_logger_core
+from friTap import agent_socket_fields
 from friTap.legacy.ssl_logger_core import (
     SSL_Logger,
     coerce_port,
@@ -35,7 +35,7 @@ class _Bus:
 
 @pytest.fixture(autouse=True)
 def _rearm_warn_once(monkeypatch):
-    monkeypatch.setattr(ssl_logger_core, "_invalid_socket_field_warned", False)
+    monkeypatch.setattr(agent_socket_fields, "_invalid_socket_field_warned", False)
 
 
 class TestGetAddrString:

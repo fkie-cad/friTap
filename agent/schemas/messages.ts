@@ -10,6 +10,21 @@ export interface CallerFrame {
     address?: string | null;
 }
 
+export interface PlaintextRvas {
+    SSL_read: number;
+    SSL_write: number;
+}
+
+export interface PlaintextPrologueHashes {
+    SSL_read: string;
+    SSL_write: string;
+}
+
+export interface LearnedFunction {
+    rva: number;
+    prologue_sha256: string;
+}
+
 export interface KeylogMessage {
     contentType: "keylog";
     protocol?: string;
@@ -38,7 +53,11 @@ export interface DatalogMessage {
     quic_stream_type?: string | null;
     direction?: string | null;
     quic_payload?: string | null;
+    quic_midstream?: boolean | null;
+    stream_offset?: number | null;
+    fin?: boolean | null;
     library?: string | null;
+    held_ms?: number | null;
 }
 
 export function isDatalogMessage(msg: unknown): msg is DatalogMessage {
@@ -319,6 +338,38 @@ export function isRequestContextMessage(msg: unknown): msg is RequestContextMess
     return (msg as any)?.contentType === "request_context";
 }
 
+export interface PlaintextApiLearnedMessage {
+    contentType: "plaintext_api_learned";
+    protocol?: string;
+    module: string;
+    build_id: string;
+    size: number;
+    arch: string;
+    cache_hit?: boolean | null;
+    rvas: PlaintextRvas;
+    prologue_sha256: PlaintextPrologueHashes;
+}
+
+export function isPlaintextApiLearnedMessage(msg: unknown): msg is PlaintextApiLearnedMessage {
+    return (msg as any)?.contentType === "plaintext_api_learned";
+}
+
+export interface ModuleOffsetsLearnedMessage {
+    contentType: "module_offsets_learned";
+    protocol?: string;
+    module: string;
+    build_id: string;
+    size: number;
+    arch: string;
+    cache_hit?: boolean | null;
+    functions?: Record<string, LearnedFunction> | null;
+    layout?: Record<string, number> | null;
+}
+
+export function isModuleOffsetsLearnedMessage(msg: unknown): msg is ModuleOffsetsLearnedMessage {
+    return (msg as any)?.contentType === "module_offsets_learned";
+}
+
 export type AgentMessage = KeylogMessage
     | DatalogMessage
     | ConnectionLifecycleMessage
@@ -338,4 +389,6 @@ export type AgentMessage = KeylogMessage
     | IPSecESPKeysMessage
     | OhttpPlaintextMessage
     | CallerStackMessage
-    | RequestContextMessage;
+    | RequestContextMessage
+    | PlaintextApiLearnedMessage
+    | ModuleOffsetsLearnedMessage;

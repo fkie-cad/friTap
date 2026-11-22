@@ -63,6 +63,14 @@ setup(
         "mcp": [
             "mcp>=1.10,<2",
         ],
+        # Optional Wireshark-viewable HTTP/3 in -p: re-encapsulates captured QUIC
+        # plaintext as a synthetic QUIC connection (pylsqpack is a base dependency).
+        "quic-pcap": [
+            "aioquic>=1.8,<2",
+        ],
+        # No-op alias so `pip install fritap[tui]` works and documents intent:
+        # textual already ships in the base install (requirements.txt).
+        "tui": [],
     },
 
     # Include non-Python assets inside the package
@@ -145,6 +153,18 @@ setup(
         # (or ``AGENT_BUNDLE_PATH``); see SSL_Logger._discover_agent_bundle.
         # friTap ships none publicly. Generic — names no protocol.
         "fritap.agent_bundle": [],
+        # Read by friTap.parsers.registry (PARSER_ENTRY_POINT_GROUP); third-party
+        # packages can expose protocol parsers here. friTap ships none this way.
+        "fritap.parsers": [],
+        # Read by friTap.plugins.loader; third-party FriTapPlugin subclasses.
+        # friTap ships none this way.
+        "fritap.plugins": [],
+        # Read by friTap.extensions.load_extensions(): each target is a
+        # zero-argument callable that calls the friTap.extensions register_*
+        # functions (detail tabs, flow columns, body decoders, filter fields):
+        #     [fritap.ui_extensions]
+        #     my-ext = my_pkg.fritap_ext:register
+        "fritap.ui_extensions": [],
     },
     project_urls={
         "Source": "https://github.com/fkie-cad/friTap",

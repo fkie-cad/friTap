@@ -1,10 +1,8 @@
-"""
-Analyzer registry — resolve analyzer names to BaseAnalyzer instances.
+"""Analyzer registry: maps each analyzer's ``.name`` to a factory.
 
-The registry maps short, user-facing names (the same string as each
-analyzer's ``.name`` attribute) to zero-argument factories. This keeps the
-CLI / live-scan wiring decoupled from the concrete analyzer classes and gives
-a single place to register new built-in analyzers.
+Decouples CLI / live-scan wiring from concrete analyzer classes. Concrete
+imports stay lazy (inside the factories) to keep this module import-light and
+free of cycles with ``friTap.analysis``.
 
 Usage::
 
@@ -13,65 +11,82 @@ Usage::
     analyzers = resolve_analyzers("credentials,ioc")
     analyzers = resolve_analyzers(None)            # all built-ins
     analyzers = resolve_analyzers("all", include_private_ips=True)
-
-Imports of the concrete analyzers are kept lazy (inside the factories) so this
-module stays import-light and free of import cycles with ``friTap.analysis``.
 """
 
 from __future__ import annotations
 
 import importlib
+import logging
 import threading
 from typing import TYPE_CHECKING, Callable
+
+logger = logging.getLogger("friTap.analysis.registry")
 
 if TYPE_CHECKING:
     from friTap.analysis import BaseAnalyzer
 
 
 def _make_ioc(*, include_private_ips: bool = False, **_ignored) -> "BaseAnalyzer":
-    """Factory for IocAnalyzer (accepts the include_private_ips passthrough)."""
+    """Factory for IocAnalyzer."""
     from friTap.analysis.ioc import IocAnalyzer
     return IocAnalyzer(include_private_ips=include_private_ips)
 
 
 def _make_credentials(**_ignored) -> "BaseAnalyzer":
-    """Factory for CredentialAnalyzer (takes no configuration)."""
+    """Factory for CredentialAnalyzer."""
     from friTap.analysis.credentials import CredentialAnalyzer
     return CredentialAnalyzer()
 
 
 def _make_protobuf(*, protobuf_schema: str | None = None, **_ignored) -> "BaseAnalyzer":
-    """Factory for ProtobufAnalyzer (accepts an optional schema path)."""
+    """Factory for ProtobufAnalyzer."""
     from friTap.analysis.protobuf_analyzer import ProtobufAnalyzer
     return ProtobufAnalyzer(schema_path=protobuf_schema)
 
 
 def _make_privacy(*, reveal_pii: bool = False, verbose: bool = False, **_ignored) -> "BaseAnalyzer":
-    """Factory for PrivacyAnalyzer (accepts reveal_pii / verbose passthroughs)."""
+    """Factory for PrivacyAnalyzer."""
     from friTap.analysis.privacy import PrivacyAnalyzer
     return PrivacyAnalyzer(reveal_pii=reveal_pii, verbose=verbose)
 
 
 def _make_tls_hygiene(**_ignored) -> "BaseAnalyzer":
-    """Factory for TlsHygieneAnalyzer (takes no configuration)."""
+    """Factory for TlsHygieneAnalyzer."""
     from friTap.analysis.security import TlsHygieneAnalyzer
     return TlsHygieneAnalyzer()
 
 
-# Name -> factory. Keys MUST equal each analyzer class's ``.name`` attribute.
+def _make_applovin_mediate(
+    *,
+    reveal_pii: bool = False,
+    applovin_sdk_keys=(),
+    applovin_salts=(),
+    app_bundles=(),
+    **_ignored,
+) -> "BaseAnalyzer":
+    """Factory for AppLovinMediateAnalyzer (key material from CLI, else env vars)."""
+    from friTap.analysis.applovin_mediate import AppLovinMediateAnalyzer
+    return AppLovinMediateAnalyzer(
+        sdk_keys=applovin_sdk_keys or (),
+        salts_hex=applovin_salts or (),
+        bundle_paths=app_bundles or (),
+        reveal_pii=reveal_pii,
+    )
+
+
+# Keys must equal each analyzer class's ``.name``.
 ANALYZER_REGISTRY: dict[str, Callable[..., "BaseAnalyzer"]] = {
     "ioc": _make_ioc,
     "credentials": _make_credentials,
     "privacy": _make_privacy,
     "protobuf": _make_protobuf,
     "tls_hygiene": _make_tls_hygiene,
+    "applovin_mediate": _make_applovin_mediate,
 }
 
 
-# Externally-discovered analyzers (drop-in dir / entry points / plugin bridge).
-# Kept separate from ANALYZER_REGISTRY so an empty discovery is byte-for-byte
-# identical to the pre-discovery behaviour. Each value is a zero-config factory
-# that returns the already-constructed discovered instance.
+# Externally discovered analyzers (drop-in dir / entry points / plugin bridge),
+# kept apart from ANALYZER_REGISTRY. Each value returns the discovered instance.
 _DISCOVERED: dict[str, Callable[..., "BaseAnalyzer"]] = {}
 _DISCOVERY_DONE = False
 # Reentrant so refresh_discovered() can call _ensure_discovered() while held.
@@ -79,13 +94,15 @@ _DISCOVERY_LOCK = threading.RLock()
 
 
 def register_analyzer(name: str, factory: Callable[..., "BaseAnalyzer"]) -> None:
-    """Register an analyzer factory by name.
+    """Register an analyzer factory by name (discovery layer and embedders).
 
-    Used by the discovery layer (and any embedder) to add analyzers that then
-    become selectable by *spec* in :func:`resolve_analyzers`, listable via
-    :func:`available_analyzers`, and visible to the CLI / TUI — without editing
-    :data:`ANALYZER_REGISTRY`.
+    The analyzer becomes selectable in :func:`resolve_analyzers` and listed by
+    :func:`available_analyzers`. A name colliding with a built-in logs a warning
+    and the built-in wins.
     """
+    if name in ANALYZER_REGISTRY:
+        logger.warning(
+            "analyzer %r collides with a built-in analyzer; the built-in is used", name)
     _DISCOVERED[name] = factory
 
 
@@ -97,11 +114,10 @@ def _const_factory(instance: "BaseAnalyzer") -> Callable[..., "BaseAnalyzer"]:
 
 
 def _ensure_discovered() -> None:
-    """Lazily run external-analyzer discovery once and populate ``_DISCOVERED``.
+    """Run external-analyzer discovery once and populate ``_DISCOVERED``.
 
-    Thread-safe: guarded by a lock with double-checked ``_DISCOVERY_DONE``, and
-    the done-flag is published only *after* ``_DISCOVERED`` is fully populated
-    so a concurrent reader never observes an empty/partial set.
+    Thread-safe (double-checked lock); the done-flag is set only after
+    ``_DISCOVERED`` is complete so readers never see a partial set.
     """
     global _DISCOVERY_DONE
     if _DISCOVERY_DONE:
@@ -113,18 +129,17 @@ def _ensure_discovered() -> None:
             from friTap.analysis.discovery import discover_external_analyzers
             discovered = discover_external_analyzers()
         except Exception:  # pragma: no cover - never let discovery break resolution
-            _DISCOVERY_DONE = True  # best-effort once; don't retry every call
+            _DISCOVERY_DONE = True  # best-effort once
             return
         for name, found in discovered.items():
             if name in ANALYZER_REGISTRY:
-                # Never let an external analyzer shadow a built-in name.
-                continue
+                continue  # built-ins are never shadowed
             _DISCOVERED.setdefault(name, _const_factory(found.instance))
         _DISCOVERY_DONE = True
 
 
 def refresh_discovered() -> None:
-    """Force a re-scan of external analyzers (e.g. a TUI 'reload' action)."""
+    """Re-scan external analyzers (TUI reload)."""
     global _DISCOVERY_DONE
     from friTap.analysis.discovery import discover_external_analyzers
 
@@ -132,17 +147,17 @@ def refresh_discovered() -> None:
         _DISCOVERED.clear()
         _DISCOVERY_DONE = False
         discover_external_analyzers(force=True)
-        _ensure_discovered()  # reentrant: RLock allows re-acquire on this thread
+        _ensure_discovered()  # RLock allows re-acquire
 
 
 def available_analyzers() -> list[str]:
-    """Return the sorted list of available analyzer names (built-in + discovered)."""
+    """Sorted built-in and discovered analyzer names."""
     _ensure_discovered()
     return sorted(set(ANALYZER_REGISTRY) | set(_DISCOVERED))
 
 
 def _build(name: str, **opts) -> "BaseAnalyzer":
-    """Instantiate a registered analyzer by name, raising on unknown names."""
+    """Instantiate a registered analyzer; ValueError on an unknown name."""
     factory = ANALYZER_REGISTRY.get(name) or _DISCOVERED.get(name)
     if factory is None:
         available = ", ".join(available_analyzers())
@@ -152,40 +167,26 @@ def _build(name: str, **opts) -> "BaseAnalyzer":
     return factory(**opts)
 
 
-# Explicit opt-in marker an external analyzer class must set to be auto-discovered
-# from a bare ``module`` reference. This stops the registry from blindly
-# instantiating every class in the module (#7) — the runtime_checkable
-# BaseAnalyzer protocol only checks attribute presence, so unrelated/imported
-# duck-typed classes would otherwise be accepted and constructed.
+# Opt-in marker for bare-``module`` auto-discovery: the runtime_checkable
+# BaseAnalyzer protocol only checks attribute presence, so unrelated duck-typed
+# classes would otherwise be instantiated.
 ANALYZER_MARKER_ATTR = "is_fritap_analyzer"
 
 
 def _is_discoverable_analyzer(obj: object, module) -> bool:
-    """True if *obj* is a class an external module opts in to auto-discovery.
-
-    Requires the class to be (a) defined in *module* itself (not merely imported
-    into its namespace) and (b) explicitly marked via ``is_fritap_analyzer``.
-    """
+    """True for a class defined in *module* (not re-exported) and marked ``is_fritap_analyzer``."""
     if not isinstance(obj, type):
         return False
-    # Only consider classes actually defined in this module, not re-exports.
     if getattr(obj, "__module__", None) != module.__name__:
         return False
-    # Require the explicit opt-in marker rather than relying on duck typing.
     return bool(getattr(obj, ANALYZER_MARKER_ATTR, False))
 
 
 def _load_external_analyzers(analyzer_path: str) -> dict[str, "BaseAnalyzer"]:
-    """Import an external module (or ``module:Class``) and collect analyzers.
+    """Import an external ``module`` or ``module:Class`` and return ``.name`` -> instance.
 
-    Returns a mapping of ``.name`` -> instance. The explicit ``module:Class``
-    form is preferred: the named class is instantiated and registered by its
-    ``.name`` (only requiring it to satisfy the :class:`BaseAnalyzer` protocol).
-
-    For a bare ``module`` reference, auto-discovery is restricted to classes
-    *defined in that module* that explicitly opt in via the
-    ``is_fritap_analyzer = True`` class attribute (#7) — we no longer
-    instantiate every class in the module.
+    ``module:Class`` (preferred) only needs to satisfy :class:`BaseAnalyzer`; a bare
+    module yields only classes defined in it with ``is_fritap_analyzer = True``.
     """
     from friTap.analysis import BaseAnalyzer
 
@@ -194,7 +195,6 @@ def _load_external_analyzers(analyzer_path: str) -> dict[str, "BaseAnalyzer"]:
 
     found: dict[str, "BaseAnalyzer"] = {}
     if class_name:
-        # Explicit class reference: trust the caller, only verify the protocol.
         obj = getattr(module, class_name)
         instance = obj() if isinstance(obj, type) else obj
         if not isinstance(instance, BaseAnalyzer):
@@ -230,33 +230,20 @@ def resolve_analyzers(
     analyzer_path: "str | list[str] | None" = None,
     **opts,
 ) -> list["BaseAnalyzer"]:
-    """Resolve an analyzer *spec* into a list of analyzer instances.
+    """Resolve an analyzer *spec* into analyzer instances.
 
-    Args:
-        spec: ``None``, ``"all"`` or ``""`` selects every available analyzer
-            (built-ins plus any auto-discovered external analyzers). Otherwise a
-            comma-separated list of analyzer names (matching each analyzer's
-            ``.name``).
-        analyzer_path: Optional explicit ``"module"`` or ``"module:Class"``
-            reference (or a list of them) to load external analyzers for this
-            call. Explicitly-loaded analyzers take precedence over discovered
-            ones of the same name and are registered by their ``.name`` so they
-            can be selected via *spec*.
-        **opts: Known passthrough options forwarded to the matching factory
-            (e.g. ``include_private_ips`` for ioc, ``protobuf_schema`` for
-            protobuf). Unknown options are ignored by the factories.
+    *spec*: ``None``, ``"all"`` or ``""`` selects every available analyzer;
+    otherwise comma-separated analyzer names.
+    *analyzer_path*: ``"module"`` / ``"module:Class"`` (or a list) loaded for this
+    call; these win over discovered analyzers of the same name.
+    **opts are forwarded to the factories (e.g. ``include_private_ips``,
+    ``protobuf_schema``, ``applovin_sdk_keys``/``applovin_salts``/``app_bundles``);
+    unknown options are ignored.
 
-    Returns:
-        A list of analyzer instances implementing :class:`BaseAnalyzer`.
-
-    Raises:
-        ValueError: When *spec* names an analyzer that is not registered.
+    Raises ValueError for an unregistered name.
     """
-    # Ambient discovery (drop-in dir / entry points / plugin bridge) so that
-    # both "all" and explicit names pick up user analyzers with no flags.
-    _ensure_discovered()
+    _ensure_discovered()  # so "all" and explicit names pick up user analyzers
 
-    # Explicit path(s) override discovery for this call.
     paths = [analyzer_path] if isinstance(analyzer_path, str) else (analyzer_path or [])
     external: dict[str, "BaseAnalyzer"] = {}
     for path in paths:

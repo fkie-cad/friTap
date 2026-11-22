@@ -1,24 +1,12 @@
 """Decrypt one direction's TLS 1.3 application_data records from a traffic secret.
 
-Two entry points, sharing the :mod:`.tls13` primitives:
+Handshake-anchored (:func:`decrypt_stream`): the first application_data record
+has sequence number 0. Mid-stream (:func:`recover_seq`, :func:`pick_suite`, ...):
+the suite and the first record's seq ``S > 0`` are unknown and brute forced.
 
-  * **Handshake-anchored** (:func:`decrypt_stream`):
-    the capture began at the handshake, so the first application_data record
-    carries record sequence number 0.
-
-  * **Mid-stream** (:func:`recover_seq`, :func:`decrypt_stream_from`,
-    :func:`pick_suite`): the capture started **mid-flow** — the
-    ClientHello/ServerHello were never seen, the negotiated cipher suite is
-    unknown, and the record sequence number of the first captured
-    application_data record is some unknown ``S > 0``.
-
-The mid-stream recovery relies on the AEAD authentication tag as a
-zero-false-accept oracle. TLS 1.3 uses ``nonce = static_iv XOR seq`` (RFC 8446
-sec 5.3), so a wrong ``seq`` produces a wrong nonce and the 16-byte
-GCM/Poly1305 tag fails to verify with overwhelming probability (~2^-128 per
-trial). We therefore brute force the small unknown starting ``seq`` (and, when
-unknown, the three TLS 1.3 suites) against the first application_data record and
-accept only a decryption whose inner content-type is a legal TLS 1.3 value.
+The AEAD tag is a zero-false-accept oracle: ``nonce = static_iv XOR seq`` (RFC
+8446 sec 5.3), so a wrong seq fails the tag (~2^-128 false accept per trial) and
+only a decryption with a legal inner content-type is accepted.
 """
 
 from __future__ import annotations
@@ -26,7 +14,7 @@ from __future__ import annotations
 from itertools import islice
 from typing import Iterator, List, NamedTuple, Optional, Tuple
 
-from .tls13 import (  # noqa: F401 - APPLICATION_DATA is re-exported
+from .tls13 import (  # noqa: F401 - APPLICATION_DATA is re-exported for rc4/crypto
     APPLICATION_DATA,
     SUITES,
     inner_content_type,
@@ -37,45 +25,28 @@ from .tls13 import (  # noqa: F401 - APPLICATION_DATA is re-exported
 # Minimum encrypted fragment length: >= 1 inner byte + the 16-byte AEAD tag.
 MIN_AEAD_FRAGMENT_LEN = 17
 
-# Legal inner content-types for a genuine decryption: handshake (0x16, e.g. a
-# post-handshake NewSessionTicket / KeyUpdate), application_data (0x17), alert
-# (0x15). Anything else means the tag matched by chance (never observed) or the
-# record is not what we think it is.
+# Legal inner content-types: handshake (0x16), application_data (0x17), alert (0x15).
 _VALID_INNER_TYPES = (0x16, 0x17, 0x15)
 
-# Default upper bound for the unknown starting sequence number search. A capture
-# that began shortly after the handshake has a small S; 64 covers realistic
-# mid-stream starts while keeping the brute force trivial.
-# The starting record sequence is unknown in a mid-stream capture: it equals the
-# number of application_data records the connection already sent before capture
-# began. A freshly-established connection sits near 0, but a connection that has
-# been alive for a while (the common attach-to-running-Signal case) can be far
-# higher, so the search must reach well past a handful. The AEAD tag is a
-# zero-false-accept oracle (a wrong seq never authenticates), so raising this only
-# widens what binds; the only cost is up to max_seq AEAD tag checks on the FIRST
-# record per wrong (secret, suite, direction) trial — microseconds each. Override
-# per call for pathological captures with very many bundles×streams.
-# The mid-stream stage searches ``0..max_seq`` window by window (see
-# :data:`SEQ_LADDER`), so a wrong stream usually costs only the first rung.
+# Upper bound for the unknown starting seq (records sent before capture began).
+# A wrong seq never authenticates, so raising it only costs up to max_seq tag
+# checks per wrong (secret, suite, direction) trial; the search runs window by
+# window (:data:`SEQ_LADDER`), so a wrong stream usually costs only the first rung.
 DEFAULT_MAX_SEQ = 100000
 
-# How many leading application_data records a mid-stream binding may try. The
-# first captured record can legitimately fail (corrupt/partial, or still under a
-# previous key), so binding falls back to the next few. Each extra record costs
-# one more ``max_seq`` sweep for a WRONG secret, but no extra key derivation
-# (the AEAD is memoized per (secret, suite)), so the bound stays small.
+# Leading application_data records a mid-stream binding may try (the first can be
+# corrupt or under a previous key). Each extra one costs another ``max_seq`` sweep
+# for a wrong secret, so the bound stays small.
 DEFAULT_BIND_RECORDS = 4
 
-# Rungs of the iterative-deepening seq search (see :func:`seq_windows`). Most
-# mid-stream captures start within a few dozen records of the handshake, so the
-# first rung binds the right stream after a handful of AEAD trials while a WRONG
-# stream costs only ``rung + 1`` trials per record instead of ``max_seq + 1``.
+# Rungs of the iterative-deepening seq search (:func:`seq_windows`). Most captures
+# start within a few dozen records of the handshake, so a wrong stream costs
+# ``rung + 1`` trials per record instead of ``max_seq + 1``.
 SEQ_LADDER = (64, 4096)
 
 
 class SeqBinding(NamedTuple):
-    """Where a mid-stream secret bound: the suite, the application_data record
-    index (into the direction's app-data records) and that record's seq."""
+    """Where a mid-stream secret bound: suite, app-data record index and its seq."""
 
     suite: str
     record_index: int
@@ -83,13 +54,11 @@ class SeqBinding(NamedTuple):
 
 
 class TrialBudget:
-    """A cap on AEAD trial decryptions shared by every seq search of one run.
+    """Cap on AEAD trial decryptions shared by every seq search of one run.
 
-    The secrets searched may come from an untrusted file, so the total brute
-    force work is bounded: each search asks for the trials it needs
-    (:meth:`grant`), gets at most what is left, and reports what it used
-    (:meth:`spend`). Once a request is cut short the budget is
-    :attr:`exhausted` and every later search gets zero trials.
+    Secrets may come from an untrusted file, so brute force work is bounded.
+    Once a :meth:`grant` is cut short the budget is :attr:`exhausted` and later
+    searches get zero trials.
     """
 
     def __init__(self, limit: int):
@@ -115,7 +84,7 @@ class TrialBudget:
 
 
 def decrypt_stream(secret_hex: str, records, suite: str) -> List[bytes]:
-    """Decrypt consecutive app-data records once the seq-0 anchor is found."""
+    """Decrypt consecutive app-data records from the first one that opens at seq 0."""
     secret = bytes.fromhex(secret_hex)
     out, seq, started = [], 0, False
     for _ctype, hdr, frag in iter_app_data_records(records):
@@ -151,12 +120,9 @@ def app_data_records(
 
 
 def seq_windows(max_seq: int) -> Iterator[Tuple[int, int]]:
-    """Split ``0..max_seq`` into disjoint inclusive ``(lo, hi)`` seq windows.
+    """Split ``0..max_seq`` into disjoint inclusive windows along :data:`SEQ_LADDER`.
 
-    Windows follow :data:`SEQ_LADDER` in increasing order, e.g. ``(0, 64)``,
-    ``(65, 4096)``, ``(4097, max_seq)``, clipped to ``max_seq``: a ``max_seq`` at
-    or below the first rung yields the single window ``(0, max_seq)``. Searching
-    the windows in order visits every seq exactly once, smallest first.
+    E.g. ``(0, 64)``, ``(65, 4096)``, ``(4097, max_seq)``; visits every seq once.
     """
     low = 0
     for rung in SEQ_LADDER:
@@ -170,10 +136,9 @@ def seq_windows(max_seq: int) -> Iterator[Tuple[int, int]]:
 def _record_seq(secret: bytes, suite: str, hdr: bytes, frag: bytes,
                 max_seq: int, min_seq: int = 0,
                 budget: Optional[TrialBudget] = None) -> Optional[int]:
-    """The ``seq`` in ``min_seq..max_seq`` at which one record authenticates, or ``None``.
+    """The seq in ``min_seq..max_seq`` at which a record authenticates, or ``None``.
 
-    With a *budget*, only the seqs it grants are tried (the lowest first) and
-    the trials made are spent from it.
+    With a *budget*, only the seqs it grants are tried (lowest first).
     """
     wanted = max(0, max_seq - min_seq + 1)
     granted = wanted if budget is None else budget.grant(wanted)
@@ -187,7 +152,7 @@ def _record_seq(secret: bytes, suite: str, hdr: bytes, frag: bytes,
 
 
 def _spend(budget: Optional[TrialBudget], used: int) -> None:
-    """Spend *used* trials from *budget* (no-op without one)."""
+    """Spend from *budget* if there is one."""
     if budget is not None:
         budget.spend(used)
 
@@ -202,19 +167,12 @@ def recover_binding(
     min_seq: int = 0,
     budget: Optional[TrialBudget] = None,
 ) -> Optional[Tuple[int, int]]:
-    """Find ``(record_index, seq)`` of the first of the leading records that binds.
+    """Find ``(record_index, seq)`` of the first leading app-data record that binds.
 
-    Brute forces ``seq`` in ``0..max_seq`` against each of the first
-    ``max_records`` application_data records in turn (the AEAD tag makes wrong
-    guesses fail) and returns the first record that decrypts to a legal inner
-    content-type, with its index among the app-data records. A record that fails
-    (corrupt, partial, or under another key) is skipped rather than condemning
-    the whole direction. ``first_record`` skips the leading app-data records a
-    caller already tried; the returned index still counts from the first one.
-    ``min_seq`` > 0 restricts the search to ``min_seq..max_seq`` (one window of
-    an iterative-deepening search whose lower seqs were already tried).
-    An optional *budget* (:class:`TrialBudget`) caps the trials; the search
-    stops once it is exhausted.
+    Tries ``min_seq..max_seq`` against app-data records ``first_record`` to
+    ``max_records``; a failing record is skipped, not fatal. The index counts from
+    the first app-data record. *budget* caps the trials and stops the search once
+    exhausted.
     """
     secret = bytes.fromhex(secret_hex)
     window = islice(iter_app_data_records(records), first_record, max_records)
@@ -233,14 +191,9 @@ def recover_seq(
     records: List[Tuple[int, bytes, bytes]],
     max_seq: int = DEFAULT_MAX_SEQ,
 ) -> Optional[int]:
-    """Recover the unknown starting record sequence number, or ``None``.
+    """Recover the seq of the first application_data record, or ``None``.
 
-    Brute forces ``seq`` in ``0..max_seq`` against the first application_data
-    record (the AEAD tag makes wrong guesses fail), returning the ``seq`` at
-    which it first decrypts to a legal inner content-type. Early-exits on the
-    first success. Stays first-record-only because the returned ``seq`` seeds
-    record 0 in :func:`decrypt_stream_from`; use :func:`recover_binding` to
-    tolerate a failing first record.
+    First-record-only; use :func:`recover_binding` to tolerate a failing first record.
     """
     found = recover_binding(secret_hex, suite, records, max_seq, max_records=1)
     return None if found is None else found[1]
@@ -253,16 +206,9 @@ def decrypt_stream_from(
     start_seq: int,
     start_index: int = 0,
 ) -> List[bytes]:
-    """Decrypt consecutive application_data records starting at ``start_seq``.
+    """Decrypt consecutive app-data records with the counter starting at ``start_seq``.
 
-    Mirrors :func:`decrypt_stream` but seeds the
-    sequence counter with the recovered mid-stream ``start_seq`` instead of
-    anchoring on seq 0. The counter advances by one per application_data record
-    (each such record consumes one record sequence number on this direction's
-    traffic keys). Successful inner plaintexts are appended in order.
-    ``start_index`` skips that many leading application_data records (those
-    before a :class:`SeqBinding` point), so ``start_seq`` applies to the record
-    at that index.
+    ``start_index`` skips leading app-data records, so ``start_seq`` applies to that record.
     """
     secret = bytes.fromhex(secret_hex)
     out: List[bytes] = []
@@ -281,14 +227,7 @@ def pick_suite(
     suites: Optional[List[str]] = None,
     max_seq: int = DEFAULT_MAX_SEQ,
 ) -> Optional[Tuple[str, int]]:
-    """Brute force the cipher suite AND starting seq when the suite is unknown.
-
-    With no ServerHello in a mid-stream capture the negotiated suite is unknown,
-    so this tries each candidate suite (the AEAD tag disambiguates) and returns
-    ``(suite, start_seq)`` for the first that recovers a sequence number, else
-    ``None``. ``max_seq`` bounds the starting-sequence search (see
-    :data:`DEFAULT_MAX_SEQ`).
-    """
+    """Brute force the suite and starting seq; returns ``(suite, start_seq)`` or ``None``."""
     for suite in (suites if suites is not None else list(SUITES)):
         seq = recover_seq(secret_hex, suite, records, max_seq=max_seq)
         if seq is not None:
@@ -306,16 +245,11 @@ def pick_binding(
     min_seq: int = 0,
     budget: Optional[TrialBudget] = None,
 ) -> Optional[SeqBinding]:
-    """Brute force the suite, binding record and its seq for a mid-stream direction.
+    """Brute force suite, binding record and seq for a mid-stream direction.
 
-    Like :func:`pick_suite`, but tolerant of failing leading records: each
-    candidate suite is tried against the app-data records from ``first_record``
-    up to ``max_records`` (see :func:`recover_binding`). Returns the first
-    :class:`SeqBinding`, else ``None``. With no explicit ``suites``, only the
-    suites whose hash length matches the secret are tried (see
-    :func:`~friTap.offline.tls.tls13.suites_for_secret`); the others can never
-    authenticate, so the result is unchanged. ``min_seq`` bounds the seq search
-    from below and *budget* caps its trials (see :func:`recover_binding`).
+    Like :func:`pick_suite` but tolerant of failing leading records. Without
+    ``suites``, only suites whose hash length matches the secret are tried (the
+    others can never authenticate). Returns a :class:`SeqBinding` or ``None``.
     """
     if suites is None:
         suites = suites_for_secret(bytes.fromhex(secret_hex))

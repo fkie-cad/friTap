@@ -1,11 +1,8 @@
-"""
-Structured tool errors for the agent API.
+"""Structured tool errors for the agent API.
 
-Every failure that leaves a tool call is a :class:`ToolError`, so the CLI,
-MCP and REST adapters can render one JSON shape
-(``{"error", "error_type", "hint"?, "exit_code", ...}``) and map it to their
-own status codes. :func:`wrap` converts arbitrary exceptions raised by the
-services into that shape.
+Every failure that leaves a tool call is a :class:`ToolError`, so the CLI, MCP and REST adapters
+render one JSON shape (``{"error", "error_type", "hint"?, "exit_code", ...}``) and map it to their own
+status codes. :func:`wrap` converts arbitrary service exceptions into that shape.
 """
 
 from __future__ import annotations
@@ -16,14 +13,10 @@ from friTap.exit_codes import EXIT_RUNTIME_ERROR, EXIT_USAGE_ERROR
 
 
 class ToolError(Exception):
-    """A tool call failure with a machine-readable ``error_type`` slug.
+    """A tool call failure with a machine-readable ``error_type`` slug (``bad_param``, ``not_found``, ...).
 
-    Attributes:
-        error: Human readable message.
-        error_type: snake_case slug (``bad_param``, ``not_found``, ...).
-        hint: Optional next step for the caller (did-you-mean, valid values).
-        exit_code: Process exit code for the CLI adapter.
-        extra: Additional JSON-safe fields merged into :meth:`to_dict`.
+    ``hint`` is an optional next step for the caller; ``exit_code`` is the CLI adapter's process exit
+    code; ``extra`` holds JSON-safe fields merged into :meth:`to_dict`.
     """
 
     def __init__(

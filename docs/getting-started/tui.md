@@ -32,14 +32,14 @@ wizard. When given a `.tap` file (via `-r`/`--replay` or as the sole argument),
 it opens in **replay mode** and loads the stored flows.
 
 !!! note "Requires Textual"
-    The TUI needs the `textual` package (`textual>=0.80.0`). In current friTap
+    The TUI needs the `textual` package (`textual>=0.86.0`). In current friTap
     releases Textual is a normal runtime dependency, so a standard
     `pip install fritap` already includes it. If your environment is missing it,
     friTap prints a hint to install it:
 
     ```bash
     pip install fritap[tui]      # extras form shown by friTap's error message
-    pip install textual>=0.80.0  # or install Textual directly
+    pip install textual>=0.86.0  # or install Textual directly
     ```
 
     If Textual cannot be imported, friTap logs an error and (when launched with
@@ -269,6 +269,7 @@ debounce) and strictly when you press `Enter`.
 | `flow.duration` | float | Flow duration (seconds) |
 | `flow.size` | int | Total bytes in the flow |
 | `flow.has_request` / `flow.has_response` | bool | Presence predicates |
+| `stream_id` | int | Real transport stream id (HTTP/2, QUIC) of a single-stream flow, e.g. `stream_id == 4`; unset flows never match |
 | `tls` | bool | TLS flow (TLS transport or a TLS layer). A session id alone no longer counts, so Telegram Secret-Chat (`telegram_e2e`) flows do not match |
 | `tls.session_id` | str | TLS session id (empty for non-TLS flows) |
 | `ohttp.present` | bool | Oblivious HTTP inner request/response present |
@@ -376,7 +377,9 @@ Inside the dialog:
 From the flow list, press **`Enter`** on a row to open its detail view. The
 detail pane is organised into tabs — **Request**, **Response**, **Detail**, and
 any protocol-specific tabs the flow exposes. The most relevant tab is selected
-automatically.
+automatically. For a single-stream HTTP/2 or QUIC flow the **Detail** tab shows
+its transport **Stream** id, and the raw hex view labels each chunk with its
+stream id when one is known.
 
 Within the detail view:
 

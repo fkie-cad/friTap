@@ -2,14 +2,13 @@
 
 """Capture-container helpers: the one rule that decides pcap vs pcapng.
 
-The container of the ``-p`` file is resolved once, when the config is built
-(:meth:`friTap.config.OutputConfig.resolve_pcap_container`); every writer (the
-plaintext PCAP object, the -p output handler, the full-capture finalizer with
-its DSB injection and the LSASS helper session sharing the file) reads that
-resolved value, so they can never disagree about the container of one file.
+The container of the ``-p`` file is resolved once when the config is built
+(:meth:`friTap.config.OutputConfig.resolve_pcap_container`); every writer (PCAP object,
+-p handler, full-capture finalizer with DSB injection, the LSASS helper) reads it, so they
+cannot disagree.
 
-Rule: an explicit format (``--pcap-format`` / ``FriTap.pcapng()``) wins;
-otherwise the extension decides (``.pcapng`` -> pcapng, anything else -> pcap).
+Rule: an explicit format (``--pcap-format`` / ``FriTap.pcapng()``) wins; otherwise the
+extension decides (``.pcapng`` -> pcapng, else pcap).
 """
 
 import logging
@@ -73,11 +72,7 @@ def resolve_pcap_format(path, requested=PCAP_FORMAT_AUTO):
 
 
 def warn_pcap_format_conflict(path, requested=PCAP_FORMAT_AUTO):
-    """Warn when an explicit format contradicts a recognised extension.
-
-    ``-p out.pcap --pcap-format pcapng`` writes pcapng; the user is told so.
-    Called once per built config (see :class:`friTap.config.FriTapConfig`).
-    """
+    """Warn when an explicit format contradicts a recognised extension (once per built :class:`friTap.config.FriTapConfig`)."""
     explicit = normalize_pcap_format(requested)
     by_extension = _extension_format(path)
     if explicit == PCAP_FORMAT_AUTO or by_extension in (None, explicit):

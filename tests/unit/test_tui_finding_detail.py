@@ -23,18 +23,16 @@ import pytest
 pytest.importorskip("textual")
 
 from friTap.analysis import Finding, Severity
-from friTap.flow.models import Flow, FlowState
-from friTap.flow.tap_writer import TapWriter
 from friTap.tui.app import FriTapApp
 from friTap.tui.widgets.analyzer_finding_detail import (
     AnalyzerFindingDetailWidget,
     _try_base64,
 )
+from tests.unit._tui_flow_helpers import make_flow, write_tap
 
 
-def _mkflow(fid: str) -> Flow:
-    return Flow(flow_id=fid, connection_id=fid, src_addr="10.0.0.1", src_port=1234,
-                dst_addr="93.184.216.34", dst_port=443, state=FlowState.COMPLETE)
+def _mkflow(fid: str):
+    return make_flow(fid, src_port=1234)
 
 
 def _write_tap(path: str) -> None:
@@ -50,13 +48,8 @@ def _write_tap(path: str) -> None:
         source="ioc", flow_id="flow-bbbb", metadata={"category": "network"},
         evidence={"value": "bad.example"},
     )
-    writer = TapWriter()
-    writer.open(path, target="test")
-    writer.write_flow(_mkflow("flow-aaaa"))
-    writer.write_flow(_mkflow("flow-bbbb"))
-    writer.write_findings("flow-aaaa", [cred])
-    writer.write_findings("flow-bbbb", [ioc])
-    writer.close()
+    write_tap(path, [_mkflow("flow-aaaa"), _mkflow("flow-bbbb")],
+              findings={"flow-aaaa": [cred], "flow-bbbb": [ioc]})
 
 
 # ----------------------------------------------------------------------

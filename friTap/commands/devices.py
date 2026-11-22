@@ -180,10 +180,6 @@ def list_apps(device, running_only: bool = False) -> List[dict]:
     return sorted(entries, key=lambda e: (e["pid"] == 0, e["name"].lower()))
 
 
-# ---------------------------------------------------------------------------
-# Rendering
-# ---------------------------------------------------------------------------
-
 def _print_json(document: dict, out) -> None:
     out.write(json.dumps(document, ensure_ascii=False) + "\n")
 

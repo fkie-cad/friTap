@@ -1,11 +1,6 @@
 #!/usr/bin/env python3
 
-"""
-TLS key processor stub.
-
-Exists for routing completeness. TLS key extraction from non-Frida
-backends is not yet implemented (planned: HKDF/PRF hooking).
-"""
+"""TLS key processor stub; non-Frida TLS extraction is not implemented."""
 
 from __future__ import annotations
 
@@ -18,11 +13,9 @@ logger = logging.getLogger("friTap.protocols.tls_extractor")
 
 
 class TLSKeyProcessor(BaseKeyProcessor):
-    """Stub processor for TLS key events from non-Frida backends.
+    """No-op processor; TLS keys come from the Frida agent.
 
-    Currently a no-op — TLS key extraction is handled entirely by
-    the Frida agent. This stub exists so the registry can return
-    a processor for every protocol uniformly.
+    Exists so the registry returns a processor for every protocol.
     """
 
     def process_key_event(self, event: dict) -> Optional[dict]:

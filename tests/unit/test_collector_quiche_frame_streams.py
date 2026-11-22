@@ -4,8 +4,8 @@ The agent's STREAM-frame hooks deliver raw, in-order HTTP/3 stream bytes per
 real QUIC stream id, tagged ``quic_payload="stream"`` with an explicit
 ``direction``: control streams (SETTINGS), QPACK encoder/decoder streams and
 request streams (HEADERS with QPACK field sections referencing the dynamic
-table, DATA). Under the default ``--protocol tls`` these records are tagged
-``tls``; they must still be decoded as HTTP/3 so each request stream becomes
+table, DATA). The agent tags these records ``quic``; older captures tag them
+``tls``. Both must be decoded as HTTP/3 so each request stream becomes
 one flow carrying the request line, the response status and all header fields.
 """
 

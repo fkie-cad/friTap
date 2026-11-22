@@ -47,7 +47,9 @@ class OhttpTabProvider:
             if lines:
                 lines.append("")
             lines.append("[bold yellow]Inner Response (decrypted bhttp)[/]")
-            lines.append(f"[bold]{resp.status_code} {safe_wire_text(resp.status_text)}[/]")
+            # status_code is untyped tap data (a crafted .tap may hold markup).
+            lines.append(f"[bold]{safe_wire_text(resp.status_code)} "
+                         f"{safe_wire_text(resp.status_text)}[/]")
             lines.extend(_header_lines(resp.headers))
             if resp.body:
                 lines.append("")

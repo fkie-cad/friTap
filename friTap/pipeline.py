@@ -3,16 +3,12 @@
 """
 Message processing pipeline for friTap.
 
-Replaces EventBus for data-path events (keylog, datalog) with a
-deterministic linear pipeline. Lifecycle events (library detection,
-session state, errors) still use the per-session EventBus.
+Linear pipeline for data-path events (keylog, datalog). Lifecycle events
+(library detection, session state, errors) use the per-session EventBus.
 
-Stages (current):
-    1. Validate      - Schema check (cold: full; hot: contentType only)
-    2. Normalize     - Raw addresses -> strings, function -> Direction
-    3. Canonicalize  - Produce frozen KeylogCanonical / DataCanonical
-
-Fan-out to sinks is handled by MessagePipeline.push() after stages complete.
+Stages: Validate (schema check), Deduplicate (keylog), Normalize (addresses,
+Direction), InfrastructureFilter, Canonicalize (frozen KeylogCanonical /
+DataCanonical / MetaCanonical). MessagePipeline.push() then fans out to sinks.
 """
 
 from __future__ import annotations
@@ -24,6 +20,7 @@ import time
 from typing import TYPE_CHECKING, runtime_checkable
 from typing import Protocol as TypingProtocol
 
+from .capture_time import held_capture_times
 from .client_random import normalize_client_random
 from .connection_index import DUMMY_SESSION_ID_BASE, NSS_DUMMY_SESSION_ID
 from .constants import (
@@ -40,6 +37,7 @@ from .schemas.canonical import (
     KeylogCanonical,
     MetaCanonical,
 )
+from .tls_keylog_labels import TLS_KEYLOG_LABELS
 
 if TYPE_CHECKING:
     from .sinks.base import Sink
@@ -52,7 +50,7 @@ class PipelineStage(TypingProtocol):
     """Protocol for a pipeline processing stage."""
 
     def process(self, msg: dict, data: bytes | None, ctx: PipelineContext) -> dict | None:
-        """Process a message. Return None to drop, return msg to continue."""
+        """Return None to drop the message, or the message to continue."""
         ...
 
 
@@ -60,7 +58,7 @@ class PipelineContext:
     """Mutable context passed through pipeline stages."""
 
     __slots__ = (
-        "timestamp", "direction", "src", "dst", "ss_family",
+        "timestamp", "received_at", "direction", "src", "dst", "ss_family",
         "connection_id", "protocol", "ssl_session_id",
         "src_addr_raw", "dst_addr_raw", "canonical", "client_random",
         "stream_id", "quic_scid", "quic_dcid",
@@ -68,6 +66,8 @@ class PipelineContext:
 
     def __init__(self) -> None:
         self.timestamp: float = 0.0
+        # Arrival time of a held (back-dated) record; None when not held.
+        self.received_at: float | None = None
         self.direction: Direction | None = None
         self.src: Endpoint | None = None
         self.dst: Endpoint | None = None
@@ -86,7 +86,7 @@ class PipelineContext:
 
 
 class ValidateStage:
-    """Stage 1: Validate contentType field exists."""
+    """Drop messages without contentType; in debug mode also schema-check (non-blocking)."""
 
     def __init__(self, debug: bool = False) -> None:
         self._debug = debug
@@ -111,7 +111,7 @@ class ValidateStage:
 
 
 class DeduplicateStage:
-    """Stage 1.5: Drop duplicate keylog entries."""
+    """Drop duplicate keylog entries."""
 
     def __init__(self) -> None:
         from .output.dedup import KeyDeduplicator
@@ -127,13 +127,12 @@ class DeduplicateStage:
 
 
 class NormalizeStage:
-    """Stage 2: Normalize addresses and derive direction."""
+    """Normalize addresses and derive direction."""
 
-    # Names of read/write functions for direction detection
     READ_FUNCTIONS = SSL_READ
 
     def process(self, msg: dict, data: bytes | None, ctx: PipelineContext) -> dict | None:
-        ctx.timestamp = time.time()
+        ctx.timestamp, ctx.received_at = held_capture_times(msg.get("held_ms"), time.time())
         ctx.protocol = msg.get("protocol", "tls")
 
         content_type = msg.get("contentType")
@@ -172,7 +171,6 @@ class NormalizeStage:
             ssl_session_id = ""
         ctx.ssl_session_id = ssl_session_id
         ctx.client_random = normalize_client_random(msg.get("client_random"))
-        # QUIC-specific fields (pass through if present)
         ctx.stream_id = msg.get("stream_id")
         ctx.quic_scid = str(msg.get("quic_scid", ""))
         ctx.quic_dcid = str(msg.get("quic_dcid", ""))
@@ -182,7 +180,6 @@ class NormalizeStage:
         """Convert raw address to string representation."""
         if isinstance(addr, str):
             if ss_family == "AF_INET6" and len(addr) == 32:
-                # IPv6 hex string -> proper notation
                 try:
                     return socket.inet_ntop(
                         socket.AF_INET6, bytes.fromhex(addr)
@@ -192,7 +189,6 @@ class NormalizeStage:
             return addr
         if ss_family == "AF_INET6":
             return str(addr)
-        # IPv4: convert integer to dotted notation
         if isinstance(addr, int) and addr > 0:
             try:
                 return socket.inet_ntoa(struct.pack("!I", addr))
@@ -201,35 +197,16 @@ class NormalizeStage:
         return str(addr)
 
 
-# Known TLS keylog labels (SSLKEYLOGFILE format)
-TLS_KEYLOG_LABELS = frozenset({
-    "CLIENT_RANDOM",
-    "CLIENT_HANDSHAKE_TRAFFIC_SECRET",
-    "SERVER_HANDSHAKE_TRAFFIC_SECRET",
-    "CLIENT_TRAFFIC_SECRET_0",
-    "SERVER_TRAFFIC_SECRET_0",
-    "EXPORTER_SECRET",
-    "RESUMPTION_MASTER_SECRET",
-    "CLIENT_EARLY_TRAFFIC_SECRET",
-})
-_TLS_KEYLOG_LABELS = TLS_KEYLOG_LABELS  # backward-compatible private alias
-
-
 def _extract_client_random(key_data: str) -> str:
-    """Extract the client_random hex string from an SSLKEYLOGFILE line.
-
-    The SSLKEYLOGFILE format is: ``LABEL CLIENT_RANDOM SECRET``
-    Returns the client_random hex string if the line matches, or ``""``
-    otherwise.
-    """
+    """client_random hex of a ``LABEL CLIENT_RANDOM SECRET`` keylog line, else ``""``."""
     parts = key_data.strip().split()
-    if len(parts) == 3 and parts[0] in _TLS_KEYLOG_LABELS:
+    if len(parts) == 3 and parts[0] in TLS_KEYLOG_LABELS:
         return parts[1]
     return ""
 
 
 class InfrastructureFilterStage:
-    """Stage 2.5: Drop frida/adb/loopback infrastructure traffic."""
+    """Drop frida/adb infrastructure traffic and, optionally, loopback-to-loopback."""
 
     def __init__(
         self,
@@ -242,7 +219,7 @@ class InfrastructureFilterStage:
     def process(self, msg: dict, data: bytes | None, ctx: PipelineContext) -> dict | None:
         if msg.get("contentType") != "datalog":
             return msg
-        # NormalizeStage always populates ctx.src/ctx.dst for datalog events.
+        # NormalizeStage always sets ctx.src/ctx.dst for datalog.
         if self._blocked_ports:
             if ctx.src.port in self._blocked_ports or ctx.dst.port in self._blocked_ports:
                 return None
@@ -259,7 +236,7 @@ class InfrastructureFilterStage:
 
 
 class CanonicalizeStage:
-    """Stage 3: Produce frozen canonical events."""
+    """Produce the frozen canonical event for the sinks."""
 
     def process(self, msg: dict, data: bytes | None, ctx: PipelineContext) -> dict | None:
         content_type = msg.get("contentType")
@@ -282,6 +259,7 @@ class CanonicalizeStage:
                 ssl_session_id=ctx.ssl_session_id,
                 protocol=ctx.protocol,
                 timestamp=ctx.timestamp,
+                received_at=ctx.received_at,
                 connection_id=ctx.connection_id,
                 client_random=ctx.client_random,
                 src_addr_raw=ctx.src_addr_raw,
@@ -313,15 +291,10 @@ class CanonicalizeStage:
 
 
 class MessagePipeline:
-    """Linear message processing pipeline with fan-out to sinks.
+    """Run stages in order, then fan the canonical event out to sinks.
 
-    Usage:
-        pipeline = MessagePipeline()
-        pipeline.add_stage(ValidateStage())
-        pipeline.add_stage(NormalizeStage())
-        pipeline.add_stage(CanonicalizeStage())
-        pipeline.add_sink(my_sink)
-        pipeline.push({"contentType": "keylog", "keylog": "CLIENT_RANDOM ..."})
+    Usage: ``add_stage(...)``, ``add_sink(sink)``, then
+    ``push({"contentType": "keylog", "keylog": "CLIENT_RANDOM ..."})``.
     """
 
     def __init__(self) -> None:
@@ -348,15 +321,13 @@ class MessagePipeline:
         """Push a message through the pipeline stages, then fan out to sinks."""
         ctx = PipelineContext()
 
-        # Run through stages
         current = msg
         for stage in self._stages:
             result = stage.process(current, data, ctx)
             if result is None:
-                return  # Message dropped
+                return
             current = result
 
-        # Fan out canonical event to sinks
         canonical = ctx.canonical
         if canonical is None:
             return

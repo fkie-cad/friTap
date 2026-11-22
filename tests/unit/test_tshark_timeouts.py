@@ -32,6 +32,7 @@ import time
 
 import pytest
 
+from friTap._warn_once import reset_warn_once
 from friTap.offline import cli as offline_cli
 from friTap.offline import tshark as tshark_mod
 from friTap.offline.schannel import correlate
@@ -40,6 +41,7 @@ from friTap.offline.tshark import (
     TsharkOutputLimitError,
     TsharkTimeoutError,
 )
+from tests.unit._log_helpers import attach_log_capture
 
 try:
     import psutil
@@ -156,7 +158,7 @@ def clean_limits_env(monkeypatch):
     """No limit overrides from the outer environment; fresh warn-once memory."""
     monkeypatch.delenv(tshark_mod.TSHARK_TIMEOUT_ENV, raising=False)
     monkeypatch.delenv(tshark_mod.TSHARK_MAX_OUTPUT_ENV, raising=False)
-    monkeypatch.setattr(tshark_mod, "_WARNED_ENV_VALUES", set())
+    reset_warn_once()
 
 
 @pytest.fixture
@@ -165,26 +167,14 @@ def fast_kill(monkeypatch):
     monkeypatch.setattr(tshark_mod, "_TSHARK_KILL_GRACE", 0.3)
 
 
-class _Records(logging.Handler):
-    """Collect the tshark module's records (its logger does not propagate to caplog)."""
-
-    def __init__(self) -> None:
-        super().__init__(logging.DEBUG)
-        self.records: list[logging.LogRecord] = []
-
-    def emit(self, record: logging.LogRecord) -> None:
-        self.records.append(record)
-
-    def warnings(self) -> list[str]:
-        return [r.getMessage() for r in self.records if r.levelno == logging.WARNING]
-
-
 @pytest.fixture
 def tshark_log():
-    handler = _Records()
-    tshark_mod.logger.addHandler(handler)
-    yield handler
-    tshark_mod.logger.removeHandler(handler)
+    """Capture of the tshark module's logger (it does not propagate to caplog)."""
+    old_level = tshark_mod.logger.level
+    logger, capture = attach_log_capture(tshark_mod.logger.name)
+    yield capture
+    logger.removeHandler(capture)
+    logger.setLevel(old_level)
 
 
 # ---------------------------------------------------------------------------
@@ -255,7 +245,7 @@ def test_invalid_timeout_env_is_ignored_with_one_warning(
     capture = _capture(tmp_path, 100 * _MIB)
     assert tshark_mod.tshark_timeout_for(capture) == 1000.0
     assert tshark_mod.tshark_timeout_for(capture) == 1000.0
-    warnings = tshark_log.warnings()
+    warnings = tshark_log.messages(logging.WARNING)
     assert len(warnings) == 1  # once per value, not once per tshark run
     assert tshark_mod.TSHARK_TIMEOUT_ENV in warnings[0] and repr(raw) in warnings[0]
 
@@ -263,7 +253,7 @@ def test_invalid_timeout_env_is_ignored_with_one_warning(
 def test_blank_timeout_env_means_default(tmp_path, monkeypatch, clean_limits_env, tshark_log):
     monkeypatch.setenv(tshark_mod.TSHARK_TIMEOUT_ENV, "   ")
     assert tshark_mod.tshark_timeout_for(_capture(tmp_path)) == 600.0
-    assert tshark_log.warnings() == []
+    assert tshark_log.messages(logging.WARNING) == []
 
 
 @pytest.mark.parametrize(("raw", "expected"), [
@@ -287,7 +277,7 @@ def test_invalid_max_output_env_falls_back_to_default(
         monkeypatch, clean_limits_env, tshark_log, raw):
     monkeypatch.setenv(tshark_mod.TSHARK_MAX_OUTPUT_ENV, raw)
     assert tshark_mod.tshark_max_output_bytes() == 4 * 1024 * _MIB
-    assert len(tshark_log.warnings()) == 1
+    assert len(tshark_log.messages(logging.WARNING)) == 1
 
 
 def test_max_output_default_is_4_gib(clean_limits_env):

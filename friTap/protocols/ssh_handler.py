@@ -39,25 +39,19 @@ def _distinct_cookies(payload: dict) -> List[str]:
 class SshKeylogFormatter(KeylogFormatter):
     """Formatter for the unified SSH ``-k`` file.
 
-    Handles two flavours of :class:`KeylogEvent`:
+    Two :class:`KeylogEvent` flavours share one file:
 
-    1. **Structured payload** (``event.payload['shared_secret']`` set) — the
-       RFC 4253 §7.2 shared secret K from a ``kex_derive_keys`` hook. Emits
-       one ``<cookie> SHARED_SECRET <hex>`` line per available cookie (local
-       and peer, when they differ). This is the Wireshark-native SSH
-       dissector format (Wireshark 4.0+, Edit → Preferences → Protocols →
-       SSH → Key log filename).
-    2. **Pre-formatted line** (``event.key_data`` set) — informational
-       per-direction derived keys (``SSH_ENC_KEY_C2S <hex>``,
-       ``SSH_IV_S2C <hex>``, …). Wireshark ignores these unknown labels,
-       but they're useful for manual cryptographic inspection.
+    1. Structured payload (``payload['shared_secret']``): the RFC 4253 7.2
+       shared secret K from ``kex_derive_keys``. Emits one
+       ``<cookie> SHARED_SECRET <hex>`` line per distinct cookie (Wireshark 4.0+
+       SSH key log format).
+    2. Pre-formatted ``event.key_data``: per-direction derived keys
+       (``SSH_ENC_KEY_C2S <hex>``, ``SSH_IV_S2C <hex>``). Wireshark ignores
+       these labels; they are for manual inspection.
 
-    Both flavours coexist in the same ``-k`` file so users get one
-    Wireshark-loadable artifact plus the historical derived-key view.
-
-    The agent runs inside a possibly hostile process, so the cookies and the
-    shared secret must each be an even-length hex string; a record with any
-    other value is dropped with a once-per-reason warning.
+    The agent runs in a possibly hostile process, so cookies and the shared
+    secret must be even-length hex; otherwise the record is dropped with a
+    once-per-reason warning.
     """
 
     @property
@@ -74,8 +68,7 @@ class SshKeylogFormatter(KeylogFormatter):
         payload = event.payload or {}
         shared_secret = payload.get("shared_secret")
         if not shared_secret:
-            # Fall back to the base passthrough (per-direction derived keys
-            # like ``SSH_ENC_KEY_C2S …`` arrive pre-formatted in key_data).
+            # Derived keys arrive pre-formatted in key_data.
             return super().format(event)
         secret_fields = sanitize_keylog_fields(_SHARED_SECRET_LABEL, shared_secret)
         cookies = _distinct_cookies(payload)

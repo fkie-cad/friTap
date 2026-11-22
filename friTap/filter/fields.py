@@ -14,10 +14,12 @@ from .layer_fields import (
     extract_filter_attrs_from_flow,
     layer_field_names,
     layer_field_spec,
+    layer_fields_generation,
     lookup_attr,
 )
 from .protocols import (
     PROTOCOL_ALIASES,
+    PROTOCOL_FIELD_PREFIX,
     aliases_for,
     canonical_protocols,
     flow_has_ohttp,
@@ -338,6 +340,11 @@ def _flow_info(flow: "Flow") -> str | None:
     return summary or None
 
 
+def _flow_stream_id(flow: "Flow") -> int | None:
+    # Flow derives it from its chunks; both summary types carry it as a scalar.
+    return flow.stream_id
+
+
 def _flow_process(flow: "Flow") -> str | None:
     return getattr(flow, "process_name", "") or None
 
@@ -460,6 +467,8 @@ _FIELD_DEFS: list[FieldDef] = [
              description="Has request data"),
     FieldDef(name="flow.has_response", value_type="bool", accessor=_flow_has_response,
              description="Has response data"),
+    FieldDef(name="stream_id", value_type="int", accessor=_flow_stream_id,
+             description="Transport stream id (QUIC/HTTP/2) of a single-stream flow"),
     # TLS
     FieldDef(name="tls", value_type="bool", accessor=_flow_is_tls,
              description="TLS flow (TLS transport or a TLS layer)"),
@@ -508,9 +517,10 @@ CANONICAL_FIELDS = frozenset(
 
 # -- Dynamic fields (protocol predicates + per-layer attributes) --------------
 
-PROTOCOL_FIELD_PREFIX = "protocol."
-
-_DYNAMIC_CACHE: dict[str, FieldDef] = {}
+# name -> (layer-field generation it was resolved under, FieldDef). An entry
+# from another generation is a miss, so a get_field that raced a registry
+# change cannot leave a stale definition behind.
+_DYNAMIC_CACHE: dict[str, tuple[int, FieldDef]] = {}
 
 
 def _protocol_field(name: str, members: frozenset[str]) -> FieldDef:
@@ -553,12 +563,13 @@ def get_field(name: str) -> FieldDef | None:
     static = FIELD_REGISTRY.get(key)
     if static is not None:
         return static
+    generation = layer_fields_generation()  # read before resolving
     cached = _DYNAMIC_CACHE.get(key)
-    if cached is not None:
-        return cached
+    if cached is not None and cached[0] == generation:
+        return cached[1]
     dynamic = _resolve_dynamic(key)
     if dynamic is not None:
-        _DYNAMIC_CACHE[key] = dynamic
+        _DYNAMIC_CACHE[key] = (generation, dynamic)
     return dynamic
 
 

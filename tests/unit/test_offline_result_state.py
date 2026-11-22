@@ -285,7 +285,10 @@ def test_tui_counts_mtproto_once_and_falls_back_for_stand_ins():
 
 
 def test_tui_drops_the_nonexistent_legacy_names():
+    # The decrypt-result counters moved into the DecryptMixin (task 2.2):
+    # scan both files so this guard keeps covering the code it was written for.
     source = (REPO_ROOT / "friTap/tui/screens/main_screen.py").read_text()
+    source += (REPO_ROOT / "friTap/tui/screens/viewer_mixins/decrypt.py").read_text()
     for bogus in ("mtproto_streams_recovered_via_obf",
                   "mtproto_streams_degraded_unrecovered",
                   "mtproto_streams_short"):

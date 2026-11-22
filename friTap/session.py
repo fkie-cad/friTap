@@ -1,16 +1,10 @@
 #!/usr/bin/env python3
 
-"""
-Session: first-class capture instance for friTap.
+"""Session: first-class capture instance for friTap.
 
-A Session represents one running capture:
-- Attach/spawn one target process
-- Load the agent
-- Run with one frozen config snapshot
-- Produce artifacts (keys.log, PCAP, JSONL, etc.)
-- Stop and finalize all outputs
-
-All mutable state lives here. No globals, no singletons.
+One running capture: attach/spawn a target, load the agent, run with one frozen
+config, produce artifacts (keys.log, PCAP, JSONL), stop and finalize outputs.
+All mutable state lives here; no globals or singletons.
 """
 
 from __future__ import annotations
@@ -46,13 +40,10 @@ class SessionState(enum.Enum):
 
 
 class Session:
-    """One capture instance. All mutable state lives here.
+    """One capture instance; all mutable state lives here.
 
-    Usage:
-        session = controller.create_session(config)
-        session.start()   # attach, load agent, open sinks
-        session.wait()    # block until session ends
-        session.stop()    # detach, drain pipeline, close sinks
+    ``start()`` attaches, loads the agent and opens sinks; ``wait()`` blocks;
+    ``stop()`` detaches, drains the pipeline and closes sinks.
     """
 
     def __init__(
@@ -97,18 +88,11 @@ class Session:
         parser_cls: type["BaseParser"],
         priority: int = 50,
     ) -> None:
-        """Register a custom protocol parser for flow detection.
+        """Register a custom parser for flow detection (call from a plugin's ``on_load()``).
 
-        Plugins call this during ``on_load()`` to inject custom parsers
-        into the parser registry. The parser's ``can_parse()`` method will
-        be tried during protocol detection in priority order (higher first).
-
-        Args:
-            parser_cls: A :class:`~friTap.parsers.base.BaseParser` subclass.
-            priority: Detection priority (higher = tried first). Default 50.
-
-        Raises:
-            RuntimeError: If no parser registry is available on this session.
+        *parser_cls* is a :class:`~friTap.parsers.base.BaseParser` subclass; higher
+        *priority* (default 50) is tried first in ``can_parse()``.
+        Raises ``RuntimeError`` if the session has no parser registry.
         """
         if self._parser_registry is None:
             from .parsers.registry import get_default_registry
@@ -121,10 +105,7 @@ class Session:
         )
 
     def start(self) -> None:
-        """Start the capture session.
-
-        Transitions: CREATED -> ATTACHING -> RUNNING
-        """
+        """Start the capture: CREATED -> ATTACHING -> RUNNING."""
         with self._lock:
             if self.state != SessionState.CREATED:
                 raise RuntimeError(
@@ -154,10 +135,7 @@ class Session:
             self.state = SessionState.RUNNING
 
     def stop(self) -> None:
-        """Stop the capture session.
-
-        Transitions: RUNNING -> STOPPING -> STOPPED
-        """
+        """Stop the capture: RUNNING -> STOPPING -> STOPPED."""
         with self._lock:
             if self.state not in (SessionState.RUNNING, SessionState.ATTACHING):
                 self._logger.debug("Session already in state %s, skip stop", self.state.value)
@@ -198,15 +176,9 @@ class Session:
         return self.state == SessionState.RUNNING
 
     def push_message(self, payload: dict, data: bytes | None = None) -> None:
-        """Push a raw agent message into the pipeline.
-
-        Called by the message handler when an agent message arrives.
-        """
+        """Push a raw agent message into the pipeline (called by the message handler)."""
         self.pipeline.push(payload, data)
 
-    # ------------------------------------------------------------------
-    # Async API (wraps sync methods via asyncio.to_thread)
-    # ------------------------------------------------------------------
 
     async def astart(self) -> None:
         """Async version of start(). Runs blocking operations in a thread."""

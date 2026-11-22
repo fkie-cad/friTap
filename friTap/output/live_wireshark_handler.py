@@ -6,11 +6,12 @@ from __future__ import annotations
 
 import logging
 import os
-import tempfile
 from typing import TYPE_CHECKING, Optional
 
 from ..constants import direction_label
+from ..sinks._fifo import make_fifo
 from .base import OutputHandler
+from .provisional_endpoint_hold import ProvisionalEndpointHold
 
 if TYPE_CHECKING:
     from ..events import DatalogEvent, EventBus
@@ -20,11 +21,15 @@ if TYPE_CHECKING:
 class LiveWiresharkHandler(OutputHandler):
     """Streams decrypted packets to Wireshark via a named FIFO pipe."""
 
+    consumes_plaintext = True
+
     def __init__(self) -> None:
         self._tmpdir: Optional[str] = None
         self._fifo_path: Optional[str] = None
         self._pcap: Optional["PCAP"] = None
         self._logger = logging.getLogger("friTap.output.wireshark")
+        # Keeps guessed QUIC tuples out of the stream as a separate fake conversation.
+        self._provisional_hold = ProvisionalEndpointHold()
 
     @property
     def fifo_path(self) -> Optional[str]:
@@ -36,9 +41,7 @@ class LiveWiresharkHandler(OutputHandler):
 
     def create_fifo(self) -> str:
         """Create the named pipe and return its path."""
-        self._tmpdir = tempfile.mkdtemp()
-        self._fifo_path = os.path.join(self._tmpdir, "fritap_sharkfin")
-        os.mkfifo(self._fifo_path)
+        self._tmpdir, self._fifo_path = make_fifo("fritap_sharkfin")
         return self._fifo_path
 
     def set_pcap(self, pcap_obj: "PCAP") -> None:
@@ -95,6 +98,10 @@ class LiveWiresharkHandler(OutputHandler):
     def on_data(self, event: "DatalogEvent") -> None:
         if not self._pcap or not event.data:
             return
+        for record in self._provisional_hold.admit(event):
+            self._write(record)
+
+    def _write(self, event: "DatalogEvent") -> None:
         try:
             self._pcap.log_plaintext_payload(
                 event.ss_family,
@@ -109,6 +116,10 @@ class LiveWiresharkHandler(OutputHandler):
             self._logger.error("Wireshark pipe broken: %s", e)
 
     def close(self) -> None:
+        if self._pcap:
+            # Records whose real tuple never appeared keep their guessed tuple.
+            for record in self._provisional_hold.drain():
+                self._write(record)
         if self._pcap and hasattr(self._pcap, 'pcap_file') and self._pcap.pcap_file:
             try:
                 self._pcap.pcap_file.close()

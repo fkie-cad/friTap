@@ -1,34 +1,13 @@
-"""
-``fritap q`` — run any agent tool from the shell, generated from the registry.
+"""``fritap q``: run any agent tool from the shell, generated from the registry.
 
     fritap q --list [--json] [--compact]
     fritap q <tool> --help-json
-    fritap q <tool> [--json '{...}' | --params-file f.json | --<param> value ...]
-                    [--compact] [--root DIR] [--allow-secrets] [--max-response-bytes N]
+    fritap q <tool> [--json '{...}' | --params-file f.json | --<param> value ...] [--compact]
 
-Parameter flags are generated from the tool's JSON-Schema: string/integer/
-number -> ``--name VALUE`` (``--max-bytes`` and ``--max_bytes`` both work),
-boolean -> ``--name`` / ``--no-name``, enum -> fixed choices, array -> comma
-list and/or repeated flag (array of objects -> one item per repeated flag, a
-JSON object or a string the tool interprets), object -> JSON string. Sources merge in the order
-``--params-file`` < ``--json`` < flags.
-
-The context switch ``--allow-secrets`` is the server-side policy; a keylog
-export also needs the per-call confirmation ``--confirm-secrets`` (two keys,
-``fritap q export --format keylog --out k.log --allow-secrets
---confirm-secrets``). ``fritap q`` always allows ``show_values`` (the local
-user owns the data).
-
-The result is printed as JSON on stdout (pretty, or one line with
-``--compact``). Every error is printed as the JSON error document
-(``{"error", "error_type", "hint"?, "exit_code"}``) on stdout and the process
-exits with its ``exit_code``.
-
-Capture sessions live in this process, so ``fritap q start_capture`` blocks by
-default: it polls ``capture_status`` until the session ends (``duration``
-elapsed or the target exited) and prints the final status; Ctrl+C calls
-``stop_capture``. ``--no-wait`` returns immediately (the capture then stops
-when this process exits).
+Flags are generated from each tool's JSON-Schema; sources merge as ``--params-file`` < ``--json`` < flags.
+Results and errors are JSON on stdout; an error exits with its ``exit_code``. A keylog export needs
+``--allow-secrets`` plus the per-call ``--confirm-secrets``. ``start_capture`` blocks until the session
+ends (Ctrl+C stops it); ``--no-wait`` returns at once and the capture stops when this process exits.
 """
 
 from __future__ import annotations
@@ -76,10 +55,6 @@ USAGE = (
     f"       {PROG} <tool> [--json '{{...}}' | --params-file FILE | --<param> VALUE ...] [--compact]\n"
 )
 
-
-# ---------------------------------------------------------------------------
-# Argument parsing (errors become ToolError instead of argparse's exit(2))
-# ---------------------------------------------------------------------------
 
 class _ToolArgumentParser(argparse.ArgumentParser):
     """argparse parser that raises ``ToolError(bad_param)`` and prints help to ``out``."""
@@ -176,8 +151,7 @@ def add_param_flags(parser: argparse.ArgumentParser, schema: dict[str, Any]) -> 
 def _object_items(name: str, values: list[str]) -> list[Any]:
     """One item per flag occurrence: a ``{...}`` token is a JSON object, else a string.
 
-    Commas are not split (a GPS fix ``48.1,11.5`` is one value); strings are
-    left for the tool to interpret (e.g. the ``find_values`` shorthand).
+    Commas are not split (a GPS fix ``48.1,11.5`` is one value); the tool interprets strings.
     """
     items = []
     for value in values:
@@ -262,10 +236,6 @@ def leading_options_parser() -> argparse.ArgumentParser:
     return parser
 
 
-# ---------------------------------------------------------------------------
-# Rendering
-# ---------------------------------------------------------------------------
-
 def render_json(doc: Any, compact: bool) -> str:
     if compact:
         return json.dumps(doc, ensure_ascii=False, default=str)
@@ -281,10 +251,6 @@ def render_table(specs: list[ToolSpec]) -> str:
     lines.append("(* = mutating)")
     return "\n".join(lines) + "\n"
 
-
-# ---------------------------------------------------------------------------
-# Runner
-# ---------------------------------------------------------------------------
 
 class QueryCli:
     """Runs ``fritap q`` against a registry; I/O and sleeping are injectable for tests."""
@@ -395,19 +361,12 @@ def looks_like_tool_name(word: str, names: list[str]) -> bool:
 def is_query_invocation(argv: list[str], tool_names: Callable[[], list[str]]) -> bool:
     """True when ``argv`` (``sys.argv``) selects ``fritap q`` rather than a capture.
 
-    Rule (documented in ``docs/api/cli.md``): after skipping leading q-level
-    options (``--root``, ``--max-response-bytes``, ``--allow-secrets``,
-    ``--compact``) ``fritap q`` is the query CLI when
-
-    * at least one such q-level option was given (no capture flag has these names),
-    * or the next token is ``--list`` / ``-h`` / ``--help``,
-    * or it is a registered tool or a close misspelling of one
-      (:func:`looks_like_tool_name`), so a typo gets an ``unknown_tool`` JSON
-      error with a did-you-mean hint.
-
-    Anything else (``fritap q -k keys.log``, ``fritap q firefox``,
-    ``fritap q com.example.my_app``) falls through to capture mode. ``tool_names`` is only called (it loads the tool
-    modules) when the next token is a bare word.
+    After the leading q-level options (``--root``, ``--max-response-bytes``, ``--allow-secrets``,
+    ``--compact``) it is the query CLI when one of those was given (no capture flag shares their
+    names), the next token is ``--list``/``-h``/``--help``, or it is a registered tool or a close
+    misspelling (so a typo gets an ``unknown_tool`` error with a hint). Rule: ``docs/api/cli.md``.
+    Anything else (``fritap q -k keys.log``, ``fritap q firefox``) falls through to capture mode.
+    ``tool_names`` loads the tool modules, so it is called only for a bare word.
     """
     if len(argv) < 3 or argv[1] != "q":
         return False

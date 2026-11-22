@@ -1,17 +1,13 @@
-"""
-Tool parameter schemas and a minimal in-house validator.
+"""Tool parameter schemas and a minimal in-house validator (no ``jsonschema`` dependency).
 
-Schemas are plain JSON-Schema (draft 2020-12 compatible) dicts so MCP and
-OpenAPI adapters can publish them unchanged. :func:`validate` implements the
-subset the tools use (type, enum, minimum/maximum, minLength/maxLength,
-items, required, default, additionalProperties=false, property-level
-``anyOf`` alternatives and ``oneOf``/``anyOf`` groups of ``required`` lists) -- no ``jsonschema`` dependency.
+Schemas are plain JSON-Schema dicts so the MCP and OpenAPI adapters publish them unchanged.
+:func:`validate` implements only the subset the tools use: type, enum, minimum/maximum,
+minLength/maxLength, pattern, items, required, default, ``additionalProperties: false``,
+property-level ``anyOf`` and ``oneOf``/``anyOf`` groups of ``required`` lists.
 
-Property fragments (``TAP_SOURCE_PARAMS`` ...) are ``{name: schema}`` dicts
-meant to be merged into :func:`object_schema`::
+Property fragments (``TAP_SOURCE_PARAMS`` ...) merge into :func:`object_schema`::
 
-    object_schema({**TAP_SOURCE_PARAMS, **SLICE_PARAMS, **page_params()},
-                  one_of_required=TAP_SOURCE_KEYS)
+    object_schema({**TAP_SOURCE_PARAMS, **SLICE_PARAMS, **page_params()}, one_of_required=TAP_SOURCE_KEYS)
 """
 
 from __future__ import annotations
@@ -121,10 +117,7 @@ def _describe_required_group(word: str, group: list[dict[str, Any]]) -> str:
 def validate(schema: dict[str, Any], params: dict[str, Any] | None) -> dict[str, Any]:
     """Validate ``params`` against an object ``schema``; return a new dict.
 
-    ``None`` values count as absent. Defaults are filled in for absent keys.
-
-    Raises:
-        ToolError: ``bad_param`` describing the first violation.
+    ``None`` values count as absent; defaults fill absent keys. Raises ``bad_param`` for the first violation.
     """
     if params is None:
         params = {}

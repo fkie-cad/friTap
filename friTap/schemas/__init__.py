@@ -7,10 +7,8 @@ dependency-free ``canonical`` module can be imported without pydantic.
 
 import importlib
 
-# Exported name -> defining submodule. Resolved lazily (PEP 562) so importing a
-# dependency-free submodule such as ``friTap.schemas.canonical`` (used by the
-# offline CLI via ``friTap.pipeline``) no longer pulls in pydantic through
-# ``agent_messages`` / ``host_messages``.
+# Resolved lazily so importing the dependency-free ``friTap.schemas.canonical``
+# (offline CLI via ``friTap.pipeline``) does not pull in pydantic.
 _AGENT_MESSAGE_NAMES = (
     "AgentMessage",
     "BaseAgentMessage",
@@ -55,43 +53,32 @@ _LAZY_EXPORTS = {
 }
 
 __all__ = [
-    # Discriminated union
     "AgentMessage",
-    # Base
     "BaseAgentMessage",
-    # TLS
     "KeylogMessage",
     "DatalogMessage",
-    # Library detection
     "LibraryDetectedMessage",
-    # Console
     "ConsoleMessage",
     "ConsoleDevMessage",
     "ConsoleDebugMessage",
     "ConsoleInfoMessage",
     "ConsoleWarnMessage",
     "ConsoleErrorMessage",
-    # Network
     "NetlogMessage",
-    # SSH
     "SSHKeyMessage",
     "SSHNewKeysMessage",
-    # IPSec
     "IPSecChildSAKeysMessage",
     "IPSecIKEKeysMessage",
     "IPSecESPKeysMessage",
-    # SDK / caller attribution (opt-in)
     "CallerStackMessage",
     "CallerFrame",
     "RequestContextMessage",
-    # Canonical pipeline events
     "Direction",
     "AddressFamily",
     "Endpoint",
     "KeylogCanonical",
     "DataCanonical",
     "MetaCanonical",
-    # Host messages
     "AgentHandshakeConfig",
     "PatternConfig",
     "OffsetConfig",

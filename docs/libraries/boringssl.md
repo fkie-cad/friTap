@@ -19,6 +19,7 @@ BoringSSL is Google's fork of OpenSSL, designed for use in Google's various prod
 | Linux    | ✓ Full       | ✓ Full         | All versions |
 | Windows  | ✓ Limited    | ✓ Full         | Read/Write hooks only |
 | macOS    | ✓ Keys       | ✗ Not available | Apple's `/usr/lib/libboringssl.dylib`. Keys only — see [Apple BoringSSL](#apple-boringssl-macos-and-ios). |
+| macOS (Chrome / Electron) | ✓ Keys | ✓ Partial | BoringSSL inside `Google Chrome Framework` / `Electron Framework`, arm64 only — see [Chrome and Electron](../platforms/macos.md#chrome-and-electron). |
 | Android  | ✓ Full       | ✓ Full         | All Android versions |
 | iOS      | ✓ Keys       | ✗ Not available | Same Apple BoringSSL as macOS. Keys only — see [Apple BoringSSL](#apple-boringssl-macos-and-ios). |
 
@@ -94,6 +95,132 @@ properties shape what friTap can do there:
     `dev/derive_boringssl_keylog_offset.py` helper are documented in the
     [macOS Platform Guide](../platforms/macos.md#apple-boringssl-keylog-offsets).
 
+## Plaintext from statically linked BoringSSL
+
+Chrome (`libmonochrome*.so`, `libchrome.so`), WebView (`libwebviewchromium*.so`),
+stripped Cronet builds, Flutter (`libflutter.so`) and Signal (`libsignal_jni.so`,
+through the Rust `boring` crate) link BoringSSL statically and usually export
+nothing. Keys come from the `ssl_log_secret` pattern and anchor
+tiers. For plaintext (`-p`), the supplementary "BoringSSL plaintext (...)" rows in
+the Android platform table need `SSL_read` and `SSL_write`, and resolve them in
+this order, stopping at the first source that has at least one of them:
+
+1. **Exports.** If the module exports `SSL_read`/`SSL_write`, the primary row
+   already hooks them and the supplementary row stays out, so no record is
+   captured twice.
+2. **`--offsets`, keyed by module basename.** An entry named after the module's
+   file name (not its path) supplies the addresses:
+
+    ```json
+    {
+      "libflutter.so": {
+        "SSL_read":  { "address": "0x5a1c40", "absolute": false },
+        "SSL_write": { "address": "0x5a2010", "absolute": false }
+      }
+    }
+    ```
+
+    `absolute: false` is an offset from the module base, `absolute: true` a
+    runtime address. Either function may be omitted. Other `--offsets` entries
+    keep their usual meaning.
+3. **Learned cache.** RVAs found by the locator on an earlier run of the same
+   library build (see below). Each RVA is used only if the first 32 bytes at that
+   address still hash to the recorded SHA-256.
+4. **`ssl_lib.cc` anchor locator (arm64 only).** Finds the `OPENSSL_PUT_ERROR`
+   sites in `ssl_lib.cc` and identifies `SSL_read`/`SSL_write` by the BoringSSL
+   reason codes each function raises, with function bounds from `.eh_frame_hdr`.
+   This scan is the slow step. It does not run on arm, x86 or x86_64.
+5. **Miss.** friTap prints once per module:
+
+    ```
+    [!] libflutter.so: BoringSSL SSL_read/SSL_write not located; TCP TLS plaintext unavailable (keys only). Supply them via --offsets; see docs/libraries/boringssl.md#boringsecrethunter
+    ```
+
+    Key extraction is not affected. See [BoringSecretHunter](#boringsecrethunter).
+
+On success friTap logs which source was used, for example
+`hooked statically linked BoringSSL for TCP TLS plaintext (...; from --offsets)`.
+
+### Learned offset cache
+
+When the locator finds `SSL_read`/`SSL_write`, the result can be stored so the next
+run on the same library build skips the scan.
+
+- **File:** `learned_offsets.json` in friTap's user cache directory
+  (`platformdirs.user_cache_dir("friTap")`, for example `~/.cache/friTap/` on
+  Linux or `~/Library/Caches/friTap/` on macOS; `~/.cache/friTap/` if
+  `platformdirs` is missing). Set `FRITAP_LEARNED_OFFSETS_DIR` to use another
+  directory.
+- **Key:** `build_id|size|arch` of the library, so a different build or ABI never
+  reuses an entry. The build id is the ELF GNU build id, or the `LC_UUID` of a
+  Mach-O image (macOS Chrome and Electron frameworks).
+- **Stored per entry:** module basename, build id, file size, arch, the
+  module-relative RVAs of `SSL_read`/`SSL_write`, the SHA-256 of each function's
+  first 32 bytes, and a last-seen time. At most 512 entries are kept; the least
+  recently seen are dropped first. Other cached functions (such as
+  `ssl_log_secret`) are hashed over bytes 32–63, which a Frida hook never
+  overwrites, so a function that was already hooked when it was found still
+  verifies on the next run.
+- **Precedence:** friTap hands every cached entry to the agent, and the agent
+  uses an `--offsets` entry for the same module before the learned one.
+- **Stale entries:** if the prologue hash no longer matches (the library was
+  rebuilt), the entry is ignored and the locator runs again. A stale entry costs a
+  scan, never a hook on the wrong code.
+- **Clearing:** delete `learned_offsets.json`. Unreadable, oversized (>1 MiB) or
+  malformed files are ignored.
+
+### BoringSecretHunter
+
+If the miss notice appears (non-arm64 target, or a build the locator does not
+recognise), you have to find `SSL_read`/`SSL_write` yourself.
+[BoringSecretHunter](https://github.com/monkeywave/BoringSecretHunter) does not
+help with that: it only locates `ssl_log_secret`, the key-side function.
+
+**Keys.** If keys are missing too, run BoringSecretHunter as described in
+[Automating with BoringSecretHunter](../advanced/patterns.md#automating-with-boringsecrethunter):
+
+```bash
+mkdir -p binary results
+adb pull /data/app/<...>/lib/arm64/libflutter.so binary/
+docker run --rm \
+  -v "$(pwd)/binary":/usr/local/src/binaries \
+  -v "$(pwd)/results":/host_output \
+  boringsecrethunter
+```
+
+It prints the `ssl_log_secret` offset and a Frida byte pattern. Pass the pattern
+with `--patterns` (see [Pattern-Based Hooking](../advanced/patterns.md)) to get
+keys with `-k`.
+
+**Plaintext.** Find `SSL_read` and `SSL_write` by hand in Ghidra or radare2,
+the same way the locator does:
+
+1. Search for the string ending in `ssl/ssl_lib.cc` (BoringSSL's `__FILE__`
+   for its error sites) and list the functions that reference it.
+2. Among those, `SSL_write` is the one that raises `SSL_R_BAD_LENGTH` (`0x6f`)
+   next to `SSL_R_UNINITIALIZED` (`0xe2`); the reason code is the `mov w2, #...`
+   right before the call to `ERR_put_error`.
+3. `SSL_read` is the function that calls `SSL_peek` (the one raising only
+   `ERR_R_SHOULD_NOT_HAVE_BEEN_CALLED`, `0x42`) and then consumes the buffer,
+   or, in builds where `SSL_peek` is inlined, the peek-shaped function that also
+   calls the buffer-consume helper.
+
+Convert the function entries to module-relative offsets and put them in an
+`--offsets` entry named after the module basename:
+
+```json
+{
+  "libflutter.so": {
+    "SSL_read":  { "address": "0x5a1c40", "absolute": false },
+    "SSL_write": { "address": "0x5a2010", "absolute": false }
+  }
+}
+```
+
+```bash
+fritap -m -p out.pcap -k keys.log --offsets offsets.json com.example.app
+```
+
 ## Usage Examples
 
 ### Chrome Browser Analysis
@@ -108,6 +235,9 @@ fritap -k chrome_keys.log google-chrome --user-data-dir=/tmp/test-profile
 # Debug mode for troubleshooting
 fritap -do -k chrome_keys.log google-chrome
 ```
+
+On macOS, attach to Chrome's network-service helper instead; see
+[Chrome and Electron](../platforms/macos.md#chrome-and-electron).
 
 ### Android Chrome/Cronet
 
@@ -124,7 +254,8 @@ fritap -m -ar -k keys.log com.android.chrome
 
 ### Flutter Applications
 
-Flutter apps commonly use statically-linked BoringSSL:
+Flutter apps commonly use statically-linked BoringSSL (details, including
+plaintext capture, on the [Flutter](flutter.md) page):
 
 ```bash
 # Basic Flutter analysis

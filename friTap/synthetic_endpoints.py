@@ -1,14 +1,11 @@
 """Synthetic TCP endpoints for TLS records that carry no socket tuple.
 
-An fd-less record (Chromium/Cronet memory BIOs, ...) still carries its TLS
-``client_random``. :func:`synthetic_tuple` derives a stable, per-connection
-IPv4 tuple from it inside the RFC 2544 benchmarking range ``198.18.0.0/15``
-(client in ``198.18/16``, server in ``198.19/16``), so each connection lands in
-its own TCP stream instead of being dropped or merged onto the ``-ed``
-placeholder. A synthetic endpoint is never a real address: consumers use
-:func:`is_synthetic_ip` to flag or skip it.
+An fd-less record (Chromium/Cronet memory BIOs) still has its TLS ``client_random``.
+:func:`synthetic_tuple` derives a stable per-connection IPv4 tuple from it in the RFC 2544
+range ``198.18.0.0/15`` (client ``198.18/16``, server ``198.19/16``), so each connection gets
+its own TCP stream. It is never a real address: use :func:`is_synthetic_ip` to flag or skip it.
 
-Pure functions only; no state.
+Pure functions only.
 """
 
 from __future__ import annotations
@@ -16,7 +13,7 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional, Tuple
 
 from .sinks.tcp_state import InvalidEndpointError, ipv4_address_int
 
@@ -47,11 +44,9 @@ class SyntheticTuple:
 
 
 def synthetic_tuple(client_random: str) -> SyntheticTuple:
-    """The deterministic synthetic tuple for a normalized *client_random*.
+    """The deterministic synthetic tuple for a normalized *client_random* (hex, else ``ValueError``).
 
-    Built from ``blake2s(client_random)`` rather than the raw bytes, whose first
-    four can be a TLS 1.2 ``gmt_unix_time`` shared by many connections.
-    Raises ``ValueError`` when *client_random* is not hex.
+    Derived from ``blake2s(client_random)``: the raw first four bytes can be a TLS 1.2 ``gmt_unix_time`` shared by many connections.
     """
     digest = hashlib.blake2s(bytes.fromhex(client_random)).digest()
     port_seed = (digest[4] << 8) | digest[5]
@@ -66,10 +61,8 @@ def synthetic_tuple(client_random: str) -> SyntheticTuple:
 def _ipv4_int(addr) -> Optional[int]:
     """*addr* (host-order int or dotted string) as an IPv4 int, else ``None``.
 
-    Thin wrapper over :func:`friTap.sinks.tcp_state.ipv4_address_int`: an
-    out-of-range int or another type is ``None`` instead of raising; a
-    malformed string keeps that helper's ``0`` (0.0.0.0) fallback, which is
-    neither synthetic nor the loopback placeholder.
+    Wraps :func:`friTap.sinks.tcp_state.ipv4_address_int`: out-of-range ints and other types give ``None``;
+    a malformed string keeps that helper's ``0`` fallback (neither synthetic nor the loopback placeholder).
     """
     if isinstance(addr, bool) or not isinstance(addr, (int, str)):
         return None
@@ -88,12 +81,8 @@ def is_synthetic_ip(addr) -> bool:
 
 
 def flow_endpoints_synthetic(flow) -> bool:
-    """True when *flow*'s tuple is a synthetic ``198.18.0.0/15`` one (fd-less record).
-
-    The single synthetic-flow predicate: trusts the flow's
-    ``endpoints_synthetic`` flag and, for flows that predate it, recognises a
-    synthetic address on either end.
-    """
+    """True when *flow*'s tuple is synthetic (fd-less record): the single predicate, trusting
+    ``endpoints_synthetic`` and, for older flows, a synthetic address on either end."""
     if getattr(flow, "endpoints_synthetic", False):
         return True
     return (is_synthetic_ip(getattr(flow, "src_addr", None))
@@ -105,3 +94,20 @@ def is_default_fd_placeholder(src_addr, src_port, dst_addr, dst_port) -> bool:
     return (_ipv4_int(src_addr) == DEFAULT_FD_LOOPBACK_ADDR
             and _ipv4_int(dst_addr) == DEFAULT_FD_LOOPBACK_ADDR
             and {src_port, dst_port} == DEFAULT_FD_PORTS)
+
+
+def addr_port(event, side: str) -> tuple:
+    """``(addr, port)`` of *event*'s ``src`` or ``dst`` side."""
+    return getattr(event, side + "_addr"), getattr(event, side + "_port")
+
+
+def record_sides(event, endpoint: Callable[[object, str], tuple] = addr_port) -> Tuple[tuple, tuple]:
+    """``(local, peer)`` of *event* as read by *endpoint*; a read travels peer -> local."""
+    src, dst = endpoint(event, "src"), endpoint(event, "dst")
+    return (dst, src) if getattr(event, "direction", "") == "read" else (src, dst)
+
+
+def is_provisional(event) -> bool:
+    """True for an agent-guessed tuple: flagged synthetic, no ``observed_*``."""
+    return (bool(getattr(event, "endpoints_synthetic", False))
+            and not getattr(event, "observed_src_addr", ""))

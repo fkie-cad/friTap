@@ -1,28 +1,12 @@
 """Parse decrypted MTProto/Telegram TL bytes into displayable chat messages.
 
-The offline MTProto decryptor recovers the inner TL-serialized payload of each
-record but historically handed it on as raw bytes, so the TUI could only show
-hex. This module turns that blob into human-readable fields (message body, kind,
-TL method/type name) by walking the relevant TL (Type Language) constructors,
-mirroring the Signal chain (:mod:`friTap.offline.signal.content`).
-
-Everything here is intentionally *tolerant*: it uses a small hand-rolled,
-exception-safe TL reader and NEVER raises — malformed, truncated or unknown
-input degrades to ``kind="unparsed"`` (or no item at all) so it can never break
-decryption. A single transport message may yield SEVERAL parsed messages (e.g.
-an ``updates`` or ``msg_container`` body fans out), so the public entry points
-return *lists*.
-
-Beyond the original outbound-text extraction this parser now surfaces:
-
-  * ``User`` identities (kind ``"user"``, body ``Evil (@kneebel, +49...)``),
-  * inbound chat ``message#`` objects (kind ``"text"``) inside updates and
-    ``messages.messages`` / ``messagesSlice`` (getHistory) results,
-  * service / container records (kind ``"service"`` / ``"ack"`` / ``"rpc"``)
-    tagged with their TL ``method`` name,
-
-and tags EVERY emitted item with a ``method`` (TL operation/type name) and a
-``kind`` per the shared TUI contract.
+Walks the relevant TL constructors to extract body, kind and TL ``method``
+name, mirroring :mod:`friTap.offline.signal.content`. The parser never raises:
+malformed, truncated or unknown input degrades to ``kind="unparsed"`` (or no
+item). One transport message can fan out into several items (``updates``,
+``msg_container``), so the entry points return lists. Emitted kinds include
+``user``, ``text`` (outbound and inbound ``message#``), ``service``, ``ack``
+and ``rpc``; every item carries a ``method`` and ``kind``.
 """
 
 from __future__ import annotations
@@ -51,22 +35,15 @@ from .tl.decoder import (
 )
 from .tl.nodes import TlNode, iter_nodes
 
-# --------------------------------------------------------------------------- #
-# TL constructor ids
-# --------------------------------------------------------------------------- #
-#
 # A constructor id is the first uint32 (little-endian) of a boxed TL object.
 #
-# LAYER-VERSIONED WARNING: the message-BEARING constructors (sendMessage and the
-# inbound update/Message ids) change their hash whenever the MTProto TL *layer*
-# revs (new optional flags shift the CRC32 over the schema line). The ids below
-# are pinned to the layer that was DEVICE-VERIFIED for the outbound path; if a
-# future Telegram build moves them, parsing degrades to ``kind="unparsed"``
-# rather than mis-reading bytes. The CORE CONTAINER ids (msg_container,
-# rpc_result, gzip_packed, invokeWithLayer, invokeAfterMsg) and the InputPeer
-# ids are stable across layers and safe to hardcode.
+# Layer-versioned ids: the message-bearing constructors (sendMessage and the
+# inbound update/Message ids) change hash whenever the TL layer revs (new
+# optional flags shift the CRC32 over the schema line). They are pinned to the
+# device-verified layer; a moved id degrades to ``kind="unparsed"`` instead of
+# mis-reading bytes. The core container ids and the InputPeer ids are stable.
 
-# --- Stable core containers (NOT layer-versioned) -------------------------- #
+# Stable core containers.
 _MSG_CONTAINER = MSG_CONTAINER_ID  # msg_container: count × {msg_id, seqno, len, body}
 _RPC_RESULT = RPC_RESULT_ID       # rpc_result: req_msg_id:long, result:Object
 _GZIP_PACKED = GZIP_PACKED_ID     # gzip_packed: packed_data:bytes → zlib → Object
@@ -75,7 +52,7 @@ _INVOKE_AFTER_MSG = 0xCB9F372D   # invokeAfterMsg: msg_id:long, query:Object
 _MSGS_ACK = 0x62D6B459           # msgs_ack: msg_ids:Vector<long> (no message body)
 _VECTOR = VECTOR_ID              # Vector<T>: count:int, items
 
-# --- Service / system messages (stable; no chat body) ---------------------- #
+# Service / system messages (stable; no chat body).
 _PONG = 0x347773C5                  # pong: msg_id:long, ping_id:long
 _NEW_SESSION_CREATED = 0x9EC20908   # new_session_created: first_msg_id, unique_id, salt
 _FUTURE_SALTS = 0xAE500895          # future_salts: req_msg_id, now, salts:Vector
@@ -86,14 +63,13 @@ _MSG_DETAILED_INFO = 0x276D3EC6     # msg_detailed_info
 _MSG_NEW_DETAILED_INFO = 0x809DB6DF  # msg_new_detailed_info
 _RPC_ERROR = 0x2144CA19             # rpc_error: error_code:int, error_message:string
 
-# --- RPC result inner types (stable enough to name) ------------------------ #
-# These let rpc_result name itself after the INNER result type.
+# RPC result inner types, so rpc_result can be named after its inner result.
 _CONFIG = 0x232D5905                # config (verify per layer; named "config")
 _BOOL_TRUE = BOOL_TRUE_ID
 _BOOL_FALSE = BOOL_FALSE_ID
 
-# --- InputPeer (stable; used to skip the `peer` field in sendMessage) ------ #
-# Maps ctor → fixed byte length of the peer body that FOLLOWS the 4-byte ctor,
+# InputPeer (stable; used to skip the `peer` field in sendMessage).
+# Maps ctor → fixed byte length of the peer body that follows the 4-byte ctor,
 # or ``None`` for the recursive *FromMessage variants handled specially.
 _INPUT_PEER_EMPTY = 0x7F3B18EA            # 0 bytes
 _INPUT_PEER_SELF = 0x7DA07EC9             # 0 bytes
@@ -111,26 +87,25 @@ _INPUT_PEER_FIXED_LEN = {
     _INPUT_PEER_CHANNEL: 16,
 }
 
-# --- Peer (the OUTPUT peer type; stable) ----------------------------------- #
+# Peer (the output peer type; stable).
 _PEER_USER = 0x59511722        # peerUser: user_id:long
 _PEER_CHAT = 0x36C6019A        # peerChat: chat_id:long
 _PEER_CHANNEL = 0xA2A5371E     # peerChannel: channel_id:long
 _PEER_FIXED_LEN = {_PEER_USER: 8, _PEER_CHAT: 8, _PEER_CHANNEL: 8}
 
-# --- Outbound message-bearing constructors (LAYER-VERSIONED) --------------- #
+# Outbound message-bearing constructors (layer-versioned).
 # messages.sendMessage layout (device-verified at the captured layer):
 #   ctor:int → flags:int32 → peer:InputPeer → [reply_to:InputReplyTo flags.0]
-#   → message:string (EXTRACT) → random_id:long → optional fields (ignored).
+#   → message:string → random_id:long → optional fields (ignored).
 _SEND_MESSAGE = 0xFEF48F62        # messages.sendMessage [verified]
-# Accept these too if encountered (schema-derived, message at the same offset
-# right after the peer-and-reply prefix is NOT identical, so only sendMessage
-# proper is structurally parsed; the set documents the family).
+# Other send* variants do not share the message offset, so only sendMessage
+# proper is structurally parsed.
 _SEND_MESSAGE_IDS = {_SEND_MESSAGE}
 
 # inputReplyToMessage (flags.0 of sendMessage); skipped best-effort.
 _INPUT_REPLY_TO_MESSAGE = 0x22C0F6D5
 
-# --- Inbound message-bearing constructors (LAYER-VERSIONED, schema-derived) -- #
+# Inbound message-bearing constructors (layer-versioned, schema-derived).
 _UPDATE_SHORT_MESSAGE = 0x313BC7F8       # flags, id, user_id:long, message:string, ...
 _UPDATE_SHORT_CHAT_MESSAGE = 0x4D6DEEA5  # flags, id, from_id:long, chat_id:long, message, ...
 _UPDATE_SHORT = 0x78D4DEC1               # update:Update, date:int (recurse update)
@@ -151,14 +126,12 @@ _CHANNEL_MESSAGES = 0xC776BA51           # flags, ..., messages:Vector<Message>,
 _MESSAGE_IDS_LAYER_VERSIONED = {
     0x96FDB04A, 0x38116EE0, 0xA66C7EFC, 0x2357BF25, 0x76BEC211, 0x85D6CBE2,
 }
-# messageService and messageEmpty (so we can recognise + skip cleanly).
+# messageService and messageEmpty, recognised so they can be skipped cleanly.
 _MESSAGE_EMPTY = 0x90A6CA84
 _MESSAGE_SERVICE_IDS = {0x2B085862, 0xD3672C00}
 
-# --- User objects (LAYER-VERSIONED) ---------------------------------------- #
-# user#... ctor changes per layer; the spec captured 0x31774388. We keep a SET
-# of known recent ids AND a tolerant fallback that scans TL-strings after
-# id+access_hash regardless of the exact ctor.
+# User objects (layer-versioned). Known recent ids plus a tolerant fallback that
+# scans TL strings after id+access_hash regardless of the exact ctor.
 # 0xB1B8CC83 is the current (TDLib telegram_api.tl) user, verified on a real
 # Android capture: its flags/flags2/id/... layout parses via Attempt 1 below.
 _USER_IDS_LAYER_VERSIONED = {
@@ -167,7 +140,7 @@ _USER_IDS_LAYER_VERSIONED = {
 }
 _USER_EMPTY = 0xD3BC4B7A
 
-# --- UserStatus constructors ("last seen"; stable) ------------------------- #
+# UserStatus constructors ("last seen"; stable).
 # Reachable only when no photo (flags.5) sits before status (flags.6) in the
 # User layout; see :func:`_parse_user_status`.
 _USER_STATUS_EMPTY = 0x09D05049       # userStatusEmpty (no payload)
@@ -181,7 +154,7 @@ _USER_STATUS_IDS = {
     _USER_STATUS_RECENTLY, _USER_STATUS_LAST_WEEK, _USER_STATUS_LAST_MONTH,
 }
 
-# --- E2E (secret-chat) message-bearing constructors (LAYER-VERSIONED) ------ #
+# E2E (secret-chat) message-bearing constructors (layer-versioned).
 _DECRYPTED_MESSAGE_LAYER = 0x1BE31789    # layer:int, random_bytes, layer:int, in/out seq, msg:Object
 # decryptedMessage variants by secret-chat layer: 0x204d3878 (layer 17),
 # 0x36b091de (layer 45+), 0x91cc4674 (layer 73+). All share the leading
@@ -189,14 +162,7 @@ _DECRYPTED_MESSAGE_LAYER = 0x1BE31789    # layer:int, random_bytes, layer:int, i
 _DECRYPTED_MESSAGE_IDS = {0x91CC4674, 0x204D3878, 0x36B091DE}
 
 
-# --------------------------------------------------------------------------- #
-# Constructor → name table
-# --------------------------------------------------------------------------- #
-#
-# Centralised map from constructor id to its TL operation/type name. This is the
-# single source of truth for the per-item ``method`` tag. Entries marked
-# LAYER-VERSIONED carry a hash that may shift between Telegram TL layers; the
-# stable container/service ids do not.
+# Constructor id → TL operation/type name; single source of the ``method`` tag.
 
 _CTOR_NAMES: Dict[int, str] = {
     # Stable core containers
@@ -225,9 +191,9 @@ _CTOR_NAMES: Dict[int, str] = {
     _MESSAGES_MESSAGES: "messages.messages",
     _MESSAGES_SLICE: "messages.messagesSlice",
     _CHANNEL_MESSAGES: "messages.channelMessages",
-    # Outbound (LAYER-VERSIONED)
+    # Outbound (layer-versioned)
     _SEND_MESSAGE: "messages.sendMessage",
-    # Inbound updates (LAYER-VERSIONED)
+    # Inbound updates (layer-versioned)
     _UPDATE_SHORT_MESSAGE: "updateShortMessage",
     _UPDATE_SHORT_CHAT_MESSAGE: "updateShortChatMessage",
     _UPDATE_SHORT: "updateShort",
@@ -241,10 +207,8 @@ _CTOR_NAMES: Dict[int, str] = {
     _MESSAGE_EMPTY: "messageEmpty",
     _USER_EMPTY: "userEmpty",
 }
-# User ctors (LAYER-VERSIONED) all map to "user".
 for _uid in _USER_IDS_LAYER_VERSIONED:
     _CTOR_NAMES[_uid] = "user"
-# Full `message` ctors (LAYER-VERSIONED) all map to "message".
 for _mid in _MESSAGE_IDS_LAYER_VERSIONED:
     _CTOR_NAMES[_mid] = "message"
 for _mid in _MESSAGE_SERVICE_IDS:
@@ -306,11 +270,9 @@ def _add_note(items: List[ParsedMtprotoMessage], note: str) -> None:
 class _ParseBudget:
     """Per-message work and inflate budget shared by every reader of one parse.
 
-    A hostile record can be crafted so the tolerant hand path does superlinear
-    work (Vector ctor ids at every offset, nested wrappers, gzip_packed bombs).
-    One budget object is threaded through all sub-readers of a single
-    :func:`parse_mtproto_message` call so the total cost stays bounded no
-    matter how the payload nests.
+    A hostile record can force superlinear work (Vector ctor ids at every
+    offset, nested wrappers, gzip_packed bombs). One budget is shared by all
+    sub-readers of a :func:`parse_mtproto_message` call to bound total cost.
     """
 
     __slots__ = ("work_left", "inflate_left", "gzip_depth", "gzip_truncated")
@@ -336,10 +298,8 @@ class _ParseBudget:
 class _Reader:
     """Exception-safe little-endian TL reader over ``data[pos:end]``.
 
-    Every accessor raises :class:`_TLError` on truncation; callers catch it and
-    degrade to ``kind="unparsed"`` rather than letting it escape. Sub-readers
-    share the parent's buffer (offset-bounded, no copy) and its
-    :class:`_ParseBudget`.
+    Accessors raise :class:`_TLError` on truncation; callers degrade to
+    ``kind="unparsed"``. Sub-readers share the buffer (no copy) and budget.
     """
 
     def __init__(self, data: bytes, pos: int = 0, end: Optional[int] = None,
@@ -425,22 +385,14 @@ class _BudgetExceeded(_TLError):
     """The per-message work budget is spent; parsing winds down cleanly."""
 
 
-# --------------------------------------------------------------------------- #
-# Peer / reply-to skipping helpers
-# --------------------------------------------------------------------------- #
-
 # Max nesting of the recursive ``inputPeer*FromMessage`` variants. Real peers
 # nest once; a hostile chain must not recurse until the interpreter limit.
 _MAX_INPUT_PEER_DEPTH = 3
 
 
 def _skip_input_peer(reader: _Reader, depth: int = 0) -> None:
-    """Consume one ``InputPeer`` from *reader*.
-
-    Raises :class:`_TLError` for an unknown constructor (or a FromMessage chain
-    nested deeper than :data:`_MAX_INPUT_PEER_DEPTH`) so the caller can bail
-    out of structured parsing for that record (per spec).
-    """
+    """Consume one ``InputPeer``; raise :class:`_TLError` on an unknown ctor or
+    a FromMessage chain deeper than :data:`_MAX_INPUT_PEER_DEPTH`."""
     if depth > _MAX_INPUT_PEER_DEPTH:
         raise _TLError("InputPeer nested too deep")
     ctor = reader.uint32()
@@ -483,20 +435,12 @@ def _skip_input_reply_to(reader: _Reader) -> None:
 
 
 def _skip_vector_unknown(reader: _Reader) -> None:
-    """Best-effort skip of a ``Vector`` whose element layout is unknown.
-
-    We cannot size unknown elements, so any Vector here forces a bail-out: the
-    only safe action is to raise and let the record degrade to ``unparsed``.
-    """
+    """Always raise: unknown elements cannot be sized, so the record degrades."""
     ctor = reader.uint32()
     if ctor != _VECTOR:
         raise _TLError("expected Vector constructor")
     raise _TLError("cannot skip Vector of unknown element type")
 
-
-# --------------------------------------------------------------------------- #
-# Outbound: messages.sendMessage
-# --------------------------------------------------------------------------- #
 
 def _parse_send_message(reader: _Reader) -> Optional[ParsedMtprotoMessage]:
     """Parse a ``messages.sendMessage`` body (ctor already consumed)."""
@@ -504,17 +448,12 @@ def _parse_send_message(reader: _Reader) -> Optional[ParsedMtprotoMessage]:
     _skip_input_peer(reader)                  # peer:InputPeer
     if flags & (1 << 0):
         _skip_input_reply_to(reader)          # reply_to:InputReplyTo (flags.0)
-    body = reader.tl_string()                 # message:string (EXTRACT)
-    reader.int64()                            # random_id:long (sender is unknown
-    #                                           for outbound, so left as 0)
+    body = reader.tl_string()                 # message:string
+    reader.int64()                            # random_id:long
     return ParsedMtprotoMessage(
         kind="text", body=body, method="messages.sendMessage",
     )
 
-
-# --------------------------------------------------------------------------- #
-# Inbound: updates / short messages
-# --------------------------------------------------------------------------- #
 
 def _parse_update_short_message(reader: _Reader) -> Optional[ParsedMtprotoMessage]:
     """updateShortMessage: flags, id, user_id:long, message:string, ..."""
@@ -540,27 +479,17 @@ def _parse_update_short_chat_message(reader: _Reader) -> Optional[ParsedMtprotoM
     )
 
 
-# --------------------------------------------------------------------------- #
-# Inbound: full `message#` object (flag-heavy, layer-versioned, best-effort)
-# --------------------------------------------------------------------------- #
-
 def _parse_message_object(reader: _Reader, ctor: int) -> Optional[ParsedMtprotoMessage]:
-    """Best-effort decode of a layer-versioned ``message`` object.
+    """Best-effort decode of a layer-versioned ``message`` object (ctor consumed).
 
-    The full ``message`` constructor is flag-heavy and shifts between layers, so
-    we make a CONSERVATIVE attempt at the modern common prefix and degrade to
-    ``kind="unparsed"`` (rather than mis-reading) on any inconsistency. Layout
-    attempted (recent layers, message# ctor already consumed):
+    Layout attempted::
 
-        flags:int32, [flags2:int32 when flags.34? — NOT present in classic],
-        id:int32, [from_id:Peer  flags.8],
-        peer_id:Peer, [saved_peer / fwd / via_bot ... — flag-gated, skipped],
-        date:int32 (after the peer block), message:string ...
+        flags:int32, id:int32, [from_id:Peer flags.8], peer_id:Peer,
+        [saved_peer / fwd / via_bot ... flag-gated, skipped],
+        date:int32, message:string ...
 
-    Because the exact offset of ``message:string`` depends on many flag-gated
-    fields we cannot size blindly, we use a tolerant heuristic: after reading the
-    fixed leading fields we SCAN forward for the first plausible TL-string and
-    take it as the body. Anything inconsistent → unparsed.
+    The body offset depends on flag-gated fields, so after the fixed prefix the
+    first plausible TL string is taken as the body; otherwise ``unparsed``.
     """
     # messageEmpty / messageService carry no chat text.
     if ctor == _MESSAGE_EMPTY or ctor in _MESSAGE_SERVICE_IDS:
@@ -572,19 +501,13 @@ def _parse_message_object(reader: _Reader, ctor: int) -> Optional[ParsedMtprotoM
     peer_id = 0
     timestamp = 0
 
-    # from_id present when flags.8 set (Peer).
     try:
         if flags & (1 << 8):
             sender_id = _read_peer(reader)   # from_id:Peer
-        # peer_id:Peer is mandatory.
         peer_id = _read_peer(reader)
     except _TLError:
-        # Peer layout did not line up; fall back to a tolerant text scan from
-        # just after id (drop what we tentatively consumed of the peers).
         return _scan_message_text(reader, msg_id, sender_id, peer_id, timestamp)
 
-    # The remaining prefix (fwd_from / via_bot_id / reply_to / date) is heavily
-    # flag-gated and layer-versioned. Rather than decode each, scan for the body.
     return _scan_message_text(reader, msg_id, sender_id, peer_id, timestamp)
 
 
@@ -597,11 +520,7 @@ _MESSAGE_SCAN_WINDOW = 512
 def _scan_message_text(
     reader: _Reader, msg_id: int, sender_id: int, peer_id: int, timestamp: int,
 ) -> Optional[ParsedMtprotoMessage]:
-    """Scan forward for the first plausible printable TL-string = message body.
-
-    Conservative: only accepts a string that decodes to mostly-printable text of
-    a reasonable length; otherwise returns ``unparsed`` (no mis-read body).
-    """
+    """Take the first mostly-printable TL string ahead as the body, else ``unparsed``."""
     start = reader.pos
     # `date:int32` sits right before `message:string` in every layer of the full
     # message ctor; if the next 4 bytes look like a plausible unix-ish timestamp
@@ -614,7 +533,6 @@ def _scan_message_text(
         reader.uint32()
         timestamp = maybe_date
 
-    # Try to read the message string at the current position first.
     candidate = _try_read_text(reader)
     if candidate is not None:
         return ParsedMtprotoMessage(
@@ -622,10 +540,7 @@ def _scan_message_text(
             timestamp=timestamp, method="message",
         )
 
-    # Otherwise byte-scan for the first plausible TL-string. The body sits within
-    # a handful of fields of the start (peer/date), so bound the scan to a small
-    # window: this caps the worst-case O(n²) per-message cost on large/garbage
-    # objects without missing a real body near the front.
+    # Byte-scan bounded by _MESSAGE_SCAN_WINDOW to cap the O(n²) worst case.
     reader.seek(start)
     data_len = reader.remaining + reader.pos
     scan_end = min(data_len - 1, start + _MESSAGE_SCAN_WINDOW)
@@ -644,11 +559,9 @@ def _scan_message_text(
 
 
 def _try_read_text(reader: _Reader) -> Optional[str]:
-    """Try to read a TL-string at the current pos and validate it as chat text.
+    """Read a TL string at pos and return it if it is mostly-printable UTF-8.
 
-    Returns the decoded text if it looks like a genuine message string (1+ chars,
-    decodes cleanly to mostly-printable UTF-8), else ``None`` (pos is left
-    undefined; callers reseek).
+    Returns ``None`` otherwise; pos is then undefined and callers reseek.
     """
     try:
         raw = reader.tl_bytes()
@@ -668,20 +581,15 @@ def _try_read_text(reader: _Reader) -> Optional[str]:
     return text
 
 
-# --------------------------------------------------------------------------- #
-# User objects → kind="user"
-# --------------------------------------------------------------------------- #
-
-# user# flag bits (recent layer; LAYER-VERSIONED). Used by the flag-driven
-# decoder; if the flags do not line up we fall back to the tolerant TL-string
-# scan.
+# user# flag bits (recent layer; layer-versioned). If they do not line up the
+# decoder falls back to the tolerant TL-string scan.
 _USER_FLAG_HAS_ACCESS_HASH = 1 << 0
 _USER_FLAG_HAS_FIRST_NAME = 1 << 1
 _USER_FLAG_HAS_LAST_NAME = 1 << 2
 _USER_FLAG_HAS_USERNAME = 1 << 3
 _USER_FLAG_HAS_PHONE = 1 << 4
-_USER_FLAG_HAS_PHOTO = 1 << 5    # UserProfilePhoto (complex) — BAIL after if set
-_USER_FLAG_HAS_STATUS = 1 << 6   # UserStatus (last seen) — reachable iff no photo
+_USER_FLAG_HAS_PHOTO = 1 << 5    # UserProfilePhoto (complex); stop after phone if set
+_USER_FLAG_HAS_STATUS = 1 << 6   # UserStatus (last seen); reachable iff no photo
 
 # Relationship flag bits (device-verified): these annotate the body with tags.
 _USER_FLAG_SELF = 1 << 10
@@ -692,12 +600,7 @@ _USER_FLAG_BOT = 1 << 14
 
 
 def _user_relationship_tags(flags: int) -> tuple:
-    """Return the relationship tags carried by *flags*, in display order.
-
-    Verified bits: .10 self, .11 contact, .12 mutual_contact, .13 deleted,
-    .14 bot. ``mutual`` implies ``contact`` so only ``mutual`` is shown when both
-    are set, to keep the body terse.
-    """
+    """Return the relationship tags carried by *flags*, in display order."""
     tags = []
     if flags & _USER_FLAG_SELF:
         tags.append("you")
@@ -713,10 +616,9 @@ def _user_relationship_tags(flags: int) -> tuple:
 
 
 def _parse_user_status(reader: _Reader) -> str:
-    """Read a ``UserStatus`` (ctor + payload) and return a "last seen" suffix.
+    """Read a ``UserStatus`` and return a "last seen" suffix; never raises.
 
-    Returns "" when the next bytes are not a recognised UserStatus ctor (the
-    position is restored so the caller does not desync). Never raises.
+    Returns "" and restores the position when the ctor is not a UserStatus.
     """
     start = reader.pos
     try:
@@ -743,7 +645,6 @@ def _parse_user_status(reader: _Reader) -> str:
         return "last seen within a month"
     if ctor == _USER_STATUS_EMPTY:
         return ""
-    # Not a UserStatus we recognise: rewind so we don't consume foreign bytes.
     reader.seek(start)
     return ""
 
@@ -752,16 +653,9 @@ def _format_user_rich(
     first: str, last: str, username: str, phone: str,
     tags: tuple, last_seen: str,
 ) -> str:
-    """Compose the rich, readable user summary used by the flag-driven decoder.
+    """Compose the user summary with ``[tag]`` suffixes and ``· last_seen``.
 
-    Examples::
-
-        db Forscher (@dbf, +4915738796832) [contact] [mutual] · last seen recently
-        Evil kneebel (+4915155912510) [you]
-
-    The ``@username`` is included only when present, the phone always shows a
-    leading ``+``, empty parts are omitted, relationship tags are appended in
-    ``[ ]`` and a UserStatus "last seen" is appended after ``·`` when known.
+    Example: ``db Forscher (@dbf, +49157...) [contact] [mutual] · last seen recently``.
     """
     base = _format_user(first, last, username, phone)
     parts = [base] if base else []
@@ -776,11 +670,7 @@ def _format_user_rich(
 def _format_user(
     first: str, last: str, username: str, phone: str,
 ) -> str:
-    """Compose a readable user summary, omitting missing parts.
-
-    Examples: ``Evil (@kneebel, +4915155912510)``, ``db Forscher (+49...)``,
-    ``(@kneebel)``.
-    """
+    """Compose ``first last (@username, +phone)``, omitting missing parts."""
     name = " ".join(p for p in (first, last) if p).strip()
     extras = []
     if username:
@@ -809,21 +699,18 @@ def _classify_user_string(value: str) -> str:
 def _parse_user_tolerant(reader: _Reader, ctor: int) -> Optional[ParsedMtprotoMessage]:
     """Parse a ``User`` object into a kind="user" item.
 
-    First tries a PRECISE FLAG-DRIVEN read of the device-verified layer layout::
+    First a flag-driven read of the device-verified layout::
 
         flags:#  flags2:#  id:long  [access_hash:long .0]
         [first_name:string .1] [last_name:string .2] [username:string .3]
         [phone:string .4] [photo .5] [status:UserStatus .6] ...
 
-    Fields appear strictly in ascending flag-bit order. Relationship bits
-    (.10 self, .11 contact, .12 mutual, .13 deleted, .14 bot) annotate the body.
-    If photo (.5) is present the following UserProfilePhoto struct is complex, so
-    we parse identity up to phone and BAIL tolerantly (no status). When the flags
-    produce an implausible result we fall back to a TOLERANT scan that reads
-    consecutive TL-strings after id(+access_hash) and classifies each.
+    Fields follow ascending flag-bit order; bits .10-.14 are relationship tags.
+    A photo (.5) stops the read after phone. An implausible result falls back to
+    classifying consecutive TL strings after id(+access_hash).
     """
     start = reader.pos
-    # --- Attempt 1: precise flag-driven (device-verified layer layout) ------ #
+    # Attempt 1: flag-driven.
     try:
         flags = reader.uint32()
         reader.uint32()            # flags2:int32 (recent layers)
@@ -842,8 +729,7 @@ def _parse_user_tolerant(reader: _Reader, ctor: int) -> Optional[ParsedMtprotoMe
 
         tags = _user_relationship_tags(flags)
         last_seen = ""
-        # UserStatus (flags.6) is only reachable when no UserProfilePhoto
-        # (flags.5) precedes it; that struct is complex, so we BAIL on photo.
+        # UserStatus (.6) is reachable only when no UserProfilePhoto (.5) precedes it.
         if (flags & _USER_FLAG_HAS_STATUS) and not (flags & _USER_FLAG_HAS_PHOTO):
             last_seen = _parse_user_status(reader)
 
@@ -857,14 +743,13 @@ def _parse_user_tolerant(reader: _Reader, ctor: int) -> Optional[ParsedMtprotoMe
     except _TLError:
         pass
 
-    # --- Attempt 2: tolerant TL-string scan --------------------------------- #
+    # Attempt 2: tolerant TL-string scan.
     reader.seek(start)
     try:
         flags = reader.uint32()    # flags:int32
         reader.uint32()            # flags2:int32 (assume present; recent layers)
         user_id = reader.int64()   # id:long
-        # access_hash rides under flag bit 0; gating it (like Attempt 1) avoids
-        # eating 8 bytes of first_name for users that carry no access_hash.
+        # Gate access_hash on flag bit 0, else 8 bytes of first_name are eaten.
         if flags & _USER_FLAG_HAS_ACCESS_HASH:
             reader.int64()         # access_hash:long
     except _TLError:
@@ -881,24 +766,19 @@ def _parse_user_tolerant(reader: _Reader, ctor: int) -> Optional[ParsedMtprotoMe
             break
         if value.strip():
             strings.append(value)
-        # phone is unambiguous; once seen we have the trailing field.
+        # phone is the trailing field.
         if phone:
             break
         if _classify_user_string(value) == "phone":
             phone = value
             break
 
-    # Classify the non-phone strings: the first 1-2 are the name (first/last);
-    # a trailing alnum/no-space token before the phone is the username. This
-    # matches the spec's tolerant heuristic without trusting layer-versioned
-    # flag bit positions.
-    # ``phone``, when set, was already captured separately above and is excluded
-    # from ``non_phone`` by the comprehension; the remaining tokens are name parts.
+    # The first 1-2 non-phone strings are the name; a trailing alnum/no-space
+    # token is the username. Does not trust layer-versioned flag bits.
     non_phone = [s for s in strings if _classify_user_string(s) != "phone"]
     if len(non_phone) >= 1:
         first = non_phone[0]
     if len(non_phone) == 2:
-        # second token: username if alnum/no-space, else last_name
         second = non_phone[1]
         if _classify_user_string(second) == "username":
             username = second
@@ -939,20 +819,15 @@ def _mostly_printable(text: str) -> bool:
     return printable / len(text) >= 0.8
 
 
-# --------------------------------------------------------------------------- #
-# Vector dispatch (Vector<User>, Vector<Message>, Vector<Update>)
-# --------------------------------------------------------------------------- #
-
-# Upper bound on a TL element count (Vector / msg_container). A hostile or
-# misaligned record can decode a wildly large count; cap it so the parse loop
-# can't spin on attacker-controlled input.
+# Cap on a TL element count (Vector / msg_container) so a hostile or misaligned
+# count cannot spin the parse loop.
 _MAX_TL_COUNT = 100_000
 
-# Upper bound on the INFLATED size of a gzip_packed body (decompression-bomb
+# Upper bound on the inflated size of a gzip_packed body (decompression-bomb
 # guard; see :data:`~.tl.decoder.MAX_INFLATE`).
 _MAX_GZIP_INFLATE = MAX_INFLATE
 
-# Total inflated bytes across ALL gzip_packed bodies of one message: vectors,
+# Total inflated bytes across all gzip_packed bodies of one message: vectors,
 # containers and nesting would otherwise multiply the per-body cap.
 _MAX_INFLATE_TOTAL = 2 * MAX_INFLATE
 
@@ -969,10 +844,7 @@ def _parse_typed_vector(
 ) -> bool:
     """Parse a ``Vector`` of boxed objects, dispatching each element.
 
-    Returns ``True`` if it consumed a vector. Each element is itself a boxed TL
-    object (constructor + body), so we can recurse via :func:`_dispatch_object`.
-    Tolerant: a single bad element ends the loop rather than discarding earlier
-    siblings.
+    Returns ``True``. A bad element ends the loop but keeps earlier siblings.
     """
     count = reader.int32()
     if count < 0 or count > _MAX_TL_COUNT:
@@ -984,18 +856,13 @@ def _parse_typed_vector(
         try:
             _dispatch_object(reader, elem_ctor, out, depth + 1)
         except _TLError:
-            # Element layout unknown / misaligned: cannot size the rest of the
-            # vector safely, so stop here (keep what we already collected).
+            # The rest of the vector cannot be sized safely.
             break
     return True
 
 
-# --------------------------------------------------------------------------- #
-# Dispatcher
-# --------------------------------------------------------------------------- #
-
 def _dispatch(reader: _Reader, out: List[ParsedMtprotoMessage], depth: int) -> None:
-    """Read ONE boxed TL object (ctor + body) and append any items to *out*."""
+    """Read one boxed TL object (ctor + body) and append any items to *out*."""
     if depth > 16:
         raise _TLError("TL recursion too deep")
     ctor = reader.uint32()
@@ -1005,11 +872,9 @@ def _dispatch(reader: _Reader, out: List[ParsedMtprotoMessage], depth: int) -> N
 def _dispatch_object(
     reader: _Reader, ctor: int, out: List[ParsedMtprotoMessage], depth: int,
 ) -> None:
-    """Dispatch a boxed object whose constructor *ctor* was already read.
+    """Dispatch a boxed object whose *ctor* was already read; append items to *out*.
 
-    Recurses into the stable containers and the inbound update / getHistory
-    wrappers; surfaces User identities, inbound/outbound text, and service
-    records. A malformed branch raises :class:`_TLError`, swallowed upstream.
+    Raises :class:`_TLError` on a malformed branch or a non-message ctor.
     """
     if depth > 16:
         raise _TLError("TL recursion too deep")
@@ -1044,7 +909,7 @@ def _dispatch_object(
             out.append(msg)
         return
 
-    # --- Service / system records: tag and stop --------------------------- #
+    # Service / system records: tag and stop.
     if ctor == _MSGS_ACK:
         out.append(ParsedMtprotoMessage(kind="ack", body="", method="msgs_ack"))
         return
@@ -1054,20 +919,13 @@ def _dispatch_object(
         ))
         return
 
-    # --- Updates ---------------------------------------------------------- #
-    # NOTE: the inbound message-bearing update paths (updateShortMessage,
-    # updateShortChatMessage, updateShort and the updateNewMessage / message#
-    # families) are superseded by the schema walk in
-    # ``_inbound_messages_from_schema``; the hand-rolled emitters kept below
-    # (_parse_update_short_message, _parse_update_short_chat_message,
-    # _parse_message_object, _scan_message_text, _try_read_text) remain for tests
-    # and helper reuse but are no longer dispatched here.
+    # Inbound message-bearing updates and message# objects are emitted by
+    # _inbound_messages_from_schema; the hand emitters (_parse_update_short_*,
+    # _parse_message_object) are not dispatched here.
 
     # updates / updatesCombined: ... updates:Vector<Update>, users:Vector<User>,
-    # chats:Vector<Chat>, date:int, seq:int. The leading layout differs between
-    # the two and is flag-free, but the trailing Vectors of Chat are not safely
-    # skippable. We SCAN for the embedded Vector<Update> and Vector<User> by
-    # searching for vector constructors, parsing each tolerantly.
+    # chats:Vector<Chat>, date:int, seq:int. Chat vectors are not safely
+    # skippable, so scan for the embedded Vector constructors instead.
     if ctor in (_UPDATES, _UPDATES_COMBINED):
         _scan_for_vectors(reader, out, depth + 1)
         return
@@ -1084,15 +942,12 @@ def _dispatch_object(
             out.append(msg)
         return
 
-    # A full `message#` object encountered directly is now surfaced by the schema
-    # walk (_inbound_messages_from_schema), not the hand path.
-
     # A bare Vector (e.g. rpc_result = Vector<User>).
     if ctor == _VECTOR:
         _parse_typed_vector(reader, out, depth)
         return
 
-    # An unknown / non-message constructor: not an error, just nothing here.
+    # Unknown / non-message constructor: nothing to emit.
     raise _TLError(f"no message in constructor 0x{ctor:08x}")
 
 
@@ -1118,17 +973,15 @@ def _parse_container(
 def _inflate_gzip_packed(reader: _Reader, packed: bytes) -> tuple[bytes, bool]:
     """Bounded inflate of one gzip_packed body: ``(inflated, complete)``.
 
-    Decompresses at most ``min(_MAX_GZIP_INFLATE, budget left)`` bytes; a body
-    that would exceed it is a (possibly malicious) oversized/bomb payload and
-    is rejected rather than inflated unbounded into memory. *complete* is
-    False for a truncated gzip stream (*inflated* is then the partial output).
+    Inflates at most ``min(_MAX_GZIP_INFLATE, budget left)`` bytes and rejects
+    larger (bomb) bodies. *complete* is False for a truncated gzip stream.
     """
     budget = reader.budget
     limit = min(_MAX_GZIP_INFLATE, budget.inflate_left)
     if limit <= 0:
         raise _TLError("gzip_packed total inflate budget exhausted")
     try:
-        # Auto-detects the zlib *or* gzip header (Telegram sends real gzip).
+        # Auto-detects the zlib or gzip header (Telegram sends real gzip).
         inflated, complete = inflate_bounded_checked(packed, limit)
     except InflateLimitError:
         # The rejected attempt still inflated *limit* bytes: charge them, so a
@@ -1168,14 +1021,10 @@ def _parse_gzip_packed(
 def _parse_rpc_result(
     reader: _Reader, out: List[ParsedMtprotoMessage], depth: int,
 ) -> None:
-    """Parse the ``result:Object`` of an rpc_result, naming the method.
+    """Parse the ``result:Object`` of an rpc_result, named after its inner ctor.
 
-    The result's inner constructor names the rpc_result (e.g. a ``config`` ctor
-    → method "config"; a ``Vector<User>`` / ``messages.messages`` → the users /
-    messages method). We peek the inner ctor for the name, then dispatch it so
-    Users / Messages inside are surfaced. If the inner object produced no items
-    of its own we still emit a single kind="rpc" marker carrying the method, so
-    the TUI can show that an RPC reply arrived.
+    Falls back to a vector scan, then to a single kind="rpc" marker, so every
+    RPC reply shows up.
     """
     try:
         inner_ctor = reader.peek_uint32()
@@ -1190,16 +1039,12 @@ def _parse_rpc_result(
     except _TLError:
         pass
     if len(out) == before:
-        # The inner result type is unknown / not structurally decodable at this
-        # layer (e.g. a contacts/peerSettings container that embeds the users we
-        # care about in trailing Vectors). Tolerantly SCAN the result bytes for
-        # Vector<User>/Vector<Message> so identities are still surfaced.
+        # Unknown inner type (e.g. contacts/peerSettings with users in trailing
+        # Vectors): scan for Vector<User>/Vector<Message>.
         scan = reader.sub(result_start)
         _scan_for_vectors(scan, out, depth + 1)
         reader.seek(max(reader.pos, scan.pos))
     if len(out) == before:
-        # Still nothing: emit a single rpc marker with the method name (noting
-        # a truncated gzip_packed result that decoded to nothing usable).
         truncated = reader.budget.gzip_truncated > truncated_before
         out.append(ParsedMtprotoMessage(
             kind="rpc", body="", method=method,
@@ -1251,19 +1096,11 @@ def _next_vector_candidate(reader: _Reader, off: int, align_base: int) -> int:
 def _scan_for_vectors(
     reader: _Reader, out: List[ParsedMtprotoMessage], depth: int,
 ) -> None:
-    """Tolerantly surface Users / Messages from a wrapper with embedded Vectors.
+    """Scan the remaining bytes for ``Vector`` ctors and parse each as boxed objects.
 
-    The exact field layout of ``updates`` / ``messages.messages`` is
-    layer-versioned and carries Vectors of un-sizeable Chat objects, so rather
-    than decode the full structure we SCAN the remaining bytes for ``Vector``
-    constructors and try to parse each as a Vector of boxed objects (Users,
-    Messages, Updates). Conservative: an element that does not line up ends that
-    vector. This never raises (it is the wrapper's terminal handler).
-
-    Hardening: candidates are parsed through offset-bounded sub-readers (no
-    copy of the tail per candidate), the scan consumes its region (the reader
-    is left at its end so an enclosing vector / scan does not re-scan the same
-    bytes), and every candidate is charged to the per-message budget.
+    Used for layer-versioned wrappers with un-sizeable Chat vectors; never raises.
+    Leaves the reader at its end so an enclosing scan does not re-scan the same
+    bytes; every candidate is charged to the per-message budget.
     """
     base = reader.pos
     off = align_base = base
@@ -1291,9 +1128,7 @@ def _parse_region(
 ) -> None:
     """Dispatch one TL object in *reader*'s region, swallowing its failure.
 
-    Container children are parsed independently: one undecodable child must not
-    discard its siblings, so failures here are local (degrade to nothing for
-    that child) rather than propagated.
+    Failures stay local so one undecodable container child keeps its siblings.
     """
     try:
         _dispatch(reader, out, depth)
@@ -1308,25 +1143,16 @@ def _parse_into(tl_bytes: bytes, out: List[ParsedMtprotoMessage], depth: int) ->
     _parse_region(_Reader(bytes(tl_bytes)), out, depth)
 
 
-# --------------------------------------------------------------------------- #
-# Inbound text via the comprehensive schema decoder
-# --------------------------------------------------------------------------- #
-#
-# The hand path above emits the device-verified OUTBOUND sendMessage, users,
-# service and container records. Inbound chat text lives in flag-heavy,
-# layer-versioned ``message#`` constructors that the schema decoder
-# (:func:`~.tl.decoder.decode_tl_cached`) already decodes precisely, so we
-# delegate inbound extraction to it: walk the decoded tree and emit one text
-# item per CHAT-MESSAGE constructor (see :data:`_CHAT_MESSAGE_CTORS`).
+# Inbound chat text lives in flag-heavy, layer-versioned ``message#``
+# constructors, so it comes from the schema decoder
+# (:func:`~.tl.decoder.decode_tl_cached`) rather than the hand path above.
 
 #: Schema predicate names (as :class:`TlNode.name` exposes them, without the
-#: ``#id`` suffix) whose ``message:string`` is chat text. Many other
-#: constructors carry a ``message:string`` too — ``draftMessage`` (sent on
-#: every keystroke on another device and in every getDialogs reply),
+#: ``#id`` suffix) whose ``message:string`` is chat text. Others that carry a
+#: ``message:string`` must not surface as chat: ``draftMessage`` (sent on every
+#: keystroke on another device and in every getDialogs reply),
 #: ``updateServiceNotification``, ``sponsoredMessage``, ``botInlineMessage*``,
-#: ``messageActionCustomAction``, ``help.inviteText``, ``businessChatLink`` ...
-#: — and must NOT surface as chat messages. ``updateShortSentMessage`` carries
-#: no text; ``messageService`` / ``messageEmpty`` carry no ``message`` field.
+#: ``messageActionCustomAction``, ``help.inviteText``, ``businessChatLink``.
 _CHAT_MESSAGE_CTORS = frozenset({
     "message",
     "updateShortMessage",
@@ -1420,11 +1246,9 @@ def _inbound_messages_from_schema(tl_bytes: bytes) -> List[ParsedMtprotoMessage]
 def parse_mtproto_message(tl_bytes: bytes) -> List[ParsedMtprotoMessage]:
     """Parse a decrypted cloud MTProto record's TL payload into messages.
 
-    Tolerant by contract: returns ``[]`` when nothing readable is found and
-    NEVER raises. A single record may yield several messages (a container fans
-    out), so the result is a list. The hand path emits the OUTBOUND sendMessage,
-    users, service and container records; inbound chat text is surfaced by the
-    schema walk (:func:`_inbound_messages_from_schema`).
+    Never raises; returns ``[]`` when nothing is readable. The hand path emits
+    outbound sendMessage, users, service and container records; inbound text
+    comes from :func:`_inbound_messages_from_schema`.
     """
     if not tl_bytes:
         return []
@@ -1433,10 +1257,6 @@ def parse_mtproto_message(tl_bytes: bytes) -> List[ParsedMtprotoMessage]:
     out.extend(_inbound_messages_from_schema(tl_bytes))
     return out
 
-
-# --------------------------------------------------------------------------- #
-# E2E (secret-chat)
-# --------------------------------------------------------------------------- #
 
 # decryptedMessage media detection (see _decrypted_has_media).
 _DECRYPTED_MSG_L17 = 0x204D3878       # layer-17 form: no flags; media is a boxed object
@@ -1447,14 +1267,9 @@ _DECRYPTED_MSG_MEDIA_FLAG = 1 << 9    # decryptedMessage.media flag bit (layer 4
 def _decrypted_has_media(reader: _Reader, ctor: int, flags: int) -> bool:
     """Report whether a ``decryptedMessage`` carries non-empty media.
 
-    A ``decryptedMessage`` ALWAYS has trailing bytes after ``message`` (a media
-    object, or further layer-versioned fields), so ``reader.remaining > 0`` would
-    flag every text message as media. Instead:
-
-      * layer-17 (``0x204d3878``, no flags): ``media`` is the next boxed
-        ``DecryptedMessageMedia`` — peek it and treat
-        ``decryptedMessageMediaEmpty`` as no media;
-      * layer-45+/73+ (flag-bearing): ``media`` rides under flag bit 9.
+    Trailing bytes always follow ``message``, so ``remaining > 0`` is no signal.
+    Layer 17 (``0x204d3878``): peek the boxed media, empty ctor means none.
+    Layer 45+/73+: media rides under flag bit 9.
     """
     if ctor == _DECRYPTED_MSG_L17:
         try:
@@ -1506,7 +1321,7 @@ def secret_ctor_name(ctor: int) -> str:
 class SecretChatFields:
     """Every decoded field of one Secret-Chat plaintext, for display.
 
-    ``ctor_name`` names the INNER message (``decryptedMessage`` or
+    ``ctor_name`` names the inner message (``decryptedMessage`` or
     ``decryptedMessageService``); the envelope fields (``layer``, seq numbers,
     ``random_bytes_len``) stay 0 for a bare message without a layer wrapper.
     """
@@ -1557,7 +1372,7 @@ def _read_decrypted_message_fields(
         fields.flags = reader.uint32()   # flags:int (layer 45+/73+ only)
     fields.random_id = reader.int64()    # random_id:long (message identity)
     fields.ttl = reader.int32()          # ttl:int
-    fields.message = reader.tl_string()  # message:string (EXTRACT)
+    fields.message = reader.tl_string()  # message:string
     fields.has_media = _decrypted_has_media(reader, ctor, fields.flags)
     if fields.has_media:
         fields.media_ctor = _peek_media_ctor(reader)
@@ -1598,8 +1413,7 @@ def _read_secret_chat_fields(reader: _Reader) -> Optional[SecretChatFields]:
 def decode_secret_chat_fields(tl_bytes: bytes) -> Optional[SecretChatFields]:
     """Decode a Secret-Chat plaintext (layer-wrapped or bare) into its fields.
 
-    Tolerant by contract: returns ``None`` for empty, truncated or unknown input
-    and NEVER raises.
+    Never raises; returns ``None`` for empty, truncated or unknown input.
     """
     if not tl_bytes:
         return None
@@ -1625,12 +1439,10 @@ def _fields_to_parsed(fields: SecretChatFields) -> ParsedMtprotoMessage:
 
 
 def _parse_decrypted_message(reader: _Reader, ctor: int) -> Optional[ParsedMtprotoMessage]:
-    """decryptedMessage (ctor already consumed): reach ``message:string``.
+    """decryptedMessage (ctor consumed) → display record.
 
-    The layout's leading fields are layer-versioned: the layer-17 form
-    (``0x204d3878``) is ``random_id:long, ttl:int, message:string, …`` while the
-    layer-45+/73+ forms (``0x36b091de``/``0x91cc4674``) prepend a ``flags:int``.
-    Built on :func:`_read_decrypted_message_fields`.
+    Layer 17 (``0x204d3878``) is ``random_id:long, ttl:int, message:string, …``;
+    layer 45+/73+ (``0x36b091de``/``0x91cc4674``) prepends ``flags:int``.
     """
     fields = SecretChatFields()
     _read_decrypted_message_fields(reader, ctor, fields)
@@ -1642,7 +1454,7 @@ def parse_secret_chat_message(tl_bytes: bytes) -> List[ParsedMtprotoMessage]:
 
     Reaches ``message:string`` via ``decryptedMessageLayer`` →
     ``decryptedMessage`` (or the action of a ``decryptedMessageService``, as
-    kind ``"service"``). Tolerant: returns ``[]`` on any failure, never raises.
+    kind ``"service"``). Returns ``[]`` on any failure, never raises.
     """
     fields = decode_secret_chat_fields(tl_bytes)
     return [_fields_to_parsed(fields)] if fields is not None else []

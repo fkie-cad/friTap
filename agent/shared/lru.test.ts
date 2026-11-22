@@ -50,3 +50,36 @@ test("FifoSet evicts the oldest value without hit promotion", () => {
     assert.equal(set.has(1), false);
     assert.equal(set.size, 2);
 });
+
+test("LruMap.entries lists oldest first without promoting", () => {
+    const m = new LruMap<string, number>(3);
+    m.set("a", 1);
+    m.set("b", 2);
+    assert.deepEqual(m.entries(), [["a", 1], ["b", 2]]);
+    m.entries();
+    m.set("c", 3);
+    m.set("d", 4);      // evicts "a": entries() did not promote it
+    assert.deepEqual(m.entries().map(([k]) => k), ["b", "c", "d"]);
+});
+
+test("LruMap.peek and has read without promoting", () => {
+    const m = new LruMap<string, number>(2);
+    m.set("a", 1);
+    m.set("b", 2);
+    assert.equal(m.peek("a"), 1);
+    assert.equal(m.has("a"), true);
+    assert.equal(m.peek("zz"), undefined);
+    assert.equal(m.has("zz"), false);
+    m.set("c", 3);      // evicts "a": peek/has did not promote it
+    assert.deepEqual(m.entries().map(([k]) => k), ["b", "c"]);
+});
+
+test("LruMap.oldest returns the least recently used entry without promoting it", () => {
+    const m = new LruMap<string, number>(2);
+    assert.equal(m.oldest(), undefined);
+    m.set("a", 1);
+    m.set("b", 2);
+    assert.deepEqual(m.oldest(), ["a", 1]);
+    m.set("c", 3);      // evicts "a": oldest() did not promote it
+    assert.deepEqual(m.oldest(), ["b", 2]);
+});

@@ -7,8 +7,8 @@ scapy
 watchdog
 psutil
 rich>=13.0.0
-textual>=0.80.0
-tlsLibHunter
+textual>=0.86.0
+tlsLibHunter>=0.2.9
 platformdirs>=3.0
 pydantic>=2.0
 h11

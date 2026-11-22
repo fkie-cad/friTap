@@ -3,11 +3,8 @@
 """
 friTap — Frida-based encrypted-traffic interception and key extraction.
 
-Public API surface (covered by SemVer guarantees from friTap 2.0.0 onward).
-The full stability policy (promotion rules, deprecation cycle, MAJOR/MINOR/PATCH
-semantics) lives in `RELEASING.md`; the listing below is a quick reference and
-must stay in sync with that document and with `__all__` below.
-
+Public API surface (SemVer-stable from 2.0.0). The stability policy lives in
+`RELEASING.md`; the list below must stay in sync with it and with `__all__`.
 
     - Builder API: FriTap, FriTapSession
     - Configuration: FriTapConfig, DeviceConfig, OutputConfig, HookingConfig
@@ -29,64 +26,35 @@ must stay in sync with that document and with `__all__` below.
       ProtobufField, ProtobufProcessor
     - Version: __version__
 
-The CLI (`fritap`) is the *primary* SemVer-stable contract. The Python API
-listed above is also stable: removing or breaking anything in the stable
-tier requires a friTap MAJOR bump; adding to it is MINOR. See
-RELEASING.md for the full policy.
+The CLI (`fritap`) is the primary SemVer-stable contract; the Python API above
+is stable too (removal needs a MAJOR bump, additions are MINOR). See RELEASING.md.
 
-Symbols imported into this module but NOT in __all__ (`CoreController`,
-`Session`, `SessionState`, `MessagePipeline`, `create_default_pipeline`)
-are internal orchestration. They remain importable for backward
-compatibility, but they are not covered by SemVer guarantees — pin a
-specific friTap version if you depend on them.
-
-Deprecation: `SSL_Logger` is retained for backward compatibility and will
-be removed in friTap 3.0. New code should use the Builder API (`FriTap`)
-or `CoreController`.
+Symbols imported here but not in __all__ (`CoreController`, `Session`,
+`SessionState`, `MessagePipeline`, `create_default_pipeline`) are internal
+orchestration and not covered by SemVer. `SSL_Logger` is deprecated and will be
+removed in friTap 3.0; use `FriTap` or `CoreController`.
 
 Usage:
-    # Legacy API (deprecated, will be removed in friTap 3.0)
-    from friTap import SSL_Logger
-
-    # Builder API
     from friTap import FriTap
     session = FriTap("com.example.app").mobile().keylog("keys.log").start()
-
-    # New core API (recommended)
-    from friTap import CoreController
-    from friTap.config import FriTapConfig
-    ctrl = CoreController()
-    session = ctrl.create_session(FriTapConfig(target="com.example.app"))
 """
 
 from typing import TYPE_CHECKING
 
-# Version (read from .about, the single source of truth — see setup.py:25).
-# Kept EAGER: .about is pure-Python (no third-party deps), so ``import friTap``
-# and ``friTap.__version__`` stay cheap and dependency-free.
+# Eager: .about is pure Python, so ``import friTap`` / ``__version__`` stay cheap.
 from .about import __version__
 
-# --- Lazy public API (PEP 562 module __getattr__) -----------------------------
-# Every other public symbol is imported ON FIRST ACCESS instead of at package
-# import time. This keeps ``import friTap`` — and importing any leaf submodule
-# such as ``friTap.schemas`` / ``friTap.constants`` / ``friTap.connection_index``
-# — free of the heavy runtime stack: frida (pulled by .friTap → ssl_logger) and
-# the rich / textual / scapy / crypto dependencies that the flow, analysis and
-# offline modules drag in. Tooling that only needs the schema or constants
-# modules (e.g. ``dev/generate_agent_types.py``, whose CI job installs *only*
-# pydantic) therefore imports cleanly without the full dependency set.
-#
-# Backward compatible: ``from friTap import SSL_Logger`` / ``FriTap`` /
-# ``CoreController`` / ``Session`` … all still work — resolved on demand by
-# ``__getattr__`` below and cached, so there is no per-access overhead after the
-# first lookup. ``__all__`` (unchanged) remains the stable public surface.
+# Lazy public API (PEP 562): every other symbol is imported on first access, so
+# ``import friTap`` and leaf submodules (``friTap.schemas``, ``friTap.constants``)
+# do not pull in frida, rich, textual or scapy. ``dev/generate_agent_types.py``
+# runs in a CI job that installs only pydantic and relies on this.
 _LAZY_EXPORTS = {
-    # Legacy API (deprecated, removed in friTap 3.0) — the only frida-coupled export
+    # Deprecated; the only frida-coupled export
     "SSL_Logger": ".friTap",
     # Builder API
     "FriTap": ".api",
     "FriTapSession": ".api",
-    # Core API (Phase 1) — importable but NOT in __all__; see module docstring
+    # Internal; importable but not in __all__
     "CoreController": ".core",
     "Session": ".session",
     "SessionState": ".session",
@@ -108,7 +76,7 @@ _LAZY_EXPORTS = {
     "DetachEvent": ".events",
     "FlowEvent": ".events",
     "MessageEvent": ".events",
-    # Pipeline — importable but NOT in __all__; see module docstring
+    # Internal; importable but not in __all__
     "MessagePipeline": ".pipeline",
     "create_default_pipeline": ".pipeline",
     # Flow models + replay / high-level overview
@@ -147,9 +115,8 @@ _LAZY_EXPORTS = {
     "list_analyzers": ".commands.analyze",
     "list_analyzers_detailed": ".commands.analyze",
     "list_report_formats": ".commands.analyze",
-    # Offline pcap -> tap reconstruction. ``pcap_to_tap`` is taken from the
-    # submodule directly (not the offline package) so it neither shadows nor is
-    # shadowed by the ``friTap.offline.pcap_to_tap`` module attribute.
+    # ``pcap_to_tap`` comes from the submodule so it does not clash with the
+    # ``friTap.offline.pcap_to_tap`` module attribute.
     "convert_pcap_to_tap": ".offline",
     "ConvertResult": ".offline",
     "NoDecryptionKeysError": ".offline",

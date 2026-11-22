@@ -1,11 +1,8 @@
-"""
-Per-call policy for agent API tools.
+"""Per-call policy for agent API tools.
 
-Adapters build one :class:`ToolContext` from their command line (``--root``,
-``--allow-capture``, ``--allow-target``, ``--allow-secrets``, ``--allow-values``)
-and pass it to
-every :func:`friTap.agent_api.call`. Handlers read policy from it instead of
-from globals, so the same tool behaves per adapter.
+Adapters build one :class:`ToolContext` from their command line (``--root``, ``--allow-capture``,
+``--allow-target``, ``--allow-secrets``, ``--allow-values``) and pass it to every
+:func:`friTap.agent_api.call`. Handlers read policy from it, not from globals.
 """
 
 from __future__ import annotations
@@ -21,16 +18,10 @@ DEFAULT_MAX_RESPONSE_BYTES = 65536
 class ToolContext:
     """Sandbox and permission settings for one tool call.
 
-    Attributes:
-        root: Sandbox root; tap paths and exports must resolve inside it.
-        allow_capture: Whether capture tools may start processes.
-        allow_targets: fnmatch patterns of allowed capture targets
-            (empty = every target allowed).
-        allow_secrets: Whether key material (keylog export) may be produced.
-        allow_values: Whether ``show_values=true`` may return unredacted
-            finding values. True in-process and for ``fritap q`` (the local
-            user owns the data); MCP/REST servers default to False.
-        max_response_bytes: Cap on the serialized JSON response size.
+    ``root``: tap paths and exports must resolve inside it. ``allow_targets``: fnmatch patterns
+    (empty = every target). ``allow_secrets``: key material (keylog export) may be produced.
+    ``allow_values``: ``show_values=true`` may return unredacted finding values; True in-process and
+    for ``fritap q`` (the local user owns the data), False by default for MCP/REST servers.
     """
 
     root: Path = field(default_factory=Path.cwd)

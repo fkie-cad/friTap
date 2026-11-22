@@ -1,6 +1,7 @@
 import { get_hex_string_from_byte_array, readAddresses } from "../../shared/shared_functions.js";
 import { sendKeylog } from "../../shared/shared_structures.js";
 import { devlog } from "../../util/log.js";
+import { secretLenOrFallback } from "../../shared/keylog_length.js";
 import { pcap_enabled } from "../../fritap_agent.js";
 
 
@@ -72,8 +73,8 @@ export class Flutter {
     }
 
 
-    dumpKeys(labelPtr: NativePointer, sslStructPtr: NativePointer, keyPtr: NativePointer): void {
-        const KEY_LENGTH = 32; // Assuming key length is 32 bytes
+    dumpKeys(labelPtr: NativePointer, sslStructPtr: NativePointer, keyPtr: NativePointer, keyLen?: number): void {
+        const KEY_LENGTH = 32; // Fallback when the hook passes no usable length (SHA-384 suites need 48)
 
         let labelStr = '';
         let client_random = '';
@@ -95,7 +96,7 @@ export class Flutter {
         }
 
         if (!keyPtr.isNull()) {
-            const keyData = keyPtr.readByteArray(KEY_LENGTH); // Read the key data (KEY_LENGTH bytes)
+            const keyData = keyPtr.readByteArray(secretLenOrFallback(keyLen, labelStr, keyPtr, KEY_LENGTH));
             
             // Convert the byte array to a string of  hex values
             const hexKey = get_hex_string_from_byte_array(keyData);
@@ -109,14 +110,16 @@ export class Flutter {
         sendKeylog(labelStr+" "+client_random+" "+secret_key, sslStructPtr, this.module_name);
     }
 
+    // Plaintext is installed by the supplementary "BoringSSL plaintext (Flutter)"
+    // row (chromium_plaintext_execute -> resolveBoringSslPlaintext). Not called
+    // from here: importing chromium_plaintext would put this base class in an
+    // import cycle with its Flutter_iOS/Flutter_Android subclasses.
     install_plaintext_read_hook(){
         if (!pcap_enabled) return;
-        // TBD
     }
 
     install_plaintext_write_hook(){
         if (!pcap_enabled) return;
-        // TBD
     }
 
     install_key_extraction_hook(){

@@ -75,13 +75,8 @@ def test_offline_symbols_share_identity_with_offline_package():
 
 
 def test_replay_symbols_reexported_for_back_compat():
-    """``friTap.flow`` is the canonical home; ``friTap.tui.replay_controller``
-    re-exports the same objects for back-compat."""
+    """``friTap.flow`` is the canonical home; the top-level package re-exports it."""
     import friTap.flow as flow
-    shim = importlib.import_module("friTap.tui.replay_controller")
 
-    assert flow.ReplayController is shim.ReplayController
-    assert flow.IFlowSource is shim.IFlowSource
-    # And the top-level package exposes the same object too.
     assert friTap.ReplayController is flow.ReplayController
     assert friTap.IFlowSource is flow.IFlowSource

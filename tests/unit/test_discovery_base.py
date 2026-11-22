@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 
+import platformdirs
+
 from friTap import discovery_base
 
 logger = logging.getLogger("test.discovery_base")
@@ -35,7 +37,7 @@ def test_resolve_dropin_dir_uses_legacy_when_only_legacy_exists(monkeypatch, tmp
     legacy_home = tmp_path / "home"
     legacy_dir = legacy_home / ".fritap" / "analyzers"
     legacy_dir.mkdir(parents=True)
-    monkeypatch.setattr(discovery_base.platformdirs, "user_data_dir",
+    monkeypatch.setattr(platformdirs, "user_data_dir",
                         lambda app: str(native_root))
     monkeypatch.setattr(discovery_base.Path, "home", staticmethod(lambda: legacy_home))
 
@@ -46,7 +48,7 @@ def test_resolve_dropin_dir_uses_legacy_when_only_legacy_exists(monkeypatch, tmp
 def test_resolve_dropin_dir_creates_native_when_no_legacy(monkeypatch, tmp_path):
     native_root = tmp_path / "native"
     legacy_home = tmp_path / "home"  # no .fritap created
-    monkeypatch.setattr(discovery_base.platformdirs, "user_data_dir",
+    monkeypatch.setattr(platformdirs, "user_data_dir",
                         lambda app: str(native_root))
     monkeypatch.setattr(discovery_base.Path, "home", staticmethod(lambda: legacy_home))
 
@@ -54,6 +56,18 @@ def test_resolve_dropin_dir_creates_native_when_no_legacy(monkeypatch, tmp_path)
     assert resolved == native_root / "offline_decryptors"
     assert resolved.is_dir()  # created
 
+
+
+def test_resolve_dropin_dir_create_false_does_not_mkdir(monkeypatch, tmp_path):
+    native_root = tmp_path / "native"
+    legacy_home = tmp_path / "home"
+    monkeypatch.setattr(platformdirs, "user_data_dir",
+                        lambda app: str(native_root))
+    monkeypatch.setattr(discovery_base.Path, "home", staticmethod(lambda: legacy_home))
+
+    resolved = discovery_base.resolve_dropin_dir("parsers", logger, create=False)
+    assert resolved == native_root / "parsers"
+    assert not resolved.exists()
 
 # --- get_entry_points ----------------------------------------------------- #
 
@@ -89,3 +103,48 @@ def test_iter_dropin_modules_bad_file_is_skipped_not_raised(tmp_path, caplog):
     # The good module still loads; the broken one is logged and skipped.
     assert [p.name for p, _ in results] == ["ok.py"]
     assert any("widget" in r.message and "broken.py" in r.message for r in caplog.records)
+
+
+def test_iter_dropin_modules_on_error_is_called_for_each_bad_file(tmp_path, caplog):
+    (tmp_path / "ok.py").write_text("OK = True\n")
+    (tmp_path / "a_syntax.py").write_text("this is not valid python :::\n")
+    (tmp_path / "b_raises.py").write_text("raise ValueError('kaboom')\n")
+    failures = []
+
+    with caplog.at_level(logging.ERROR):
+        results = list(discovery_base.iter_dropin_modules(
+            tmp_path, "t_", logger, label="widget",
+            on_error=lambda path, error: failures.append((path, error))))
+
+    assert [p.name for p, _ in results] == ["ok.py"]
+    assert [(p.name, type(e)) for p, e in failures] == [
+        ("a_syntax.py", SyntaxError), ("b_raises.py", ValueError)]
+    assert str(failures[1][1]) == "kaboom"
+    # The existing log line is kept: on_error is called in addition to it.
+    assert any("widget" in r.message and "b_raises.py" in r.message
+               for r in caplog.records)
+
+
+def test_iter_dropin_modules_on_error_not_called_for_good_or_skipped_files(tmp_path):
+    (tmp_path / "good.py").write_text("VALUE = 1\n")
+    (tmp_path / "_private.py").write_text("raise RuntimeError('skipped')\n")
+    (tmp_path / "notes.txt").write_text("ignore me\n")
+    failures = []
+
+    results = list(discovery_base.iter_dropin_modules(
+        tmp_path, "t_", logger, on_error=lambda path, error: failures.append(path)))
+
+    assert [p.name for p, _ in results] == ["good.py"]
+    assert failures == []
+
+
+def test_import_without_platformdirs():
+    import subprocess
+    import sys
+    code = (
+        "import sys; sys.modules['platformdirs'] = None\n"
+        "import friTap.discovery_base\n"
+        "import friTap.parsers.registry\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr

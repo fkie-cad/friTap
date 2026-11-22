@@ -1,16 +1,12 @@
-"""
-Fold the ``fritap.events/1`` JSONL stream of a capture into a status summary.
+"""Fold the ``fritap.events/1`` JSONL stream of a capture into a status summary.
 
-:class:`StatusTracker` is pure (fed decoded record dicts, no I/O) and only
-keeps counters and short strings: plaintext (``data`` records) and key
-material (``keylog`` records) are counted, never stored.
+:class:`StatusTracker` is pure (fed decoded record dicts, no I/O) and keeps only counters and short
+strings: plaintext (``data``) and key material (``keylog``) are counted, never stored.
 
-Hooked is not in use: under ``--protocol auto`` (the default) friTap installs
-every protocol's hooks speculatively, so e.g. the RC4 key hooks attach to any
-libssl/libcrypto that exports ``RC4_set_key``. A protocol is only reported as
-``active`` (and listed in ``protocols_in_use``) once it produced keys,
-plaintext or session/message records; hooked-but-silent protocols are
-``idle`` (listed in ``idle_hooks``).
+Hooked is not in use: under ``--protocol auto`` friTap installs every protocol's hooks speculatively
+(e.g. the RC4 key hooks attach to any libssl exporting ``RC4_set_key``). A protocol is ``active``
+(and in ``protocols_in_use``) only once it produced keys, plaintext or session/message records;
+hooked-but-silent ones are ``idle`` (in ``idle_hooks``).
 """
 
 from __future__ import annotations
@@ -108,8 +104,6 @@ class StatusTracker:
             **{kind: self._on_activity for kind in ACTIVITY_RECORD_TYPES},
         }
 
-    # -- feeding -------------------------------------------------------------
-
     def feed(self, record: dict) -> None:
         """Account one decoded JSONL record (unknown types only count)."""
         if not isinstance(record, dict):
@@ -131,8 +125,6 @@ class StatusTracker:
             self.error = {"error_type": "ProcessExited",
                           "message": f"friTap exited with code {returncode} without stream_end"}
         self._settle()
-
-    # -- record handlers -----------------------------------------------------
 
     def _stats(self, record: dict) -> ProtocolStats:
         return self.protocols.setdefault(str(record.get("protocol") or "unknown"), ProtocolStats())
@@ -184,17 +176,12 @@ class StatusTracker:
             self.exit_code is None and self.error is None)
         self.state = STOPPED if clean else FAILED
 
-    # -- reporting -----------------------------------------------------------
-
     def ended_by(self, stop_requested: bool = False) -> Optional[str]:
         """Why the session ended, or ``None`` while it is still active.
 
-        ``error`` for a failed run; ``stopped`` when ``stop_capture`` ended it.
-        Otherwise the ``ended_by`` the friTap child reported in ``stream_end``
-        (it knows whether the duration timer, a signal or the target ended
-        the run); for a child that reported none it is inferred:
-        ``target_exited`` for exit code 3 (target detached/exited -- a normal
-        end, not a failure), else ``duration``.
+        ``error`` for a failed run, ``stopped`` when ``stop_capture`` ended it, else the ``ended_by``
+        the child reported in ``stream_end``. With none reported it is inferred: ``target_exited``
+        for exit code 3 (target detached/exited, a normal end), else ``duration``.
         """
         if self.state not in TERMINAL_STATES:
             return None
@@ -244,8 +231,7 @@ class StatusTracker:
 
 
 def _data_len(record: dict) -> int:
-    """Plaintext bytes of a ``data`` record: ``data_len`` if the reader kept only
-    the length, else half the hex ``data`` string."""
+    """Plaintext bytes of a ``data`` record: ``data_len`` if only the length was kept, else half the hex string."""
     length = record.get("data_len")
     if isinstance(length, int) and not isinstance(length, bool) and length >= 0:
         return length

@@ -133,8 +133,16 @@ forked by the app: use `--enable_spawn_gating` for those.
     such child. `fork()`+`exec()` children that keep their descriptors (git,
     bash, `close_fds=False`) and `posix_spawn()` children are followed at once.
 
-#### `--no-follow-exec`
-friTap follows every process it instruments across `exec()` by default: the
+#### `--follow-exec` / `--no-follow-exec`
+Exec-following is tri-state. Default (auto): **off on every platform**. Child
+gating makes Frida install its fork hook, and Frida 17.24.3-17.27.x crashes or
+parks the fork child of the target (Android apps forking via `ProcessBuilder`;
+desktop Firefox on Linux crashed 4 of 6 runs); friTap logs one INFO line when it
+applies this default. `--follow-exec` opts in (friTap then warns about the Frida
+bug, as it does for `--enable_child_gating`); `--no-follow-exec` forces it off
+explicitly.
+
+With `--follow-exec`, friTap follows every process it instruments across `exec()`: the
 spawned (`-s`) or attached target, and each child instrumented through
 `--enable_child_gating`. A launcher that `exec()`s the real binary (e.g.
 Homebrew's `/opt/homebrew/bin/python3`), or a running process that `exec()`s
@@ -147,14 +155,14 @@ instrument are always resumed right away. Where a session cannot gate, friTap
 re-attaches to the new image after Frida's `process-replaced` detach (its first
 instants then run uninstrumented).
 
-`--no-follow-exec` turns this off: friTap captures only the original image, and
+Without `--follow-exec` (the default, or `--no-follow-exec`) friTap captures only the original image, and
 when the target `exec()`s the capture ends as "target detached" (exit 3).
 `--enable_child_gating` still instruments children when given explicitly; their
-`exec()`'d images are then resumed uninstrumented. Python API: `.follow_exec(False)`.
+`exec()`'d images are then resumed uninstrumented. Python API: `.follow_exec(True)` / `.follow_exec(False)`; unset means auto (off).
 
 ```bash
-fritap -s --no-follow-exec -k keys.log ./fork_heavy_server
-fritap --no-follow-exec -k keys.log 4242      # attach mode as well
+fritap -s --follow-exec -k keys.log /opt/homebrew/bin/python3 script.py   # opt in
+fritap --follow-exec -k keys.log 4242      # attach mode as well
 ```
 
 #### `-ed, --enable_default_fd`
@@ -1459,6 +1467,8 @@ Live-capture exit codes (constants in `friTap/exit_codes.py`):
 | `1` | `EXIT_RUNTIME_ERROR` | Runtime error: attach/spawn failure, agent script load failure, backend error |
 | `2` | `EXIT_USAGE_ERROR` | Usage error: invalid arguments/configuration (argparse) |
 | `3` | `EXIT_TARGET_DETACHED` | The target process died or detached before friTap was asked to stop (including a target that simply exited on its own) |
+| `130` | `EXIT_FORCED_SIGINT` | Forced quit after repeated Ctrl+C/SIGINT (see [Stopping a capture](#stopping-a-capture)); the outputs may be incomplete |
+| `143` | `EXIT_FORCED_SIGTERM` | Forced quit after repeated SIGTERM; the outputs may be incomplete |
 
 A termination signal other than SIGINT (e.g. SIGTERM) exits with `128 + signum`.
 
@@ -1467,9 +1477,37 @@ error (`1`) or a non-SIGINT signal (`128 + signum`) happens first is the exit
 code; later events never override it, and a clean stop (`0`) never overrides
 an earlier failure. So Ctrl+C or SIGTERM after the target already detached
 still exits `3`, and an error reported after the target died stays `3`.
+This includes a forced quit (below): it exits `130`/`143` only when no
+earlier non-zero status was set.
 There is no `--max-flows`: in a plain CLI capture friTap does not track flow
 completion (flow events exist only with `--scan`), so a flow count could only
 stop the capture in the middle of the Nth connection. Use `--duration` instead.
+
+#### Stopping a capture
+
+- **1st Ctrl+C** (or SIGTERM): graceful stop. friTap detaches, stops the
+  capture and writes every output (pcap, keylog, JSON, `.tap`, manifest). With
+  `-f` on Android this includes pulling the device capture, which can take a
+  while on a slow device.
+- **2nd Ctrl+C**: the teardown keeps going. friTap prints
+  `Teardown in progress ... Press Ctrl+C again to force quit.` and starts a
+  60 s timer.
+- **3rd Ctrl+C**, or the teardown still running 60 s after the 2nd: forced
+  quit with `130` (`143` for SIGTERM), or with the earlier status if one was
+  already set (e.g. `3`: the first non-zero status wins). friTap stops a
+  running `adb pull`, kills its own device tcpdump, AppTap session and
+  background `adb` helpers, and closes the output files, but the outputs may
+  be incomplete. If the device capture was not pulled completely it stays on
+  the device, and friTap logs the command that recovers it
+  (`full capture: the device capture was kept at ...; recover it with: adb -s <serial> pull ...`).
+- While the device capture is still being pulled and the local copy keeps
+  growing, the 60 s timer waits for the pull instead of forcing the exit (the
+  pull has its own size-scaled timeout of at most 600 s). A 3rd Ctrl+C still
+  forces the exit at once.
+
+friTap's own `adb` helper processes run in their own session on Linux/macOS,
+so the Ctrl+C the terminal sends to the whole foreground process group does not
+kill an `adb pull` or a tcpdump stop that is still in progress.
 
 ---
 
@@ -1477,7 +1515,7 @@ stop the capture in the middle of the Nth connection. Use `--duration` instead.
 
 | Mode | Codes |
 |------|-------|
-| Live capture | `0` success (incl. `--duration` elapsed) · `1` runtime error · `2` invalid arguments/configuration · `3` target died/detached unexpectedly · `128+signum` non-SIGINT signal (see [Unattended / automation](#unattended--automation)) |
+| Live capture | `0` success (incl. `--duration` elapsed) · `1` runtime error · `2` invalid arguments/configuration · `3` target died/detached unexpectedly · `128+signum` non-SIGINT signal · `130`/`143` forced quit after repeated Ctrl+C/SIGTERM (see [Unattended / automation](#unattended--automation)) |
 | `--probe` | `0` probe completed (agent loaded, no hooks installed) · `2` the loaded agent bundle does not implement probe mode |
 | `analyze` / `--analyze` | `0` success · `2` finding at/above gate severity (medium) · `1` usage/IO error |
 | `devices` / `apps` | `0` success · `1` Frida error (device not found, server not running, …) · `2` invalid arguments |

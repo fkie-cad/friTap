@@ -343,8 +343,10 @@ def test_two_sequential_instruments_both_complete_handshake():
         assert target in (first, second)
     assert [t is first for t, _, _ in backend.posts[:2]] == [True, True]
     assert [t is second for t, _, _ in backend.posts[2:]] == [True, True]
-    # self.script has moved on, but the first script was still served.
-    assert obj.script is second
+    # self.script stays the main (first) target's agent; the second process's
+    # agent is a child agent — and both were served.
+    assert obj.script is first
+    assert [child.script for child in obj._child_agents] == [second]
 
 
 def test_third_instrument_also_completes_handshake():

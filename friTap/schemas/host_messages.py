@@ -1,12 +1,6 @@
 #!/usr/bin/env python3
 
-"""
-Pydantic models for host -> agent configuration messages.
-
-These represent the structured data sent from the Python host
-to the injected TypeScript/JavaScript agent during the handshake
-and runtime configuration phases.
-"""
+"""Pydantic models for host -> agent configuration (handshake and runtime)."""
 
 from __future__ import annotations
 

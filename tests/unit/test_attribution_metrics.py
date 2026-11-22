@@ -11,6 +11,7 @@ import pytest
 from friTap.flow.models import Flow, FlowChunk, FlowState
 from friTap.flow.tap_writer import TapWriter
 from friTap.parsers.base import ParseResult
+from tests.unit._tui_flow_helpers import write_tap
 
 _SCRIPT = os.path.normpath(
     os.path.join(os.path.dirname(__file__), "..", "..", "dev", "attribution_metrics.py")
@@ -275,12 +276,7 @@ def _tap_flow(flow_id, url, host, sdk=None):
 
 
 def _write_tap(path, flows):
-    writer = TapWriter()
-    writer.open(str(path), target="test")
-    for flow in flows:
-        writer.write_flow(flow)
-    writer.close()
-    return str(path)
+    return str(write_tap(path, flows))
 
 
 def test_end_to_end_on_written_tap(tmp_path, capsys):
@@ -714,3 +710,85 @@ def test_request_contexts_end_to_end_on_written_tap(tmp_path):
     assert report["request_contexts"]["records"] == 2
     assert report["request_contexts"]["cache_bucket"] == 1
     assert report["request_contexts"]["unmatched"] == 1
+
+
+# --------------------------------------------------------------------------- #
+# Per-protocol groups + per-stream attribution
+# --------------------------------------------------------------------------- #
+
+def _report(reqs, flows):
+    return am.build_report(am.GroundTruth(requests={r.req_id: r for r in reqs}), flows, SDK_MAP)
+
+
+class TestProtocolGroups:
+    def test_gt_protocol_is_normalised_to_wire_labels(self):
+        reqs = [_gt("a", done=True, protocol="h3"),
+                _gt("b", sdk="beta", url=BETA_URL, done=True, protocol="HTTP/2")]
+        flows = [_wire(ALPHA_URL, sdk_name="FritapAlpha", protocol="h3"),
+                 _wire(BETA_URL, sdk_name="FritapAlpha")]
+        by_protocol = _report(reqs, flows)["by_protocol"]
+        assert sorted(by_protocol) == ["h2", "h3"]
+        assert by_protocol["h3"]["pct_correct"] == 100.0
+        assert by_protocol["h2"]["pct_wrong"] == 100.0
+
+    def test_missing_gt_protocol_falls_back_to_agreeing_wire_protocol(self):
+        flows = [_wire(ALPHA_URL, protocol="h2")]
+        matched = am.match_requests([_gt("a")], flows, SDK_MAP)
+        assert am.request_protocol(matched[0]) == "h2"
+
+    def test_missing_or_conflicting_protocol_is_unknown(self):
+        flows = [_wire(ALPHA_URL, protocol="h2"), _wire(ALPHA_URL, conn="c2", protocol="h3")]
+        matched = am.match_requests([_gt("a"), _gt("b", url=BETA_URL)], flows, SDK_MAP)
+        assert [am.request_protocol(m) for m in matched] == ["?", "?"]
+
+    def test_protocol_rows_follow_transport_rows(self):
+        reqs = [_gt("a", done=True, protocol="h3")]
+        rows = [line.split()[0] for line in am.format_table(_report(reqs, [_wire()]))[2:]]
+        assert rows == ["overall", "transport:cronet-embedded", "protocol:h3", "sdk:alpha"]
+
+
+class TestStreamAttribution:
+    def test_counts_only_decoded_per_request_flows(self):
+        flows = [_wire(ALPHA_URL, sdk_name="FritapAlpha"), _wire(BETA_URL),
+                 am.WireFlow(host="httpbingo.org")]
+        assert am.stream_attribution(flows) == {
+            "streams": 2, "attributed": 1, "pct_attributed": 50.0}
+
+    def test_no_streams_has_no_percentage(self):
+        assert am.stream_attribution([])["pct_attributed"] is None
+
+    def test_summary_line(self):
+        lines = am.format_extras(_report([_gt()], [_wire(sdk_name="FritapAlpha"), _wire(BETA_URL)]))
+        assert "streams (per-request flows): 1 of 2 attributed (50.0%)" in lines
+
+
+class TestStreamIds:
+    def _streamed(self, stream_id, url=ALPHA_URL, conn="c1"):
+        flow = _wire(url, conn=conn, sdk_name="FritapAlpha")
+        flow.stream_id = stream_id
+        return flow
+
+    def test_wire_flow_takes_flow_stream_id(self):
+        from types import SimpleNamespace
+        flow = SimpleNamespace(flow_id="f", connection_id="c", transport="quic",
+                               request=None, stream_id=8, layers=[])
+        assert am.to_wire_flow(flow).stream_id == 8
+
+    def test_stream_breakdown_counts_stream_ids_only_when_present(self):
+        assert "with_stream_id" not in am.stream_attribution([_wire()])
+        flows = [self._streamed(0), self._streamed(None, url=BETA_URL)]
+        assert am.stream_attribution(flows)["with_stream_id"] == 1
+
+    def test_fields_report_counts_stream_ids(self):
+        assert am.fields_report([self._streamed(4), _wire()])["stream_id"] == 1
+
+    def test_mixed_connection_detail_lists_stream_ids(self):
+        flows = [self._streamed(0, conn="shared"),
+                 self._streamed(4, url=BETA_URL, conn="shared")]
+        reqs = [_gt("a"), _gt("b", sdk="beta", url=BETA_URL)]
+        mixed = am.mixed_connections(am.match_requests(reqs, flows, SDK_MAP), SDK_MAP)
+        assert mixed["details"][0]["stream_ids"] == [0, 4]
+
+    def test_summary_line_mentions_stream_ids(self):
+        lines = am.format_extras(_report([_gt()], [self._streamed(0)]))
+        assert any(line.endswith(", 1 with stream id") for line in lines)

@@ -91,12 +91,14 @@ def test_tls_metadata_calibration(tmp_path):
     C = ("10.0.0.1", 50000)
     S = ("93.184.216.34", 443)
     ch = TLS(msg=[TLSClientHello(
+        gmt_unix_time=0x01020304, random_bytes=bytes(range(28)),
         ciphers=[0x1301, 0xc02f],
         ext=[
             TLS_Ext_ServerName(servernames=[ServerName(servername=b"example.com")]),
             TLS_Ext_ALPN(protocols=[ProtocolName(protocol=b"h2")]),
         ])])
     sh = TLS(msg=[TLSServerHello(
+        gmt_unix_time=0x0A0B0C0D, random_bytes=b"\xee" * 28,
         cipher=0x1301,
         ext=[
             TLS_Ext_SupportedVersion_SH(version=0x0304),
@@ -114,6 +116,7 @@ def test_tls_metadata_calibration(tmp_path):
         "cipher": "TLS_AES_128_GCM_SHA256",
         "version": "TLS 1.3",
         "alpn": "h2",
+        "client_random": "01020304" + bytes(range(28)).hex(),
     }}
 
 
@@ -259,10 +262,11 @@ def _sha(data: bytes) -> str:
 # a non-default value (a real behaviour change); left at its default it must
 # not perturb the recorded "fields" digest (the ground truth is frozen).
 _FIELDS_ADDED_AFTER_RECORDING = frozenset({
-    "quic_payload", "library",
+    "quic_payload", "library", "quic_midstream", "stream_offset", "fin",
     # Option 5 (synthetic endpoints for fd-less connections).
     "endpoints_synthetic", "observed_src_addr", "observed_src_port",
     "observed_dst_addr", "observed_dst_port", "observed_ss_family",
+    "received_at",
 })
 
 

@@ -1,17 +1,10 @@
 #!/usr/bin/env python3
 
-"""
-GDB instrumentation backend for friTap.
+"""GDB instrumentation backend: breakpoint-based hooking for environments
+where Frida cannot run.
 
-Uses GDB's Python API for breakpoint-based hooking. Useful for
-debugging, CI/CD testing, or environments where Frida can't run.
-
-The ``gdb`` Python module is available only inside GDB's embedded
-Python interpreter. Run friTap from within GDB::
-
-    gdb -x your_script.py -p <pid>
-
-Or use ``gdb -batch -x`` for non-interactive extraction.
+The ``gdb`` module exists only inside GDB's embedded Python, so run friTap
+from within GDB (``gdb -x your_script.py -p <pid>``, or ``gdb -batch -x``).
 """
 
 from __future__ import annotations
@@ -28,7 +21,7 @@ from .base import (
 )
 from .debugger_script import DebuggerScript
 
-# Optional import — gdb module only available inside GDB's Python
+# gdb exists only inside GDB's Python.
 try:
     import gdb as _gdb_module
 except ImportError:
@@ -50,11 +43,7 @@ def _ensure_gdb() -> None:
 
 
 class GDBScript(DebuggerScript):
-    """Frida-style script using GDB breakpoints.
-
-    Each function name is translated to a ``gdb.Breakpoint`` with
-    a ``stop()`` callback that invokes the registered message handler.
-    """
+    """Frida-style script: one ``gdb.Breakpoint`` per function name."""
 
     def load(self) -> None:
         """Create GDB breakpoints for all function names."""
@@ -82,13 +71,12 @@ class GDBScript(DebuggerScript):
 
     def set_message_callback(self, callback: Callable) -> None:
         super().set_message_callback(callback)
-        # Also update existing breakpoints' callback references
         for bp in self._breakpoints.values():
             if isinstance(bp, _FriTapBreakpoint):
                 bp._callback = callback
 
 
-# Conditional class — only defined when gdb is available
+# Real class only when gdb is importable.
 if _gdb_module is not None:
     class _FriTapBreakpoint(_gdb_module.Breakpoint):
         """GDB Breakpoint subclass that invokes a callback on hit."""
@@ -123,12 +111,7 @@ else:
 
 
 class GDBBackend(Backend):
-    """
-    GDB-based backend using breakpoints for function hooking.
-
-    Requires GDB's Python API (``gdb`` module), which is only
-    available inside GDB's embedded Python interpreter.
-    """
+    """Breakpoint-based backend; needs GDB's embedded ``gdb`` module."""
 
     def __init__(self) -> None:
         self._logger = logging.getLogger("friTap.backend.gdb")
@@ -141,23 +124,14 @@ class GDBBackend(Backend):
         else:
             self._logger.warning("GDB backend created but gdb module not available")
 
-    # ------------------------------------------------------------------
-    # Device
-    # ------------------------------------------------------------------
-
     def get_device(self, mobile: bool | str = False, host: str | None = None) -> Any:
         if mobile:
             raise NotImplementedError("GDB backend does not support mobile devices")
         if host:
-            # GDB supports remote targets via gdbserver
             _ensure_gdb()
             self._gdb.execute(f"target remote {host}")
             return host
         return "local"
-
-    # ------------------------------------------------------------------
-    # Attach / Spawn
-    # ------------------------------------------------------------------
 
     def attach(self, device: Any, target: str) -> Any:
         _ensure_gdb()
@@ -165,7 +139,6 @@ class GDBBackend(Backend):
             pid = int(target)
             self._gdb.execute(f"attach {pid}")
         except ValueError:
-            # Attach by name — need to find PID first
             self._gdb.execute(f"attach {target}")
 
         inferior = self._gdb.selected_inferior()
@@ -183,15 +156,13 @@ class GDBBackend(Backend):
             for key, val in env.items():
                 self._gdb.execute(f"set environment {key}={val}")
 
-        # Start but stop at entry
         self._gdb.execute("starti")
         inferior = self._gdb.selected_inferior()
         return inferior, inferior.pid
 
     def spawn_raw(self, device: Any, target, env: dict | None = None,
                   aux: dict | None = None) -> int:
-        # aux (e.g. Android activity selection) is Frida-specific; not
-        # applicable when launching a local binary under gdb.
+        # aux (e.g. Android activity) is Frida-specific.
         _ensure_gdb()
         exe = target[0] if isinstance(target, list) else str(target)
         args = " ".join(target[1:]) if isinstance(target, list) and len(target) > 1 else ""
@@ -211,18 +182,13 @@ class GDBBackend(Backend):
         _ensure_gdb()
         self._gdb.execute("continue &")  # Async continue
 
-    # ------------------------------------------------------------------
-    # Script
-    # ------------------------------------------------------------------
-
     def create_script(self, process: Any, script_source: str, runtime: str = "qjs") -> Any:
         _ensure_gdb()
         fn_names = self._extract_function_names(script_source)
         return GDBScript(fn_names)
 
     def load_script(self, script: Any, *, timeout: float | None = None) -> None:
-        # *timeout* is accepted for interface parity and ignored: a GDB script
-        # load is synchronous and cheap, so it cannot wedge like a Frida agent.
+        # *timeout* is ignored: a GDB script load is synchronous and cheap.
         if isinstance(script, GDBScript):
             script.load()
 
@@ -241,10 +207,6 @@ class GDBBackend(Backend):
         # GDB scripts don't receive messages like Frida
         pass
 
-    # ------------------------------------------------------------------
-    # Process management
-    # ------------------------------------------------------------------
-
     def detach(self, process: Any) -> None:
         if self._gdb is None:
             return
@@ -258,16 +220,8 @@ class GDBBackend(Backend):
         pid = self._get_process_pid(process)
         self._detach_callbacks.setdefault(pid, []).append(callback)
 
-    # ------------------------------------------------------------------
-    # Debugger
-    # ------------------------------------------------------------------
-
     def enable_debugger(self, script: Any, port: int) -> None:
         self._logger.info("GDB is already a debugger — no separate debugger port needed")
-
-    # ------------------------------------------------------------------
-    # Threads
-    # ------------------------------------------------------------------
 
     def enumerate_threads(self, process: Any) -> list[ThreadInfo]:
         _ensure_gdb()
@@ -292,19 +246,11 @@ class GDBBackend(Backend):
         self._gdb.execute(f"thread {thread_id}")
         self._gdb.execute("continue &")
 
-    # ------------------------------------------------------------------
-    # Device enumeration
-    # ------------------------------------------------------------------
-
     def enumerate_devices(self) -> list:
         return [{"id": "local", "name": "Local System (GDB)", "type": "local"}]
 
     def get_local_device(self) -> Any:
         return "local"
-
-    # ------------------------------------------------------------------
-    # Properties
-    # ------------------------------------------------------------------
 
     @property
     def name(self) -> str:
@@ -318,10 +264,6 @@ class GDBBackend(Backend):
             return self._gdb.VERSION
         except AttributeError:
             return "0.0.0"
-
-    # ------------------------------------------------------------------
-    # Memory helpers (for SSH/IPSec key extraction)
-    # ------------------------------------------------------------------
 
     def read_memory(self, target, addr: int, size: int) -> bytes:
         """Read raw bytes from inferior memory."""

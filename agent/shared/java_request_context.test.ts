@@ -17,14 +17,24 @@ import {
 // Pure helpers
 // ---------------------------------------------------------------------------
 
-test("requestContextHooksWanted: only attribute_sdk && pcap && !pairip_safe && !quic_only", () => {
-    for (let mask = 0; mask < 16; mask++) {
+test("requestContextHooksWanted: attribute_sdk && (pcap || (full_capture && keylog)) && !pairip_safe && !quic_only", () => {
+    for (let mask = 0; mask < 64; mask++) {
         const cfg = {
             attribute_sdk: !!(mask & 1), pcap_enabled: !!(mask & 2),
             pairip_safe: !!(mask & 4), quic_only: !!(mask & 8),
+            full_capture: !!(mask & 16), keylog_enabled: !!(mask & 32),
         };
-        assert.equal(requestContextHooksWanted(cfg), mask === 3, JSON.stringify(cfg));
+        const flows = cfg.pcap_enabled || (cfg.full_capture && cfg.keylog_enabled);
+        const expected = cfg.attribute_sdk && flows && !cfg.pairip_safe && !cfg.quic_only;
+        assert.equal(requestContextHooksWanted(cfg), expected, JSON.stringify(cfg));
     }
+});
+
+test("requestContextHooksWanted: -f -k enables, -f alone does not", () => {
+    const base = { attribute_sdk: true, pcap_enabled: false, pairip_safe: false, quic_only: false };
+    assert.equal(requestContextHooksWanted({ ...base, full_capture: true, keylog_enabled: true }), true);
+    assert.equal(requestContextHooksWanted({ ...base, full_capture: true, keylog_enabled: false }), false);
+    assert.equal(requestContextHooksWanted({ ...base, full_capture: false, keylog_enabled: true }), false);
 });
 
 /** Log.getStackTraceString output for a fresh Throwable whose stack is `frames`. */

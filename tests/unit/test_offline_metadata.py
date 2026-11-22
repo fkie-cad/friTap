@@ -38,21 +38,21 @@ def _fold_tls_rows(output: str) -> dict:
 
 
 def _tls_row(stream, hs_type, sni="", cipher="", version="",
-             supported_version="", alpn=""):
+             supported_version="", alpn="", random=""):
     """Build one tab-separated TLS-metadata row in the canonical column order."""
     return "\t".join([str(stream), hs_type, sni, cipher, version,
-                      supported_version, alpn])
+                      supported_version, alpn, random])
 
 
 def test_tls_metadata_accumulator_merges_client_and_server_hello():
     output = "\n".join([
         # ClientHello carries SNI.
-        _tls_row(0, "1", sni="example.com"),
+        _tls_row(0, "1", sni="example.com", random="AA" * 32),
         # ServerHello carries the negotiated suite/version/alpn. TLS 1.3 puts
         # the real version in the supported_version extension (handshake.version
         # is frozen at 0x0303).
         _tls_row(0, "2", cipher="0x1301", version="0x0303",
-                 supported_version="0x0304", alpn="h2"),
+                 supported_version="0x0304", alpn="h2", random="bb" * 32),
     ])
     meta = _fold_tls_rows(output)
     assert meta[0] == {
@@ -60,7 +60,17 @@ def test_tls_metadata_accumulator_merges_client_and_server_hello():
         "cipher": "TLS_AES_128_GCM_SHA256",
         "version": "TLS 1.3",
         "alpn": "h2",
+        "client_random": "aa" * 32,
     }
+
+
+def test_tls_client_random_comes_only_from_the_client_hello():
+    server_first = "\n".join([
+        _tls_row(4, "2", cipher="0x1301", random="bb" * 32),
+        _tls_row(4, "1", sni="example.com", random="cc:" * 31 + "cc"),
+    ])
+    assert _fold_tls_rows(server_first)[4]["client_random"] == "cc" * 32
+    assert _fold_tls_rows(_tls_row(5, "2", random="bb" * 32))[5]["client_random"] == ""
 
 
 def test_tls_metadata_accumulator_supported_version_preferred_over_handshake_version():

@@ -1,6 +1,4 @@
-"""
-Protocol services: protocols seen in a capture and validation of slice parameters.
-"""
+"""Protocol services: protocols seen in a capture and validation of slice parameters."""
 
 from __future__ import annotations
 
@@ -59,9 +57,8 @@ def _sorted_counts(counter: Counter) -> dict[str, int]:
 def protocols_in_tap(tap: Path) -> dict[str, Any]:
     """Flows per canonical protocol and per app group (memoized per capture file).
 
-    Needs the full flows: a ``.tap`` flow summary carries no layer names, so
-    layer protocols (websocket, telegram_e2e, ...) and the grpc group would be
-    missed when counting from summaries.
+    Counts full flows: a ``.tap`` flow summary carries no layer names, so layer protocols
+    (websocket, telegram_e2e, ...) and the grpc group would be missed.
     """
     from friTap.agent_api.services.reading import scan_cache
 

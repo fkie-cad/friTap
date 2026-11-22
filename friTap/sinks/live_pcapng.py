@@ -5,28 +5,17 @@
 from __future__ import annotations
 
 import logging
-import os
-import tempfile
 from typing import TYPE_CHECKING, Callable, Optional
 
+from ._fifo import cleanup_fifo, make_fifo
 from .pcapng import PcapngSink
 
 if TYPE_CHECKING:
     from ..schemas.canonical import DataCanonical, KeylogCanonical, MetaCanonical
 
 
-def _cleanup_fifo(fifo_path: Optional[str], tmpdir: Optional[str]) -> None:
-    """Remove a FIFO and its temporary directory, ignoring missing files."""
-    if fifo_path:
-        try:
-            os.unlink(fifo_path)
-        except FileNotFoundError:
-            pass
-    if tmpdir:
-        try:
-            os.rmdir(tmpdir)
-        except OSError:
-            pass
+# Re-exported: other modules import it from here.
+_cleanup_fifo = cleanup_fifo
 
 
 class LivePcapngSink:
@@ -63,9 +52,7 @@ class LivePcapngSink:
         from ..fritap_utility import WINDOWS_LIVE_UNSUPPORTED, are_we_running_on_windows
         if are_we_running_on_windows():
             raise RuntimeError(WINDOWS_LIVE_UNSUPPORTED)
-        self._tmpdir = tempfile.mkdtemp()
-        self._fifo_path = os.path.join(self._tmpdir, "fritap_sharkfin.pcapng")
-        os.mkfifo(self._fifo_path)
+        self._tmpdir, self._fifo_path = make_fifo("fritap_sharkfin.pcapng")
         return self._fifo_path
 
     def open(self) -> None:

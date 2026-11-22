@@ -78,7 +78,7 @@ test("a module exporting SSL_get_client_random never triggers (and is decided on
 });
 
 test("known non-BoringSSL libraries, non-arm64 and --pairip-safe never trigger", () => {
-    for (const name of ["libssl.so.3", "libcrypto.so.1.1", "libgnutls.so.30", "libnss3.so", "libwolfssl.so", "libmbedtls.so.14"]) {
+    for (const name of ["libssl.so.3", "libcrypto.so.1.1", "libgnutls.so.30", "libnss3.so", "libnspr4.so", "libnspr4.dylib", "nspr4.dll", "libwolfssl.so", "libmbedtls.so.14"]) {
         assert.equal(isKnownNonBoringSslModule(name), true, name);
     }
     assert.equal(isKnownNonBoringSslModule(HTTPENGINE), false);

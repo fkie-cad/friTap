@@ -93,6 +93,7 @@ import {
     findStringLoadSitesAsync, findAnchorStringsAsync, findOpeningAdrp,
     scanRangesChunked, patternByteLength, pointerScanPattern, LOAD_SITE_WINDOW, withoutLeadingWildcards,
     adrTarget, adrScanWindows, ADR_REACH_BYTES,
+    outlinedStubBody, ARG_SETUP_STUB, REGISTER_SAVE_STUB, isRegisterMove, isRegisterSave, isEpilogueLinkReload,
 } from "./arm64_xref.js";
 
 // ---- instruction / buffer builders -----------------------------------------
@@ -301,6 +302,22 @@ test("scanRangesChunked reports a straddling match exactly once", async () => {
     assert.deepEqual(hits, [0x46]); // "_RA" of CLIENT_RANDOM, split by the 0x47 edge
 });
 
+test("scanRangesChunked clears status.complete on an unreadable slice (clean scans leave it set)", async () => {
+    const realScan = G.Memory.scanSync;
+    const clean = { complete: true };
+    await scanRangesChunked([{ base: P(0x40), size: 0x20 }], [{ pattern: "5f 52 41", onMatch: () => { } }], 0x10, async () => { }, clean);
+    assert.equal(clean.complete, true);
+    const faulted = { complete: true };
+    G.Memory.scanSync = () => { throw new Error("access violation"); };
+    try {
+        await scanRangesChunked([{ base: P(0x40), size: 0x20 }], [{ pattern: "5f 52 41", onMatch: () => { } }], 0x10, async () => { }, faulted);
+    } finally {
+        G.Memory.scanSync = realScan;
+    }
+    assert.equal(faulted.complete, false);
+    assert.equal(clean.complete, true, "another call's fault does not leak into this status");
+});
+
 test("withoutLeadingWildcards drops leading masked / ?? bytes (Frida <= 17.15 rejects them)", () => {
     assert.deepEqual(withoutLeadingWildcards("00 20 03 91 : 00 fc ff ff"), { pattern: "20 03 91 : fc ff ff", skipped: 1 });
     assert.deepEqual(withoutLeadingWildcards("?? ?? 41 42"), { pattern: "41 42", skipped: 2 });
@@ -489,4 +506,193 @@ test("adrScanWindows clips each code range to ±1 MB of the targets and merges o
         [0x1800000 - MB, (0x1880000 + MB + 8) - (0x1800000 - MB)], // two windows merged
     ]);                                                          // 0x3000000 is out of reach
     assert.deepEqual(adrScanWindows(code, []), []);
+});
+
+// ---- outlined arg-setup stubs and epilogue tail calls (Flutter's libflutter.so) ----
+//
+// Words below are copied from a release libflutter.so (BoringSSL c7eb007f),
+// whose ssl_log_secret sits at 0x77d778: CLIENT_HANDSHAKE_TRAFFIC_SECRET's site
+// does `bl 0xaac40c` (mov x0, x20; mov x2, x21; ret) then `bl ssl_log_secret`;
+// three labels tail-call it after the epilogue reloads x30.
+
+const HIGH = 0x1000;                      // code area outside the scanned ranges
+const SITE_AT = HIGH;                     // the label load site
+const STUB_AT = HIGH + 0x800;             // tiny arg-setup stub
+const LONG_STUB_AT = HIGH + 0x840;        // 5 moves + ret: too long to be skipped
+const SSL_LOG_AT = HIGH + 0x900;          // stands in for ssl_log_secret
+const MOV_X0_X20 = 0xaa1403e0, MOV_X2_X21 = 0xaa1503e2, MOV_W2_W3 = 0x2a0303e2;
+const LDR_X30_POST = 0xf84207fe;          // ldr x30, [sp], #0x20
+const LDP_X30_X21_POST = 0xa8c257fe;      // ldp x30, x21, [sp], #0x20
+const SSL_LOG_PROLOGUE = [0xd101c3ff, 0xa9045ffe, 0x940cb475, 0xf9403408]; // sub sp; stp x30, x23; bl; ldr
+const STP_X22_X21 = 0xa90557f6;           // stp x22, x21, [sp, #0x50]
+
+function withWordsAt(regions: [number, number[]][], body: () => void): void {
+    for (const [off, words] of regions) words.forEach((w, k) => writeU32(off + 4 * k, w));
+    try { body(); } finally {
+        for (const [off, words] of regions) words.forEach((_w, k) => writeU32(off + 4 * k, 0));
+    }
+}
+const flutterCode = (site: number[]): [number, number[]][] => [
+    [SITE_AT, site],
+    [STUB_AT, [MOV_X0_X20, MOV_X2_X21, RET]],
+    [LONG_STUB_AT, [MOV_X0_X20, MOV_X2_X21, MOV_X0_X20, MOV_X2_X21, MOV_X0_X20, RET]],
+    [SSL_LOG_AT, SSL_LOG_PROLOGUE],
+];
+const walkFrom = (off: number) => {
+    const c = firstCallTargetForward(P(off), modEnd as any, modStart as any, modEnd as any);
+    return c === null ? null : (c as unknown as BufPtr).addr - BASE;
+};
+const at = (off: number) => BASE + off;
+
+test("stub shapes: register moves and stp/str saves before a RET, bounded", () => {
+    assert.ok(isRegisterMove(MOV_X0_X20) && isRegisterMove(MOV_W2_W3));
+    assert.ok(isRegisterSave(STP_X22_X21) && !isRegisterSave(0xa9bf7bfd)); // stp x29, x30, [sp, #-16]! writes back
+    assert.deepEqual(outlinedStubBody([MOV_X0_X20, MOV_X2_X21, RET], ARG_SETUP_STUB), [MOV_X0_X20, MOV_X2_X21]);
+    assert.deepEqual(outlinedStubBody([RET], ARG_SETUP_STUB), []);
+    assert.equal(outlinedStubBody([STP_X22_X21, RET], ARG_SETUP_STUB), null);
+    assert.deepEqual(outlinedStubBody([STP_X22_X21, RET], REGISTER_SAVE_STUB), [STP_X22_X21]);
+    assert.equal(outlinedStubBody([...new Array(5).fill(MOV_X0_X20), RET], ARG_SETUP_STUB), null);
+    assert.equal(outlinedStubBody([...new Array(8).fill(MOV_X0_X20), RET], REGISTER_SAVE_STUB), null);
+    assert.equal(outlinedStubBody([MOV_X0_X20, MOV_X2_X21], ARG_SETUP_STUB), null);   // no RET
+    assert.equal(outlinedStubBody([0x91002001, RET], REGISTER_SAVE_STUB), null);      // add x1, x0, #8
+});
+
+test("firstCallTargetForward skips a BL into an arg-setup stub and resolves the real call", () =>
+    withWordsAt(flutterCode([NOP, bl(at(SITE_AT + 4), at(STUB_AT)), bl(at(SITE_AT + 8), at(SSL_LOG_AT))]), () => {
+        assert.equal(walkFrom(SITE_AT), SSL_LOG_AT);
+    }));
+
+test("firstCallTargetForward still votes for a BL whose callee is too long to be a stub", () =>
+    withWordsAt(flutterCode([NOP, bl(at(SITE_AT + 4), at(LONG_STUB_AT)), bl(at(SITE_AT + 8), at(SSL_LOG_AT))]), () => {
+        assert.equal(walkFrom(SITE_AT), LONG_STUB_AT);
+    }));
+
+for (const [name, epilogue] of [["ldr x30, [sp], #0x20", LDR_X30_POST], ["ldp x30, x21, [sp], #0x20", LDP_X30_X21_POST]] as const) {
+    test(`firstCallTargetForward votes for a tail call B after \`${name}\``, () =>
+        withWordsAt(flutterCode([NOP, NOP, epilogue, B(at(SITE_AT + 12), at(SSL_LOG_AT))]), () => {
+            assert.equal(walkFrom(SITE_AT), SSL_LOG_AT);
+        }));
+}
+
+test("a skipped stub BL (which writes x30) does not make a later B a tail call", () =>
+    withWordsAt(flutterCode([NOP, bl(at(SITE_AT + 4), at(STUB_AT)), B(at(SITE_AT + 8), at(SSL_LOG_AT))]), () => {
+        assert.equal(walkFrom(SITE_AT), null);
+    }));
+
+test("a tail call B out of the module is not a vote", () =>
+    withWordsAt(flutterCode([NOP, LDR_X30_POST, B(at(SITE_AT + 8), at(SIZE + 0x100))]), () => {
+        assert.equal(walkFrom(SITE_AT), null);
+    }));
+
+test("all three libflutter.so site shapes resolve the same ssl_log_secret", () => {
+    const shapes = [
+        [NOP, NOP, bl(at(SITE_AT + 8), at(SSL_LOG_AT))],                                    // plain bl
+        [NOP, bl(at(SITE_AT + 4), at(STUB_AT)), bl(at(SITE_AT + 8), at(SSL_LOG_AT))],         // stub, then bl
+        [NOP, LDP_X30_X21_POST, B(at(SITE_AT + 8), at(SSL_LOG_AT))],                         // epilogue + b
+    ];
+    for (const site of shapes) withWordsAt(flutterCode(site), () => assert.equal(walkFrom(SITE_AT), SSL_LOG_AT));
+});
+
+// ---- tail-call B votes need a real epilogue and a function-entry target ----
+
+const LOOP_AT = HIGH + 0x700;              // in-function label: no prologue word there
+const MOV_X30_X5 = 0xaa0503fe;             // mov x30, x5 (x30 as a scratch GPR)
+const walkWith = (off: number, functions: any) => {
+    const c = firstCallTargetForward(P(off), modEnd as any, modStart as any, modEnd as any, functions);
+    return c === null ? null : (c as unknown as BufPtr).addr - BASE;
+};
+
+test("isEpilogueLinkReload accepts only sp-based x30 reloads", () => {
+    for (const w of [LDR_X30_POST, LDP_X30_X21_POST, 0xa8c17bfd /* ldp x29, x30, [sp], #0x10 */,
+        0xa9417bfd /* ldp x29, x30, [sp, #0x10] */, 0xf94007fe /* ldr x30, [sp, #8] */,
+        0xf8410ffe /* ldr x30, [sp, #0x10]! */]) assert.ok(isEpilogueLinkReload(w), w.toString(16));
+    for (const w of [MOV_X30_X5, 0xf94004be /* ldr x30, [x5, #8] */, 0x9100041e /* add x30, x0, #1 */,
+        0xa8c17ba1 /* ldp x1, x30, [x29], #0x10 */, 0xa8c157e1 /* ldp x1, x21, [sp], #0x10 */])
+        assert.ok(!isEpilogueLinkReload(w), w.toString(16));
+});
+
+test("a scratch write of x30 does not arm the tail-call vote (in-function loop B)", () =>
+    withWordsAt(flutterCode([NOP, MOV_X30_X5, B(at(SITE_AT + 8), at(SSL_LOG_AT))]), () => {
+        assert.equal(walkFrom(SITE_AT), null);
+    }));
+
+test("an x30 write after the epilogue reload disarms the tail-call vote", () =>
+    withWordsAt(flutterCode([NOP, LDR_X30_POST, MOV_X30_X5, B(at(SITE_AT + 12), at(SSL_LOG_AT))]), () => {
+        assert.equal(walkFrom(SITE_AT), null);
+    }));
+
+test("without bounds, an epilogue B to a non-prologue label is not a vote", () =>
+    withWordsAt(flutterCode([NOP, LDR_X30_POST, B(at(SITE_AT + 8), at(LOOP_AT))]), () => {
+        assert.equal(walkFrom(SITE_AT), null);
+    }));
+
+test("with function bounds, a tail call must leave the site's function", () =>
+    withWordsAt(flutterCode([NOP, LDR_X30_POST, B(at(SITE_AT + 8), at(SSL_LOG_AT))]), () => {
+        const inside = { bounds: () => ({ start: P(SITE_AT - 0x10), end: P(SSL_LOG_AT + 0x10) }) };
+        const outside = { bounds: () => ({ start: P(SITE_AT - 0x10), end: P(SITE_AT + 0x40) }) };
+        assert.equal(walkWith(SITE_AT, inside), null);           // prologue-looking but in-function
+        assert.equal(walkWith(SITE_AT, outside), SSL_LOG_AT);
+        assert.equal(walkWith(SITE_AT, { bounds: () => null }), SSL_LOG_AT); // unknown: prologue check
+    }));
+
+test("with function bounds, an out-of-function tail call needs no prologue word", () =>
+    withWordsAt(flutterCode([NOP, LDR_X30_POST, B(at(SITE_AT + 8), at(LOOP_AT))]), () => {
+        const fn = { bounds: () => ({ start: P(SITE_AT - 0x10), end: P(SITE_AT + 0x40) }) };
+        assert.equal(walkWith(SITE_AT, fn), LOOP_AT);
+    }));
+
+// ---- Mach-O anchor passes: string sections, data, then r-x only for what is still missing ----
+
+const MACHO_CSTRING_OFF = 0x1c00, MACHO_OSLOG_OFF = 0x1c80, MACHO_TEXT_OFF = 0x1c40;
+const MACHO_HEADER = (() => {
+    // mach_header_64 (MH_MAGIC_64, ncmds 1, sizeofcmds 8) + one inert 8-byte load command.
+    const h = new Uint8Array(40);
+    const dv = new DataView(h.buffer);
+    dv.setUint32(0, 0xfeedfacf, true);
+    dv.setUint32(16, 1, true);
+    dv.setUint32(20, 8, true);
+    dv.setUint32(36, 8, true);
+    return h;
+})();
+
+/** Module base that reads as a Mach-O header (everything else reads from `buf`). */
+class MachOBufPtr extends BufPtr {
+    add(n: number | BufPtr) { return new MachOBufPtr(super.add(n).addr); }
+    readByteArray(length: number) {
+        const off = this.addr - BASE;
+        if (off + length > MACHO_HEADER.length) throw new Error("read out of range");
+        return MACHO_HEADER.slice(off, off + length).buffer;
+    }
+}
+
+function fakeMachOModule(onCodeRanges: () => void): Module {
+    return {
+        base: new MachOBufPtr(BASE),
+        size: SIZE,
+        name: "libfake_anchor_passes.dylib",
+        enumerateSections: () => [
+            { id: "1.__TEXT.__cstring", name: "__cstring", address: new BufPtr(BASE + MACHO_CSTRING_OFF), size: 0x40 },
+        ],
+        enumerateRanges(prot: string) {
+            if (prot === "r-x") {
+                onCodeRanges();
+                return [{ base: new BufPtr(BASE + MACHO_TEXT_OFF), size: 0x80, protection: prot }];
+            }
+            return [{ base: new BufPtr(DATA_RANGE.base), size: DATA_RANGE.size, protection: prot }];
+        },
+    } as unknown as Module;
+}
+
+test("Mach-O anchors: __cstring first; an anchor in another __TEXT section is found by the lazy r-x pass", async () => {
+    writeString(MACHO_CSTRING_OFF, "CSTRING_ANCHOR");
+    writeString(MACHO_OSLOG_OFF, "OSLOG_ANCHOR");          // e.g. __oslogstring: r-x only
+    let codePasses = 0;
+    const mod = fakeMachOModule(() => { codePasses++; });
+    const onlySection = await findAnchorStringsAsync(mod, ["CSTRING_ANCHOR\u0000"], 0x10, async () => { });
+    assert.deepEqual(onlySection.map((p) => p === null ? null : (p as unknown as BufPtr).addr - BASE), [MACHO_CSTRING_OFF]);
+    assert.equal(codePasses, 0);                              // nothing missing: no r-x pass
+    const both = await findAnchorStringsAsync(mod, ["CSTRING_ANCHOR\u0000", "OSLOG_ANCHOR\u0000"], 0x10, async () => { });
+    assert.deepEqual(both.map((p) => p === null ? null : (p as unknown as BufPtr).addr - BASE),
+        [MACHO_CSTRING_OFF, MACHO_OSLOG_OFF]);
+    assert.equal(codePasses, 1);
 });

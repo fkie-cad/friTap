@@ -14,8 +14,25 @@
  */
 
 import { HookingStrategy, HookResult } from "../hooking_pipeline";
-import { devlog, _isShuttingDownNow } from "../../util/log.js";
+import { devlog, devlog_debug, _isShuttingDownNow } from "../../util/log.js";
 import { currentPlatformKey, normalizeArchKey } from "../../util/process_infos.js";
+import type { ScanStatus } from "../arm64_xref.js";
+
+type ArchPatterns = Record<string, string | string[]>;
+
+/** Patterns for `funcName`, primary first. */
+function patternList(archPatterns: ArchPatterns, funcName: string): string[] {
+    const funcPatterns = archPatterns[funcName];
+    if (!funcPatterns) return [];
+    return Array.isArray(funcPatterns) ? funcPatterns : [funcPatterns];
+}
+
+/** A part of the scan could not run, so its misses prove nothing. */
+function markIncomplete(status: ScanStatus | undefined, reason: string): void {
+    if (!status) return;
+    status.complete = false;
+    devlog_debug(`[PatternStrategy] scan incomplete: ${reason}`);
+}
 
 export class PatternStrategy implements HookingStrategy {
     name = "pattern";
@@ -30,6 +47,28 @@ export class PatternStrategy implements HookingStrategy {
 
     setPatternData(data: any): void {
         this.patternData = data;
+    }
+
+    /** Patterns tryHookAsync tries for `funcName`, in order. */
+    patternsFor(moduleName: string, libraryType: string, funcName: string | undefined): string[] {
+        if (funcName === undefined) return [];
+        const lookup = this.archPatternsFor(moduleName, libraryType);
+        return "table" in lookup ? patternList(lookup.table, funcName) : [];
+    }
+
+    /** The library -> os -> arch pattern table for the module, or why there is none. */
+    private archPatternsFor(moduleName: string, libraryType: string): { table: ArchPatterns } | { error: string } {
+        const modulePatterns = this.patternData?.[moduleName] || this.patternData?.[libraryType];
+        if (!modulePatterns) return { error: `No patterns defined for ${moduleName} or ${libraryType}` };
+
+        const platform = currentPlatformKey();
+        const osPatterns = modulePatterns[platform];
+        if (!osPatterns) return { error: `No patterns for OS ${platform} in ${moduleName}` };
+
+        const arch = normalizeArchKey(Process.arch);
+        const archPatterns = osPatterns[arch] || osPatterns["default"];
+        if (!archPatterns) return { error: `No patterns for architecture ${arch} (OS ${platform}) in ${moduleName}` };
+        return { table: archPatterns };
     }
 
     /**
@@ -60,8 +99,10 @@ export class PatternStrategy implements HookingStrategy {
      * Frida JS thread yields to the event loop between scan chunks and a
      * gracefulDetach RPC can be serviced mid-scan. Awaited by the pipeline's
      * hookModuleAsync() for every TLS library and by the QUIC install path.
+     * `status` (optional) learns about errors the result otherwise swallows.
      */
-    async tryHookAsync(moduleName: string, libraryType: string, functions: string[]): Promise<HookResult> {
+    async tryHookAsync(moduleName: string, libraryType: string, functions: string[],
+                       status?: ScanStatus): Promise<HookResult> {
         const hooked: string[] = [];
         const errors: string[] = [];
         const resolved = new Map<string, NativePointer>();
@@ -73,39 +114,20 @@ export class PatternStrategy implements HookingStrategy {
 
         try {
             const mod = Process.getModuleByName(moduleName);
-            const modulePatterns = this.patternData[moduleName] || this.patternData[libraryType];
-
-            if (!modulePatterns) {
-                errors.push(`No patterns defined for ${moduleName} or ${libraryType}`);
-                return { success: false, strategy: this.name, hookedFunctions: hooked, errors, resolvedAddresses: new Map() };
-            }
-
-            const platform = currentPlatformKey();
-            const osPatterns = modulePatterns[platform];
-
-            if (!osPatterns) {
-                errors.push(`No patterns for OS ${platform} in ${moduleName}`);
-                return { success: false, strategy: this.name, hookedFunctions: hooked, errors, resolvedAddresses: new Map() };
-            }
-
-            const arch = normalizeArchKey(Process.arch);
-            const archPatterns = osPatterns[arch] || osPatterns["default"];
-
-            if (!archPatterns) {
-                errors.push(`No patterns for architecture ${arch} (OS ${platform}) in ${moduleName}`);
+            const lookup = this.archPatternsFor(moduleName, libraryType);
+            if ("error" in lookup) {
+                errors.push(lookup.error);
                 return { success: false, strategy: this.name, hookedFunctions: hooked, errors, resolvedAddresses: new Map() };
             }
 
             for (const funcName of functions) {
-                const funcPatterns = archPatterns[funcName];
-                if (!funcPatterns) continue;
-
-                const patterns = Array.isArray(funcPatterns) ? funcPatterns : [funcPatterns];
+                if (!lookup.table[funcName]) continue;
+                const patterns = patternList(lookup.table, funcName);
                 let found = false;
 
                 for (const pattern of patterns) {
                     try {
-                        const match = await this.scanFirstMatchAsync(mod, pattern);
+                        const match = await this.scanFirstMatchAsync(mod, pattern, status);
                         if (match !== null) {
                             hooked.push(funcName);
                             resolved.set(funcName, match);
@@ -113,7 +135,7 @@ export class PatternStrategy implements HookingStrategy {
                             break;
                         }
                     } catch (scanErr) {
-                        // Try next pattern
+                        markIncomplete(status, `${funcName}: ${scanErr}`);
                     }
                 }
 
@@ -123,6 +145,7 @@ export class PatternStrategy implements HookingStrategy {
             }
         } catch (err) {
             errors.push(`Pattern strategy error: ${err}`);
+            markIncomplete(status, `${err}`);
         }
 
         return {
@@ -146,7 +169,8 @@ export class PatternStrategy implements HookingStrategy {
      * Checks _isShuttingDownNow() between ranges so the scan loop stops issuing
      * new scans the moment detach begins.
      */
-    private async scanFirstMatchAsync(mod: Module, pattern: string): Promise<NativePointer | null> {
+    private async scanFirstMatchAsync(mod: Module, pattern: string,
+                                      status?: ScanStatus): Promise<NativePointer | null> {
         let ranges: RangeDetails[] = [];
         try {
             ranges = mod.enumerateRanges("r-x");
@@ -155,13 +179,16 @@ export class PatternStrategy implements HookingStrategy {
         }
 
         if (!ranges || ranges.length === 0) {
-            return this.scanRegionAsync(mod.base, mod.size, pattern, `${mod.name} (whole-module scan)`);
+            return this.scanRegionAsync(mod.base, mod.size, pattern, `${mod.name} (whole-module scan)`, status);
         }
 
         for (const range of ranges) {
             // Early-abort on shutdown so a detach mid-scan returns fast.
-            if (_isShuttingDownNow()) return null;
-            const hit = await this.scanRegionAsync(range.base, range.size, pattern, `${mod.name}@${range.base}`);
+            if (_isShuttingDownNow()) {
+                markIncomplete(status, "shutting down");
+                return null;
+            }
+            const hit = await this.scanRegionAsync(range.base, range.size, pattern, `${mod.name}@${range.base}`, status);
             if (hit !== null) return hit;
         }
         return null;
@@ -173,19 +200,21 @@ export class PatternStrategy implements HookingStrategy {
      * first — so reportIfAmbiguous can warn when a pattern is non-unique.
      * Unreadable pages are skipped.
      */
-    private scanRegionAsync(base: NativePointer, size: number, pattern: string, where: string): Promise<NativePointer | null> {
+    private scanRegionAsync(base: NativePointer, size: number, pattern: string, where: string,
+                            status?: ScanStatus): Promise<NativePointer | null> {
         return new Promise((resolve) => {
             const acc: MemoryScanMatch[] = [];
             try {
                 Memory.scan(base, size, pattern, {
                     onMatch: (address, matchSize) => { acc.push({ address, size: matchSize }); },
-                    onError: () => { /* skip unreadable pages */ },
+                    onError: (reason) => { markIncomplete(status, `${where}: ${reason}`); },
                     onComplete: () => {
                         this.reportIfAmbiguous(acc, where);
                         resolve(acc.length > 0 ? acc[0].address : null);
                     },
                 });
-            } catch (_e) {
+            } catch (e) {
+                markIncomplete(status, `${where}: ${e}`);
                 resolve(null);
             }
         });

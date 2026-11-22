@@ -14,6 +14,9 @@ import { isWindows, isLinux, isWine, isAndroid, isiOS, isMacOS, getDetailedPlatf
 import { anti_root_execute } from "./util/anti_root.js";
 import { socket_trace_execute } from "./misc/socket_tracer.js"
 import { devlog, log, hookBreadcrumb } from "./util/log.js";
+import { Java } from "./shared/javalib.js";
+import { installArrayClassInitGuard } from "./shared/java_array_class_init_guard.js";
+import { installJvmtiPluginGuard } from "./shared/java_jvmti_guard.js";
 import { initializePipeline } from "./shared/pipeline_utils.js";
 import { AGENT_ABI_VERSION } from "./shared/generated_constants.js";
 // Process-wide runtime state lives in the side-effect-free shared_structures
@@ -34,6 +37,10 @@ import { restoreAnchorLocatorKeylogFields } from "./shared/boringssl_anchor_loca
 import { installSslLayoutAutoLocate } from "./shared/ssl_layout_autolocate.js";
 import { restoreTrackedKeylogCallbacks } from "./shared/keylog_callback_tracker.js";
 import { runDetachTeardowns } from "./shared/detach_teardown.js";
+import { runPreShutdownFlushes } from "./shared/pre_shutdown.js";
+import { DetachReport, DetachReportBuilder, repeatDetachReport, withTeardownCapture } from "./shared/detach_report.js";
+import { installLearnedPlaintextCache } from "./tls/shared/learned_plaintext_cache.js";
+import { installLearnedModuleCache } from "./shared/learned_module_cache.js";
 
 // global address which stores the addresses of the hooked modules which aren't loaded via the dynamic loader
 (globalThis as any).init_addresses = {};
@@ -66,41 +73,63 @@ function initStage<T>(stage: string, fn: () => T, fatal: boolean = true): T | un
     }
 }
 
+/** Set by the first releaseAgentHooks(); later calls only report a repeat. */
+let agentHooksReleased = false;
+
 /**
  * Shared teardown for the gracefulDetach RPC and Frida's `dispose` hook.
- * Idempotent: every step is a flag set, a detach, or a restore that clears
- * its own bookkeeping, so running it twice (graceful_detach then unload) is safe.
+ * Runs once: a second call (dispose after graceful_detach) returns a
+ * `repeat: true` report without touching anything. Every step is timed and
+ * isolated into the returned DetachReport, and log()/devlog() lines emitted
+ * from just after the shutdown flag to the end are captured into it (sends
+ * are dropped by then). Never throws.
  */
-function releaseAgentHooks(): void {
+function releaseAgentHooks(): DetachReport {
+    if (agentHooksReleased) return repeatDetachReport();
+    agentHooksReleased = true;
+    const report = new DetachReportBuilder();
+    // Held data must go out while sendDatalog still sends, i.e. before the flag.
+    report.step("pre-shutdown-flush", () => runPreShutdownFlushes());   // each flush is isolated
     // Set the shutdown flag BEFORE Interceptor.detachAll so any callback
     // already mid-execution (or queued on the JS message loop) sees the
     // flag at sendDatalog/emit and short-circuits. Order matters: if we
     // detached first and then set the flag, callbacks already queued
     // between the two statements would still pay the full IPC cost.
     setIsShuttingDown(true);
+    try {
+        withTeardownCapture(report, () => releaseHooksAfterShutdownFlag(report));
+    } catch (_e) { /* every step is isolated; never block the detach */ }
+    return report.finish();
+}
+
+/** The releaseAgentHooks steps that run with the shutdown flag set; order is load-bearing. */
+function releaseHooksAfterShutdownFlag(report: DetachReportBuilder): void {
     try { stopBlink(); } catch (_e) { /* blink not active */ }
     // Revert ART (Java) .implementation swaps FIRST, while the VM is attached and
     // before Interceptor.detachAll()/dispose. Interceptor.detachAll only reverts
     // native hooks; a Java method left for frida's implicit dispose-restore races
     // the app's threads and SIGBUSes it on stop (seen on Signal). Best-effort.
-    try { runDetachTeardowns(); } catch (_e) { /* best effort */ }
+    runDetachTeardowns(report);   // one `teardown:<label>` step per revert, each isolated
     // BEFORE detachAll, on purpose: the callback tier's SSL_CTX_free hook must
     // still be live so a CTX being freed right now blocks in its onEnter (we
     // hold the script lock) instead of being written after release. The
     // registry is sealed first, so the SSL_new/SSL_CTX_new hooks that are
     // still attached can no longer re-install the callback behind the restore.
-    try { restoreTrackedKeylogCallbacks(); } catch (_e) { /* best effort */ }
-    try {
-        Interceptor.detachAll();
-    } catch (e) {
+    report.step("keylog-callbacks-restore", () => restoreTrackedKeylogCallbacks());
+    report.step("interceptor-detach-all", () => {
         try {
-            log(`[gracefulDetach] Interceptor.detachAll threw: ${e}`);
-        } catch (_e2) { /* host already gone */ }
-    }
+            Interceptor.detachAll();
+        } catch (e) {
+            try {
+                log(`[gracefulDetach] Interceptor.detachAll threw: ${e}`);
+            } catch (_e2) { /* host already gone */ }
+            throw e;   // recorded as the step's error
+        }
+    });
     // After detachAll (so no hook can re-install it): NULL the SSL_CTX
     // keylog_callback fields tier 4 filled with a script-owned callback,
     // which would otherwise dangle once the script unloads.
-    try { restoreAnchorLocatorKeylogFields(); } catch (_e) { /* best effort */ }
+    report.step("anchor-keylog-fields-restore", () => ({ restored: restoreAnchorLocatorKeylogFields() }));
 }
 
 // Declared BEFORE anything that can throw or kill the target, so the host's
@@ -120,8 +149,10 @@ rpc.exports = {
         return AGENT_ABI_VERSION;
     },
     //@ts-ignore
-    gracefulDetach(): void {
-        releaseAgentHooks();
+    gracefulDetach(): DetachReport {
+        // The report is the RPC reply: the host reads it while it blocks on
+        // this call, independent of the message channel (JSON-serialisable).
+        return releaseAgentHooks();
     },
     //@ts-ignore
     dispose(): void {
@@ -133,6 +164,8 @@ rpc.exports = {
         // graceful_detach failure followed by a plain unload. Without this,
         // tier 4's SSL_CTX->keylog_callback write would dangle after unload
         // and SIGSEGV the target on its next handshake.
+        // Its DetachReport has no consumer here (a repeat after graceful_detach,
+        // or an unclean unload nobody waits on), so it is ignored.
         try { releaseAgentHooks(); } catch (_e) { /* never block unload */ }
     }
 };
@@ -390,6 +423,10 @@ export let force_anchor_locator: boolean = false;
 //@ts-ignore
 export let attribute_sdk: boolean = false;
 
+// -f: the host records a full tcpdump capture; with -k it is decrypted offline.
+//@ts-ignore
+export let full_capture: boolean = false;
+
 /**
  * Perform a send/recv handshake with the Python host to receive a configuration value.
  * @param sendChannel Channel name to send on
@@ -462,10 +499,18 @@ debug_output = config_batch.debug_output ?? debug_output;
 probe = config_batch.probe ?? probe;
 force_anchor_locator = config_batch.force_anchor_locator ?? force_anchor_locator;
 attribute_sdk = config_batch.attribute_sdk ?? attribute_sdk;
+full_capture = config_batch.full_capture ?? full_capture;
 // Generic feature-config passthrough (e.g. { scan_region } for the public
 // memory-scan engine). Protocol-agnostic: the public core never inspects a
 // private sub-key; private units read their own keys from config_extensions.
 setConfigExtensions(config_batch.extensions ?? {});
+// Host-learned SSL_read/SSL_write RVAs (keyed by build id) let a stripped
+// BoringSSL skip the slow locator; locator hits are reported back. Non-fatal:
+// a bad cache costs a scan, never the capture.
+// The host entries are read through the learned module cache, which also
+// serves named function RVAs and layout values (learned_module_cache.ts).
+initStage("learned-module-cache", () => installLearnedModuleCache(config_batch.learned_plaintext), false);
+initStage("learned-plaintext-cache", () => installLearnedPlaintextCache(), false);
 
 // "anti" handshake must be LAST in the startup sequence to prevent deadlock
 anti_root = initStage("anti-handshake", () => recvHandshake("anti", anti_root, "antiroot")) as boolean;
@@ -666,6 +711,16 @@ function load_os_specific_agent() {
     // commented-out devlog; it now runs only for an unknown platform, and behind
     // debug_output on a deferred tick.
     const target = initStage("platform-detect", () => detectTarget()) as TargetKind;
+    if (target === "android") {
+        // Before ANY Java.use()/Java.perform(): frida-java-bridge 7.1.0's class-init
+        // probe SIGSEGVs ART on array classes (Pixel 5 / Android 14, 64-bit Firefox).
+        initStage("java-array-class-init-guard", () =>
+            devlog(`[java] array class-init guard: ${installArrayClassInitGuard(Java, NULL)}`), false);
+        // Also before any Java.use(): load ART's JVMTI plugin with faults passed to
+        // ART; the bridge's unprotected load wedges Chrome on an early attach.
+        initStage("java-jvmti-plugin-guard", () =>
+            devlog(`[java] JVMTI plugin guard: ${installJvmtiPluginGuard(Java, msg => devlog(`[java] ${msg}`))}`), false);
+    }
 
     const plan = planForTarget(target);
     log(`Running Script on ${plan.label}`);

@@ -82,6 +82,7 @@ def test_builtins_registered_on_import():
 def reset_discovery(monkeypatch):
     """Isolate discovery: clear cache, ignore real entry points/dirs by default."""
     monkeypatch.setattr(discovery, "_DISCOVERED", None)
+    monkeypatch.setattr(discovery, "_DISCOVERY_ERRORS", ())
     monkeypatch.setattr(discovery, "_load_entrypoint_decryptors", lambda found: None)
     monkeypatch.delenv("FRITAP_DISABLE_OFFLINE_DECRYPTOR_DISCOVERY", raising=False)
     return monkeypatch

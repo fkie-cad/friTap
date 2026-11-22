@@ -20,6 +20,9 @@ from typing import Any, Iterable
 
 from friTap.constants import LAYER_DISPLAY_NAMES
 
+# Prefix of the explicit protocol-predicate form (``protocol.signal``).
+PROTOCOL_FIELD_PREFIX = "protocol."
+
 # Labels that carry no protocol information.
 _EMPTY_LABELS = frozenset({"", "unknown"})
 

@@ -5,11 +5,7 @@
     from friTap import CoreController, Session, FriTapConfig  # recommended
     from friTap import SSL_Logger  # legacy (delegates to friTap.legacy)
 """
-# Re-exposed for tests that still patch ``friTap.ssl_logger.frida`` /
-# ``friTap.ssl_logger.logging``. The legacy core module imports both for
-# its own use; we mirror them here so unittest.mock.patch can target them
-# at the documented entry-point path. Removing these breaks every test
-# that uses ``patch("friTap.ssl_logger.frida.X")``.
+# Re-exported because tests patch ``friTap.ssl_logger.frida.X`` and ``.logging``.
 import logging
 
 import frida

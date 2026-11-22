@@ -14,6 +14,7 @@
 
 import { activeRecordProtocol } from "./record_protocol.js";
 import { observeKeylogSsl } from "./keylog_ssl_observer.js";
+import type { ModuleOffsetsLearnedMessage, PlaintextApiLearnedMessage } from "../schemas/messages.js";
 
 // --- Shared runtime state (live ESM bindings; set once at config-handshake) ---
 // Reads are live, taken at hook-INSTALL time (well after config parse), so the
@@ -64,7 +65,7 @@ export type Platform = "linux" | "darwin" | "windows" | "wine";
 
 export type LibraryType =
     | "openssl" | "boringssl" | "libressl" | "gnutls" | "wolfssl"
-    | "nss" | "mbedtls" | "s2ntls" | "rustls"
+    | "nss" | "mbedtls" | "s2ntls" | "rustls" | "fizz"
     | "gotls" | "matrixssl" | "sspi" | "lsass" | "nss_hpke"
     | "quiche" | "msquic" | "google_quiche" | "neqo"
     | "ssh_openssh" | "ssh_libssh"
@@ -151,6 +152,17 @@ export function resolveProtocolTag(selected: string, declared?: string): string 
 }
 
 /**
+ * The tag of a QUIC record. QUIC hooks install under the TLS family, but their
+ * records are QUIC: wherever a message would be tagged "tls" it is tagged
+ * "quic" instead, so the host keys and parses the flow as QUIC. Other concrete
+ * selections keep the "selected protocol wins" rule.
+ */
+export function quicProtocolTag(selected: string, declared?: string): string {
+    const tag = resolveProtocolTag(selected, declared);
+    return tag === "tls" ? "quic" : tag;
+}
+
+/**
  * Send a message to the Python side with the active protocol stamped in.
  *
  * @param message  The payload object (its `protocol` field is overwritten). The
@@ -158,9 +170,10 @@ export function resolveProtocolTag(selected: string, declared?: string): string 
  *                 to the emitting hook (agent/shared/record_protocol.ts); it is
  *                 honoured under a meta selection (see resolveProtocolTag).
  * @param data     Optional binary data to attach
+ * @param protocolTag Explicit tag instead of the resolved one (QUIC records).
  */
-export function sendWithProtocol(message: { [key: string]: any }, data?: ArrayBuffer | number[] | null): void {
-    message["protocol"] = resolveProtocolTag(selected_protocol, activeRecordProtocol());
+export function sendWithProtocol(message: { [key: string]: any }, data?: ArrayBuffer | number[] | null, protocolTag?: string): void {
+    message["protocol"] = protocolTag ?? resolveProtocolTag(selected_protocol, activeRecordProtocol());
     if (data !== undefined && data !== null) {
         send(message, data);
     } else {
@@ -223,7 +236,8 @@ export function sendKeyMaterial(message: { [key: string]: any }, data?: ArrayBuf
     sendWithProtocol(message, data);
 }
 
-export function sendDatalog(message: { [key: string]: any }, data: ArrayBuffer | number[] | null): void {
+/** @param protocolTag Explicit tag instead of the active selection (QUIC records). */
+export function sendDatalog(message: { [key: string]: any }, data: ArrayBuffer | number[] | null, protocolTag?: string): void {
     // Shutdown-time short-circuit. Once gracefulDetach has fired, this is the
     // single chokepoint for ALL plaintext IPC (datalog from QUIC, TLS, SSH,
     // IPSec — every protocol). Skipping send() here lets pending Interceptor
@@ -234,16 +248,28 @@ export function sendDatalog(message: { [key: string]: any }, data: ArrayBuffer |
     // reasonable detach timeout.
     if (_isShuttingDown) return;
     message["contentType"] = "datalog";
-    sendWithProtocol(message, data);
+    sendWithProtocol(message, data, protocolTag);
 }
 
+/** @param protocolTag Explicit tag instead of the active selection (QUIC: activeQuicProtocolTag()). */
 export function sendConnectionLifecycle(
     event: string,
     message: { [key: string]: any },
+    protocolTag?: string,
 ): void {
     message["contentType"] = "connection_lifecycle";
     message["event"] = event;
-    sendWithProtocol(message);
+    sendWithProtocol(message, undefined, protocolTag);
+}
+
+/** sendConnectionLifecycle for a QUIC connection: tagged like its datalog records. */
+export function sendQuicConnectionLifecycle(event: string, message: { [key: string]: any }): void {
+    sendConnectionLifecycle(event, message, activeQuicProtocolTag());
+}
+
+/** Tag of the QUIC record being sent now. Data and lifecycle of one QuicConnection must share it, or the host keys them apart. */
+export function activeQuicProtocolTag(): string {
+    return quicProtocolTag(selected_protocol, activeRecordProtocol());
 }
 
 /** One symbolized native stack frame in a `caller_stack` message (mirrors the
@@ -313,6 +339,24 @@ export function sendRequestContext(payload: { [key: string]: any }): void {
     sendWithProtocol({ ...payload, contentType: "request_context" });
 }
 
+/** `plaintext_api_learned` fields the caller supplies; contentType and protocol are added on send. */
+export type PlaintextApiLearnedPayload = Omit<PlaintextApiLearnedMessage, "contentType" | "protocol">;
+
+/** Emit a `plaintext_api_learned` message: locator-found SSL_read/SSL_write RVAs for the host's learned cache. */
+export function sendPlaintextApiLearned(payload: PlaintextApiLearnedPayload): void {
+    if (_isShuttingDown) return;
+    sendWithProtocolTag({ ...payload, contentType: "plaintext_api_learned" }, "tls");
+}
+
+/** `module_offsets_learned` fields the caller supplies; contentType and protocol are added on send. */
+export type ModuleOffsetsLearnedPayload = Omit<ModuleOffsetsLearnedMessage, "contentType" | "protocol">;
+
+/** Emit a `module_offsets_learned` message: named function RVAs / layout values for the host's learned cache. */
+export function sendModuleOffsetsLearned(payload: ModuleOffsetsLearnedPayload): void {
+    if (_isShuttingDown) return;
+    sendWithProtocolTag({ ...payload, contentType: "module_offsets_learned" }, "tls");
+}
+
 /**
  * Send a QUIC keylog line with BOTH the standard TLS 1.3 label
  * AND a QUIC_ prefixed duplicate.
@@ -349,6 +393,9 @@ export function sendQuicKeylog(keylogLine: string): void {
  *                routes the record without knowing hook names: "stream" = raw
  *                in-order QUIC stream bytes (HTTP/3 frames), "body" = de-framed
  *                HTTP/3 DATA payload. Omitted for other records.
+ * @param midstream Raw stream bytes of a connection first seen mid-life (sent
+ *                as message["quic_midstream"]): its control / QPACK streams
+ *                were not observed, so dynamic-table header refs may not decode.
  */
 export function sendQuicDatalog(
     message: { [key: string]: any },
@@ -359,6 +406,7 @@ export function sendQuicDatalog(
     transport: "udp" | "tcp" = "udp",
     http3Headers?: [string, string][],
     payload?: QuicPayloadKind,
+    midstream?: boolean,
 ): void {
     message["stream_id"] = streamId;
     if (scid) message["quic_scid"] = scid;
@@ -366,7 +414,35 @@ export function sendQuicDatalog(
     message["transport"] = transport;
     if (http3Headers && http3Headers.length > 0) message["http3_headers"] = http3Headers;
     if (payload) message["quic_payload"] = payload;
-    sendDatalog(message, data);
+    if (midstream) message["quic_midstream"] = true;
+    sendDatalog(message, data, activeQuicProtocolTag());
+}
+
+/** Position of a raw, in-order STREAM chunk within its QUIC stream. */
+export interface QuicStreamChunk {
+    /** Stream offset of the chunk's first byte. */
+    offset: number;
+    /** True when the chunk ends the stream (reaches the FIN offset). */
+    fin: boolean;
+    /** The connection predates the capture (see sendQuicDatalog). */
+    midstream: boolean;
+}
+
+/**
+ * Send one reassembled STREAM chunk (quic_payload "stream") with its offset and
+ * FIN, so the host can rebuild the QUIC STREAM frame.
+ */
+export function sendQuicStreamChunk(
+    message: { [key: string]: any },
+    data: ArrayBuffer | number[] | null,
+    streamId: number,
+    chunk: QuicStreamChunk,
+): void {
+    message["stream_offset"] = chunk.offset;
+    // Callers re-use one message object across chunks: clear a stale FIN.
+    if (chunk.fin) message["fin"] = true;
+    else delete message["fin"];
+    sendQuicDatalog(message, data, streamId, undefined, undefined, "udp", undefined, "stream", chunk.midstream);
 }
 
 /** Kind of QUIC record payload (see sendQuicDatalog). */

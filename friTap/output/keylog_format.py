@@ -2,12 +2,9 @@
 
 """Per-protocol keylog line formatter abstraction.
 
-Each :class:`~friTap.protocols.base.ProtocolHandler` may expose a
-``keylog_formatter()`` that returns one of these. The generic
-:class:`~friTap.output.keylog_handler.KeylogOutputHandler` then uses the
-formatter to turn :class:`~friTap.events.KeylogEvent` instances into the
-Wireshark-loadable lines for that specific protocol, without the output
-layer needing protocol-specific branching.
+A :class:`~friTap.protocols.base.ProtocolHandler` may expose a ``keylog_formatter()``;
+the generic :class:`~friTap.output.keylog_handler.KeylogOutputHandler` uses it to turn
+:class:`~friTap.events.KeylogEvent`\ s into Wireshark-loadable lines without protocol branching.
 """
 
 from __future__ import annotations
@@ -23,25 +20,18 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Keylog line validation
-#
-# Key material arrives from an agent running inside a possibly hostile process,
-# so every string that ends up in a keylog file is attacker-controlled. A CR/LF
-# (or other control character) inside a label or secret would inject extra,
-# forged lines into a keylog the user later feeds to Wireshark/tshark. These
-# validators are total: non-``str`` input is rejected, never raised on.
-# ---------------------------------------------------------------------------
+# Keylog line validation. Key material comes from an agent in a possibly hostile
+# process, so every keylog string is attacker-controlled: a CR/LF or control
+# character would inject forged lines into a keylog later fed to Wireshark/tshark.
+# Validators are total: non-``str`` input is rejected, never raised on.
 
 # Longest single keylog line accepted (an MTProto OBF/E2E line is ~600 chars).
 MAX_KEYLOG_LINE_LENGTH = 16 * 1024
 # Longest hex field accepted (4096 hex chars = 2 KiB of key material).
 MAX_HEX_FIELD_LENGTH = 4096
 
-# Labels in use: NSS TLS (CLIENT_RANDOM, *_TRAFFIC_SECRET_0, EXPORTER_SECRET...),
-# SSH (SSH_ENC_KEY_C2S, SSH_IV_S2C...), MTProto/RC4 (MTPROTO_AUTH_KEY, RC4_KEY)
-# and user-chosen custom-plugin labels (AES_KEY, WG_SENDING_KEY...). Custom
-# labels may be lower case or hyphenated, so both are allowed.
+# Labels: NSS TLS (CLIENT_RANDOM, *_TRAFFIC_SECRET_0...), SSH (SSH_ENC_KEY_C2S...),
+# MTProto/RC4 (MTPROTO_AUTH_KEY, RC4_KEY) and custom-plugin labels, which may be lower case or hyphenated.
 _KEYLOG_LABEL_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_\-]{0,63}")
 _HEX_FIELD_RE = re.compile(r"[0-9a-fA-F]+")
 # Custom plugins may emit base64 secrets (``encoding="base64"``).
@@ -60,11 +50,7 @@ def _has_control_chars(text: str) -> bool:
 
 
 def is_safe_keylog_line(line) -> bool:
-    """True when *line* can be written as exactly ONE keylog line.
-
-    Rejects non-strings, empty lines, over-long lines and any control character
-    (CR/LF/NUL included), so one agent string can never become several lines.
-    """
+    """True when *line* can be written as exactly ONE keylog line (no non-strings, empty, over-long or control characters)."""
     if not isinstance(line, str) or not line:
         return False
     if len(line) > MAX_KEYLOG_LINE_LENGTH:
@@ -104,10 +90,9 @@ def sanitize_keylog_fields(label, *hex_fields) -> Optional[str]:
 
 
 def is_nss_keylog_line(line) -> bool:
-    """True for an NSS-style ``LABEL <hex|???> <hex> ...`` keylog line.
+    """True for an NSS-style ``LABEL <hex|???> <hex> ...`` line.
 
-    The label must match ``^[A-Z0-9_]{1,64}$``; every following field must be
-    an even-length hex string, or ``???`` (an unknown Schannel client_random).
+    Label ``^[A-Z0-9_]{1,64}$``; fields are even-length hex or ``???`` (unknown Schannel client_random).
     """
     if not is_safe_keylog_line(line):
         return False
@@ -117,9 +102,8 @@ def is_nss_keylog_line(line) -> bool:
     return all(f == UNKNOWN_CLIENT_RANDOM or is_hex_field(f) for f in fields)
 
 
-# A data field of a generic keylog line: hex, (signed) decimal, base64 or
-# base64url (``-``/``_``), the ``???`` unknown-client_random placeholder, or a
-# numeric ``<ipv4|[ipv6]>:<port>`` endpoint (MTProto OBF lines record one).
+# Generic keylog data field: hex, signed decimal, base64/base64url, ``???``, or a
+# numeric ``<ipv4|[ipv6]>:<port>`` endpoint (MTProto OBF lines).
 _KEYLOG_FIELD_RE = re.compile(
     r"\?\?\?|-?[0-9]+|[A-Za-z0-9+/]+={0,2}|[A-Za-z0-9_\-]+={0,2}"
     r"|(?:[0-9.]+|\[[0-9A-Fa-f:.]+\]):[0-9]{1,5}")
@@ -128,10 +112,8 @@ _KEYLOG_FIELD_RE = re.compile(
 def is_keylog_shaped_line(line) -> bool:
     """True for a generic ``LABEL <field> [<field> ...]`` keylog line.
 
-    A safe single line (:func:`is_safe_keylog_line`) whose first token is a
-    keylog label (:func:`is_safe_keylog_label`) followed by at least one
-    whitespace-separated hex / decimal / base64 field — no free text. Used to
-    vet lines copied out of untrusted files (a PEM key or prose never matches).
+    A safe single line whose first token is a keylog label followed by at least one
+    hex/decimal/base64 field, no free text. Vets lines from untrusted files (PEM or prose never matches).
     """
     if not is_safe_keylog_line(line):
         return False
@@ -142,11 +124,7 @@ def is_keylog_shaped_line(line) -> bool:
 
 
 def is_valid_keylog_line_for(protocol: str, line) -> bool:
-    """True when *line* is a well-formed keylog line for *protocol*.
-
-    TLS lines must be NSS lines (:func:`is_nss_keylog_line`); every other
-    protocol uses the generic shape check (:func:`is_keylog_shaped_line`).
-    """
+    """True when *line* is a well-formed keylog line for *protocol* (NSS for TLS, else the generic shape)."""
     if protocol == "tls":
         return is_nss_keylog_line(line)
     return is_keylog_shaped_line(line)
@@ -184,11 +162,9 @@ def filter_safe_keylog_lines(lines) -> List[str]:
 
 
 class KeylogFormatter(ABC):
-    """Translates a :class:`KeylogEvent` into Wireshark-loadable keylog lines.
+    """Translates a :class:`KeylogEvent` into keylog lines for exactly one ``protocol``.
 
-    Subclasses bind the formatter to exactly one protocol via the
-    ``protocol`` property — the output handler uses that as an event-bus
-    routing filter (``event.protocol == formatter.protocol``).
+    The output handler routes on ``event.protocol == formatter.protocol``.
     """
 
     @property
@@ -198,25 +174,16 @@ class KeylogFormatter(ABC):
         ...
 
     def header_comment(self) -> Optional[str]:
-        """Optional comment written once when the keylog file is first opened.
-
-        Wireshark dissectors ignore ``#``-prefixed lines, so this is a safe
-        place to put human-readable provenance. Return ``None`` for no header.
-        """
+        """Optional ``#`` comment written once when the file is opened (Wireshark ignores it); ``None`` for no header."""
         return None
 
     def format(self, event: "KeylogEvent") -> List[str]:
-        """Return zero or more keylog lines for *event* (no trailing newlines).
+        """Zero or more keylog lines for *event* (no trailing newlines).
 
-        The default returns ``event.key_data`` as a single line when present.
-        This handles the common case where the agent already produced a
-        protocol-correct line (NSS ``CLIENT_RANDOM …``, OpenSSH-style
-        ``SSH_ENC_KEY_C2S …``, etc.); override for protocols that emit
-        structured payloads (see :class:`SshKeylogFormatter`).
-
-        ``key_data`` comes from the (untrusted) agent: a value that is not a
-        single safe line (CR/LF/NUL/control characters, non-``str``) is dropped
-        with a rate-limited warning instead of being written verbatim.
+        The default returns ``event.key_data`` when the agent already produced a
+        protocol-correct line; override for structured payloads
+        (see :class:`SshKeylogFormatter`). ``key_data`` is untrusted: a value that is
+        not a single safe line is dropped with a rate-limited warning.
         """
         if not event.key_data:
             return []
@@ -225,10 +192,7 @@ class KeylogFormatter(ABC):
     def dedup_key(self, event: "KeylogEvent") -> str:
         """Stable identity for the LRU deduplicator.
 
-        The default joins the formatted lines — correct but calls
-        :meth:`format` a second time. Subclasses on the keylog hot path
-        should override with a cheaper identity (e.g. SSH
-        ``cookie|shared_secret``) to avoid the double-format cost; the
-        built-in TLS/SSH formatters do.
+        The default joins the formatted lines (a second :meth:`format` call);
+        hot-path subclasses override it with a cheaper identity (the built-in TLS/SSH ones do).
         """
         return "\n".join(self.format(event))

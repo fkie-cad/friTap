@@ -15,8 +15,9 @@ import assert from "node:assert/strict";
 import "./frida-test-stubs.js";
 
 import {
-    decodeX64CtxKeylogOffsets, findRipLeaRefs, firstCallAfter, X64_REG,
+    decodeX64CtxKeylogOffsets, findRipLeaRefs, firstCallAfter,
 } from "./x64_xref.js";
+import { X64 } from "./x64_insn.js";
 import { win64SpanIsByReference } from "./call_abi.js";
 
 // ssl_log_secret prologue, CEF 120: push/sub/stack-cookie, then
@@ -52,15 +53,15 @@ const IMAGE_LO = 0x180000000;
 const IMAGE_HI = 0x180000000 + 0x11b00000;
 
 test("decodeX64CtxKeylogOffsets: CEF 120 (cmp [rax+0x1f0],0 form, ssl in rcx)", () => {
-    assert.deepEqual(decodeX64CtxKeylogOffsets(CEF120_PROLOGUE, X64_REG.rcx), { ctxOff: 0x68, cbOff: 0x1f0 });
+    assert.deepEqual(decodeX64CtxKeylogOffsets(CEF120_PROLOGUE, X64.rcx), { ctxOff: 0x68, cbOff: 0x1f0 });
 });
 
 test("decodeX64CtxKeylogOffsets: CEF 156 (keylog_callback moved to 0x238)", () => {
-    assert.deepEqual(decodeX64CtxKeylogOffsets(CEF156_PROLOGUE, X64_REG.rcx), { ctxOff: 0x68, cbOff: 0x238 });
+    assert.deepEqual(decodeX64CtxKeylogOffsets(CEF156_PROLOGUE, X64.rcx), { ctxOff: 0x68, cbOff: 0x238 });
 });
 
 test("decodeX64CtxKeylogOffsets: wrong ssl register (SysV rdi) fails closed", () => {
-    assert.equal(decodeX64CtxKeylogOffsets(CEF120_PROLOGUE, X64_REG.rdi), null);
+    assert.equal(decodeX64CtxKeylogOffsets(CEF120_PROLOGUE, X64.rdi), null);
 });
 
 test("decodeX64CtxKeylogOffsets: SysV load-then-test form", () => {
@@ -72,7 +73,7 @@ test("decodeX64CtxKeylogOffsets: SysV load-then-test form", () => {
         0x48, 0x85, 0xc0,
         0x74, 0x10,
     ]);
-    assert.deepEqual(decodeX64CtxKeylogOffsets(code, X64_REG.rdi), { ctxOff: 0x68, cbOff: 0x250 });
+    assert.deepEqual(decodeX64CtxKeylogOffsets(code, X64.rdi), { ctxOff: 0x68, cbOff: 0x250 });
 });
 
 test("decodeX64CtxKeylogOffsets: follows a mov copy of the ssl register", () => {
@@ -82,7 +83,7 @@ test("decodeX64CtxKeylogOffsets: follows a mov copy of the ssl register", () => 
         0x48, 0x8b, 0x46, 0x68,
         0x48, 0x83, 0xb8, 0xf0, 0x01, 0x00, 0x00, 0x00,
     ]);
-    assert.deepEqual(decodeX64CtxKeylogOffsets(code, X64_REG.rcx), { ctxOff: 0x68, cbOff: 0x1f0 });
+    assert.deepEqual(decodeX64CtxKeylogOffsets(code, X64.rcx), { ctxOff: 0x68, cbOff: 0x1f0 });
 });
 
 test("decodeX64CtxKeylogOffsets: cmp against a non-zero immediate is rejected", () => {
@@ -90,7 +91,7 @@ test("decodeX64CtxKeylogOffsets: cmp against a non-zero immediate is rejected", 
         0x48, 0x8b, 0x41, 0x68,
         0x48, 0x83, 0xb8, 0xf0, 0x01, 0x00, 0x00, 0x05,
     ]);
-    assert.equal(decodeX64CtxKeylogOffsets(code, X64_REG.rcx), null);
+    assert.equal(decodeX64CtxKeylogOffsets(code, X64.rcx), null);
 });
 
 test("decodeX64CtxKeylogOffsets: implausible ctx offset is rejected", () => {
@@ -99,12 +100,12 @@ test("decodeX64CtxKeylogOffsets: implausible ctx offset is rejected", () => {
         0x48, 0x8b, 0x81, 0x00, 0x40, 0x00, 0x00,
         0x48, 0x83, 0xb8, 0xf0, 0x01, 0x00, 0x00, 0x00,
     ]);
-    assert.equal(decodeX64CtxKeylogOffsets(code, X64_REG.rcx), null);
+    assert.equal(decodeX64CtxKeylogOffsets(code, X64.rcx), null);
 });
 
 test("findRipLeaRefs: finds the real CEF 156 label LEA and its register (rdx)", () => {
     const refs = findRipLeaRefs(CEF156_SITE, CEF156_SITE_VA, new Set([LABEL_VA]));
-    assert.deepEqual(refs, [{ site: CEF156_SITE_VA, target: LABEL_VA, reg: X64_REG.rdx }]);
+    assert.deepEqual(refs, [{ site: CEF156_SITE_VA, target: LABEL_VA, reg: X64.rdx }]);
 });
 
 test("findRipLeaRefs: ignores LEAs to other targets", () => {
@@ -118,7 +119,7 @@ test("findRipLeaRefs: scanEnd excludes LEAs starting in the overlap tail", () =>
 test("findRipLeaRefs: negative displacement", () => {
     // lea rdx,[rip-0x10] at va 0x1000 -> target 0x1000 + 7 - 0x10 = 0xff7
     const code = Uint8Array.from([0x48, 0x8d, 0x15, 0xf0, 0xff, 0xff, 0xff]);
-    assert.deepEqual(findRipLeaRefs(code, 0x1000, new Set([0xff7])), [{ site: 0x1000, target: 0xff7, reg: X64_REG.rdx }]);
+    assert.deepEqual(findRipLeaRefs(code, 0x1000, new Set([0xff7])), [{ site: 0x1000, target: 0xff7, reg: X64.rdx }]);
 });
 
 test("findRipLeaRefs: REX.R LEA (lea r8, ...) reports reg 8", () => {
@@ -161,7 +162,7 @@ test("findRipLeaRefs: several LEAs in one buffer, only target hits reported", ()
     ]);
     const va = 0x5000;
     assert.deepEqual(findRipLeaRefs(code, va, new Set([va + 0x19, va + 0x30])), [
-        { site: va + 2, target: va + 0x19, reg: X64_REG.rdx },
-        { site: va + 9, target: va + 0x30, reg: X64_REG.rcx },
+        { site: va + 2, target: va + 0x19, reg: X64.rdx },
+        { site: va + 9, target: va + 0x30, reg: X64.rcx },
     ]);
 });

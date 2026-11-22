@@ -121,6 +121,7 @@
       "to_dict": {
        "alpn": "",
        "cipher": "TLS_AES_256_GCM_SHA384",
+       "client_random": "11a3e6eb00d8544c3f5ce2bb240fca6f091bc5b1b4ed61b7840018af102c45d2",
        "depth": 0,
        "library": "",
        "name": "tls",
@@ -347,6 +348,7 @@
       "to_dict": {
        "alpn": "",
        "cipher": "TLS_AES_256_GCM_SHA384",
+       "client_random": "89e2d61413f4f5f66140184b1badf8e76fe7a886677ce648824f76e1edf088c9",
        "depth": 0,
        "library": "",
        "name": "tls",

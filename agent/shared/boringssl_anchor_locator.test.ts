@@ -26,6 +26,7 @@ import {
     pickAgreedCallee,
     collectLabelVotes,
     BORINGSSL_KEYLOG_LABELS,
+    isPlausibleFunctionEntry,
 } from "./boringssl_anchor_locator.js";
 
 // ---- arm64 instruction-word builders (little pieces, verified below) --------
@@ -387,6 +388,96 @@ test("real libhttpengine ssl_log_secret (movi before the ssl alias) decodes s3=0
     assert.deepEqual(decodeRealLayout(HTTPENGINE_SSL_LOG_SECRET), { s3Off: 0x30, crOff: 0x30, lengthArgSeen: true });
 });
 
+// ---- outlined register-save / move stubs (Flutter's machine outliner) -----
+
+const STP_X22_X21 = 0xa90557f6;   // stp x22, x21, [sp, #0x50]
+const STP_X20_X19 = 0xa9064ff4;   // stp x20, x19, [sp, #0x60]
+/** stubWordsAt resolver: the given stub for the BL at `index`, nothing elsewhere. */
+const stubAt = (index: number, stub: number[]) => (i: number) => (i === index ? stub : null);
+
+test("a BL into an outlined `mov x19, x0; mov x0, x1; ret` stub keeps ssl in x19", () => {
+    const words = [...HEAD, BL, BL, ldr64(8, 19, 0x30), movW(2, 0x20), add64(1, 8, 0x30), BL, RET];
+    const stub = [mov64(19, 0), mov64(0, 1), RET];
+    assert.equal(decodeSslLogSecretLayout(words, CTX_OFF), null);
+    assert.deepEqual(decodeSslLogSecretLayout(words, CTX_OFF, stubAt(4, stub)),
+        { s3Off: 0x30, crOff: 0x30, lengthArgSeen: true });
+});
+
+test("a BL into an stp-only register-save stub does not clobber x0", () => {
+    const words = [...HEAD, BL, ldr64(9, 0, 0x30), add64(1, 9, 0x30), RET];
+    assert.deepEqual(decodeSslLogSecretLayout(words, CTX_OFF, stubAt(4, [STP_X22_X21, STP_X20_X19, RET])),
+        { s3Off: 0x30, crOff: 0x30, lengthArgSeen: false });
+});
+
+test("a stub that overwrites the alias drops it", () => {
+    const words = [...HEAD, mov64(19, 0), BL, ldr64(8, 19, 0x30), add64(1, 8, 0x30), RET];
+    assert.equal(decodeSslLogSecretLayout(words, CTX_OFF, stubAt(5, [mov64(19, 1), RET])), null);
+});
+
+test("callees that are not tiny move/save stubs still clobber like real calls", () => {
+    const words = [...HEAD, BL, ldr64(9, 0, 0x30), add64(1, 9, 0x30), RET];
+    const notStubs = [
+        [add64(1, 0, 8), RET],                                  // arithmetic, not a move
+        [mov64(2, 0), mov64(3, 1)],                             // no RET
+        [...new Array(8).fill(mov64(2, 3)), RET],               // 9 instructions: too long
+        [0xa9bf7bfd, mov64(29, 31), RET],                       // stp with writeback (a real prologue)
+    ];
+    for (const stub of notStubs) assert.equal(decodeSslLogSecretLayout(words, CTX_OFF, stubAt(4, stub)), null);
+});
+
+// ssl_log_secret from a release Flutter app's arm64 libflutter.so (BoringSSL
+// c7eb007f, @0x77d778, 57 words up to the next function). The machine outliner
+// moved `mov x19, x0` into the stub at 0xaaab18 (word 6's callee).
+const FLUTTER_SSL_LOG_SECRET: number[] = [
+    0xd101c3ff, 0xa9045ffe, 0x940cb475, 0xf9403408, 0xf9413508, 0xb4000608, 0x940cb4e2, 0x940c8f94,
+    0xa9007fff, 0x940d7321, 0x8b140408, 0xaa0003f7, 0x910043e0, 0x91010d01, 0x97ff0379, 0x34000440,
+    0x910043e0, 0x940cb758, 0x97ff04ba, 0x340003c0, 0x910043e0, 0x940d2a04, 0x34000360, 0xf9401a68,
+    0x910043e0, 0x52800402, 0x9100c101, 0x9400001e, 0x360002a0, 0x910043e0, 0x940d29fb, 0x34000240,
+    0x910043e0, 0x940cb4b0, 0x94000017, 0x360001c0, 0x910043e0, 0x940cbae2, 0x34000160, 0x940cbec8,
+    0x97ff08b6, 0x36000100, 0xf9403668, 0xf94003e1, 0xaa1303e0, 0xf9413508, 0xd63f0100, 0x52800033,
+    0x14000002, 0x2a1f03f3, 0x940cde48, 0x940cee3d, 0x14000002, 0x52800033, 0x940caf2c, 0xa9445ffe,
+    0x140cb45f,
+];
+// First 8 callee words of every BL in FLUTTER_SSL_LOG_SECRET, by word index.
+const FLUTTER_BL_CALLEES: { [index: number]: number[] } = {
+    2: [0xa90557f6, 0xa9064ff4, 0xd65f03c0, 0xaa0103f4, 0xaa0003f3, 0xd65f03c0, 0xaa0003e2, 0xaa0103e3],
+    6: [0xaa0003f3, 0xaa0103e0, 0xd65f03c0, 0xaa0003f3, 0x91002001, 0xd65f03c0, 0x910283ff, 0xd65f03c0],
+    7: [0xaa0303f4, 0xaa0203f5, 0xaa0103f6, 0xd65f03c0, 0xa95657f6, 0xa9555ff8, 0xa95467fa, 0xd65f03c0],
+    9: [0xf0000350, 0xf9418e11, 0x910c6210, 0xd61f0220, 0xf0000350, 0xf9419211, 0x910c8210, 0xd61f0220],
+    14: [0xf81e0ffe, 0xa9014ff4, 0x6f00e400, 0x940db134, 0x940e25e3, 0xaa0103e0, 0x94005f0f, 0xb4000054],
+    17: [0xaa1603e1, 0xaa1703e2, 0xd65f03c0, 0x910303e0, 0x17f3d496, 0x910303e0, 0x17e97b38, 0xf900011f],
+    18: [0xf81e0ffe, 0xa9014ff4, 0x940de3eb, 0xaa0203f3, 0x9400000a, 0x340000c0, 0xb4000093, 0xf94007e0],
+    21: [0x52800401, 0x17f1daed, 0xf9401a60, 0x17e88e8e, 0xf94007e0, 0x17ee5747, 0xf94007e0, 0x17ec3ab3],
+    27: [0xd10103ff, 0xa9015ffe, 0x940cb517, 0xaa0203f3, 0xd37ff842, 0x940ce87b, 0x97ff049b, 0x2a0003f5],
+    30: [0x52800401, 0x17f1daed, 0xf9401a60, 0x17e88e8e, 0xf94007e0, 0x17ee5747, 0xf94007e0, 0x17ec3ab3],
+    33: [0xaa1503e1, 0xaa1403e2, 0xd65f03c0, 0x910023e1, 0xaa1303e0, 0xd65f03c0, 0xf9400000, 0xf9400008],
+    34: [0xd10103ff, 0xa9015ffe, 0x940cb517, 0xaa0203f3, 0xd37ff842, 0x940ce87b, 0x97ff049b, 0x2a0003f5],
+    37: [0x2a1f03e1, 0x17f249ff, 0xaa1303e0, 0x17f43359, 0xaa0303f5, 0xaa0203f6, 0xd65f03c0, 0xf9400289],
+    39: [0x910043e0, 0x910003e1, 0xd65f03c0, 0x1e204100, 0x1e204121, 0xd65f03c0, 0xaa1403e1, 0xaa1503e2],
+    40: [0xd100c3ff, 0xf9000bfe, 0xa9024ff4, 0xaa0103f4, 0x940dc7a6, 0x97fffac4, 0x2a0003f3, 0x340000c0],
+    50: [0x910003e0, 0x17f22997, 0x910003e0, 0x17eeb8aa, 0x52801001, 0x1400951b, 0xf9400268, 0x9102e3e1],
+    51: [0x910043e0, 0x17f2152b, 0x910043e0, 0x910523e1, 0xbd014be0, 0xbd014fe1, 0xbd0153e2, 0xbd0157e3],
+    54: [0x2a1303e0, 0xa9464ff4, 0xa94557f6, 0xd65f03c0, 0x2a0203f3, 0x2a0103f4, 0xaa0003f5, 0xd65f03c0],
+};
+
+test("real libflutter.so ssl_log_secret decodes s3=0x30, client_random=0x30 through outlined stubs", () => {
+    const ctx = decodeCtxKeylogOffsets(FLUTTER_SSL_LOG_SECRET.slice(0, 12));
+    assert.deepEqual(ctx, { ctxOff: 0x68, cbOff: 0x268 });
+    assert.equal(decodeSslLogSecretLayout(FLUTTER_SSL_LOG_SECRET, ctx!.ctxOff), null);
+    assert.deepEqual(decodeSslLogSecretLayout(FLUTTER_SSL_LOG_SECRET, ctx!.ctxOff, (i) => FLUTTER_BL_CALLEES[i] ?? null),
+        { s3Off: 0x30, crOff: 0x30, lengthArgSeen: true });
+});
+
+test("Chromium-shaped real bodies decode identically when every BL callee is a real function", () => {
+    // A full prologue (paciasp; sub sp; stp x29, x30) is never a stub.
+    const realCallee = () => [PACIASP, 0xd10203ff, 0xa9047bfd, 0x910103fd, RET];
+    for (const words of [MONOCHROME_SSL_LOG_SECRET, CRONET_SSL_LOG_SECRET, HTTPENGINE_SSL_LOG_SECRET]) {
+        const ctx = decodeCtxKeylogOffsets(words.slice(0, 12))!;
+        assert.deepEqual(decodeSslLogSecretLayout(words, ctx.ctxOff, realCallee),
+            decodeSslLogSecretLayout(words, ctx.ctxOff));
+    }
+});
+
 // ---- readInstructionWords: one readability walk + one readByteArray --------
 
 import { readInstructionWords, readableByteCount } from "./boringssl_anchor_locator.js";
@@ -400,6 +491,8 @@ function memPtr(addr: bigint, memory: Map<bigint, number>, reads: { count: numbe
         compare: (o: any) => (addr < o.value ? -1 : addr > o.value ? 1 : 0),
         toUInt32: () => Number(addr & 0xffffffffn),
         toString: () => "0x" + addr.toString(16),
+        // findRange untags first; these test addresses carry no tag.
+        and: () => p,
         readU32: () => { throw new Error("per-word readU32 must not be used"); },
         readByteArray: (len: number) => {
             reads.count++;
@@ -415,7 +508,7 @@ function memPtr(addr: bigint, memory: Map<bigint, number>, reads: { count: numbe
     return p;
 }
 
-/** Install BigInt-aware ptr() and findRangeByAddress() for `ranges`, run fn, restore. */
+/** Install BigInt-aware ptr() and findRangeByAddress() (findRange's fallback) for `ranges`, run fn, restore. */
 function withRanges(ranges: { base: bigint; size: bigint; protection: string }[], fn: (mem: Map<bigint, number>, reads: { count: number }) => void): void {
     const savedPtr = G.ptr;
     const savedFind = G.Process.findRangeByAddress;
@@ -457,4 +550,30 @@ test("readInstructionWords follows adjacent readable mappings but not a non-read
         assert.equal(readableByteCount(G.ptr(0x1004), 64), 0xc);
         assert.equal(readInstructionWords(G.ptr(0x1004), 16).length, 3);
     });
+});
+
+// ---- field-dump attach target must be a function entry ----------------------
+
+/** A code pointer at `addr` whose first word is `word` (or unreadable). */
+const codePtr = (addr: number, word: number | null): any => ({
+    addr,
+    equals: (o: any) => o.addr === addr,
+    readU32: () => { if (word === null) throw new Error("unmapped"); return word; },
+});
+
+test("isPlausibleFunctionEntry: an eh_frame function start is an entry", () => {
+    const p = codePtr(0x1000, NOP);
+    assert.ok(isPlausibleFunctionEntry(p, { bounds: () => ({ start: p, end: null }) }));
+});
+
+test("isPlausibleFunctionEntry: mid-function without a prologue word is rejected", () => {
+    const p = codePtr(0x1040, NOP);
+    assert.equal(isPlausibleFunctionEntry(p, { bounds: () => ({ start: codePtr(0x1000, NOP), end: null }) }), false);
+    assert.equal(isPlausibleFunctionEntry(p, null), false);
+    assert.equal(isPlausibleFunctionEntry(codePtr(0x1040, null), null), false);
+});
+
+test("isPlausibleFunctionEntry: a prologue word passes without eh_frame coverage", () => {
+    assert.ok(isPlausibleFunctionEntry(codePtr(0x1000, PACIASP), null));
+    assert.ok(isPlausibleFunctionEntry(codePtr(0x1000, 0xd101c3ff /* sub sp, sp, #0x70 */), { bounds: () => null }));
 });

@@ -7,6 +7,7 @@
 #   ./dev/macos_verify/verify.sh              # run every applicable check
 #   ./dev/macos_verify/verify.sh --keep       # keep the work dir for inspection
 #   ./dev/macos_verify/verify.sh --list       # show the checks and exit
+#   ./dev/macos_verify/verify.sh --chromium-only  # only the chrome:* / electron:* checks
 #
 # Exits non-zero if any check fails. Every check prints the numbers it asserted
 # on, so a pass is auditable rather than a bare "ok".
@@ -23,10 +24,12 @@ RIG_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 KEEP_WORKDIR=0
 LIST_ONLY=0
+CHROMIUM_ONLY=0
 for arg in "$@"; do
     case "$arg" in
         --keep) KEEP_WORKDIR=1 ;;
         --list) LIST_ONLY=1 ;;
+        --chromium-only) CHROMIUM_ONLY=1 ;;
         -h|--help) sed -n '2,20p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) echo "unknown option: $arg" >&2; exit 2 ;;
     esac
@@ -40,6 +43,9 @@ FAILED_NAMES=()
 # Processes we start, killed by the EXIT trap so a failed check never leaks a
 # TLS server or a half-instrumented target into the user's machine.
 STARTED_PIDS=()
+# Long-running friTaps (chromium_checks.sh start_fritap): the EXIT trap stops
+# them with SIGINT first so they detach instead of staying attached.
+FRITAP_PIDS=()
 
 # ---------------------------------------------------------------------------
 # output helpers
@@ -62,6 +68,10 @@ fail()    {
 }
 
 cleanup() {
+    # Before the targets die, so friTap detaches rather than losing its session.
+    for pid in ${FRITAP_PIDS+"${FRITAP_PIDS[@]}"}; do
+        alive "$pid" && stop_fritap "$pid"
+    done
     for pid in ${STARTED_PIDS+"${STARTED_PIDS[@]}"}; do
         kill -9 "$pid" 2>/dev/null
     done
@@ -69,6 +79,8 @@ cleanup() {
     # and tls_fork spawns a child of its own).
     pkill -9 -f "$WORK/tls_client" 2>/dev/null
     pkill -9 -f "$WORK/tls_fork" 2>/dev/null
+    # The separate Chrome instance of the chrome:* checks, helpers included.
+    pkill -9 -f "$WORK/chrome_ud" 2>/dev/null
     # friTap writes its debug log into the cwd it was started from, i.e. the repo
     # root. Remove only the ones this run created — a concurrent friTap session
     # may legitimately own others.
@@ -110,6 +122,20 @@ run_bounded() {
     return $rc
 }
 
+# fritap_cmd <fritap args...>: friTap from this checkout, run from the repo root,
+# unbuffered. It execs python, so call it only in a background job or subshell
+# (then `$!` is friTap itself); in the foreground it would replace this script.
+fritap_cmd() {
+    exec env PYTHONUNBUFFERED=1 FRITAP_VERIFY_CWD="$REPO_ROOT" \
+        python -c 'import os, runpy, signal, sys
+# Background jobs of a non-interactive shell start with SIGINT ignored; restore
+# it so a SIGINT before friTap installs its own handler still stops it.
+signal.signal(signal.SIGINT, signal.default_int_handler)
+os.chdir(os.environ["FRITAP_VERIFY_CWD"])
+sys.argv = ["fritap"] + sys.argv[1:]
+runpy.run_module("friTap.friTap", run_name="__main__")' "$@"
+}
+
 # run_fritap <seconds> <outfile> <fritap args...>
 #
 # friTap runs until interrupted, so every capture check is bounded and the
@@ -118,23 +144,36 @@ run_bounded() {
 run_fritap() {
     local seconds=$1 outfile=$2
     shift 2
-    run_bounded "$seconds" "$outfile" \
-        env PYTHONUNBUFFERED=1 FRITAP_VERIFY_CWD="$REPO_ROOT" \
-        python -c 'import os, runpy, sys
-os.chdir(os.environ["FRITAP_VERIFY_CWD"])
-sys.argv = ["fritap"] + sys.argv[1:]
-runpy.run_module("friTap.friTap", run_name="__main__")' "$@"
+    run_bounded "$seconds" "$outfile" fritap_cmd "$@"
 }
 
 # A keylog file is only good if it has lines AND every line is well formed.
 # `readKeylogLine` once appended heap garbage past the NUL terminator, which
 # produced a plausible-looking file full of unusable keys — hence both checks.
 count_keys()      { [ -f "$1" ] && wc -l < "$1" | tr -d ' ' || echo 0; }
+# count_malformed <keylog> [line regex]: lines not matching the regex (default: upper-case hex).
 count_malformed() {
     [ -f "$1" ] || { echo 0; return; }
-    grep -cvE '^[A-Z_0-9]+ [0-9A-F]+ [0-9A-F]+$' "$1" || true
+    grep -cvE "${2:-^[A-Z_0-9]+ [0-9A-F]+ [0-9A-F]+\$}" "$1" || true
 }
 alive() { kill -0 "$1" 2>/dev/null; }
+
+# stop_fritap <pid> [outfile]: SIGINT (clean detach), SIGKILL after 25 s as a
+# last resort. Sets FRITAP_DETACHED=1 only if friTap exited on its own within
+# the bound AND logged the SIGINT teardown; FRITAP_RC is its exit status.
+FRITAP_STOP_SECONDS=25
+stop_fritap() {
+    local pid=$1 outfile=${2:-} deadline=$((SECONDS + FRITAP_STOP_SECONDS)) killed=0
+    FRITAP_DETACHED=0
+    kill -INT "$pid" 2>/dev/null
+    while alive "$pid" && [ $SECONDS -lt $deadline ]; do sleep 1; done
+    if alive "$pid"; then kill -9 "$pid" 2>/dev/null; killed=1; fi
+    wait "$pid" 2>/dev/null
+    FRITAP_RC=$?
+    if [ "$killed" = 0 ] && [ -n "$outfile" ] && grep -q "Ctrl+C detected" "$outfile" 2>/dev/null; then
+        FRITAP_DETACHED=1
+    fi
+}
 
 # ---------------------------------------------------------------------------
 # checks
@@ -152,7 +191,37 @@ CHECK_NAMES=(
     "capture:openssl-python     a non-system libssl (Homebrew/pyenv OpenSSL) is hooked"
     "list:exits                 -ll lists libraries and exits without a capture"
     "gating:second-script       a gated child process is instrumented too"
+    "chrome:keys                Chrome framework keys via the anchor locator (separate Chrome instance)"
+    "chrome:plaintext           Chrome TCP plaintext: the nonce URL is in the .tap"
+    "chrome:quic                Chrome QUICHE STREAM-frame hooks produce QUIC flows"
+    "chrome:pages-load          pages load while attached; Chrome survives the detach"
+    "chrome:learned-cache       a second attach hooks from the learned-offsets cache"
+    "electron:hooks             a running Electron network helper gets keylog/plaintext/QUIC hooks"
 )
+
+if [ -f "$RIG_DIR/chromium_checks.sh" ]; then
+    # shellcheck source=chromium_checks.sh
+    . "$RIG_DIR/chromium_checks.sh"
+else
+    run_chrome_checks() {
+        local c
+        for c in keys plaintext quic pages-load learned-cache; do skip "chrome:$c  chromium_checks.sh is missing"; done
+    }
+    run_electron_checks() { skip "electron:hooks             chromium_checks.sh is missing"; }
+fi
+
+print_summary_and_exit() {
+    section "summary"
+    printf '%d passed, %d failed, %d skipped\n' "$PASS_COUNT" "$FAIL_COUNT" "$SKIP_COUNT"
+    if [ "$FAIL_COUNT" -gt 0 ]; then
+        printf '\nfailed checks:\n'
+        for name in ${FAILED_NAMES+"${FAILED_NAMES[@]}"}; do printf '  - %s\n' "$name"; done
+        printf '\nRe-run with --keep to inspect the raw output in the work dir.\n'
+        exit 1
+    fi
+    printf '%sAll applicable checks passed.%s\n' "$C_OK" "$C_OFF"
+    exit 0
+}
 
 if [ "$LIST_ONLY" = "1" ]; then
     printf 'checks:\n'
@@ -194,6 +263,12 @@ trap cleanup EXIT
 touch "$WORK/.started"
 detail "work dir $WORK"
 
+if [ "$CHROMIUM_ONLY" = "1" ]; then
+    run_chrome_checks
+    run_electron_checks
+    print_summary_and_exit
+fi
+
 # ---------------------------------------------------------------------------
 section "repo checks"
 # ---------------------------------------------------------------------------
@@ -208,14 +283,16 @@ fi
 # The bundle is what actually runs in the target; a stale one silently
 # exercises old code, and `tsc --noEmit` does NOT catch what frida-compile
 # rejects. A failed build also leaves the previous bundle in place, so the
-# "done. Agent:" line is the only trustworthy signal.
+# "done. intercept agent:" and "all requested bundles built." lines are the
+# only trustworthy signal.
 if ( cd "$REPO_ROOT" && ./dev/compile_agent.sh >"$WORK/build1.out" 2>&1 ) \
-   && grep -q "done. Agent:" "$WORK/build1.out"; then
+   && grep -q "done. intercept agent:" "$WORK/build1.out" \
+   && grep -q "all requested bundles built." "$WORK/build1.out"; then
     HASH1=$(md5 -q "$REPO_ROOT/friTap/fritap_agent.js")
     ( cd "$REPO_ROOT" && ./dev/compile_agent.sh >"$WORK/build2.out" 2>&1 )
     HASH2=$(md5 -q "$REPO_ROOT/friTap/fritap_agent.js")
     if [ "$HASH1" = "$HASH2" ]; then
-        pass "repo:agent-build           deterministic ($(grep -o 'Agent: *[0-9]*' "$WORK/build1.out" | tr -s ' ') bytes)"
+        pass "repo:agent-build           deterministic ($(grep -o 'intercept agent: *[0-9]*' "$WORK/build1.out" | tr -s ' ') bytes)"
     else
         fail "repo:agent-build           two builds differ ($HASH1 vs $HASH2)"
     fi
@@ -487,15 +564,7 @@ else
     fi
 fi
 
-# ---------------------------------------------------------------------------
-section "summary"
-# ---------------------------------------------------------------------------
+run_chrome_checks
+run_electron_checks
 
-printf '%d passed, %d failed, %d skipped\n' "$PASS_COUNT" "$FAIL_COUNT" "$SKIP_COUNT"
-if [ "$FAIL_COUNT" -gt 0 ]; then
-    printf '\nfailed checks:\n'
-    for name in ${FAILED_NAMES+"${FAILED_NAMES[@]}"}; do printf '  - %s\n' "$name"; done
-    printf '\nRe-run with --keep to inspect the raw output in the work dir.\n'
-    exit 1
-fi
-printf '%sAll applicable checks passed.%s\n' "$C_OK" "$C_OFF"
+print_summary_and_exit

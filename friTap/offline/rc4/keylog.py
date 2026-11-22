@@ -1,13 +1,9 @@
 """Read a friTap RC4 keylog into trial-decrypt candidate keys.
 
-ALL line-format knowledge is delegated to
-:mod:`friTap.protocols.rc4_keylog_spec` (the single source of truth shared with
-the live ``Rc4KeylogFormatter``) via its :func:`parse_line`, so this reader can
-never drift from the writer. Each ``RC4_KEY`` line becomes one
-``(source, key_bytes)`` candidate tuple in the shape :func:`trial_decrypt`
-consumes; the ``source`` carries the recovering hook + direction hint for
-provenance. Duplicate keys are preserved here (de-duplication happens once in
-:func:`~friTap.offline.rc4.decrypt.materialize_candidates`).
+Parsing is shared with the live writer via
+:func:`friTap.protocols.rc4_keylog_spec.parse_line`. Each ``RC4_KEY`` line is one
+candidate; duplicates are removed later in
+:func:`~friTap.offline.rc4.decrypt.materialize_candidates`.
 """
 
 from __future__ import annotations

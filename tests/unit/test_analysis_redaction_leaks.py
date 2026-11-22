@@ -43,9 +43,9 @@ from friTap.analysis.redaction import (
 from friTap.analysis.reporters import JsonReporter, MarkdownReporter
 from friTap.commands.analyze import analyze_tap_report, run_analyze_cli
 from friTap.flow.models import Flow, FlowChunk, FlowState
-from friTap.flow.tap_writer import TapWriter
 from friTap.parsers.base import ParseResult
 from friTap.pipeline import TLS_KEYLOG_LABELS
+from tests.unit._tui_flow_helpers import write_tap
 
 HOST = "api.example.com"
 EMAIL = "alice.secret@example.org"
@@ -89,12 +89,7 @@ def _http_flow(flow_id: str = "leak-1", *, url: str = REQUEST_URL, body: bytes |
 
 
 def _write_tap(path: Path, flows: list[Flow]) -> str:
-    writer = TapWriter()
-    writer.open(str(path), target="test")
-    for flow in flows:
-        writer.write_flow(flow)
-    writer.close()
-    return str(path)
+    return str(write_tap(path, flows))
 
 
 def _leaked(text: str) -> list[str]:

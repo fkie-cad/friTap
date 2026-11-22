@@ -1,7 +1,7 @@
 /**
  * Minimal bounded-size cache helpers for the Frida agent.
  *
- * LruMap: Map-backed LRU cache — promotes entries on access.
+ * LruMap: Map-backed LRU cache — get()/set() promote; peek()/has() do not.
  * FifoSet: Set-backed FIFO cache — no hit promotion (oldest evicted first).
  *
  * Both leverage JS Map/Set insertion-order guarantees (ECMAScript spec).
@@ -22,6 +22,15 @@ export class LruMap<K, V> {
             this._map.set(key, val);
         }
         return val;
+    }
+
+    /** Read without promoting: membership checks must not reorder eviction. */
+    peek(key: K): V | undefined {
+        return this._map.get(key);
+    }
+
+    has(key: K): boolean {
+        return this._map.has(key);
     }
 
     set(key: K, value: V): void {
@@ -49,6 +58,16 @@ export class LruMap<K, V> {
 
     get size(): number {
         return this._map.size;
+    }
+
+    /** The least recently used entry, without promoting it. */
+    oldest(): [K, V] | undefined {
+        return this._map.entries().next().value;
+    }
+
+    /** Snapshot of the entries, oldest first, without promoting any of them. */
+    entries(): [K, V][] {
+        return Array.from(this._map.entries());
     }
 }
 

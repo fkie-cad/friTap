@@ -1,19 +1,11 @@
 """Suggest a keylog for a pcap and sniff which picker protocol a keylog is for.
 
-Pure helpers (no TUI code) used by the pcap-to-tap wizard:
-
-  * :func:`suggest_keylog_for_pcap` looks for a sibling ``*key*.log`` /
-    ``*key*.keylog`` file captured alongside the pcap — first by a matching
-    timestamp in the filename, then by the file times closest to the capture.
-  * With the capture's client randoms (``capture_crs``), candidates are first
-    ranked by CONTENT — how many of those client randoms each keylog covers
-    (:func:`rank_keylogs_by_coverage`); :func:`suggest_keylog_with_evidence`
-    also reports that count for the hint.
-  * :func:`sniff_keylog_protocol` reads the first lines of a keylog and returns
-    the keylog-picker entry (``tls`` / ``custom`` / ``mtproto`` / ``signal``) it
-    belongs to.
-
-Both are total: any I/O or parse failure yields ``None``, never an exception.
+Pure helpers (no TUI code) for the pcap-to-tap wizard.
+:func:`suggest_keylog_for_pcap` picks a sibling ``*key*.log``/``*key*.keylog``
+file: by client-random coverage when ``capture_crs`` is given, else by filename
+timestamp, else by file time. :func:`sniff_keylog_protocol` maps a keylog to its
+picker entry (``tls``/``custom``/``mtproto``/``signal``). Both return ``None``
+on any I/O or parse failure, never raise.
 """
 
 from __future__ import annotations
@@ -65,10 +57,6 @@ _MAX_LINE_CHARS = 8192
 MAX_RANK_KEYLOG_BYTES = 4 * 1024 * 1024
 
 
-# --------------------------------------------------------------------------
-# Filename timestamp tokens
-# --------------------------------------------------------------------------
-
 def _datetime_from_groups(groups: Tuple[Optional[str], ...]) -> Optional[datetime]:
     """Build a datetime from ``(Y, M, D, h, m, s?)`` regex groups, or ``None``."""
     try:
@@ -114,19 +102,10 @@ def _timestamp_token(name: str) -> Optional[datetime]:
     return None
 
 
-# --------------------------------------------------------------------------
-# Keylog suggestion
-# --------------------------------------------------------------------------
-
 def _looks_like_keylog_name(name: str) -> bool:
     """True for ``*key*.log`` / ``*key*.keylog`` filenames (case-insensitive)."""
     lowered = name.lower()
     return "key" in lowered and lowered.endswith(KEYLOG_EXTENSIONS)
-
-
-def _normalized(path: str) -> str:
-    """Canonical form of *path* for identity comparisons."""
-    return canonical_keylog_path(path)
 
 
 TimeWindow = Tuple[float, float]
@@ -160,16 +139,14 @@ def _candidate_mtime(entry: "os.DirEntry[str]") -> Optional[float]:
 def _keylog_candidates(directory: str, excluded: set) -> Dict[str, float]:
     """Sorted ``{name: mtime}`` of keylog-looking regular files in *directory*.
 
-    Names are filtered before any stat call; each candidate is stat'ed once and
-    its mtime cached for the time-matching step. *excluded* paths are skipped.
-    The keylog's LAST write is what counts: a long-lived keylog that is appended
-    to across many sessions was created long before, so its creation time says
-    nothing about this capture.
+    Names are filtered before any stat call and each candidate is stat'ed once.
+    *excluded* paths are skipped. Only the last write (mtime) counts: an appended
+    long-lived keylog's creation time says nothing about this capture.
     """
     candidates: Dict[str, float] = {}
     with os.scandir(directory) as entries:
         for entry in entries:
-            if not _looks_like_keylog_name(entry.name) or _normalized(entry.path) in excluded:
+            if not _looks_like_keylog_name(entry.name) or canonical_keylog_path(entry.path) in excluded:
                 continue
             mtime = _candidate_mtime(entry)
             if mtime is not None:
@@ -279,8 +256,8 @@ def _suggest(
 ) -> Optional[Suggestion]:
     """Core of :func:`suggest_keylog_with_evidence` (may raise on I/O errors)."""
     pcap_abs = os.path.abspath(pcap_path)
-    excluded = {_normalized(p) for p in exclude if p}
-    excluded.add(_normalized(pcap_abs))
+    excluded = {canonical_keylog_path(p) for p in exclude if p}
+    excluded.add(canonical_keylog_path(pcap_abs))
     mtimes = _keylog_candidates(os.path.dirname(pcap_abs), excluded)
     if not mtimes:
         return None
@@ -324,39 +301,14 @@ def suggest_keylog_for_pcap(
 ) -> Optional[str]:
     """Suggest a sibling keylog for *pcap_path*, or ``None``.
 
-    Candidates are regular files next to the pcap whose lowercased name
-    contains ``key`` and ends with ``.log``/``.keylog`` (minus *exclude* and the
-    pcap itself). With *capture_crs*, the candidate covering the most of those
-    client randoms wins (ties broken as below). Otherwise a filename-timestamp
-    match within *max_delta_s* wins; else the candidate whose last write is
-    closest to the pcap's capture window (creation .. last modification),
-    within *max_delta_s*. The result is
+    Candidates are regular files next to the pcap named ``*key*.log``/``*key*.keylog``
+    (case-insensitive), minus *exclude* and the pcap. Priority: most *capture_crs*
+    covered, then filename timestamp, then last write closest to the capture
+    window; time matches must be within *max_delta_s*. Returns
     ``os.path.join(os.path.dirname(pcap_path), name)``.
     """
     suggestion = suggest_keylog_with_evidence(pcap_path, exclude, max_delta_s, capture_crs)
     return None if suggestion is None else suggestion.path
-
-
-# --------------------------------------------------------------------------
-# Keylog protocol sniffing
-# --------------------------------------------------------------------------
-
-def _is_mtproto_line(line: str) -> bool:
-    """True when any canonical MTProto keylog parser accepts *line*.
-
-    The MTProto keylog reuses one file for three labels — ``MTPROTO_AUTH_KEY``
-    (cloud), ``MTPROTO_E2E_KEY`` (secret chat) and ``MTPROTO_OBF_KEY``
-    (obfuscated-transport CTR state). A file may legitimately contain only the
-    E2E or only the OBF label (e.g. the Telegram Secret-Chat keylog, or a
-    memory-scan obf-key sidecar), so all three parsers are consulted — otherwise
-    such a keylog sniffs as ``None`` and gets mis-filed under TLS.
-    """
-    return mtproto_keylog_spec.matches_line(line)
-
-
-def _is_rc4_line(line: str) -> bool:
-    """True when the canonical RC4 keylog parser accepts *line*."""
-    return rc4_keylog_spec.matches_line(line)
 
 
 def _is_tls_label(label: str) -> bool:
@@ -369,9 +321,10 @@ def _is_tls_line(line: str) -> bool:
     return _is_tls_label(line.split(None, 1)[0])
 
 
-# Ordered (picker protocol, line matcher) table; the first match wins. TLS and
-# the label-prefixed formats come first; Signal records are bare hex with no
-# label, so they go last and can never claim a labelled line.
+# Ordered (picker protocol, line matcher) table; the first match wins. Signal
+# records are bare unlabelled hex, so they go last and never claim a labelled
+# line. The MTProto matcher accepts AUTH, E2E and OBF lines alike, since a file
+# may hold only E2E or only OBF keys and must not be mis-filed under TLS.
 KEYLOG_LINE_MATCHERS: Tuple[Tuple[str, Callable[[str], bool]], ...] = (
     (TLS_PICKER_NAME, _is_tls_line),
     (CUSTOM_PICKER_NAME, rc4_keylog_spec.matches_line),
@@ -409,9 +362,11 @@ class _CharLimitedReader:
 
 
 def _record_lines(path: str, max_lines: int) -> List[str]:
-    """Up to *max_lines* non-blank, non-comment lines from *path* (bounded read:
-    at most ``4 * max_lines`` physical lines of ``_MAX_LINE_CHARS`` each; an
-    over-long line is skipped, see :func:`iter_bounded_lines`)."""
+    """Up to *max_lines* non-blank, non-comment lines from *path*.
+
+    Bounded: at most ``4 * max_lines`` physical lines of ``_MAX_LINE_CHARS`` each;
+    over-long lines are skipped (:func:`iter_bounded_lines`).
+    """
     max_physical = max_lines * 4
     lines: List[str] = []
     with open(path, "r", encoding="utf-8", errors="replace") as fh:

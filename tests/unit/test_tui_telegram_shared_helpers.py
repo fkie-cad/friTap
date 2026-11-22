@@ -23,6 +23,7 @@ from friTap.flow.models import Flow, FlowChunk
 from friTap.tui.widgets import telegram_panes as tp
 from friTap.tui.widgets import tl_tree_render as tr
 from tests.unit._render_helpers import RenderingFakeLog as _FakeLog
+from tests.unit._tui_flow_helpers import make_flow_detail_widget
 
 _T = 1790358548.25
 
@@ -35,10 +36,9 @@ def _expected_millis(ts: float) -> str:
 # tl_tree_render: time and msg_id formatting
 # ---------------------------------------------------------------------------
 
-def test_local_time_matches_strftime_millis_and_keeps_private_alias():
+def test_local_time_matches_strftime_millis():
     assert tr.local_time(_T, millis=True) == _expected_millis(_T)
     assert tr.local_time(_T) == _expected_millis(_T)[:-4]
-    assert tr._local_time is tr.local_time
 
 
 def test_local_time_and_datetime_reject_out_of_range():
@@ -67,7 +67,6 @@ def test_ref_items_single_list_and_other():
     assert tr.ref_items(item) == [item]
     assert tr.ref_items([item, "x", 3]) == [item]
     assert tr.ref_items("x") == []
-    assert tr._as_items is tr.ref_items
 
 
 def test_ref_target_text_row_method_and_fallback():
@@ -109,14 +108,12 @@ def test_refs_lines_matches_legacy_fallback_copy():
 def test_telegram_layer_names_match_message_transports():
     assert set(TELEGRAM_LAYER_NAMES) == set(MESSAGE_TRANSPORTS)
     assert tconv._CHAT_LAYER_NAMES == TELEGRAM_LAYER_NAMES
-    assert tconv._OUTBOUND_DIRECTIONS is tconv.OUTBOUND_DIRECTIONS
 
 
 def test_as_int_parses_or_returns_zero():
     assert tconv.as_int("12") == 12
     assert tconv.as_int(None) == 0
     assert tconv.as_int("x") == 0
-    assert tconv._as_int is tconv.as_int
 
 
 def test_telegram_layers_of_orders_cloud_then_e2e():
@@ -139,13 +136,7 @@ def test_conversation_keys_of_entries_ignores_non_chat_text():
 # ---------------------------------------------------------------------------
 
 def _widget():
-    from friTap.tui.widgets.flow_detail import FlowDetailWidget
-    w = FlowDetailWidget.__new__(FlowDetailWidget)
-    w._current_flow = None
-    w._active_processing = None
-    w._conversation_siblings = []
-    w._row_resolver = None
-    return w
+    return make_flow_detail_widget(_current_flow=None, _row_resolver=None)
 
 
 def _chunked_flow() -> Flow:

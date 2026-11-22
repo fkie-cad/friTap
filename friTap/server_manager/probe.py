@@ -1,20 +1,15 @@
 #!/usr/bin/env python3
 
-"""
-Reliable frida-server liveness probe.
+"""Reliable frida-server liveness probe.
 
-Frida 17 trap: a USB Android device with NO frida-server running still
-answers ``enumerate_processes()`` (the whole ADB process list),
-``enumerate_applications()`` and ``query_system_parameters()`` via its
-jailed (ADB-backed) fallback. Only ``attach()`` fails, with
-``frida.ServerNotRunningError``. So "enumeration works" does NOT mean
-"frida-server is running".
+Frida 17 trap: a USB Android device with NO frida-server still answers
+``enumerate_processes()``, ``enumerate_applications()`` and
+``query_system_parameters()`` via its jailed (ADB-backed) fallback; only ``attach()``
+fails (``frida.ServerNotRunningError``). So working enumeration does not mean a server runs.
 
-The reliable signal is ``query_system_parameters()["access"]``:
-``"full"`` means a real (root) frida-server; ``"jailed"`` means either
-the ADB fallback (no server) or a frida-gadget-injected app. The two
-jailed cases are told apart by the process list: a Gadget reports
-exactly one process (itself), the ADB fallback reports hundreds.
+The reliable signal is ``query_system_parameters()["access"]``: ``"full"`` is a real
+(root) frida-server; ``"jailed"`` is the ADB fallback or a frida-gadget app, told apart
+by the process list (a Gadget reports exactly one process, the fallback hundreds).
 """
 
 from __future__ import annotations
@@ -67,11 +62,7 @@ def _classify_access(device: Any, access: Any) -> ServerState:
 
 
 def _classify_without_access_key(device: Any) -> ServerState:
-    """Fallback for older frida that does not report ``access``.
-
-    Those versions predate the jailed ADB fallback, so a successful
-    ``enumerate_processes()`` there does imply a live frida-server.
-    """
+    """Fallback for older frida without ``access``: it predates the jailed fallback, so successful enumeration implies a live server."""
     try:
         device.enumerate_processes()
     except Exception:

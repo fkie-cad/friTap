@@ -1,8 +1,4 @@
-"""Shared trailing data detection and sub-parsing utilities.
-
-Used by WebSocketParser and Http1Parser to detect and parse unconsumed
-bytes after valid protocol frames.
-"""
+"""Shared trailing-data detection and sub-parsing, used by WebSocketParser and Http1Parser for bytes left after valid frames."""
 
 from __future__ import annotations
 
@@ -14,19 +10,11 @@ from .base import BaseParser, ParseResult
 def detect_trailing_protocol(
     data: bytes, transport: Optional[str] = None,
 ) -> tuple[str, bytes, BaseParser | None]:
-    """Detect protocol in trailing bytes.
+    """Detect a protocol in trailing bytes: ``(protocol_name, cleaned_data, parser)`` or ``("", data, None)``.
 
-    Two-phase detection:
-    1. **Fast path** — strip leading nulls, try ``registry.detect()`` at offset 0.
-    2. **Boundary scan** — if fast path fails, scan forward through garbage bytes
-       looking for a protocol signature (e.g. HTTP method token).
-
-    *transport* is the owning flow's ``Flow.transport``; it is passed to
-    ``registry.detect()`` so the transport's pins/restrictions apply here
-    too (e.g. ``quic`` only sniffs HTTP/3). None keeps pure byte-sniffing.
-
-    Returns ``(protocol_name, cleaned_data, parser_instance)``
-    or ``("", data, None)`` if nothing matched.
+    Fast path: strip leading nulls and try ``registry.detect()`` at offset 0; else
+    boundary-scan forward past garbage. *transport* (``Flow.transport``) applies its
+    pins/restrictions (``quic`` only sniffs HTTP/3); None is pure byte-sniffing.
     """
     from .boundary_scan import scan_protocol_boundary
     from .hexdump import HexdumpParser
@@ -62,12 +50,7 @@ def detect_trailing_protocol(
 def try_sub_parse(
     data: bytes, parser: BaseParser | None, direction: str,
 ) -> Optional[ParseResult]:
-    """Attempt to parse trailing data using the detected parser.
-
-    Since Http1Parser tracks body_size but doesn't store body bytes
-    (they're normally reconstructed from raw chunks), we extract the
-    body directly from the data using the header/body separator.
-    """
+    """Parse trailing data with the detected parser; Http1Parser keeps no body bytes, so the body is cut from *data* at the header/body separator."""
     if parser is None:
         return None
     try:

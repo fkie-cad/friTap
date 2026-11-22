@@ -1,11 +1,7 @@
-"""
-Indexed .tap file reader with two-tier loading.
+"""Indexed .tap file reader with two-tier loading.
 
-TapReader provides:
-  - Fast metadata-only loading for populating the TUI flow list
-  - On-demand full flow loading (with chunks/bodies) for the detail view
-  - Automatic fallback to linear scan if the FLOW_INDEX is missing (partial capture)
-  - Corruption recovery via sync marker scanning
+Fast metadata-only summaries for the flow list, on-demand full flows, a linear-scan
+fallback when the FLOW_INDEX is missing (partial capture), and sync-marker corruption recovery.
 """
 
 from __future__ import annotations
@@ -55,10 +51,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-#: Sanity ceiling for one record's payload. The envelope's u32 ``payload_len``
-#: allows ~4 GiB, but the writer never comes close: the collector caps a flow's
-#: retained chunk bytes at 64 MiB, so a FLOW record (chunks + bodies + JSON
-#: metadata) stays far below this. A record claiming more is treated as corrupt.
+#: Sanity ceiling for one record's payload (the envelope's u32 allows ~4 GiB). The collector caps a
+#: flow's retained chunks at 64 MiB, so a record claiming more is treated as corrupt.
 MAX_RECORD_PAYLOAD = 1 << 30  # 1 GiB
 _KEYLOG_ONLY = frozenset({REC_KEYLOG})
 _REQUEST_CONTEXT_ONLY = frozenset({REC_REQUEST_CONTEXT})
@@ -67,13 +61,8 @@ _REQUEST_CONTEXT_ONLY = frozenset({REC_REQUEST_CONTEXT})
 class TapReader:
     """Indexed reader for .tap capture files.
 
-    Usage::
-
-        reader = TapReader("capture.tap")
-        meta = reader.open()
-        summaries = reader.read_flow_summaries()   # fast, metadata only
-        flow = reader.read_flow("10.0.0.1:443-...:0")  # full load on demand
-        reader.close()
+    Usage: ``reader = TapReader(path); reader.open(); reader.read_flow_summaries()``
+    (fast, metadata only); ``reader.read_flow(flow_id)`` (full, on demand); ``reader.close()``.
     """
 
     def __init__(self, path: str) -> None:
@@ -86,23 +75,16 @@ class TapReader:
         self._flow_offsets: dict[str, int] = {}
         # Lazily-built findings index: flow_id -> list[Finding]. None = not built.
         self._findings_index: Optional[dict[str, list]] = None
-        # Finding-presence flag determined cheaply at open() time.
-        #   None  = undetermined (footer-index path does not walk records, so we
-        #           cannot know without a scan — fall back to lazy full scan)
-        #   False = open-time scan walked every record and saw NO REC_FINDING
-        #           (read_findings short-circuits to [] with no second scan)
-        #   True  = at least one REC_FINDING was seen; offsets captured below
+        # Finding presence, determined cheaply at open(): None = undetermined (the footer-index path
+        # does not walk records), False = the open-time scan saw no REC_FINDING (read_findings
+        # returns [] without a second scan), True = seen; offsets are captured below.
         self._saw_finding_record: Optional[bool] = None
-        # Byte offsets of REC_FINDING record envelopes captured during the
-        # open-time linear scan, so read_findings can seek directly to them
-        # instead of re-scanning the whole file.
+        # Byte offsets of REC_FINDING envelopes from the open-time scan, so read_findings can seek to them.
         self._finding_offsets: list[int] = []
         self._opened: bool = False
-        # Serializes every seek+read on the shared file handle. get_flow runs
-        # on the UI thread, the analyzer worker and the filter content index,
-        # and an interleaved seek between another caller's seek and read would
-        # read the wrong bytes (CRC mismatch / garbage). Re-entrant because
-        # open() and the findings-index build nest record reads.
+        # Serializes every seek+read on the shared file handle: get_flow runs on the UI thread,
+        # the analyzer worker and the filter content index, and an interleaved seek would read the
+        # wrong bytes (CRC mismatch). Re-entrant: open() and the findings-index build nest record reads.
         self._io_lock = threading.RLock()
 
     @property
@@ -122,10 +104,7 @@ class TapReader:
         return len(self._flow_offsets)
 
     def open(self) -> TapMeta:
-        """Open the .tap file, parse the header, and build the flow index.
-
-        Returns the file-level TapMeta.
-        """
+        """Open the .tap file, parse the header, build the flow index and return the file-level TapMeta."""
         with self._io_lock:
             self._file = open(self._path, "rb")
             self._opened = True
@@ -156,10 +135,7 @@ class TapReader:
             return self._meta or TapMeta()
 
     def read_flow_summaries(self) -> list[FlowSummary]:
-        """Read lightweight flow metadata for all flows (no chunks/bodies).
-
-        Returns summaries sorted by start timestamp.
-        """
+        """Read lightweight flow metadata for all flows (no chunks/bodies), sorted by start timestamp."""
         self._ensure_open()
         summaries = []
 
@@ -172,11 +148,9 @@ class TapReader:
             except Exception:
                 logger.debug("Failed to read flow summary at offset %d", offset, exc_info=True)
 
-        # Enrich finding_count from the findings index: findings are stored in
-        # separate REC_FINDING records, not in FLOW meta, so decode_flow_summary
-        # cannot know them and leaves the count at 0. has_findings() is a cheap
-        # no-op short-circuit for findings-free captures (the common case); only
-        # captures that actually carry findings pay for the (cached) index build.
+        # Enrich finding_count: findings live in separate REC_FINDING records, so decode_flow_summary
+        # leaves it 0. has_findings() is a cheap no-op for findings-free captures; only captures with
+        # findings pay for the (cached) index build.
         if self.has_findings():
             for summary in summaries:
                 summary.finding_count = len(self.read_findings(summary.flow_id))
@@ -187,20 +161,18 @@ class TapReader:
     def iter_flows(self) -> Iterator[tuple[int, FlowSummary, "Flow"]]:
         """Yield ``(ordinal, summary, flow)`` for every decodable flow, in summary order.
 
-        ``ordinal`` is the 1-based position in :meth:`read_flow_summaries`
-        (the ``f<N>`` flow-ref numbering), counted even for flows that cannot
-        be decoded (those are skipped).
+        ``ordinal`` is the 1-based position in :meth:`read_flow_summaries` (the ``f<N>`` flow-ref
+        numbering), counted even for flows that cannot be decoded (skipped).
         """
+        # Each FLOW meta is parsed twice (summaries, then read_flow) on purpose: holding all parsed metas would raise
+        # peak memory ~10x on large taps (12.7 MB -> 142.5 MB on a 68 MB tap), and avoiding it needs a .tap format change.
         for ordinal, summary in enumerate(self.read_flow_summaries(), start=1):
             flow = self.read_flow(summary.flow_id)
             if flow is not None:
                 yield ordinal, summary, flow
 
     def read_flow(self, flow_id: str) -> Optional["Flow"]:
-        """Read a full Flow object by flow_id (on-demand, with chunks/bodies).
-
-        Returns None if the flow_id is not in the index.
-        """
+        """Read a full Flow (with chunks/bodies) by flow_id; None if not in the index."""
         self._ensure_open()
         offset = self._flow_offsets.get(flow_id)
         if offset is None:
@@ -215,8 +187,7 @@ class TapReader:
             logger.error("Failed to read flow %s at offset %d", flow_id, offset, exc_info=True)
             return None
 
-        # Findings are best-effort enrichment: a corrupt/undecodable findings
-        # index must NEVER suppress an already-decoded valid flow. Isolate it.
+        # Findings are best-effort: a corrupt findings index must NEVER suppress an already-decoded valid flow.
         try:
             findings = self.read_findings(flow_id)
             if findings:
@@ -229,10 +200,7 @@ class TapReader:
         return flow
 
     def read_all_flows(self) -> list["Flow"]:
-        """Read all flows fully (with chunks and bodies).
-
-        For large captures, prefer read_flow_summaries() + read_flow() on demand.
-        """
+        """Read all flows fully (large captures: prefer summaries + :meth:`read_flow`)."""
         self._ensure_open()
         flows = []
 
@@ -246,8 +214,7 @@ class TapReader:
                 logger.debug("Failed to read flow at offset %d", offset, exc_info=True)
                 continue
 
-            # Findings are best-effort enrichment: a corrupt/undecodable
-            # findings index must NEVER drop an already-decoded valid flow.
+            # Best-effort findings: a corrupt index must NEVER drop a decoded valid flow.
             try:
                 findings = self.read_findings(flow.flow_id)
                 if findings:
@@ -263,21 +230,15 @@ class TapReader:
         return flows
 
     def read_findings(self, flow_id: str) -> list:
-        """Return analysis findings persisted for *flow_id* (REC_FINDING records).
-
-        The findings index is built lazily on first call (one linear pass over
-        the file) and cached. Returns an empty list if the file carries none.
-        """
+        """Return analysis findings persisted for *flow_id*; the index is built lazily (one linear pass) and cached."""
         self._ensure_open()
         return self._ensure_findings_index().get(flow_id, [])
 
     def iter_keylogs(self) -> Iterator[tuple[str, float]]:
         """Yield ``(key_data, timestamp)`` for every intact REC_KEYLOG record.
 
-        Key material: callers must gate this behind an explicit secrets opt-in.
-        Records are read in file order under the I/O lock (one linear pass)
-        before the first item is yielded; CRC-mismatched or undecodable
-        records are skipped.
+        Key material: callers must gate this behind an explicit secrets opt-in. Records are read in
+        file order under the I/O lock before the first item is yielded; bad-CRC/undecodable ones are skipped.
         """
         self._ensure_open()
         for payload in self._intact_payloads(_KEYLOG_ONLY):
@@ -325,12 +286,7 @@ class TapReader:
         return bool(self._ensure_findings_index())
 
     def _ensure_findings_index(self) -> dict:
-        """Build the findings index once, holding the I/O lock while it reads.
-
-        Returns the index itself (never re-read from ``self``), so a
-        concurrent ``close()`` resetting ``_findings_index`` to None cannot
-        turn the caller's lookup into ``None.get``.
-        """
+        """Build the findings index once under the I/O lock; returns the index itself so a concurrent ``close()`` (resetting ``_findings_index`` to None) cannot turn the caller's lookup into ``None.get``."""
         index = self._findings_index
         if index is not None:
             return index
@@ -361,21 +317,15 @@ class TapReader:
     def __exit__(self, *args) -> None:
         self.close()
 
-    # ------------------------------------------------------------------
-    # Internal: index building
-    # ------------------------------------------------------------------
 
     def _build_index_from_footer(self) -> None:
         """Read the FLOW_INDEX from the footer pointer."""
         assert self._file is not None
 
-        # Findings presence is recorded in the header flags at close() time, so
-        # we can decide cheaply (no record walk) whether the findings scan is
-        # worth running. A closed/indexed file (FLAG_HAS_INDEX, this path) that
-        # lacks FLAG_HAS_FINDINGS provably contains no REC_FINDING records.
+        # Findings presence is in the header flags: a closed/indexed file (FLAG_HAS_INDEX, this path)
+        # without FLAG_HAS_FINDINGS provably has no REC_FINDING records.
         if self._header is not None and self._header.flags & FLAG_HAS_FINDINGS:
-            # Findings exist; offsets unknown on this path, so _build_findings_index
-            # will scan once (lazily, only if findings are actually requested).
+            # Findings exist; offsets unknown on this path, so _build_findings_index scans once, lazily.
             self._saw_finding_record = True
         else:
             self._saw_finding_record = False
@@ -416,23 +366,16 @@ class TapReader:
             self._flow_offsets[entry["flow_id"]] = entry["offset"]
 
     def _build_index_linear_scan(self) -> None:
-        """Scan all records sequentially to build the flow index.
-
-        Used when the FLOW_INDEX is missing (partial capture / crash).
-        Keeps only the last FLOW record per flow_id.
-        """
+        """Scan all records sequentially to build the flow index (FLOW_INDEX missing: partial capture / crash); keeps the last FLOW record per flow_id."""
         assert self._file is not None
 
-        # This pass already visits every record, so capture finding presence
-        # and offsets here for free. After this method completes, the flag is
-        # authoritative (False if no REC_FINDING was seen), letting
-        # _build_findings_index short-circuit instead of scanning a second time.
+        # This pass visits every record, so capture finding presence/offsets here: afterwards the
+        # flag is authoritative (False if none seen) and _build_findings_index skips a second scan.
         self._saw_finding_record = False
         self._finding_offsets = []
 
         for offset, rec_type, payload, stored_crc in self._iter_records(self._data_start):
-            # Record finding presence/offset cheaply (payload is decoded lazily
-            # on first read_findings, not here).
+            # Record finding presence/offset only; the payload is decoded lazily on first read_findings.
             if rec_type == REC_FINDING:
                 self._saw_finding_record = True
                 self._finding_offsets.append(offset)
@@ -455,23 +398,14 @@ class TapReader:
                         pass
 
     def _build_findings_index(self) -> None:
-        """Build the lazy flow_id -> [Finding] index from REC_FINDING records.
+        """Build the lazy flow_id -> [Finding] index from REC_FINDING records, cached in ``_findings_index``.
 
-        Performance gate: the open-time scan records whether any REC_FINDING
-        record exists (``self._saw_finding_record``) and, when so, their byte
-        offsets (``self._finding_offsets``):
+        Performance gate on the open-time scan results:
 
-          * ``_saw_finding_record is False`` — the open-time linear scan walked
-            every record and saw no findings, so we short-circuit to an empty
-            index without re-reading the (potentially large) file. This is the
-            common case for findings-free captures.
-          * ``_finding_offsets`` populated — seek directly to each known finding
-            record instead of scanning the whole file.
-          * ``_saw_finding_record is None`` — undetermined (the footer-index
-            path does not walk records, so presence is unknown without a scan).
-            Fall back to the original full linear pass, preserving behaviour.
-
-        The result is cached in ``self._findings_index``.
+          * ``_saw_finding_record is False``: no findings seen, short-circuit to an empty index
+            without re-reading the (potentially large) file (the common case).
+          * ``_finding_offsets`` populated: seek directly to each known finding record.
+          * ``_saw_finding_record is None``: undetermined (footer-index path), fall back to a full linear pass.
         """
         assert self._file is not None
 
@@ -533,16 +467,10 @@ class TapReader:
     def _iter_records(self, start_offset: int, rec_types: Optional[frozenset] = None):
         """Yield ``(offset, rec_type, payload, stored_crc)`` for every record.
 
-        With *rec_types*, only records of those types are yielded and the
-        payloads of all others are seeked past without being read (same
-        bounds/truncation checks, so the scan ends at the same point).
-
-        Single shared sequential record iterator used by both
-        ``_build_index_linear_scan`` and ``_build_findings_index`` (fallback
-        path). It handles sync-marker recovery on a corrupt envelope and skips
-        zero-length records exactly as the prior duplicated loops did. The
-        CRC is yielded unverified so each caller can apply its own
-        verify/decode policy per record type (behaviour-preserving).
+        With *rec_types*, other records' payloads are seeked past unread (same bounds/truncation
+        checks, so the scan ends at the same point). Shared by ``_build_index_linear_scan`` and the
+        findings fallback; recovers via sync marker on a corrupt envelope and skips zero-length
+        records. The CRC is yielded unverified so each caller applies its own policy.
         """
         assert self._file is not None
         self._file.seek(start_offset)
@@ -580,10 +508,7 @@ class TapReader:
             yield offset, rec_type, payload, stored_crc
 
     def _recover_from(self, start_offset: int) -> int:
-        """Scan forward from start_offset to find the next valid sync marker.
-
-        Returns the offset of the next record, or -1 if not found.
-        """
+        """Scan forward from start_offset for the next valid sync marker; its offset, or -1."""
         assert self._file is not None
         self._file.seek(start_offset)
 
@@ -600,16 +525,9 @@ class TapReader:
                 self._file.seek(recovered_offset)
                 return recovered_offset
 
-    # ------------------------------------------------------------------
-    # Internal: record reading
-    # ------------------------------------------------------------------
 
     def _read_record_payload_at(self, offset: int) -> Optional[bytes]:
-        """Read and verify a single record's payload at the given file offset.
-
-        Returns the raw payload bytes, or None if the record is invalid.
-        Thread-safe: the seek+read pair runs under ``_io_lock``.
-        """
+        """Read and verify one record's payload at *offset*; None if invalid. Thread-safe (seek+read under ``_io_lock``)."""
         with self._io_lock:
             raw = self._read_record_raw_at(offset)
         if raw is None:
@@ -640,24 +558,17 @@ class TapReader:
         return payload, stored_crc
 
     def _read_payload(self, payload_len: int) -> bytes:
-        """Read a *payload_len*-byte record payload at the current position.
+        """Read a *payload_len*-byte payload at the current position.
 
-        The length is checked against :data:`MAX_RECORD_PAYLOAD` and the bytes
-        left in the file *before* anything is allocated, so a crafted u32
-        length cannot trigger a multi-GiB ``read()``. Raises
-        :class:`~friTap.binary_bounds.BoundsError` (a ``ValueError``) on an
-        implausible or truncated payload.
+        Length is checked against :data:`MAX_RECORD_PAYLOAD` and the bytes left in the file *before*
+        allocating, so a crafted u32 cannot trigger a multi-GiB ``read()``. Raises
+        :class:`~friTap.binary_bounds.BoundsError` (a ``ValueError``) on an implausible or truncated payload.
         """
         assert self._file is not None
         return read_bounded(self._file, payload_len, "tap record payload", MAX_RECORD_PAYLOAD)
 
     def _skip_payload(self, payload_len: int) -> None:
-        """Advance past a *payload_len*-byte payload without reading it.
-
-        Applies the same bounds checks as :meth:`_read_payload` (raising
-        :class:`~friTap.binary_bounds.BoundsError`); when the file size is
-        unknown it falls back to a bounded read so truncation is still detected.
-        """
+        """Advance past a payload without reading it, with :meth:`_read_payload`'s bounds checks (bounded read fallback when the file size is unknown)."""
         assert self._file is not None
         remaining = remaining_bytes(self._file)
         if remaining is None:

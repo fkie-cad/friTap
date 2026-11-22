@@ -175,12 +175,15 @@ def test_stop_twice_is_harmless():
 def test_pull_writes_the_unique_device_file_to_the_local_temp_path():
     android = _android()
     android.is_Android = True
-    android.adb.run.return_value = SimpleNamespace(returncode=0, stdout="", stderr="1 file pulled")
+    from tests.unit._adb_pull_helpers import pull_timeout, reply_to_pull
+    reply_to_pull(android)
 
     assert android.pull_pcap_from_device("/tmp/out", local_path="/tmp/out/_cap.pcap") \
         == "/tmp/out/_cap.pcap"
-    android.adb.run.assert_called_once_with(
-        "pull", "/data/local/tmp/_cap.1-abcdef.pcap", "/tmp/out/_cap.pcap", timeout=30)
+    # A tracked process (D7), so a forced exit can stop it.
+    android.adb.Popen.assert_called_once_with(
+        "pull", "/data/local/tmp/_cap.1-abcdef.pcap", "/tmp/out/_cap.pcap", text=True)
+    assert pull_timeout(android) == android.PULL_UNKNOWN_SIZE_TIMEOUT  # fake stat gives no size (D6)
 
 
 def test_remove_deletes_the_unique_file_and_its_pidfile():

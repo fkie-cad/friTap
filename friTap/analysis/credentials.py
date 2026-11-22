@@ -186,18 +186,11 @@ def _claim_str(claims: dict, key: str) -> str:
 
 @dataclass(frozen=True)
 class SecretRule:
-    """A declarative pattern-based secret detection rule.
+    """A declarative secret-detection rule; ``name`` appears in finding titles.
 
-    Attributes:
-        name: Human-readable detector name (used in finding titles).
-        pattern: Compiled regular expression matched against flow text.
-        severity: Severity assigned to a match.
-        confidence: Confidence score (0..1) for a pattern match.
-        cwe: Optional CWE identifier recorded in finding metadata.
-        entropy_min: Optional gate — only flag when the matched value's
-            Shannon entropy is at least this value.
-        keywords: Optional gate — only flag when one of these keywords is
-            present in the surrounding text/location (case-insensitive).
+    ``entropy_min`` and ``keywords`` are optional gates: flag only when the
+    match's Shannon entropy reaches ``entropy_min`` / a keyword occurs in the
+    surrounding text or location (case-insensitive).
     """
     name: str
     pattern: re.Pattern
@@ -228,13 +221,11 @@ _SECRET_RULES: list[SecretRule] = [
     SecretRule("Twilio API Key", re.compile(r"SK[0-9a-fA-F]{32}"), Severity.HIGH, confidence=0.9, cwe=_CWE_HARDCODED),
     SecretRule("SendGrid API Key", re.compile(r"SG\.[A-Za-z0-9\-_]{22}\.[A-Za-z0-9\-_]{43}"), Severity.HIGH, confidence=0.9, cwe=_CWE_HARDCODED),
     SecretRule("Private Key", re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----"), Severity.CRITICAL, confidence=0.95, cwe=_CWE_CRYPTO_KEY),
-    # --- Task 2: additional key-material detections ------------------------
     SecretRule("Encrypted Private Key", re.compile(r"-----BEGIN ENCRYPTED PRIVATE KEY-----"), Severity.CRITICAL, confidence=0.95, cwe=_CWE_CRYPTO_KEY),
     SecretRule("PGP Private Key", re.compile(r"-----BEGIN PGP PRIVATE KEY BLOCK-----"), Severity.CRITICAL, confidence=0.95, cwe=_CWE_CRYPTO_KEY),
     SecretRule("PuTTY Private Key", re.compile(r"PuTTY-User-Key-File-[23]:"), Severity.CRITICAL, confidence=0.9, cwe=_CWE_CRYPTO_KEY),
     SecretRule("SSH2 Encrypted Private Key", re.compile(r"---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----"), Severity.CRITICAL, confidence=0.9, cwe=_CWE_CRYPTO_KEY),
     SecretRule("X.509 Certificate", re.compile(r"-----BEGIN CERTIFICATE-----"), Severity.INFO, confidence=0.95),
-    # --- Task 3: additional token detections -------------------------------
     SecretRule("Google OAuth Access Token", re.compile(r"ya29\.[0-9A-Za-z\-_]{50,}"), Severity.HIGH, confidence=0.95, cwe=_CWE_HARDCODED),
     SecretRule("Google OAuth Refresh Token", re.compile(r"1//[0-9A-Za-z\-_]{30,}"), Severity.HIGH, confidence=0.85, cwe=_CWE_HARDCODED, keywords=("refresh", "oauth", "token")),
     SecretRule("npm Access Token", re.compile(r"npm_[A-Za-z0-9]{36}"), Severity.HIGH, confidence=0.95, cwe=_CWE_HARDCODED),

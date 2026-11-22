@@ -1,21 +1,15 @@
 """Share one scapy parse of a capture across the decryptors of one conversion.
 
-Several offline stages reassemble the same pcap's TCP conversations (mid-stream
-TLS binding, MTProto, standalone RC4), each through
-:func:`friTap.offline.net.tcp_reassembly.reassemble_pcap`. Inside a
-:func:`capture_cache_scope` for that file, the first of them parses it with
-:func:`~friTap.offline.net.tcp_reassembly.parse_pcap` and the rest reuse the
-:class:`~friTap.offline.net.tcp_reassembly.ParsedCapture` (each still gets its own
-pairs, oriented for its own server ports).
+Several stages (mid-stream TLS, MTProto, standalone RC4) reassemble the same
+pcap via :func:`friTap.offline.net.tcp_reassembly.reassemble_pcap`. Inside a
+:func:`capture_cache_scope` the first parses it and the rest reuse the
+:class:`~friTap.offline.net.tcp_reassembly.ParsedCapture` (each orients its own pairs).
 
-The scope lives in a :class:`~contextvars.ContextVar`, so it is visible only to
-code running inside it (and is restored on exit, nested scopes included). The
-cache is keyed on ``(realpath, size, mtime_ns)``: another file, or this file once
-modified, bypasses it. Captures larger than ``FRITAP_PCAP_CACHE_MAX_MB``
-(default 256; ``0`` disables caching; non-numeric or non-finite values fall back
-to the default) are never held, and a parse that raises is never memoized, so the
-next caller retries it. A scope told that fewer than two reassemblies will run
-inside it caches nothing, so a lone consumer never pays the retained memory.
+The scope is a :class:`~contextvars.ContextVar` (restored on exit, nesting
+included). The cache key is ``(realpath, size, mtime_ns)``, so another or modified
+file bypasses it. Captures over ``FRITAP_PCAP_CACHE_MAX_MB`` (default 256; ``0``
+disables; invalid values use the default) are never held; a parse that raises is
+never memoized. A scope told fewer than two reassemblies will run caches nothing.
 """
 
 from __future__ import annotations
@@ -115,16 +109,11 @@ def capture_cache_scope(
 ) -> Iterator[Optional[CaptureCache]]:
     """Share one parse of *path* among the reassemblies run inside this block.
 
-    Yields the :class:`CaptureCache` (``parse_count`` tells how often it parsed),
-    or None when caching is disabled (``FRITAP_PCAP_CACHE_MAX_MB=0``), in which
-    case any enclosing scope is hidden too. The previous scope is restored on exit
-    and the parse is released with the scope.
-
-    *expected_consumers* is the caller's upper bound on how many reassemblies will
-    run inside the block. Below two there is nothing to share, so caching is
-    disabled (as above) rather than holding the parse in memory for the whole
-    block; None (the default) means unknown and always caches.
-    """
+    Yields the :class:`CaptureCache` (``parse_count`` counts parses), or None when
+    caching is disabled (``FRITAP_PCAP_CACHE_MAX_MB=0``), which hides any enclosing
+    scope too. *expected_consumers* is the caller's upper bound on reassemblies;
+    below two nothing is shared, so caching is disabled; None means unknown and caches.
+"""
     max_bytes = max_cache_bytes()
     worth_sharing = expected_consumers is None or expected_consumers >= 2
     cache = CaptureCache(path, max_bytes) if max_bytes > 0 and worth_sharing else None

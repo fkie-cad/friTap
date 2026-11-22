@@ -2,21 +2,16 @@
 
 """Process-wide shared writers for keylog files.
 
-Several independent writers can target the SAME keylog path inside one Python
-process. The canonical case is a Windows full capture: the main SSL_Logger and
-the LSASS SSL_Logger (``hook_lsass`` in friTap.py) both write the ``-k`` file.
-If each opened the path itself with ``"w"``, whichever received its first key
-later would truncate everything the other already wrote, and two handles would
-then interleave/overwrite each other.
+Several writers can target the SAME keylog path in one process (Windows full
+capture: the main and LSASS SSL_Loggers both write ``-k``). Each opening it with
+``"w"`` would truncate what the other wrote and interleave handles.
 
-This module keeps exactly one open handle per normalized path:
+One open handle is kept per normalized path:
 
-* the FIRST acquirer of a path truncates it (a new capture starts a fresh
-  keylog, as before); every later acquirer shares the same handle;
-* writes are line-atomic under a per-path lock and flushed after each batch;
-* :func:`release_keylog_writer` drops a reference and the file is closed once
-  the last reference is gone. A later acquisition (e.g. a new TUI capture run
-  in the same process) truncates again.
+* the first acquirer truncates it (a new capture starts a fresh keylog); later ones share it;
+* writes are line-atomic under a per-path lock and flushed per batch;
+* :func:`release_keylog_writer` drops a reference and closes on the last; a later
+  acquisition (e.g. a new TUI run in the same process) truncates again.
 """
 
 from __future__ import annotations
@@ -29,7 +24,7 @@ from .keylog_format import filter_safe_keylog_lines
 
 
 def normalize_keylog_path(path: str) -> str:
-    """Return the registry key for *path* (absolute, symlink-resolved, case-normalized)."""
+    """Registry key for *path* (absolute, symlink-resolved, case-normalized)."""
     return os.path.normcase(os.path.realpath(os.path.abspath(path)))
 
 
@@ -53,10 +48,7 @@ class SharedKeylogWriter:
         return self._refcount
 
     def write_header_once(self, header: str) -> bool:
-        """Write *header* unless an identical header was already written.
-
-        Returns ``True`` when it was written now. Raises ``OSError`` on I/O errors.
-        """
+        """Write *header* unless an identical one was written; True when written now. Raises ``OSError``."""
         with self._lock:
             if self._file is None or header in self._headers_written:
                 return False
@@ -66,12 +58,10 @@ class SharedKeylogWriter:
             return True
 
     def write_lines(self, lines: Iterable[str]) -> bool:
-        """Write *lines* atomically w.r.t. other writers, then flush.
+        """Write *lines* atomically w.r.t. other writers, then flush; ``False`` once closed. Raises ``OSError``.
 
-        Returns ``False`` (writing nothing) when the file is already closed.
-        Raises ``OSError`` on I/O errors. Lines that are not a single safe
-        keylog line (CR/LF/NUL/control characters, non-``str``) are dropped —
-        the last line of defense against agent-injected keylog lines.
+        Lines that are not a single safe keylog line (control characters, non-``str``) are
+        dropped: the last defense against agent-injected keylog lines.
         """
         safe_lines = filter_safe_keylog_lines(lines)
         with self._lock:
@@ -98,11 +88,7 @@ _registry_lock = threading.Lock()
 
 
 def acquire_keylog_writer(path: str) -> Tuple[SharedKeylogWriter, bool]:
-    """Take a reference on the shared writer for *path*.
-
-    Returns ``(writer, created)``: ``created`` is ``True`` when this call opened
-    (and truncated) the file. Raises ``OSError`` when the file cannot be opened.
-    """
+    """Take a reference on the shared writer for *path*; ``(writer, created)``, ``created`` when this call opened (truncated) the file. Raises ``OSError``."""
     key = normalize_keylog_path(path)
     with _registry_lock:
         writer = _registry.get(key)
@@ -115,10 +101,7 @@ def acquire_keylog_writer(path: str) -> Tuple[SharedKeylogWriter, bool]:
 
 
 def release_keylog_writer(writer: SharedKeylogWriter) -> bool:
-    """Drop one reference on *writer*; close it when the last one is gone.
-
-    Returns ``True`` when this call closed the file. Idempotent past zero.
-    """
+    """Drop one reference on *writer*, closing it on the last; True when this call closed it. Idempotent past zero."""
     with _registry_lock:
         if writer._refcount <= 0:
             return False

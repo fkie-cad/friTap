@@ -42,7 +42,7 @@ def tls_handshake_row(*, tls_stream: int = 0, tcp_stream: int | None = None,
                       hs_types=("1",), sni: str = "", ciphersuites=(),
                       version: str = "", supported_version: str = "", alpn: str = "",
                       src=CLIENT, dst=SERVER, ts: float = 1700000000.0,
-                      frame: int | None = None) -> dict:
+                      frame: int | None = None, random: str = "") -> dict:
     """One ``tls.handshake`` row (ClientHello by default)."""
     layers = _base("tcp", src, dst, tls_stream if tcp_stream is None else tcp_stream,
                    ts, frame)
@@ -56,6 +56,7 @@ def tls_handshake_row(*, tls_stream: int = 0, tcp_stream: int | None = None,
         "tls_handshake_extensions_supported_version":
             [supported_version] if supported_version else [],
         "tls_handshake_extensions_alpn_str": [alpn] if alpn else [],
+        "tls_handshake_random": [random] if random else [],
     }
     layers.update({key: value for key, value in optional.items() if value})
     return {"layers": layers}
@@ -94,7 +95,7 @@ def tls_app_data_row(data, *, tcp_stream: int = 0, tls_stream: int | None = None
 
 def quic_row(*, udp_stream: int = 0, src=CLIENT, dst=SERVER, version: str = "0x00000001",
              hs_types=(), sni: str = "", cipher: str = "", alpn: str = "",
-             ts: float = 1700000000.0, frame: int | None = None) -> dict:
+             ts: float = 1700000000.0, frame: int | None = None, random: str = "") -> dict:
     """One QUIC metadata row (the ``quic`` marker plus long-header fields)."""
     layers = _base("udp", src, dst, udp_stream, ts, frame)
     layers["quic"] = ["quic"]
@@ -105,7 +106,8 @@ def quic_row(*, udp_stream: int = 0, src=CLIENT, dst=SERVER, version: str = "0x0
         layers["tls_handshake_type"] = [str(t) for t in hs_types]
     for key, value in (("tls_handshake_extensions_server_name", sni),
                        ("tls_handshake_ciphersuite", cipher),
-                       ("tls_handshake_extensions_alpn_str", alpn)):
+                       ("tls_handshake_extensions_alpn_str", alpn),
+                       ("tls_handshake_random", random)):
         if value:
             layers[key] = [value]
     return {"layers": layers}

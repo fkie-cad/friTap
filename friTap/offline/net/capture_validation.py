@@ -26,7 +26,7 @@ import struct
 import zlib
 from contextlib import contextmanager
 from functools import lru_cache
-from typing import BinaryIO, Iterator, Optional
+from typing import BinaryIO, Iterator, Optional, Tuple
 
 from friTap.binary_bounds import BoundsError, check_length
 
@@ -52,6 +52,7 @@ _PCAPNG_BYTE_ORDER = {b"\x1a\x2b\x3c\x4d": "big", b"\x4d\x3c\x2b\x1a": "little"}
 _PCAPNG_BLOCK_HEADER = 8        # block type + block total length
 _PCAPNG_MIN_BLOCK = 12          # type + leading length + trailing length
 _PCAPNG_MIN_SHB = 28            # + byte-order magic, versions, section length
+_PCAPNG_MAJOR_VERSION = 1
 
 
 class CaptureFormatError(BoundsError):
@@ -156,6 +157,64 @@ def _walk_pcapng(f: BinaryIO, size: Optional[int], path: str) -> None:
         if not _skip_to(f, start + block_len, size):
             _check_truncated_tail(block_len, what, size, start)
             return
+
+
+def iter_pcapng_blocks(f: BinaryIO) -> Iterator[Tuple[int, int, int]]:
+    """Yield ``(block_type, offset, total_length)`` for each block from the current position.
+
+    Start with *f* at a Section Header Block; each SHB sets the byte order of
+    its own section. Lenient: the walk stops silently, without yielding the
+    offending block, at anything the pcapng spec rules out (no leading SHB, an
+    unknown byte order or SHB major version, a total length below the minimum
+    or not a multiple of 4, a trailing length that differs from the leading
+    one). A final block cut short by EOF is still yielded, then the walk ends.
+    Lengths are not bounded (use ``validate_capture_file`` for that). The
+    caller may stop early; the stream position is then undefined.
+    """
+    # One seek + one read per block: the trailing length and the next header are
+    # read together (12 bytes), so the spec checks cost no extra syscall.
+    seek, read = f.seek, f.read
+    start = f.tell()
+    header = read(_PCAPNG_BLOCK_HEADER)
+    uint32 = None  # set by the first block, which must be an SHB
+    while len(header) == _PCAPNG_BLOCK_HEADER:
+        is_shb = header[:4] == _PCAPNG_SHB_MAGIC
+        if is_shb:
+            uint32 = _read_section_uint32(f)
+        if uint32 is None:
+            return
+        block_type, block_len = uint32.unpack_from(header)[0], uint32.unpack_from(header, 4)[0]
+        if block_len < (_PCAPNG_MIN_SHB if is_shb else _PCAPNG_MIN_BLOCK) or block_len & 3:
+            return
+        seek(start + block_len - 4)
+        tail = read(12)  # trailing length (4) + next block header (8)
+        if len(tail) >= 4 and tail[:4] != header[4:8]:
+            return  # the two length copies disagree: the block cannot be trusted
+        yield block_type, start, block_len  # SHB magic is palindromic
+        if len(tail) < 4:
+            return  # final block cut short by EOF
+        start += block_len
+        header = tail[4:]
+
+
+_UINT32 = {"little": struct.Struct("<I"), "big": struct.Struct(">I")}
+
+
+def _read_section_uint32(f: BinaryIO) -> Optional[struct.Struct]:
+    """uint32 reader for the section whose SHB body starts at *f*, or None if unusable."""
+    endian = _read_section_byte_order(f)
+    return None if endian is None else _UINT32[endian]
+
+
+def _read_section_byte_order(f: BinaryIO) -> Optional[str]:
+    """Byte order of the section whose SHB body starts at *f*, or None if unusable."""
+    body = f.read(6)  # byte-order magic (4) + major version (2)
+    endian = _PCAPNG_BYTE_ORDER.get(body[:4])
+    if endian is None or len(body) < 6:
+        return None
+    if int.from_bytes(body[4:6], endian) != _PCAPNG_MAJOR_VERSION:
+        return None  # a different major version is a format this walker cannot read
+    return endian
 
 
 def _check_pcapng_block_length(block_len: int, is_shb: bool, what: str) -> None:

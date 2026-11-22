@@ -21,9 +21,10 @@ import { activeRecordProtocol, runHookExecutor } from "../shared/record_protocol
  * 5. Dispatch keylog hook based on def.keylog.kind
  * 6. Run extraHooks if present
  *
- * Resolves to the row's installed verdict (ModuleHookingType): `false` only for a
- * definition that delegates everything to extraHooks (SSH/IPsec wrappers) when every
- * extra hook reported installing nothing; `true` otherwise.
+ * Resolves to the row's installed verdict (ModuleHookingType): `true` when an extra
+ * hook installed something or the definition has hooks of its own, where a "custom"
+ * keylog counts only once its (sync or async) install reports success; `false` for a
+ * definition whose only hooks (extraHooks, custom keylog) all installed nothing.
  */
 export async function executeFromDefinition(
     def: HookDefinition,
@@ -83,9 +84,32 @@ export async function executeFromDefinition(
     return runHookExecutor(recordProtocol, install);
 }
 
-/** Whether a definition installs nothing of its own, leaving all hooking to extraHooks. */
-function delegatesToExtraHooks(def: HookDefinition): boolean {
-    return !def.readHook && !def.writeHook && def.keylog.kind === "none";
+/** Whether the definition has hooks of its own whose verdict does not wait on a custom keylog install. */
+function hasUnconditionalOwnHooks(def: HookDefinition): boolean {
+    return !!def.readHook || !!def.writeHook || (def.keylog.kind !== "custom" && def.keylog.kind !== "none");
+}
+
+/**
+ * Run a "custom" keylog installer (it may be async: NSS, Fizz) and settle its verdict:
+ * a throw or a rejection counts as nothing installed.
+ */
+async function settleCustomKeylog(
+    keylog: Extract<HookDefinition["keylog"], { kind: "custom" }>,
+    addresses: { [lib: string]: { [fn: string]: NativePointer } },
+    moduleName: string,
+    resolvedFns: ResolvedFunctions,
+    enableDefaultFd: boolean,
+): Promise<boolean> {
+    try {
+        const installed = await keylog.install(addresses, moduleName, resolvedFns, enableDefaultFd);
+        devlog(installed
+            ? `[*] ${moduleName}: custom keylog install settled: installed`
+            : `[-] ${moduleName}: custom keylog install settled: nothing installed`);
+        return installed === true;
+    } catch (e) {
+        devlog(`[loader] custom keylog install failed on ${moduleName}: ${e}`);
+        return false;
+    }
 }
 
 /**
@@ -98,7 +122,7 @@ function installResolvedDefinition(
     moduleName: string,
     isBaseHook: boolean,
     enableDefaultFd: boolean,
-): boolean {
+): Promise<boolean> {
     // 3. Create NativeFunction wrappers
     const resolvedFns: ResolvedFunctions = {};
     for (const spec of def.nativeFunctions) {
@@ -147,6 +171,9 @@ function installResolvedDefinition(
     //    Symmetric counterpart to the pcap_enabled gate: this single install-time
     //    gate skips the whole keylog install (callback/symbol/pattern) for every
     //    data-driven lib when keys aren't wanted (BoringSSL self-gates too).
+    //    A "custom" installer (rustls, s2ntls, libressl, NSS, gotls, Fizz) emits its
+    //    own banner; it is started here and its verdict joins the row's below.
+    let customKeylog: Promise<boolean> = Promise.resolve(false);
     if (!keylog_enabled) {
         devlog(`[loader] ${moduleName}: keylog install skipped (keylog_enabled=false)`);
     } else if (def.libraryType === "boringssl") {
@@ -155,16 +182,15 @@ function installResolvedDefinition(
         } catch (e) {
             devlog(`[loader] BoringSSL chain threw for ${moduleName}: ${e}`);
         }
+    } else if (def.keylog.kind === "custom") {
+        customKeylog = settleCustomKeylog(def.keylog, addresses, moduleName, resolvedFns, enableDefaultFd);
     } else {
         try {
             const installed = installKeylogHook(def, addresses, moduleName, resolvedFns, enableDefaultFd);
-            // Per-library install banner for non-BoringSSL paths. The "custom"
-            // kind (rustls, s2ntls, libressl, NSS, gotls) emits its own banner
-            // inside the install closure where it has richer context — skip
-            // here to avoid duplicates. The keylog dispatcher itself returns
-            // true/false based on whether at least one Interceptor.attach
-            // reached, which is the right signal for the banner.
-            if (installed && def.keylog.kind !== "custom" && def.keylog.kind !== "none") {
+            // Per-library install banner for non-BoringSSL paths. The keylog
+            // dispatcher returns true/false based on whether at least one
+            // Interceptor.attach reached, which is the right signal for the banner.
+            if (installed && def.keylog.kind !== "none") {
                 log(`[*] ${moduleName}: keylog hooks installed via callback (${def.keylog.kind})`);
             }
         } catch (e) {
@@ -191,5 +217,6 @@ function installResolvedDefinition(
             devlog(`[loader] base-hook address store error: ${e}`);
         }
     }
-    return extraInstalled || !delegatesToExtraHooks(def);
+    // The custom keylog decides the verdict only when nothing else installed.
+    return extraInstalled || hasUnconditionalOwnHooks(def) ? Promise.resolve(true) : customKeylog;
 }

@@ -1,23 +1,18 @@
 """Opt-in process isolation for friTap's native decompressors.
 
 brotli, zstd and zlib are C decoders fed attacker-controlled bytes (e.g. a
-malware C2 response captured by friTap). With isolation on, decoding runs in
-a separate, restricted worker process, so a decoder exploit compromises only
-that disposable worker -- not the friTap process holding the Frida session
-and the keys.
+captured malware C2 response). With isolation on, decoding runs in a separate
+restricted worker, so a decoder exploit compromises only that disposable process,
+not the one holding the Frida session and keys.
 
-Switch it on with ``--isolate-decoders``, ``FRITAP_ISOLATE_DECODERS=1`` (also
-covers the TUI and offline paths) or :func:`enable_decoder_isolation`.
-Default off: decoding stays in-process exactly as before.
+Enable with ``--isolate-decoders``, ``FRITAP_ISOLATE_DECODERS=1`` (also TUI and
+offline paths) or :func:`enable_decoder_isolation`. Default off.
 
-Stateful decoders run there too: WebSocket permessage-deflate inflaters
-(:func:`isolated_inflater`) and QPACK dynamic-table decoders
-(:func:`isolated_qpack_decoder`) become worker-side contexts; when a worker
-dies their state is lost and the parsers disable / poison them
-(:class:`DecoderContextLost`).
-
-This module stays import-light; the worker machinery (``multiprocessing``)
-is imported only once isolation is actually used.
+Stateful decoders (WebSocket permessage-deflate via :func:`isolated_inflater`,
+QPACK via :func:`isolated_qpack_decoder`) become worker-side contexts; when a
+worker dies their state is lost and parsers disable/poison them
+(:class:`DecoderContextLost`). The module stays import-light: ``multiprocessing``
+is imported only once isolation is used.
 """
 
 from __future__ import annotations
@@ -47,11 +42,7 @@ def decoder_isolation_enabled() -> bool:
 
 
 def isolated_decoders():
-    """The worker client module when isolation is on, else None.
-
-    :mod:`friTap.parsers.decompress` calls this on every decode to decide
-    where to run; when isolation is off it costs one flag/env lookup.
-    """
+    """The worker client module when isolation is on, else None (called on every decode; off costs one flag/env lookup)."""
     if not decoder_isolation_enabled():
         return None
     from . import client
@@ -59,11 +50,8 @@ def isolated_decoders():
 
 
 def isolated_inflater(wbits: int):
-    """A worker-side persistent inflater when isolation is on, else None.
-
-    The object offers ``inflate_bounded(data, max_out)`` with the semantics
-    of :func:`friTap.parsers.decompress.inflate_stream_bounded`.
-    """
+    """A worker-side persistent inflater (``inflate_bounded(data, max_out)``, like
+    :func:`friTap.parsers.decompress.inflate_stream_bounded`) when isolation is on, else None."""
     if not decoder_isolation_enabled():
         return None
     from .inflate_proxy import IsolatedInflater
@@ -74,8 +62,7 @@ def isolated_qpack_decoder(capacity: int, blocked_streams: int, *, max_count: in
                            max_bytes: int):
     """A worker-side ``pylsqpack.Decoder`` stand-in when isolation is on, else None.
 
-    *max_count* / *max_bytes* are the caller's header-list caps: the worker
-    withholds larger lists and the parent rejects any reply above them.
+    The worker withholds header lists above *max_count*/*max_bytes* and the parent rejects larger replies.
     """
     if not decoder_isolation_enabled():
         return None
@@ -85,11 +72,7 @@ def isolated_qpack_decoder(capacity: int, blocked_streams: int, *, max_count: in
 
 
 def close_isolated_decoder(decoder) -> bool:
-    """Free *decoder*'s worker context if it is an isolated stand-in.
-
-    Returns True when something was released; in-process decoder objects are
-    left untouched (False).
-    """
+    """Free *decoder*'s worker context if it is an isolated stand-in; True when released."""
     if not getattr(decoder, "isolated", False):
         return False
     decoder.close()

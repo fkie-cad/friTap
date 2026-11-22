@@ -4,7 +4,7 @@
 Example protobuf plugin — auto-decode protobuf/gRPC payloads in flow detail.
 
 To use: copy this file to your platform's plugin directory and run friTap.
-Find the path with: python -c "from friTap.plugins.loader import PLUGIN_DIR; print(PLUGIN_DIR)"
+Find the path with: python -c "from friTap.plugins.loader import _get_plugin_dir; print(_get_plugin_dir())"
 
 Provides a "Protobuf" tab in the flow detail view that shows decoded
 protobuf structures for both request and response bodies.

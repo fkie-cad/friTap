@@ -91,8 +91,7 @@ for _test_op in Op.TEST_OPS:
 # Flag bits.
 REQ_ALLOW_UNPATCHED_BROTLI = 0x0001  # request: honour FRITAP_ALLOW_UNPATCHED_BROTLI
 REPLY_COMPLETE = 0x0001              # reply (INFLATE_CHECKED): stream reached its end
-# Reply flags of a CONTEXT_ERROR from a qpack_decoder context: the pylsqpack
-# exception class, so the parent can re-raise the same type.
+# CONTEXT_ERROR flags from a qpack_decoder context: the pylsqpack exception class, so the parent re-raises the same type.
 REPLY_QPACK_DECOMPRESSION_FAILED = 0x0010
 REPLY_QPACK_ENCODER_STREAM_ERROR = 0x0020
 
@@ -155,9 +154,8 @@ def decode_frame(message: bytes, max_text: int = MAX_TEXT_LEN,
 def parse_reply(message: bytes, *, op: int, request_id: int, max_data: int) -> Frame:
     """Decode and validate a worker reply to request (*op*, *request_id*).
 
-    Checks the shape, the request id, the op echo, the status against
-    :data:`ALLOWED_STATUSES` and the data length against *max_data* (the
-    caller's ``max_out``). Raises :class:`ProtocolError` on any violation.
+    Checks shape, request id, op echo, status (:data:`ALLOWED_STATUSES`) and data
+    length (<= *max_data*); raises :class:`ProtocolError` on any violation.
     """
     frame = decode_frame(message, MAX_TEXT_LEN, min(max_data, MAX_REPLY_DATA))
     if frame.request_id != request_id & U32_MASK:
@@ -180,12 +178,8 @@ _UNSAFE_CODEPOINTS = frozenset(
 
 
 def safe_worker_text(raw: bytes, max_chars: int = MAX_LOG_TEXT_CHARS) -> str:
-    """Decode untrusted worker text for logging or error strings.
-
-    Length-capped (bytes and characters), decoded with ``errors="replace"``,
-    and every control or bidi character is replaced by its ``\\xNN`` /
-    ``\\uNNNN`` escape so the text cannot forge log lines or terminal output.
-    """
+    """Decode untrusted worker text for logging: length-capped, ``errors="replace"``, control and bidi
+    characters escaped as ``\\xNN``/``\\uNNNN`` so it cannot forge log lines or terminal output."""
     text = bytes(raw[:MAX_TEXT_LEN]).decode("utf-8", errors="replace")[:max_chars]
     return "".join(_escape_char(ch) for ch in text)
 
@@ -215,11 +209,9 @@ def unpack_i64(data: bytes) -> int | None:
     return struct.unpack("!q", data)[0]
 
 
-# --- Compact binary lists (qpack_decoder replies) ------------------------------
-#
-# header list: u32 count, then per field: u32 name_len, name, u32 value_len, value
+# Compact binary lists (qpack_decoder replies), decoded strictly (lengths checked, caps, no trailing bytes):
+# header list: u32 count, then per field u32 name_len, name, u32 value_len, value
 # stream ids:  u32 count, then count x u64
-# Both are decoded strictly: every length checked, caps enforced, no trailing bytes.
 
 _U32 = struct.Struct("!I")
 _U64 = struct.Struct("!Q")

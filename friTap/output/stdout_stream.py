@@ -2,19 +2,12 @@
 
 """Reserve the process's stdout for the ``-j -`` JSONL event stream.
 
-When ``-j -`` / ``--json -`` is given, stdout must carry nothing but JSONL so
-scripts and AI agents can parse it line by line. Rather than chase every
-``print()``, banner and logging handler, :func:`claim_stdout_for_json_stream`
-works at the file-descriptor level:
+stdout must carry nothing but JSONL. :func:`claim_stdout_for_json_stream` works
+at the fd level: the original stdout fd is duplicated as the private JSON
+stream, then fd 1 is ``dup2``-ed to stderr so every other stdout write (print,
+logging, native code, an inheriting spawned target) lands on stderr.
 
-1. the original stdout fd is duplicated and wrapped as the private JSON stream;
-2. fd 1 is then pointed at stderr (``dup2``), so every other write to stdout --
-   Python ``print()``, logging handlers bound to ``sys.stdout``, native code and
-   a target process spawned afterwards that inherits our stdio -- lands on
-   stderr instead.
-
-The claim is process-wide and idempotent: the second caller (e.g. the Windows
-LSASS helper session sharing ``-j -``) gets the same stream.
+The claim is process-wide and idempotent (the Windows LSASS helper shares the stream).
 """
 
 from __future__ import annotations
@@ -48,20 +41,16 @@ ENDED_BY_ERROR = "error"
 _END_REASONS = frozenset({ENDED_BY_DURATION, ENDED_BY_STOPPED,
                           ENDED_BY_TARGET_EXITED, ENDED_BY_ERROR})
 
-# Run outcome, read once when the stream closes (``stream_end``): the first
-# runtime error noted by the CLI, and a callable returning the process's final
-# exit status (SSL_Logger's first-non-zero-wins status).
+# Run outcome read once at ``stream_end``: the first runtime error noted by the CLI, and
+# a callable returning the final exit status (first non-zero wins).
 _first_runtime_error: Optional[dict] = None
 _exit_status_provider: Optional[Callable[[], Optional[int]]] = None
-# Why a clean (exit 0) run ended: the first reason noted by the CLI (e.g. the
-# --duration timer) wins over the provider (e.g. "a stop signal arrived").
+# Why a clean (exit 0) run ended: the CLI's first noted reason (e.g. --duration) wins over the provider.
 _noted_end_reason: Optional[str] = None
 _end_reason_provider: Optional[Callable[[], Optional[str]]] = None
 
-# Envelope progress of the claimed stream: ``stream_start`` written / the
-# closing record (``stream_end`` or ``usage_error``) written. Lets
-# :func:`finish_unclosed_stream` complete the envelope for a run that failed
-# before (or without) the JSONL output handler ever opening or closing it.
+# Envelope progress, so :func:`finish_unclosed_stream` can complete it when the
+# JSONL handler never opened or closed the stream.
 _stream_opened = False
 _stream_closed = False
 
@@ -80,10 +69,7 @@ def _flush_python_streams() -> None:
 
 
 def claim_stdout_for_json_stream(stdout_fd: int = 1, stderr_fd: int = 2) -> IO:
-    """Return the JSON stream and redirect everything else on stdout to stderr.
-
-    Idempotent; the fds are parameters only so tests can use pipes.
-    """
+    """Return the JSON stream and redirect everything else on stdout to stderr (idempotent; fds are parameters for tests)."""
     global _stream
     with _lock:
         if _stream is not None:
@@ -97,11 +83,7 @@ def claim_stdout_for_json_stream(stdout_fd: int = 1, stderr_fd: int = 2) -> IO:
 
 
 def argv_requests_stdout_stream(argv) -> bool:
-    """True when *argv* (without the program name) contains ``-j -``/``--json -``.
-
-    Used before/without argparse (e.g. on a usage error) to know whether stdout
-    is promised to be pure JSONL.
-    """
+    """True when *argv* (without the program name) contains ``-j -``/``--json -`` (usable before argparse)."""
     tokens = list(argv)
     for index, token in enumerate(tokens):
         if token in ("-j", "--json") and index + 1 < len(tokens) \
@@ -121,12 +103,9 @@ def envelope(kind: str, fields: dict) -> dict:
 
 
 def write_stream_record(record: dict) -> None:
-    """Write *record* (must carry ``type``) to the claimed stream, enveloped.
+    """Write *record* (must carry ``type``) to the claimed stream, enveloped; no-op when unclaimed.
 
-    No-op when stdout was not claimed.
-
-    The stream is line-buffered (``buffering=1``), so each line is flushed on
-    its trailing newline.
+    The stream is line-buffered, so each line flushes on its newline.
     """
     stream = _stream
     if stream is None:
@@ -139,11 +118,9 @@ def write_stream_record(record: dict) -> None:
 
 def note_runtime_error(error_type: str, message: str,
                        hint: Optional[str] = None) -> None:
-    """Remember the cause of a runtime failure for the closing ``error`` record.
+    """Remember the cause of a runtime failure for the closing ``error`` record (first wins).
 
-    Only records; the record itself is written once, when the stream closes,
-    so it carries the FINAL exit code. The first noted error wins, like the
-    exit status itself.
+    The record is written at close so it carries the final exit code.
     """
     global _first_runtime_error
     with _lock:
@@ -176,8 +153,7 @@ def final_exit_code() -> Optional[int]:
 def runtime_error_fields(exit_code: Optional[int]) -> Optional[dict]:
     """Fields of the closing ``error`` record, or None when the run did not fail.
 
-    Written for every non-zero exit that has a noted cause, and for a bare
-    runtime-error exit (1) without one, so a consumer always learns why.
+    Written for a non-zero exit with a noted cause and for a bare exit 1, so a consumer learns why.
     """
     error = _first_runtime_error
     if not exit_code:
@@ -191,10 +167,7 @@ def runtime_error_fields(exit_code: Optional[int]) -> Optional[dict]:
 
 
 def note_end_reason(reason: str) -> None:
-    """Remember why a clean run is ending (``duration``/``stopped``); first wins.
-
-    Only consulted for exit code 0: a failure exit code is its own reason.
-    """
+    """Remember why a clean run is ending (``duration``/``stopped``); first wins; only used for exit 0."""
     global _noted_end_reason
     if reason not in _END_REASONS:
         raise ValueError(f"unknown end reason: {reason!r}")
@@ -224,10 +197,8 @@ def _provided_end_reason() -> Optional[str]:
 def ended_by(exit_code: Optional[int]) -> Optional[str]:
     """``stream_end``'s ``ended_by`` for *exit_code*, or None when unknown.
 
-    A target detach (3) and a failure (exit 1, or any non-zero exit with a
-    noted cause) speak for themselves; a clean exit (0) reports the noted
-    reason, else the provider's. Anything else (unknown exit code, a bare
-    signal status, a clean exit nobody explained) is left out.
+    A detach (3) and failures speak for themselves; a clean exit reports the
+    noted reason, else the provider's. Unknown codes and unexplained clean exits give None.
     """
     if exit_code == _EXIT_TARGET_DETACHED:
         return ENDED_BY_TARGET_EXITED
@@ -279,12 +250,10 @@ def finish_unclosed_stream(exit_code: Optional[int], *,
                            key_material: bool = False) -> bool:
     """Emergency writer: complete the ``-j -`` envelope if nobody else did.
 
-    For failures that happen before the JSONL output handler opened the stream
-    (e.g. a refused macOS platform binary, a config error) or where it never
-    closed it: writes the missing ``stream_start``, the ``error`` record (cause
-    noted via :func:`note_runtime_error`, else the generic "see stderr" text
-    for exit 1) and ``stream_end``. No-op when stdout was not claimed or the
-    stream is already closed. Returns True when it wrote the closing records.
+    For failures before the JSONL handler opened the stream, or that never closed it:
+    writes the missing ``stream_start``, ``error`` (cause from :func:`note_runtime_error`,
+    else the generic "see stderr" text for exit 1) and ``stream_end``. No-op when unclaimed
+    or already closed. Returns True when it wrote the closing records.
     """
     if _stream is None or _stream_closed:
         return False

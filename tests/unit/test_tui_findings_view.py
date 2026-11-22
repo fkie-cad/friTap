@@ -21,25 +21,12 @@ import pytest
 pytest.importorskip("textual")
 
 from friTap.analysis import Finding, Severity
-from friTap.flow.models import Flow, FlowState
-from friTap.flow.tap_writer import TapWriter
 from friTap.tui.app import FriTapApp
+from tests.unit._tui_flow_helpers import make_flow as _make_flow, write_tap
 
 # ----------------------------------------------------------------------
 # Fixtures
 # ----------------------------------------------------------------------
-
-def _make_flow(flow_id: str, dst_port: int) -> Flow:
-    return Flow(
-        flow_id=flow_id,
-        connection_id=flow_id,
-        src_addr="10.0.0.1",
-        src_port=12345,
-        dst_addr="93.184.216.34",
-        dst_port=dst_port,
-        state=FlowState.COMPLETE,
-    )
-
 
 def _write_tap_with_findings(path: str) -> None:
     """Write a .tap file containing two flows and three findings.
@@ -78,20 +65,12 @@ def _write_tap_with_findings(path: str) -> None:
         metadata={"category": "network"},
     )
 
-    writer = TapWriter()
-    writer.open(path, target="test")
-    writer.write_flow(flow_a)
-    writer.write_flow(flow_b)
-    writer.write_findings("flow-aaaa", [creds, net])
-    writer.write_findings("flow-bbbb", [pii])
-    writer.close()
+    write_tap(path, [flow_a, flow_b],
+              findings={"flow-aaaa": [creds, net], "flow-bbbb": [pii]})
 
 
 def _write_tap_without_findings(path: str) -> None:
-    writer = TapWriter()
-    writer.open(path, target="test")
-    writer.write_flow(_make_flow("flow-cccc", 443))
-    writer.close()
+    write_tap(path, [_make_flow("flow-cccc", 443)])
 
 
 # ----------------------------------------------------------------------

@@ -1,0 +1,86 @@
+// agent/shared/__fixtures__/nss_fenix160_x64.ts
+//
+// Real code bytes from Firefox for Android (Fenix) 160.0.1, x86_64 libnss3.so
+// (NSS 3.132, GNU build-id f16e0555554ec74b1510b5982e016a76f9c18f19, .eh_frame
+// with 4478 FDEs). Addresses are file vaddrs (== module offsets; for .text the
+// vaddr equals the file offset). Static validation only (capstone): no x86_64
+// device run.
+
+function hexBytes(hex: string): Uint8Array {
+    return new Uint8Array(hex.match(/../g)!.map((b) => parseInt(b, 16)));
+}
+
+/** Offsets of every "0123456789abcdef" copy (the writer references 0x39f70). */
+export const HEX_TABLE_OFFSETS = [0x19b30, 0x34d04, 0x34ff0, 0x39e70, 0x39f70, 0x420b0, 0x420d0];
+/** client_random offset in sslSocket: `movzx edi, byte [r12+rsi+0x650]` (x2), no lea/add. */
+export const CLIENT_RANDOM_OFF = 0x650;
+
+/**
+ * ssl3_WriteKeyLog, full body 0x292520..0x2926b9 (FDE bounds). `mov r12, rdi` @0x292557;
+ * hex table `lea rcx, [rip-0x25863a]` @0x2925a3 -> 0x39f70; `movzx edi, byte [r12+rsi+0x650]`
+ * @0x2925aa and @0x2925be; r12 overwritten by `lea r12, [rip+0x592c7]` @0x29263a.
+ */
+export const WRITER_VADDR = 0x292520;
+export const WRITER_END = 0x2926b9;
+export const WRITER = hexBytes(
+    "55415741564155415453504885d20f84760100004989d748837a08000f8468010000488d2db793050048837d00000f84" +
+    "560100004989f54989fc4889f7e85e1c0300418b4f10448d34484183c6434c89f7e8aa2a03004885c00f842b01000048" +
+    "89c34889c74c89eee8d33b03004c89efe82b1c030089c180040b208d50014801da31f6488d0dc679daff410fb6bc3450" +
+    "060000c1ef04408a3c0f40883c72410fb6bc345006000083e70f408a3c0f40887c720148ffc64883fe2075ce8d504183" +
+    "c042c6041320418b57104885d20f84b3000000498b77084189c04889df4c01c74531c0460fb60c0641c1e904458a0c09" +
+    "46880c47460fb60c064183e10f458a0c0946884c470149ffc04c39c275d5418b4f1001c901c1c6040b0a4c8d25c79205" +
+    "004d8b3c244c89ffe873180300e86e200300498987a000000041c7879800000001000000488b4d00ba010000004889df" +
+    "4c89f6e8083703004883f8017509488b7d00e8691e0300498b3c24e8801d03004889df4883c4085b415c415d415e415f" +
+    "5de98a1b030031c9eb8a4883c4085b415c415d415e415f5dc3");
+/** Instruction starts of WRITER per capstone (a real decoder must walk exactly these). */
+export const WRITER_INSN_STARTS = [
+    0x292520, 0x292521, 0x292523, 0x292525, 0x292527, 0x292529, 0x29252a, 0x29252b, 0x29252e, 0x292534,
+    0x292537, 0x29253c, 0x292542, 0x292549, 0x29254e, 0x292554, 0x292557, 0x29255a, 0x29255d, 0x292562,
+    0x292566, 0x29256a, 0x29256e, 0x292571, 0x292576, 0x292579, 0x29257f, 0x292582, 0x292585, 0x292588,
+    0x29258d, 0x292590, 0x292595, 0x292597, 0x29259b, 0x29259e, 0x2925a1, 0x2925a3, 0x2925aa, 0x2925b3,
+    0x2925b6, 0x2925ba, 0x2925be, 0x2925c7, 0x2925ca, 0x2925ce, 0x2925d3, 0x2925d6, 0x2925da, 0x2925dc,
+    0x2925df, 0x2925e2, 0x2925e6, 0x2925ea, 0x2925ed, 0x2925f3, 0x2925f7, 0x2925fa, 0x2925fd, 0x292600,
+    0x292603, 0x292608, 0x29260c, 0x292610, 0x292614, 0x292619, 0x29261d, 0x292621, 0x292626, 0x292629,
+    0x29262c, 0x29262e, 0x292632, 0x292634, 0x292636, 0x29263a, 0x292641, 0x292645, 0x292648, 0x29264d,
+    0x292652, 0x292659, 0x292664, 0x292668, 0x29266d, 0x292670, 0x292673, 0x292678, 0x29267c, 0x29267e,
+    0x292682, 0x292687, 0x29268b, 0x292690, 0x292693, 0x292697, 0x292698, 0x29269a, 0x29269c, 0x29269e,
+    0x2926a0, 0x2926a1, 0x2926a6, 0x2926a8, 0x2926aa, 0x2926ae, 0x2926af, 0x2926b1, 0x2926b3, 0x2926b5,
+    0x2926b7, 0x2926b8,
+];
+
+/** 64 bytes from 0x2999b8: CLIENT_RANDOM `lea rsi, [rip-0x279004]` @0x2999c8, `call 0x292520` @0x2999d5. */
+export const CLIENT_RANDOM_SITE_VADDR = 0x2999b8;
+export const CLIENT_RANDOM_LEA = 0x2999c8;
+/** FDE bounds of the function holding the CLIENT_RANDOM site. */
+export const CLIENT_RANDOM_FN = { start: 0x2997f0, end: 0x2999e6 };
+export const CLIENT_RANDOM_SITE = hexBytes(
+    "89c131c085c90f85d8feffff4983c630488d35fc6fd8ff4889df4c89f2e8468bffff31c0e9bbfeffffe8bac70200cccc" +
+    "cccccccccccccccc5541574156534883");
+
+/**
+ * Whole function 0x2bd9c0..0x2bda33 (FDE bounds): ECH_SECRET lea @0x2bda00 + `call 0x292520`
+ * @0x2bda0d; ECH_CONFIG lea @0x2bda16, epilogue, tail `jmp 0x292520` @0x2bda28.
+ */
+export const ECH_FN_VADDR = 0x2bd9c0;
+export const ECH_FN_END = 0x2bda33;
+export const ECH_SECRET_LEA = 0x2bda00;
+export const ECH_CONFIG_LEA = 0x2bda16;
+export const ECH_FN = hexBytes(
+    "4157415653488b87f80900004885c0745c488d8ff0140000488b9ff01400004839cb74494c8b78484d85ff74404989fe" +
+    "4c89ffe8c881000085c075164983c730488d35b90fd9ff4c89f74c89fae80e4bfdff4883c310488d35ae0fd9ff4c89f7" +
+    "4889da5b415e415fe9f34afdff5b415e415fc3");
+
+/** tls13_DeriveSecretWrap, full body 0x2b9ba0..0x2b9dad (FDE bounds); calls the writer @0x2b9da1. */
+export const TLS13_WRAP_VADDR = 0x2b9ba0;
+export const TLS13_WRAP = hexBytes(
+    "554157415641554154534881ecc80000004d89cf4c89c34989cc4989f54989fe64488b04252800000048898424c00000" +
+    "004885d274674889d54c897424084d89ee4d89fd4989df4889d7e8d1a500004889c34c89e7e8c6a500004801d84883c0" +
+    "9d4883f89a0f863b010000488d1540e3d7ff488d5c24104889dfbe640000004889e94d89e031c0e8d4a600004989dc4c" +
+    "89fb4d89ef4d89f54c8b742408488d7424784c89f7e806e3ffff85c00f848c000000e869a800008b4048bdffffffff3d" +
+    "ffdfffff7e2c8d880020000083f923773948ba0700000008000000480fa3ca7329bf01e0ffff31f6e8b3a70000e9c500" +
+    "00008d88fa2f000083f90272e43d5ad0ffff0f85af000000ebd785c074d33d99e8ffff74cce99d00000041ba20000000" +
+    "31d2488d8c2480000000eb46498b8ed01400004885c974e24883c140eb184c89e7e8daa40000498b8e000700004885c9" +
+    "74da4883c1108b11488d8c24800000004531d283fa05410f94c241c1e2044183ca20448b442478458b9ee81400004883" +
+    "ec08bf2a4000004c89ee4d89e1415741534152682a40000050e8227c00004883c43085c07438bf01e0ffff31f6e8eea6" +
+    "0000bdffffffff64488b042528000000483b8424c0000000753e89e84881c4c80000005b415c415d415e415f5dc331ed" +
+    "4885db74d24d8b3f4c89ffe830be000085c075c34983c7304c89f74889de4c89fae87a87fdffebafe8f3c30000");

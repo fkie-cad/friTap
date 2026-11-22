@@ -176,6 +176,7 @@ friTap has comprehensive support for Android TLS libraries, covering both system
 | **BouncyCastle/Spongycastle** | Java crypto apps | ✓ Full | Java-level hooking |
 | **Mono BTLS** | Xamarin/.NET apps | ✓ Full | Pattern-based hooking |
 | **MetaRTC** | WebRTC applications | ✓ Full | Pattern-based hooking |
+| **Fizz (Meta)** | Facebook, Instagram (TLS 1.3 + mvfst QUIC) | Keys | arm64 only; located without symbols — see [Fizz (Meta)](../libraries/others.md#fizz-meta) |
 | **Java TLS** | Pure Java apps | ✓ Full | Java-level hooking |
 
 **Legend:**
@@ -221,12 +222,27 @@ so a stripped APK is hooked without any extra configuration:
 | **libmonochrome** (Chrome / WebView) | `*monochrome*.so` | `Cronet (Monochrome)`, `Google QUICHE (Monochrome)` |
 | **Signal / RingRTC** | `libsignal_jni*.so`, `libringrtc_rffi*.so` | `Cronet (Signal)`, `Cronet (RingRTC)` |
 | **Cloudflare Warp** | `libwarp_mobile*.so` | `Cronet (Warp Mobile)` |
+| **Meta Fizz** (Facebook / Instagram) | any arm64 `*.so` passing the content filter (e.g. `libcoldstart.so`, `libstartup.so`) | `Fizz (Meta)` |
 
 !!! note "Chrome / Cronet are BoringSSL underneath"
     The Chrome, Cronet, Signal, RingRTC and Warp matchers all route to the same
     BoringSSL key-extraction hook. Chrome-browser QUIC specifically lives in
     `libmonochrome*.so` (no resolvable symbols), which is why pattern-based hooking
     is mandatory there.
+
+!!! note "Meta Fizz is matched by content, not by filename"
+    Fizz is statically linked into arbitrarily named Meta libraries, so its row matches
+    every `.so` and then applies a cheap, cached content filter: arm64 only, system/APEX
+    paths skipped, accepted when the library itself defines Meta's `fizz_probe_secret_available` export (not one resolved from a dependency), or
+    by path or name alone for app-private libraries (`/data/data/<pkg>/lib-compressed/`) and the known Meta
+    host names (`libcoldstart`, `libstartup`, `libscrollmerged`, `libstreamingmerged`).
+    The filter never scans memory; the installer then confirms Fizz asynchronously
+    (the probe export, or the RTTI name `N4fizz17KeyDerivationImplE` in the library's
+    `r--`, then `r-x` ranges). Default and `--modern` run the same row. No byte patterns are
+    used: `deriveSecret` is located by a TLS 1.3 label vote plus an RTTI/relative-vtable
+    walk, and the result is cached per build-id. Keys only — use `-k` with `-f -p`.
+    Late-loaded (`dlopen`) libraries are handled; the first scan takes a few seconds per
+    library. See [Fizz (Meta)](../libraries/others.md#fizz-meta).
 
 See [Pattern-based Hooking](../advanced/patterns.md) for the pattern-file schema, the
 `--patterns`/`--offsets`/`--force-scan` flags, and how to author patterns with
@@ -288,6 +304,36 @@ fritap -m --quic-capture-mode app-api --quic-egress-headers-layer chrome-shim \
 a particular layer when validating chain behavior on builds where the
 `quiche-internal` path still resolves.
 
+### Chrome: attach vs spawn
+
+Chrome opens around nine QUIC connections (google.com, googleapis, Cloudflare, ...)
+as preconnects within the first seconds after launch. When you attach to a running
+Chrome (`fritap -m <device_id> <pid>`), these connections already exist and their
+TLS handshakes are never observed, so friTap has no client_random or secrets for
+them:
+
+- they are missing from the keylog, and tshark cannot decrypt them;
+- in the `.tap` file they show up as `sid:quic:` connections with body-only flows
+  (no stream id, protocol unknown).
+
+Chrome reuses these connections for later requests (for example google.com
+searches). friTap recovers such post-attach requests on a best-effort basis: new
+request streams on a pre-attach connection are captured through the frame path, and
+their HEADERS are decoded without the connection's QPACK state. Method, path and
+authority are recovered when Chrome encodes them as static-table or literal fields.
+Values that reference the pre-attach QPACK dynamic table cannot be recovered.
+
+Connections opened after the attach are fully covered: client_random, `cr:quic`
+connection ids, decoded HTTP/3 and a complete keylog. Resumed (0-RTT) connections
+are bound as well.
+
+For complete coverage of Chrome, and of other Chromium-based apps that preconnect,
+use spawn mode so the hooks are installed before the first connection is opened:
+
+```bash
+fritap -m <device_id> -s -k chrome_keys.log -p chrome.pcap com.android.chrome
+```
+
 See the [QUIC protocol guide](../protocols/quic.md) for the full HTTP/3 capture model.
 
 ## Decrypted Plaintext Capture Stability
@@ -326,7 +372,8 @@ platform HttpEngine (`libhttpengine.so`, Android 14+):
   per SSL object and leaves the session id empty. Its QUIC traffic is covered
   by the "Google QUICHE (HttpEngine)" row.
 
-This path is new and device verification is still pending.
+Verified on a Pixel 5 with app-embedded Cronet, GMS Cronet, HttpEngine,
+WebView and Chrome.
 
 ## Per-request SDK attribution (Java request context)
 
@@ -342,10 +389,19 @@ request:
 fritap -m -p out.pcap --attribute-sdk --tap out.tap com.example.app
 ```
 
-**When the hooks are installed:** only with `--attribute-sdk` **and** a
-plaintext capture (`-p`). They are not installed with `-f` (no plaintext
-hooks), `--pairip-safe` (no ART instrumentation) or `--quic-only` (no Java
-hooks). They are removed again when friTap detaches.
+**When the hooks are installed:** only with `--attribute-sdk` **and** either a
+plaintext capture (`-p`) or a full capture with keys (`-f -k`). They are not
+installed with `-f` alone, `--pairip-safe` (no ART instrumentation) or
+`--quic-only` (no Java hooks). They are removed again when friTap detaches.
+
+`-f` installs no plaintext hooks, so with `-f -k --attribute-sdk` the request
+contexts are written to `<pcap>.request_contexts.jsonl` (one JSON object per
+event, listed under `request_contexts` in the `<pcap>.fritap.json` manifest)
+and the flows are attributed when the `.tap` is built from the capture:
+
+```bash
+fritap -m -f -k keys.log -p out.pcap --attribute-sdk --tap out.tap com.example.app
+```
 
 **Supported stacks:**
 
@@ -404,6 +460,11 @@ IPsec hooks, which are installed only via `--protocol all`/`auto` —
 `--protocol ipsec` is not selectable yet). Pass `--modern` explicitly only when
 you want the experimental modern hooks.
 
+NSS (Firefox) and Fizz (Facebook, Instagram) key extraction does not depend on the
+path: the default and `--modern` run the same installers, so neither needs
+`--modern`. Plaintext is the same too: on Android both paths hook
+`PR_Read`/`PR_Write` for `-p`, as on Linux, macOS and Windows.
+
 ## Application Categories
 
 ### Social Media Apps
@@ -411,6 +472,10 @@ you want the experimental modern hooks.
 ```bash
 # Instagram
 fritap -m -k instagram_keys.log com.instagram.android
+
+# Facebook / Instagram via Meta Fizz (TLS 1.3 + QUIC keys, arm64): keys + full capture
+fritap -m -k facebook_keys.log -f -p facebook_capture.pcap $(adb shell pidof com.facebook.katana)
+fritap -m -k instagram_keys.log -f -p instagram_capture.pcap $(adb shell pidof com.instagram.android)
 
 # Twitter
 fritap -m --pcap twitter_traffic.pcap com.twitter.android

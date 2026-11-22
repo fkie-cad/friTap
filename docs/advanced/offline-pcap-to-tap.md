@@ -159,6 +159,15 @@ value you did **not** pass on the command line.
 Recognized keys: `keylog`, `tls_ports`, `quic_ports`. A missing or unreadable
 manifest is treated as empty (no error).
 
+A `-f -k --attribute-sdk` capture also records `request_contexts`: the path of
+`<pcap>.request_contexts.jsonl`, the Java request contexts seen during the run
+(one JSON object per line). The offline build replays them, joins them onto the
+decrypted TLS and QUIC flows by method, URL and time (agent clock `t_ms`, the
+same device clock as the packet timestamps), and stores them in the `.tap` as
+request-context records. A relative path is resolved against the manifest's
+directory; an oversized file or a malformed line is skipped. The Python API takes
+the same file as `pcap_to_tap(..., request_contexts=path)`.
+
 A live `-p` capture may also add a `synthetic_endpoints` key. It is
 informational (the offline pipeline does not read it) and is written only when
 some connections had no socket and were given a synthetic tuple (see
@@ -521,6 +530,9 @@ files keep those ids.
 * `quic.library` (`QuicLayer.library`) holds the hooked TLS/QUIC library of a
   **live** QUIC flow, like `tls.library`. Offline QUIC flows never carry a
   library, so it is empty there.
+* `stream_id` matches the real QUIC stream id of a converted HTTP/3 stream
+  flow. Every converted QUIC chunk carries the stream id of the STREAM frame
+  it came from (`FlowChunk.stream_id`, `chunks[i].stream_id` in the `.tap`).
 
 `pcap_to_tap()` raises `NoDecryptionKeysError` (a `ValueError`) when the capture
 is encrypted and no keys are available; other tshark/IO failures propagate as

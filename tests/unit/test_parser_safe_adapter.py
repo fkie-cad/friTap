@@ -122,25 +122,9 @@ class TestSafeParserAdapterFailure:
         assert adapter.feed(b"x", "read") == []
         assert adapter.failed is True
 
-    def test_failure_logged_with_traceback(self):
-        # Attach our own capturing handler directly to the parser logger.
-        # caplog cannot reliably observe records from `friTap.parsers.safe`
-        # because `friTap` may have ``propagate=False`` set (production
-        # behavior, also set by setup_fritap_logging in earlier tests).
-        records: list[logging.LogRecord] = []
-
-        class _Capture(logging.Handler):
-            def emit(self, record):
-                records.append(record)
-
-        handler = _Capture(level=logging.WARNING)
-        log = logging.getLogger("friTap.parsers.safe")
-        log.addHandler(handler)
-        try:
-            adapter = SafeParserAdapter(_BrokenParser())
-            adapter.feed(b"x", "read")
-        finally:
-            log.removeHandler(handler)
+    def test_failure_logged_with_traceback(self, fritap_log_records):
+        records = fritap_log_records("friTap.parsers.safe", logging.WARNING)
+        SafeParserAdapter(_BrokenParser()).feed(b"x", "read")
         assert any("_BrokenParser" in r.getMessage() for r in records)
         # Traceback was attached so the debug-log file gets the full stack.
         assert any(r.exc_info for r in records)
