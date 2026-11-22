@@ -521,8 +521,7 @@ def test_no_follow_exec_in_attach_mode_gates_nothing():
 
 def test_follow_exec_config_defaults_off():
     from friTap.api import FriTap
-    from friTap.config import DeviceConfig, FriTapConfig
-    from friTap.config import resolve_follow_exec
+    from friTap.config import DeviceConfig, FriTapConfig, resolve_follow_exec
     assert DeviceConfig().follow_exec is None  # auto
     assert resolve_follow_exec(DeviceConfig()) is False
     assert resolve_follow_exec(FriTapConfig.from_legacy_params(app="t").device) is False

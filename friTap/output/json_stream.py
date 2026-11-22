@@ -93,7 +93,7 @@ class JsonStreamWriter:
     """One memory-bounded, crash-safe JSON document shared by path.
 
     *order* is the top-level key order; *stream_keys* become sidecar-backed
-    :class:`StreamedList`\ s, the rest stay in :attr:`data` as small metadata.
+    :class:`StreamedList`\\ s, the rest stay in :attr:`data` as small metadata.
     :meth:`assemble` builds the final document without loading every event.
     """
 

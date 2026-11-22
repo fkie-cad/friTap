@@ -240,7 +240,9 @@ class OutputsMixin:
         if not self._request_context_sidecar_wanted():
             return
         from ..output.request_context_sidecar import (
-            RequestContextSidecar, request_contexts_sidecar_path)
+            RequestContextSidecar,
+            request_contexts_sidecar_path,
+        )
         sidecar = RequestContextSidecar(
             request_contexts_sidecar_path(self.pcap_obj.pcap_file_name), self.logger)
         sidecar.attach(self._event_bus)

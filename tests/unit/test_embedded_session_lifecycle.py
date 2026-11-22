@@ -254,6 +254,8 @@ def test_instrument_main_and_children_share_one_watcher(fake_observer):
     from tests.unit.test_multi_script_handshake import (
         FakeBackend,
         FakeProcess,
+    )
+    from tests.unit.test_multi_script_handshake import (
         _make_logger as _make_rig_logger,
     )
     backend = FakeBackend()

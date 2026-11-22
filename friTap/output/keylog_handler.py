@@ -2,7 +2,7 @@
 
 """Generic keylog output handler, one instance per active protocol.
 
-The bound :class:`KeylogFormatter` selects the :class:`KeylogEvent`\ s (via
+The bound :class:`KeylogFormatter` selects the :class:`KeylogEvent`\\ s (via
 ``event.protocol == formatter.protocol``) and formats them into keylog lines.
 The file opens lazily on the first matching event, so e.g. ``--protocol all``
 leaves no empty ``mykeys.ssh.log`` when the target never emits SSH.

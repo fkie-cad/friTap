@@ -13,8 +13,8 @@ from friTap.flow.decryptors import (
     get_default_decryptor_registry,
 )
 from friTap.flow.layer_registry import (
-    ProtocolDescriptor,
     LayerRegistry,
+    ProtocolDescriptor,
     get_registry,
 )
 from friTap.flow.layers import (

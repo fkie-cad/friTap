@@ -15,6 +15,7 @@ from .key_material import apply_key_material_policy
 if TYPE_CHECKING:
     from ..events import (
         DatalogEvent,
+        DetachReportEvent,
         ErrorEvent,
         EventBus,
         KeylogEvent,
@@ -90,11 +91,11 @@ class JsonOutputHandler(OutputHandler):
     def setup(self, event_bus: "EventBus") -> None:
         from ..events import (
             DatalogEvent,
+            DetachReportEvent,
             ErrorEvent,
             KeylogEvent,
             LibraryDetectedEvent,
             SessionEvent,
-            DetachReportEvent,
         )
         self._join_shared_document()
         event_bus.subscribe(KeylogEvent, self.on_keylog)

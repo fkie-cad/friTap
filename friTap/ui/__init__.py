@@ -117,17 +117,26 @@ def __dir__():
 
 
 if TYPE_CHECKING:  # static analysers / IDEs see the real symbols, no runtime cost
-    from friTap.analysis import BaseAnalyzer, Finding, Severity
-    from friTap.analysis.registry import available_analyzers, register_analyzer
-    from friTap.flow.replay import ReplayController, TapSource
-    from friTap.flow.replay_rows import iter_replay_rows
-    from friTap.parsers.app_ciphers.registry import (
-        AppCipherDecoder,
-        DecodedView,
-        register_app_cipher_decoder,
-    )
-    from friTap.tui.screens.tap_viewer import TapViewerScreen
-    from friTap.tui.theme_install import install_theme
-    from friTap.tui.themes import theme_variable_defaults
-    from friTap.tui.viewer_app import TapViewerApp, open_tap
+    from friTap.analysis import BaseAnalyzer as BaseAnalyzer
+    from friTap.analysis import Finding as Finding
+    from friTap.analysis import Severity as Severity
+    from friTap.analysis.registry import available_analyzers as available_analyzers
+    from friTap.analysis.registry import register_analyzer as register_analyzer
     from friTap.extensions import *  # noqa: F401,F403
+    from friTap.flow.replay import ReplayController as ReplayController
+    from friTap.flow.replay import TapSource as TapSource
+    from friTap.flow.replay_rows import iter_replay_rows as iter_replay_rows
+    from friTap.parsers.app_ciphers.registry import (
+        AppCipherDecoder as AppCipherDecoder,
+    )
+    from friTap.parsers.app_ciphers.registry import (
+        DecodedView as DecodedView,
+    )
+    from friTap.parsers.app_ciphers.registry import (
+        register_app_cipher_decoder as register_app_cipher_decoder,
+    )
+    from friTap.tui.screens.tap_viewer import TapViewerScreen as TapViewerScreen
+    from friTap.tui.theme_install import install_theme as install_theme
+    from friTap.tui.themes import theme_variable_defaults as theme_variable_defaults
+    from friTap.tui.viewer_app import TapViewerApp as TapViewerApp
+    from friTap.tui.viewer_app import open_tap as open_tap

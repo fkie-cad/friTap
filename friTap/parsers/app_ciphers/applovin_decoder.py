@@ -29,7 +29,10 @@ from friTap.parsers.app_ciphers.applovin_mediate import (
 from friTap.parsers.app_ciphers.registry import DecodedView
 
 if TYPE_CHECKING:
-    from friTap.parsers.app_ciphers.applovin_mediate import DecryptResult, MediateEnvelope
+    from friTap.parsers.app_ciphers.applovin_mediate import (
+        DecryptResult,
+        MediateEnvelope,
+    )
 
 TITLE = "AppLovin (decrypted)"
 REASON_NO_ENVELOPE = "no AppLovin mediate envelope found in the request"

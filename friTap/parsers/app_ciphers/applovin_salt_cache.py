@@ -22,7 +22,12 @@ import logging
 import os
 from typing import Mapping
 
-from friTap.cache_files import CACHE_WRITE_OPTIONS, cache_file_lock, fritap_cache_dir, write_atomic
+from friTap.cache_files import (
+    CACHE_WRITE_OPTIONS,
+    cache_file_lock,
+    fritap_cache_dir,
+    write_atomic,
+)
 
 logger = logging.getLogger("friTap.parsers.app_ciphers.applovin_salt_cache")
 

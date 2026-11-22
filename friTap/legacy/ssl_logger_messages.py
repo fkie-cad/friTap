@@ -13,8 +13,18 @@ import time
 from collections import deque
 from datetime import datetime
 
-from ..agent_socket_fields import FILTERABLE_SS_FAMILIES, coerce_port, get_addr_string, resolve_ss_family
-from ..events import AntiTamperDetectedEvent, HookBreadcrumbEvent, PlatformReportEvent, SocketTraceEvent
+from ..agent_socket_fields import (
+    FILTERABLE_SS_FAMILIES,
+    coerce_port,
+    get_addr_string,
+    resolve_ss_family,
+)
+from ..events import (
+    AntiTamperDetectedEvent,
+    HookBreadcrumbEvent,
+    PlatformReportEvent,
+    SocketTraceEvent,
+)
 from ..text_safety import safe_terminal_text
 
 # Breadcrumb the agent sends after its synchronous top-level init succeeded.

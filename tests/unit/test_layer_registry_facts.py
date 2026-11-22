@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from friTap.flow import display, layer_pipeline, layer_registry
 from friTap.flow.layer_registry import (
-    ProtocolDescriptor,
     LayerRegistry,
+    ProtocolDescriptor,
     _register_builtins,
     carrier_for_inner,
     inner_e2e_layer_names,

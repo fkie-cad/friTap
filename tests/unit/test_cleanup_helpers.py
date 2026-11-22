@@ -6,7 +6,7 @@ import pytest
 
 from friTap.flow.tap_format import _BlobTable
 from friTap.output import factory
-from friTap.parsers.http2 import Http2Parser, _CONNECTION_PREFACE
+from friTap.parsers.http2 import _CONNECTION_PREFACE, Http2Parser
 
 
 class TestBlobTable:

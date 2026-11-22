@@ -27,7 +27,8 @@ from friTap.analysis import Finding, Severity
 from friTap.flow.replay import ReplayController
 from friTap.flow.tap_writer import TapWriter
 from friTap.tui.app import FriTapApp
-from tests.unit._tui_flow_helpers import make_flow as _make_flow, write_tap
+from tests.unit._tui_flow_helpers import make_flow as _make_flow
+from tests.unit._tui_flow_helpers import write_tap
 
 
 def _write_tap_with_stored_finding(path: str) -> Finding:

@@ -26,7 +26,12 @@ import threading
 import time
 from typing import Callable, Dict, Optional
 
-from .cache_files import CACHE_WRITE_OPTIONS, cache_file_lock, fritap_cache_dir, write_atomic
+from .cache_files import (
+    CACHE_WRITE_OPTIONS,
+    cache_file_lock,
+    fritap_cache_dir,
+    write_atomic,
+)
 
 logger = logging.getLogger("friTap.learned_offsets")
 

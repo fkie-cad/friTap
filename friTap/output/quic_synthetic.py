@@ -302,7 +302,11 @@ class _SyntheticConnection:
 
     @staticmethod
     def _write(sender, stream_id: int, data: bytes, fin: bool) -> bool:
-        from aioquic.quic.exceptions import OutOfRangeError, StreamStateError, StreamTypeError
+        from aioquic.quic.exceptions import (
+            OutOfRangeError,
+            StreamStateError,
+            StreamTypeError,
+        )
 
         try:
             sender.send_stream_data(stream_id, data, end_stream=fin)

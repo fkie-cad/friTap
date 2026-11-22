@@ -10,6 +10,7 @@ BASE = ["#", "Time", "Proto", "Method", "Connection", "Status", "Size", "Duratio
 
 def _run(body):
     from textual.app import App
+
     from friTap.tui.widgets.flow_list import FlowListWidget
 
     class _App(App):

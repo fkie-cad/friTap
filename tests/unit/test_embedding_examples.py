@@ -114,10 +114,13 @@ def demo_package(monkeypatch):
 
 
 def test_extension_demo_registers_everything(demo_package):
-    from friTap.extensions import (
-        get_body_decoders, get_detail_tabs, get_filter_fields, get_flow_columns,
-    )
     from friTap.analysis import registry
+    from friTap.extensions import (
+        get_body_decoders,
+        get_detail_tabs,
+        get_filter_fields,
+        get_flow_columns,
+    )
     from friTap.filter.layer_fields import extract_filter_attrs
 
     demo_package.register()

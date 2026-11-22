@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import logging
 import time
 import types
 from typing import get_args

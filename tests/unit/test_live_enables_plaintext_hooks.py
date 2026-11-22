@@ -75,6 +75,7 @@ def test_modern_notice_is_info_not_warning():
     """--modern's "modern hooks active" notice is status, so it must not get the "[-]" prefix."""
     from types import SimpleNamespace
     from unittest.mock import MagicMock
+
     from friTap.friTap import _validate_capture_options
     from friTap.pcap_utility import PCAP_FORMAT_AUTO
 

@@ -360,6 +360,7 @@ def test_cache_hit_with_bad_key_fields_is_ignored(cache_dir):
 def test_ssl_logger_tests_never_touch_the_real_cache():
     # Guard for the autouse conftest fixture: SSL_Logger() must not read ~/.cache.
     import os
+
     from friTap.cache_files import fritap_cache_dir
     assert os.environ["FRITAP_LEARNED_OFFSETS_DIR"] != fritap_cache_dir()
 

@@ -23,7 +23,6 @@ from .http2_constants import (
     unpack_frame_header,
 )
 
-
 _FRAME_HEADER_LEN = HTTP2_FRAME_HEADER_LEN
 _FRAME_TYPE_DATA = 0x00
 _FRAME_TYPE_MAX = 0x09  # CONTINUATION is the highest standard frame type.

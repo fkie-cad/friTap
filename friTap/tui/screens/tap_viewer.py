@@ -33,8 +33,8 @@ from textual.message import Message
 from textual.screen import Screen
 from textual.widgets import Footer, Header, Static
 
-from friTap.flow.replay_rows import iter_replay_rows
 from friTap.extensions import load_extensions
+from friTap.flow.replay_rows import iter_replay_rows
 
 from ..theme_install import install_theme
 from ..themes import c

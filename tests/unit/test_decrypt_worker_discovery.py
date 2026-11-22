@@ -21,6 +21,7 @@ def _stub_host():
 
 def _patch_worker(monkeypatch, calls):
     import textual.worker as tw
+
     import friTap.offline.pcap_to_tap as p2t
 
     monkeypatch.setattr(

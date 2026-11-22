@@ -18,7 +18,10 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from ..discovery_base import (
-    discovery_disabled, get_entry_points, iter_dropin_modules, resolve_dropin_dir,
+    discovery_disabled,
+    get_entry_points,
+    iter_dropin_modules,
+    resolve_dropin_dir,
 )
 from .base import BaseParser
 from .hexdump import HexdumpParser

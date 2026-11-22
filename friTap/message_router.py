@@ -8,7 +8,12 @@ import logging
 import time
 from typing import get_args
 
-from .agent_socket_fields import coerce_port, get_addr_string, resolve_ss_family, sanitize_raw_addr
+from .agent_socket_fields import (
+    coerce_port,
+    get_addr_string,
+    resolve_ss_family,
+    sanitize_raw_addr,
+)
 from .caller_stack_shapes import (
     REQUEST_CONTEXT_FRAME_LIMIT,
     REQUEST_CONTEXT_FRAME_TEXT_LIMIT,

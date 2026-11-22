@@ -25,7 +25,12 @@ from friTap.parsers.app_ciphers.applovin_keyring import (
     REASON_NO_SDK_KEY,
     AppLovinKeyring,
 )
-from tests.unit.test_applovin_mediate import SALT, SDK_KEY, encrypt_for_testing, gz_payload
+from tests.unit.test_applovin_mediate import (
+    SALT,
+    SDK_KEY,
+    encrypt_for_testing,
+    gz_payload,
+)
 from tests.unit.test_privacy_analyzer import _make_http_flow
 
 IDFA = "6D92078A-8246-4BA4-AE5B-76104861E7DC"

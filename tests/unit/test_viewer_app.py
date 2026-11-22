@@ -13,7 +13,6 @@ import pytest
 pytest.importorskip("textual")
 
 from friTap.tui import viewer_app  # noqa: E402
-from tests.unit._tui_flow_helpers import make_flow, write_tap  # noqa: E402
 from friTap.tui.screens.tap_viewer import TapViewerScreen  # noqa: E402
 from friTap.tui.viewer_app import (  # noqa: E402
     TapViewerApp,
@@ -21,6 +20,7 @@ from friTap.tui.viewer_app import (  # noqa: E402
     muted_fritap_console,
     open_tap,
 )
+from tests.unit._tui_flow_helpers import make_flow, write_tap  # noqa: E402
 
 
 @pytest.fixture

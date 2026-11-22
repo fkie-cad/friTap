@@ -24,7 +24,12 @@ from friTap.output.quic_pcap_bridge import (
     QuicPcapBridge,
     is_quic_stream_record,
 )
-from friTap.output.quic_synthetic import CLIENT, SERVER, SyntheticOutput, encode_http3_frames
+from friTap.output.quic_synthetic import (
+    CLIENT,
+    SERVER,
+    SyntheticOutput,
+    encode_http3_frames,
+)
 from friTap.pcap import PCAP
 
 needs_aioquic = pytest.mark.skipif(not quic_synthetic.is_available(), reason="aioquic not installed")

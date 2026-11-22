@@ -8,9 +8,16 @@ from __future__ import annotations
 
 import pytest
 
+from friTap import message_router as router_module
 from friTap import pipeline as pipeline_module
-from friTap.pipeline import NormalizeStage, PipelineContext
+from friTap.events import DatalogEvent, EventBus
+from friTap.flow.collector import FlowCollector
+from friTap.message_router import MessageRouter
+from friTap.output.quic_pcap_bridge import QuicPcapBridge
+from friTap.output.quic_synthetic import CLIENT, SyntheticOutput
+from friTap.pipeline import NormalizeStage, PipelineContext, create_default_pipeline
 from friTap.schemas.agent_messages import DatalogMessage
+from friTap.sinks.pcapng import PcapngSink
 
 NOW = 1_000.0
 
@@ -48,15 +55,6 @@ def test_schema_accepts_optional_held_ms():
 # --- packet writers keep the arrival time; flows keep the back-dated time -------
 # Records reach the pcap in arrival order, so a back-dated packet time would
 # land before packets written earlier (out of order in Wireshark).
-
-from friTap import message_router as router_module
-from friTap.events import DatalogEvent, EventBus
-from friTap.flow.collector import FlowCollector
-from friTap.message_router import MessageRouter
-from friTap.output.quic_pcap_bridge import QuicPcapBridge
-from friTap.output.quic_synthetic import CLIENT, SyntheticOutput
-from friTap.pipeline import create_default_pipeline
-from friTap.sinks.pcapng import PcapngSink
 
 HELD = {"held_ms": 1500}
 REQUEST = b"GET / HTTP/1.1\r\nHost: example.org\r\n\r\n"

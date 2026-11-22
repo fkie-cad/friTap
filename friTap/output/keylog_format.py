@@ -4,7 +4,7 @@
 
 A :class:`~friTap.protocols.base.ProtocolHandler` may expose a ``keylog_formatter()``;
 the generic :class:`~friTap.output.keylog_handler.KeylogOutputHandler` uses it to turn
-:class:`~friTap.events.KeylogEvent`\ s into Wireshark-loadable lines without protocol branching.
+:class:`~friTap.events.KeylogEvent`\\ s into Wireshark-loadable lines without protocol branching.
 """
 
 from __future__ import annotations

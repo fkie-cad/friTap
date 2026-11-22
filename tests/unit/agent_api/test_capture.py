@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from friTap.agent_api import ToolContext, ToolError, protocol_catalog, tools_capture
+from friTap.agent_api.adapters.cli import QueryCli
 from friTap.agent_api.capture import manager as manager_module
 from friTap.agent_api.capture.manager import SessionManager
 from friTap.agent_api.capture.runner import (
@@ -22,7 +23,6 @@ from friTap.agent_api.capture.runner import (
     validate_request,
 )
 from friTap.agent_api.capture.session import DEBUG_LOG_NAME, PHASES_NAME, CaptureSession
-from friTap.agent_api.adapters.cli import QueryCli
 from friTap.agent_api.capture.status import TERMINAL_STATES, StatusTracker
 from friTap.agent_api.registry import Registry
 from friTap.agent_api.services import capture as capture_service

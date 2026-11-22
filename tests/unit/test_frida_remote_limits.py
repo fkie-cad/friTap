@@ -17,7 +17,6 @@ from friTap.backends import frida_remote_limits as limits
 from friTap.exit_codes import EXIT_RUNTIME_ERROR
 from friTap.legacy.ssl_logger_core import SSL_Logger
 
-
 # --------------------------------------------------------------------------
 # pure helpers
 # --------------------------------------------------------------------------

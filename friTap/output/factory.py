@@ -212,8 +212,8 @@ def _resolve_keylog_formatters(config, protocol_handler, protocol_registry):
 def _add_keylog_handlers(config, protocol_handler, protocol_registry, logger,
                          handlers, live_info):
     """Wire the -k keylog writers; returns the per-protocol split paths or None."""
-    from . import KeylogOutputHandler
     from ..config import memory_scan_only
+    from . import KeylogOutputHandler
     from .keylog_paths import split_keylog_path
 
     keylog = config.output.keylog

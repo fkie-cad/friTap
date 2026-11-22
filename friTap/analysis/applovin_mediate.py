@@ -32,15 +32,22 @@ from friTap.analysis._json_walk import CONTAINER, FIELD, iter_json
 from friTap.analysis.filtering import with_category
 from friTap.analysis.redaction import mask
 from friTap.parsers.app_ciphers.applovin_mediate import (
-    MEDIATE_HOST_SUFFIX,
-    MEDIATE_PATH_PREFIX,
+    MEDIATE_HOST_SUFFIX as MEDIATE_HOST_SUFFIX,
+)
+from friTap.parsers.app_ciphers.applovin_mediate import (
+    MEDIATE_PATH_PREFIX as MEDIATE_PATH_PREFIX,
+)
+from friTap.parsers.app_ciphers.applovin_mediate import (
     is_mediate_request,
 )
 
 if TYPE_CHECKING:
     from friTap.flow.models import Flow
     from friTap.parsers.app_ciphers.applovin_keyring import AppLovinKeyring
-    from friTap.parsers.app_ciphers.applovin_mediate import DecryptResult, MediateEnvelope
+    from friTap.parsers.app_ciphers.applovin_mediate import (
+        DecryptResult,
+        MediateEnvelope,
+    )
 
 TITLE_DECRYPTED = "AppLovin mediate payload decrypted"
 TITLE_NOT_DECRYPTED = "AppLovin mediate envelope (not decrypted)"

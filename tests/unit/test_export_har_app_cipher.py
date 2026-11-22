@@ -13,9 +13,17 @@ from friTap.analysis.export_har import (
     tap_to_har,
 )
 from friTap.parsers.app_ciphers import applovin_mediate as am
-from friTap.parsers.app_ciphers.applovin_keyring import REASON_NO_SDK_KEY, AppLovinKeyring
+from friTap.parsers.app_ciphers.applovin_keyring import (
+    REASON_NO_SDK_KEY,
+    AppLovinKeyring,
+)
 from tests.unit._digest_helpers import http_flow, write_tap
-from tests.unit.test_applovin_mediate import SALT, SDK_KEY, encrypt_for_testing, gz_payload
+from tests.unit.test_applovin_mediate import (
+    SALT,
+    SDK_KEY,
+    encrypt_for_testing,
+    gz_payload,
+)
 
 PAYLOAD = {"device_info": {"os": "17.4"}, "signal_data": [{"name": "a"}]}
 ENV_VARS = ("FRITAP_APPLOVIN_SDK_KEY", "FRITAP_APPLOVIN_SALT", "FRITAP_APPLOVIN_BUNDLE")

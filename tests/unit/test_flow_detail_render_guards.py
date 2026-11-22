@@ -149,7 +149,6 @@ def test_ohttp_markup_escapes_every_tap_derived_value():
 def test_replay_crafted_ohttp_tap_renders_literally(tmp_path):
     """``fritap -r`` on a .tap whose OHTTP response holds markup must not crash."""
     from friTap.tui.app import FriTapApp
-
     from tests.unit._tui_flow_helpers import make_flow, write_tap
 
     flow = make_flow("flow-ohttp")

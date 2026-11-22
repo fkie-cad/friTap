@@ -12,6 +12,7 @@ from friTap.extensions import (  # noqa: F401
     ExtensionLoadError,
     FlowColumnSpec,
     LayerFieldSpec,
+    __all__,  # noqa: F401
     extension_load_errors,
     get_body_decoders,
     get_detail_tabs,
@@ -24,4 +25,3 @@ from friTap.extensions import (  # noqa: F401
     register_flow_column,
     reset_extensions,
 )
-from friTap.extensions import __all__  # noqa: F401

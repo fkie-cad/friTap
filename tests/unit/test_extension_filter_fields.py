@@ -145,7 +145,10 @@ def test_extension_registry_stores_the_normalized_spec():
 
 def test_help_lists_registered_field_with_literal_brackets():
     pytest.importorskip("textual")
-    from friTap.tui.modals.filter_help_modal import _build_filter_help_text, _static_field_groups
+    from friTap.tui.modals.filter_help_modal import (
+        _build_filter_help_text,
+        _static_field_groups,
+    )
 
     ext.register_filter_field(_EXT_SPEC)
     ext.register_filter_field(LayerFieldSpec("[weird].f", ("weird",), "f", "str", "odd"))

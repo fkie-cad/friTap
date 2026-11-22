@@ -24,7 +24,6 @@ from friTap.legacy.ssl_logger_core import SSL_Logger
 from friTap.output.tap_handler import TapOutputHandler
 from tests.unit._log_helpers import attach_log_capture
 
-
 # ------------------------------------------------------------ fakes
 
 def _frida_process(pid, name, parameters=None):

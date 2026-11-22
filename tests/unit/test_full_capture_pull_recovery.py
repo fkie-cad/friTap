@@ -18,8 +18,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from friTap.android import Android
-from tests.unit._adb_pull_helpers import pull_timeout, reply_to_pull
 from friTap.pcap import PCAP
+from tests.unit._adb_pull_helpers import pull_timeout, reply_to_pull
 
 DEVICE_FILE = "/data/local/tmp/_cap.1-abcdef.pcap"
 

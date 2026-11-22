@@ -208,7 +208,6 @@ def test_replay_shows_ohttp_pane_for_ohttp_flow_from_tap(tmp_path):
     """End to end: OHTTP data survives the .tap round trip and the replay
     viewer (FriTapApp(replay_file=...)) shows the OHTTP pane for that flow."""
     from friTap.tui.app import FriTapApp
-
     from tests.unit._tui_flow_helpers import make_flow, write_tap
 
     flow = make_flow("flow-ohttp")

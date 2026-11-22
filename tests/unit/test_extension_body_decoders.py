@@ -20,12 +20,12 @@ from friTap.extensions import (  # noqa: E402
     register_body_decoder,
     register_detail_tab,
 )
-from friTap.tui.theme_install import install_theme  # noqa: E402
 from friTap.tui.modals import body_processing_modal as bpm  # noqa: E402
 from friTap.tui.modals.body_processing_modal import (  # noqa: E402
     BodyProcessingModal,
     BodyProcessingResult,
 )
+from friTap.tui.theme_install import install_theme  # noqa: E402
 from tests.unit._ext_helpers import decoder_widget as _widget  # noqa: E402
 from tests.unit._render_helpers import RenderingFakeLog as _FakeLog  # noqa: E402
 from tests.unit.test_flow_detail_optional_tabs import (  # noqa: E402
@@ -133,7 +133,7 @@ def test_modal_lists_registered_decoder_after_builtins_escaped():
     buttons = _modal_buttons(registered=True)
     ids = [i for _, i in buttons]
     assert ids.index("opt-ext-0") > ids.index("opt-tl")
-    label = dict((i, l) for l, i in buttons)["opt-ext-0"]
+    label = {button_id: text for text, button_id in buttons}["opt-ext-0"]
     assert "Demo [x]" in label
 
 

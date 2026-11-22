@@ -7,10 +7,20 @@ The agent tags Chromium QUICHE data and lifecycle records ``quic`` (not
 """
 
 from friTap.connection_index import resolve_connection_key
-from friTap.events import SESSION_DESTROYED, SESSION_STARTED, DatalogEvent, EventBus, SessionEvent
+from friTap.events import (
+    SESSION_DESTROYED,
+    SESSION_STARTED,
+    DatalogEvent,
+    EventBus,
+    SessionEvent,
+)
 from friTap.flow.collector import FlowCollector
 from friTap.message_router import MessageRouter
-from tests.unit.test_collector_quiche_frame_streams import DEVICE, SERVER, _chrome_like_session
+from tests.unit.test_collector_quiche_frame_streams import (
+    DEVICE,
+    SERVER,
+    _chrome_like_session,
+)
 
 QUIC_CONNECTION = "0x72004e7c00"
 

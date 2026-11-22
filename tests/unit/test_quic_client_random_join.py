@@ -10,8 +10,13 @@ request contexts attribute those flows as they do TCP flows.
 import time
 
 from friTap.connection_index import DUMMY_SESSION_ID_BASE, connection_scoped_session_key
-from friTap.events import (SESSION_STARTED, CallerStackEvent, DatalogEvent, EventBus,
-                           SessionEvent)
+from friTap.events import (
+    SESSION_STARTED,
+    CallerStackEvent,
+    DatalogEvent,
+    EventBus,
+    SessionEvent,
+)
 from friTap.flow.collector import FlowCollector
 from friTap.flow.layers import QuicLayer
 from friTap.message_router import MessageRouter

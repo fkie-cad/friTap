@@ -267,9 +267,8 @@ def test_go_back_steps_out_of_findings_and_analyzer_panel(tmp_path):
 
 def test_go_back_clears_active_flow_filter(tmp_path):
     async def body(app, pilot, viewer):
-        from friTap.tui.widgets.filter_bar import FilterBar
-
         from friTap.filter import FilterEngine
+        from friTap.tui.widgets.filter_bar import FilterBar
 
         bar = viewer.query_one("#filter-bar", FilterBar)
         bar.apply_result(text="tcp.port == 443", text_engine=FilterEngine("tcp.port == 443"),

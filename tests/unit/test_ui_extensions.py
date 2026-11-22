@@ -2,8 +2,8 @@
 
 import pytest
 
-from friTap.filter.layer_fields import LayerFieldSpec
 from friTap import extensions as ext
+from friTap.filter.layer_fields import LayerFieldSpec
 from tests.unit._ext_helpers import FakeEntryPoint as _EP
 
 

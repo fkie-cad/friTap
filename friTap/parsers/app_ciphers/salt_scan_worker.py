@@ -22,7 +22,10 @@ import mmap
 import sys
 from typing import IO, Sequence
 
-from friTap.parsers.app_ciphers.applovin_keys import SALT_MEANINGFUL_LENGTH, _scan_window_range
+from friTap.parsers.app_ciphers.applovin_keys import (
+    SALT_MEANINGFUL_LENGTH,
+    _scan_window_range,
+)
 
 WINDOW_OVERLAP = SALT_MEANINGFUL_LENGTH - 1
 NO_HIT = "-"

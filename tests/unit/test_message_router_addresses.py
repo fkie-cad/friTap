@@ -10,8 +10,8 @@ import types
 
 import pytest
 
-from friTap.events import DatalogEvent
 from friTap import agent_socket_fields
+from friTap.events import DatalogEvent
 from friTap.legacy.ssl_logger_core import (
     SSL_Logger,
     coerce_port,

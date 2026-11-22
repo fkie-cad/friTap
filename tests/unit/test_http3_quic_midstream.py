@@ -13,10 +13,10 @@ from types import SimpleNamespace
 import pylsqpack
 
 from friTap.events import DatalogEvent, EventBus
-from friTap.parsers import qpack_context
 from friTap.flow.collector import FlowCollector
 from friTap.flow.quic_flow import QUIC_PAYLOAD_STREAM, QuicStreamFlowMixin
 from friTap.message_router import MessageRouter
+from friTap.parsers import qpack_context
 from friTap.parsers.h3_streams import SIDE_CLIENT
 from friTap.parsers.http3 import Http3Parser
 from friTap.parsers.qpack_context import (

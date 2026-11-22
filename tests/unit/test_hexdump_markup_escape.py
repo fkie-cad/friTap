@@ -1,15 +1,14 @@
-import pytest
 from rich.text import Text
 
-from friTap.tui.widgets.hexdump import format_hexdump_lines
 from friTap.tui.themes import c
+from friTap.tui.widgets.hexdump import format_hexdump_lines
 
 
 def test_bracket_bytes_render_literally():
     data = b"AAAA[/]BBBB[bold]"
     for line in format_hexdump_lines(data, markup=True):
         Text.from_markup(line)
-    plain = "".join(Text.from_markup(l).plain for l in format_hexdump_lines(data, markup=True))
+    plain = "".join(Text.from_markup(line).plain for line in format_hexdump_lines(data, markup=True))
     assert "AAAA[/]BBBB" in plain and "[bold]" not in plain.replace("AAAA[/]BBBB[bold]", "")
     assert "AAAA[/]BBBB" in plain
 

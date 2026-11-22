@@ -46,6 +46,7 @@ setup(
     # install that skips the crypto backend, see requirements-minimal.txt.
     extras_require={
         "dev": [
+            "setuptools>=42",
             "pytest>=7.0",
             "pytest-cov>=4.0",
             "pytest-mock>=3.10",

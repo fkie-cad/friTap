@@ -22,7 +22,8 @@ pytest.importorskip("textual")
 
 from friTap.analysis import Finding, Severity
 from friTap.tui.app import FriTapApp
-from tests.unit._tui_flow_helpers import make_flow as _make_flow, write_tap
+from tests.unit._tui_flow_helpers import make_flow as _make_flow
+from tests.unit._tui_flow_helpers import write_tap
 
 # ----------------------------------------------------------------------
 # Fixtures

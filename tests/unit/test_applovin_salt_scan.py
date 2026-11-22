@@ -198,7 +198,10 @@ def test_bundle_runs_structured_candidates_over_all_blobs_before_windows(tmp_pat
     })
     scanned = []
     monkeypatch.setattr(ak._WindowScanner, "scan", lambda self, blob, target: scanned.append(blob))
-    hook = lambda _label, blob: [_xor(blob[4:25])] if blob.startswith(b"dex\n") else []
+
+    def hook(_label, blob):
+        return [_xor(blob[4:25])] if blob.startswith(b"dex\n") else []
+
     assert ak.recover_salt_from_bundle(apk, PROTOCOL_ID, extra_candidates=hook) == SALT32
     assert scanned == []
 
