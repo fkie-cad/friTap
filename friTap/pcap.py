@@ -361,7 +361,8 @@ class PCAP:
 
     def __init__(self,pcap_file_name,SSL_READ,SSL_WRITE, doFullCapture, isMobile, print_debug_infos=False,
                  owner_capture=False, owner_capture_opts=None, target_package=None, target_pid=None,
-                 include_loopback=False, filter_infrastructure=True, pcap_format=PCAP_FORMAT_AUTO):
+                 include_loopback=False, filter_infrastructure=True, pcap_format=PCAP_FORMAT_AUTO,
+                 managed_full_capture=False):
         self.pcap_file_name = pcap_file_name
         # The -p container ("pcap"/"pcapng"), resolved once; read by writes_pcapng.
         self.pcap_container = resolve_pcap_format(pcap_file_name, pcap_format)
@@ -432,6 +433,8 @@ class PCAP:
                 self.logger.debug(f"Applying debug mode: {self.print_debug_infos}")
                 self.android_Instance = Android(device_id=self.device_id)
             self.full_capture_thread = self.get_instance_of_FullCaptureThread()
+            if managed_full_capture:
+                self.full_capture_thread.managed_local = True
             self.full_capture_thread.start()
             if self.full_capture_thread.is_alive():
                 self.logger.info("capturing whole traffic of target app")

@@ -1,7 +1,7 @@
 {
   "name": "fritap",
   "description": "friTap skills and a read-only MCP server for analyzing Frida-based TLS key and plaintext captures.",
-  "version": "2.6.8",
+  "version": "2.7.0",
   "author": {
     "name": "Daniel Baier",
     "email": "daniel.baier@fkie.fraunhofer.de"

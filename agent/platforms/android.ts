@@ -4,6 +4,7 @@ import { matchAntiTamper, warnAntiTamper, scanForAntiTamper, bannerAntiTamper } 
 import { matchNonTLSLibrary, noteNonTLSLibrary } from "../util/non_tls_libs.js";
 import { Platform, PLATFORM_LINUX } from "../shared/shared_structures.js";
 import { log, devlog } from "../util/log.js";
+import { beginAsyncInstall } from "../shared/install_readiness.js";
 import { findModulesWithSSLKeyLogCallback } from "../tls/shared/library_identification.js";
 // Modern (definition-based) executors
 import { gnutls_execute_modern } from "../tls/platforms/android/gnutls_android.js";
@@ -397,7 +398,7 @@ export function load_android_hooking_agent() {
     // (fkie-cad/friTap#64). Skip it when forced (--no-loader-hook) or, auto, in
     // spawn mode when a known anti-tamper lib is already present. This single
     // decision MUST gate EVERY loader-hook site — the OHTTP phase, the
-    // loader+patterns phase, and the library-scan phase — because OHTTP installs
+    // loader phase, and the library-scan phase — because OHTTP installs
     // its OWN android_dlopen_ext hook (shared_functions.ts:installOhttpHooks),
     // which previously still crashed protected apps even with --no-loader-hook.
     // scanForAntiTamper() re-enumerates the live module list (getModuleNames()
@@ -424,7 +425,7 @@ export function load_android_hooking_agent() {
     // inline hook is neither installed nor reported as a capture-disabling skip.
     const loaderHookSkipped = pairip_safe || (!useStealthLoader && (no_loader_hook || (spawned && antiTamperPresent)));
     // The single gate for the inline android_dlopen_ext trampoline across ALL
-    // sites (OHTTP, loader+patterns, library-scan).
+    // sites (OHTTP, loader, library-scan).
     const installInlineLoaderHook = !loaderHookSkipped && !useStealthLoader;
     if (loaderHookSkipped) {
         // Pass the matched module name when auto-detected so the host banner
@@ -438,7 +439,7 @@ export function load_android_hooking_agent() {
     // threads can make progress between bursts of Interceptor.attach work.
     const phases: Array<{ label: string; fn: () => void }> = [];
     // --pairip-safe: ONLY the symbol-based ssl-libs phase. Skip Java hooks
-    // (ART instrumentation), OHTTP+scan-results, the loader+patterns phase
+    // (ART instrumentation), OHTTP+scan-results, the loader and patterns phases
     // (pattern scan of WebView/Cronet libs is what trips PairIP), and the
     // library-scan pass.
     if (pairip_safe) log("[*] --pairip-safe: symbol-only keylog on libssl/libjavacrypto/conscrypt; loader hook, pattern scan, Java & OHTTP hooks disabled.");
@@ -453,6 +454,26 @@ export function load_android_hooking_agent() {
     // the bridge's first Java.use() dlopen()s libopenjdkjvmti.so, faults there while
     // holding the linker lock, and freezes the app (see shared/rtld_notifier_probe.ts).
     // The gate logs LINKER_NOTIFIER_JAVA_SKIP_WARNING once (shared with modern conscrypt).
+    // Dynamic-loader hook FIRST, before the java/ssl-libs sweep of already-loaded
+    // modules: a TLS library dlopen()ed while the earlier phases yield would
+    // otherwise be neither in the sweep's module list nor seen by a loader hook
+    // that is not installed yet. Both paths dedup (isModuleHooked / isRowHandled),
+    // so a library seen by both is hooked once.
+    if (!pairip_safe) phases.push({
+        label: "loader",
+        fn: () => {
+            if (useStealthLoader) {
+                log("[!] EXPERIMENTAL: stealth loader enabled — watching android_dlopen_ext via hardware");
+                log("[!] breakpoint (no linker code patch). Unvalidated against PairIP; see friTap#64.");
+                if (!installStealthDynamicLoader(androidLoaderConfig, hookRegistry, getModuleNames, selected_protocols)) {
+                    log("[-] Stealth loader failed to arm — TLS libraries loaded later will NOT be hooked.");
+                    log("[-] Re-run in attach mode (no -s) or with root frida-server. See friTap#64.");
+                }
+            } else if (installInlineLoaderHook) {
+                hookDynamicLoader(androidLoaderConfig, hookRegistry, getModuleNames(), false, selected_protocols);
+            }
+        },
+    });
     const linkerNotifierBroken = !quic_only && !pairip_safe && isTlsFamilyRequested() && isJavaBlockedByBrokenLinkerNotifier();
     if (linkerNotifierBroken) {
         // Java phase skipped; the one-time warning was logged by the gate.
@@ -472,19 +493,11 @@ export function load_android_hooking_agent() {
             processScanResults(scan_results, plattform_name, true, selected_protocols);
         },
     });
+    // The loader hook itself runs FIRST (see the "loader" phase above); the
+    // pattern pass keeps its original slot after the library sweep.
     if (!pairip_safe) phases.push({
-        label: "loader+patterns",
+        label: "patterns",
         fn: () => {
-            if (useStealthLoader) {
-                log("[!] EXPERIMENTAL: stealth loader enabled — watching android_dlopen_ext via hardware");
-                log("[!] breakpoint (no linker code patch). Unvalidated against PairIP; see friTap#64.");
-                if (!installStealthDynamicLoader(androidLoaderConfig, hookRegistry, getModuleNames, selected_protocols)) {
-                    log("[-] Stealth loader failed to arm — TLS libraries loaded later will NOT be hooked.");
-                    log("[-] Re-run in attach mode (no -s) or with root frida-server. See friTap#64.");
-                }
-            } else if (installInlineLoaderHook) {
-                hookDynamicLoader(androidLoaderConfig, hookRegistry, getModuleNames(), false, selected_protocols);
-            }
             if (isPatternReplaced()) install_pattern_based_hooks();
         },
     });
@@ -526,8 +539,10 @@ export function load_android_hooking_agent() {
             }
         },
     });
+    // Readiness: the host holds a spawn-gated process suspended until every phase ran.
+    const phasesDone = beginAsyncInstall();
     const runPhase = (i: number) => {
-        if (i >= phases.length) return;
+        if (i >= phases.length) { phasesDone(); return; }
         setTimeout(() => {
             try { phases[i].fn(); }
             catch (e) { devlog("[Android] install phase " + phases[i].label + " threw: " + e); }

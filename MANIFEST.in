@@ -17,3 +17,5 @@ recursive-include friTap/assets *
 recursive-include friTap/plugins/examples README*
 recursive-include integrations *.py *.sh README*
 recursive-include agent_gdb/wine *.py *.txt README*
+recursive-include agent_ebpf *.c *.h Makefile README.md
+prune agent_ebpf/build

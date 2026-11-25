@@ -55,7 +55,7 @@ class RecordingInstrument:
         self._block = block
         self._error = error
 
-    def __call__(self, session, handler):
+    def __call__(self, session, handler, is_main=None):
         self.sessions.append(session)
         self.called.set()
         if self._block is not None:

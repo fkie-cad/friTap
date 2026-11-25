@@ -18,8 +18,9 @@ from unittest.mock import MagicMock
 import pytest
 
 import friTap.legacy.ssl_logger_core as core
-from friTap.api import FriTapSession
+from friTap.backends.frida_backend import FridaBackend
 from friTap.legacy.ssl_logger_core import SSL_Logger
+from tests.unit._api_session_helpers import embedded_api_session
 
 WAIT = 5.0
 REPORT = {"version": 1, "repeat": False, "total_ms": 3, "steps": [], "logs": [],
@@ -93,27 +94,50 @@ def test_messages_sent_during_the_rpc_are_consumed_before_outputs_close():
     assert obj._message_queue.empty()
 
 
-def test_wedged_graceful_rpc_times_out_and_outputs_still_close():
+@pytest.mark.parametrize("inside_step", [False, True])
+def test_wedged_graceful_rpc_times_out_and_outputs_still_close(inside_step, caplog):
     order = []
     release = threading.Event()
-    obj = _make_logger(order, _FakeScript(lambda: release.wait(WAIT * 4)), timeout=1)
+
+    def graceful():
+        if inside_step:
+            send_marker(obj.script, "entered")
+            send_marker(obj.script, "started", "interceptor-detach-all")
+            send_marker(_FakeScript(), "finished", "child-cleanup")
+        release.wait(WAIT * 4)
+
+    def send_marker(script, phase, step=None):
+        obj._internal_callback_wrapper(script)({
+            "type": "send", "payload": {"detach_progress": {"phase": phase, "step": step}},
+        }, None)
+
+    obj = _make_logger(order, _FakeScript(graceful), timeout=1)
     try:
         obj._run_cleanup_steps()
         assert order[-1] == "close"
         assert obj._graceful_detach_outcome == SSL_Logger.GRACEFUL_TIMEOUT
         assert obj.detach_report is None
+        assert ("started step 'interceptor-detach-all'" if inside_step
+                else "no RPC-entry marker arrived") in caplog.text
+        assert "child-cleanup" not in caplog.text
     finally:
         release.set()
 
 
-def test_wedged_graceful_rpc_makes_detach_skip_unload_and_session_detach():
+def test_wedged_graceful_rpc_makes_detach_release_the_agent_bounded():
+    """A timed-out RPC no longer leaves the agent loaded: unload and session.detach
+    run at once under WEDGED_RELEASE_TIMEOUT instead of the normal unload path."""
     obj = _make_logger([], _FakeScript())
+    obj.logger = MagicMock()
+    obj._config.debug_output = True
+    obj._stop_consumer_thread()
     obj._graceful_detach_outcome = SSL_Logger.GRACEFUL_TIMEOUT
     obj.process = MagicMock()
     obj._backend = MagicMock()
     obj.detach_with_timeout(timeout=WAIT)
-    obj._backend.unload_script.assert_not_called()
-    obj._backend.detach.assert_not_called()
+    obj._backend.unload_script.assert_called_once_with(obj.script)
+    obj._backend.detach.assert_called_once_with(obj.process)
+    assert "Detached friTap from process successfully." in str(obj.logger.debug.call_args_list)
 
 
 @pytest.mark.parametrize("destroyed, target_gone", [(True, False), (False, True)])
@@ -152,6 +176,37 @@ def test_detach_with_timeout_does_not_call_graceful_a_second_time():
     assert script.graceful_calls == 1
     obj._backend.unload_script.assert_called_once_with(script)
     obj._backend.detach.assert_called_once_with(obj.process)
+
+
+@pytest.mark.parametrize("outcome", ["success", "gone", "unload timeout", "failure"])
+def test_session_detach_logs_actual_outcome(outcome, monkeypatch):
+    obj = _make_logger([], _FakeScript())
+    obj.logger = MagicMock()
+    obj._config.debug_output = True
+    obj.process = MagicMock()
+    obj._backend = FridaBackend()
+    obj.script.unload = MagicMock()
+    obj._target_gone = outcome == "gone"
+    if outcome == "failure":
+        obj.process.detach.side_effect = RuntimeError("transport closed")
+    if outcome == "unload timeout":
+        monkeypatch.setattr(obj, "_unload_main_script_bounded",
+                            lambda _: types.SimpleNamespace(is_alive=lambda: True))
+
+    obj._shutdown_agent_and_drain()
+    obj.detach_with_timeout(timeout=WAIT)
+
+    assert obj._main_session_detached is (outcome == "success")
+    assert obj.process.detach.call_count == int(outcome in ("success", "failure"))
+    assert ("Detached friTap from process successfully." in
+            str(obj.logger.debug.call_args_list)) is (outcome == "success")
+    if outcome == "gone":
+        assert "target/script already gone" in str(obj.logger.debug.call_args_list)
+    elif outcome == "unload timeout":
+        assert "script.unload() did not return" in str(obj.logger.warning.call_args_list)
+    elif outcome == "failure":
+        obj.logger.error.assert_called_once_with(
+            "Backend session detach failed: %s", obj.process.detach.side_effect)
 
 
 def test_detach_with_timeout_alone_still_calls_graceful_once():
@@ -195,7 +250,7 @@ def test_api_stop_calls_graceful_before_the_drain_and_unload():
     obj._backend.unload_script.side_effect = lambda _s: order.append("unload")
     _enqueue(obj, "queued")
 
-    FriTapSession(obj, obj._event_bus).stop()
+    embedded_api_session(obj).stop()
 
     assert script.graceful_calls == 1
     assert order.index("graceful") < order.index("unload")

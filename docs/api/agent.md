@@ -38,6 +38,7 @@ on stderr and exits with `2`.
 |------|------|:--------:|---------|
 | `list_devices` | discover | | Frida devices (`id`, `name`, `type`) usable as capture device |
 | `list_apps` | discover | | Installed apps (or processes) of a device, running ones first (paginated) |
+| `discover_processes` | discover | yes | Android: find the processes carrying an app's TLS (target, siblings, delegate apps) with tlsLibHunter; optionally save a profile for `start_capture` |
 | `list_supported_protocols` | discover | | Protocols friTap can capture, with platforms, capture modes and options |
 | `start_capture` | capture | yes | Start a live capture in the background; returns a `session_id` |
 | `capture_status` | capture | | State, hook status, protocols in use (vs. idle hooks) and per-protocol counters of a session |
@@ -65,8 +66,9 @@ tool; `fritap q --list` lists them all.
 
 ```text
 list_devices / list_apps            discover the target
+discover_processes (Android)        which processes carry its TLS -> profile.json
 list_supported_protocols            what can be hooked on that platform
-start_capture  ──► session_id       live capture (background)
+start_capture  ──► session_id       live capture (background; profile=... on Android)
 capture_status                      poll: is a library hooked? data flowing? protocols_in_use?
 mark_phase "login" ...              label what you do in the app
 stop_capture                        clean teardown, .tap finalized
@@ -85,6 +87,28 @@ fritap q list_devices
 fritap q list_apps --device usb --running --limit 20
 fritap q list_supported_protocols
 ```
+
+On Android, an app's TLS often leaves through other processes: `:process`
+siblings, delegate apps (Gemini uses Google Search's `:googleapp`), SDK
+sandboxes. `discover_processes` samples the device with tlsLibHunter
+(`duration_s`, default 15, 1..120; use the app meanwhile) and lists them:
+
+```bash
+fritap q discover_processes --package com.example.app --device emulator-5556 \
+    --duration-s 20 --write-profile profiles/example.json
+```
+
+The result (`fritap.process_discovery/1`) has one row per candidate: `pid`,
+`role` (`target`, `sibling`, `delegate`, `sdk_sandbox`, `shared_system`,
+`unknown`), `attributable` (`false` for shared system processes, which are
+reported but never hooked), `confirmed` when tlsLibHunter sets it, and the
+device-supplied `process`, `package` and `evidence` strings under
+`untrusted`. `write_profile` saves the `tlslibhunter.profile/1` document
+(a `.json` path inside the sandbox root) for `start_capture`'s `profile`.
+Discovery runs `su` commands on the device, so it is gated like
+`start_capture` (`--allow-capture`, `--allow-target` on the package). Without
+tlsLibHunter's discovery support it fails with `missing_dependency`; pass a
+profile saved elsewhere to `start_capture` instead.
 
 `list_supported_protocols` returns `fritap.capture_protocols/1`: per protocol
 its `name`, `category`, `platforms`, `capture_modes` and the `options` it
@@ -114,15 +138,28 @@ accepts (e.g. `offsets`, `patterns`, `force_scan`, `library_scan`,
 - **`capture`**: `plaintext` (default, `.tap` only), `keys` (+ keylog),
   `full` (+ keylog + pcap).
 - **`duration_s`** (default 60, 1..3600): the capture stops cleanly after it.
-- **`spawn`** (default `true`) or attach to a running process; `args` only with
-  spawn; `follow_exec` (default `false`) follows the target across `exec()`.
+- **`spawn`** (default `true`; `false` with `backend: "ebpf"`) or attach to a
+  running process; `args` only with spawn; `follow_exec` (default `false`)
+  follows the target across `exec()`.
+- **`backend`**: `frida` (default) or the experimental `ebpf` (see
+  [Capture backend selection](#capture-backend-selection)).
 - **`anti_root`** (default `false`, Android only): enables friTap's
   anti-root-detection hooks (`-ar` / `--anti_root`). It changes the app's
   behaviour; use it only on authorized targets.
 - `device`: `local` (default), `usb` or a Frida device id; `host`: a remote
   frida-server `ip:port` (wins over `device`).
+- **`profile`** (Android device only, `--profile`): a discovery profile inside
+  the sandbox root (from `discover_processes` `write_profile`). friTap
+  spawn-gates its packages, force-stops delegates so they respawn under
+  friTap and keeps capturing while any instrumented process lives; shared
+  system processes are only reported. Every attributable package of the
+  profile must pass `--allow-target`.
+- **`also_package`** (Android device only, `--also-package`, up to 16): extra
+  package names to spawn-gate and instrument, e.g. a delegate app. Each must
+  be a valid package name and pass `--allow-target`.
 
-The result (`session_id`, `state`, `tap`, `session_dir`, `argv`) comes back
+The result (`session_id`, `state`, `requested_backend`, `tap`, `session_dir`,
+`argv`) comes back
 immediately. Session files live in `<root>/.fritap-sessions/<session_id>/`.
 At most 4 sessions run at once (`limit_reached` otherwise).
 
@@ -456,8 +493,9 @@ that escapes it (`..`, absolute path elsewhere, symlink) fails with
 Live capture runs code inside another process, so the servers are
 conservative:
 
-- `fritap mcp` and `fritap serve` **deny** `start_capture` unless started with
-  `--allow-capture` (error `forbidden`, hint `start the server with --allow-capture`).
+- `fritap mcp` and `fritap serve` **deny** `start_capture` and
+  `discover_processes` unless started with `--allow-capture` (error
+  `forbidden`, hint `start the server with --allow-capture`).
 - `--allow-target PATTERN` (repeatable, `fnmatch` syntax, e.g.
   `'com.example.*'`) restricts which targets may be captured; anything else is
   `forbidden`. Without it every target is allowed once capture is enabled.
@@ -484,7 +522,7 @@ conservative:
 | `--root DIR` | q, mcp, serve | Sandbox root (default: cwd) |
 | `--allow-secrets` | q, mcp, serve | Allow key material (keylog export) |
 | `--max-response-bytes N` | q, mcp, serve | Cap on one JSON response (default 65536) |
-| `--allow-capture` | mcp, serve | Enable `start_capture` |
+| `--allow-capture` | mcp, serve | Enable `start_capture` and `discover_processes` |
 | `--allow-target PATTERN` | mcp, serve | Allowed capture targets (repeatable) |
 | `--allow-values` | mcp, serve | Allow `show_values: true` (unredacted finding values); always on for q |
 | `--http` | mcp | Streamable HTTP instead of stdio |
@@ -642,7 +680,8 @@ the call to make first. Some errors add fields (`position` for `bad_filter`,
 | `unauthorized` | Missing/wrong bearer token | | 401 |
 | `body_too_large` | REST request body over 1 MiB | | 413 |
 | `runtime_error` | Unexpected failure inside a tool | 1 | 500 |
-| `missing_dependency` | `fritap mcp` without the `mcp` package | 2 | |
+| `missing_dependency` | `fritap mcp` without the `mcp` package (exit 2); `discover_processes` without tlsLibHunter discovery (exit 1) | 2 / 1 | 500 |
+| `discovery_failed` | `discover_processes` failed on the device (adb, `su`, malformed profile) | 1 | 500 |
 
 `fritap q` prints the error document on **stdout** and exits with its
 `exit_code` (`0` success, `2` usage/policy errors, `1` runtime errors). REST
@@ -703,3 +742,34 @@ optional `target` and `device` arguments. See [Agent skills](../agents/skills.md
 - [CLI reference: machine-readable output](cli.md#machine-readable-output)
 - [Traffic analysis and the digest](../advanced/traffic-analysis.md)
 - [.tap file format](tap-format.md)
+
+### Capture backend selection
+
+`start_capture` accepts an optional `backend` parameter. It defaults to
+`frida`. The experimental `ebpf` backend supports plaintext TLS capture from
+one already-running local Linux PID using the optional OpenSSL 3 runtime.
+
+With `backend: "ebpf"`, `start_capture` attaches to the numeric PID in
+`target` (`spawn` defaults to `false`; `spawn: true` is a `bad_param`),
+`protocols` defaults to and may only be `["tls"]`, and `capture` must be
+`plaintext` (no key extraction yet). `host`, `follow_exec`, `anti_root` and
+`protocol_options` are rejected; `device` selects an ADB serial for Android.
+The child writes only the `.tap` file (no JSONL stream), so `capture_status`
+reports `requested_backend: "ebpf"`, `records: 0` and stays `starting` until
+the capture ends; watch `tap_bytes` and `stderr_log` for progress.
+`stop_capture`, `get_digest`, `list_protocols` and the other read tools work on
+the `.tap` as usual.
+
+The CLI and Python builder support TAP, plaintext PCAP, and local wire capture. Use `fritap --backend ebpf --backend-readiness <pid>` under the capture
+identity to load the actual BPF object and check its process-scoped
+attachments. For CLI and Python builder examples, see
+`agent_ebpf/README.md`.
+
+Omit the PID for environment diagnostics. Add `--mobile <adb-serial>` for
+Android diagnostics or OpenSSL 3 plaintext capture with the deployed arm64
+loader. The diagnostic and capture use the selected ADB shell identity. If `bpftool`
+is available, the environment check also probes for the BPF syscall.
+
+Target-free Linux readiness automatically uses an installed kernel helper
+when available. Build instructions are in `dev/ebpf/README.md`. The helper
+probes map creation and program loading, then closes both test objects.

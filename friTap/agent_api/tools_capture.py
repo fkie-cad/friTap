@@ -7,9 +7,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from friTap.agent_api.capture.runner import (
+    CAPTURE_BACKENDS,
     CAPTURE_MODES,
     DEFAULT_CAPTURE_MODE,
     DEFAULT_DURATION_S,
+    FRIDA_BACKEND,
     MAX_DURATION_S,
     MIN_DURATION_S,
 )
@@ -17,7 +19,7 @@ from friTap.agent_api.capture.status import ENDED_BY_VALUES, PROTOCOL_STATUS_VAL
 from friTap.agent_api.registry import ToolSpec
 from friTap.agent_api.schema import object_schema, page_params
 from friTap.agent_api.services import capture as capture_service
-from friTap.agent_api.services import discovery
+from friTap.agent_api.services import discovery, process_discovery
 
 if TYPE_CHECKING:
     from friTap.agent_api.registry import Registry
@@ -32,6 +34,9 @@ _PHASE_LABEL = {"type": "string", "minLength": 1, "maxLength": 200,
                                "consent-declined). diff phase_a/phase_b must match it exactly."}
 _HOST = {"type": "string", "minLength": 1,
          "description": "Remote frida-server as ip:port (wins over device)."}
+_ANDROID_PACKAGE = {"type": "string", "minLength": 1, "maxLength": 255,
+                    "pattern": r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$",
+                    "description": "Android package name, e.g. com.example.app."}
 
 
 def _protocol_options_schema() -> dict[str, Any]:
@@ -61,10 +66,16 @@ def _start_params() -> dict[str, Any]:
                  "description": "Arguments for a spawned executable (spawn=true only)."},
         "device": _DEVICE,
         "host": _HOST,
-        "spawn": {"type": "boolean", "default": True,
-                  "description": "Spawn the target (true) or attach to a running process."},
+        "backend": {"type": "string", "enum": list(CAPTURE_BACKENDS), "default": FRIDA_BACKEND,
+                    "description": "frida (default) or experimental ebpf: Linux/Android OpenSSL 3 "
+                                   "TLS plaintext, attach to a numeric PID, capture=plaintext only."},
+        # No schema default: an omitted spawn means true for frida, false (attach) for ebpf.
+        "spawn": {"type": "boolean",
+                  "description": "Spawn the target (true) or attach to a running process. "
+                                 "Default: true; false for backend=ebpf (which cannot spawn)."},
         "protocols": {"type": "array", "items": {"type": "string", "enum": capture_protocol_enum()},
-                      "description": "Protocols to hook; omit for automatic detection."},
+                      "description": "Protocols to hook; omit for automatic detection "
+                                     "(backend=ebpf: tls only, the default)."},
         "protocol_options": _protocol_options_schema(),
         "capture": {"type": "string", "enum": list(CAPTURE_MODES), "default": DEFAULT_CAPTURE_MODE,
                     "description": "keys: + keylog; plaintext: .tap only; full: + keylog + pcap."},
@@ -77,6 +88,13 @@ def _start_params() -> dict[str, Any]:
                       "description": "Android only: enable friTap's anti-root-detection hooks "
                                      "(-ar/--anti_root). Changes app behaviour; use only on "
                                      "authorized targets."},
+        "profile": {"type": "string", "minLength": 1,
+                    "description": "Android device only: tlsLibHunter discovery profile JSON "
+                                   "under the sandbox root (discover_processes write_profile); "
+                                   "also captures its siblings/delegates (--profile)."},
+        "also_package": {"type": "array", "items": _ANDROID_PACKAGE, "maxItems": 16,
+                         "description": "Android device only: also spawn-gate and instrument "
+                                        "these packages, e.g. a delegate app (--also-package)."},
     }, required=("target",))
 
 
@@ -119,7 +137,7 @@ STATUS_RESULT = {"type": "object", "properties": {
                                 "duration, stopped or error. Only 'error' is a failure."},
     "records": {"type": "integer"},
     "protocols": {"type": "object", "additionalProperties": _PROTOCOL_STATS},
-    "target": _STRING, "pid": {"type": ["integer", "null"]}, "elapsed_s": {"type": "number"},
+    "target": _STRING, "requested_backend": _STRING, "pid": {"type": ["integer", "null"]}, "elapsed_s": {"type": "number"},
     "duration_s": {"type": "integer"}, "capture": _STRING, "tap": _STRING,
     "tap_bytes": {"type": "integer"}, "keylog": _STRING, "pcap": _STRING,
     "keylog_files": {"type": "array", "items": _STRING},
@@ -129,7 +147,7 @@ STATUS_RESULT = {"type": "object", "properties": {
 
 START_RESULT = {"type": "object", "properties": {
     "schema": _STRING, "session_id": _STRING, "state": _STRING, "tap": _STRING,
-    "session_dir": _STRING, "argv": {"type": "array", "items": _STRING}}}
+    "session_dir": _STRING, "requested_backend": _STRING, "argv": {"type": "array", "items": _STRING}}}
 
 PHASE_RESULT = {"type": "object", "properties": {
     "schema": _STRING, "session_id": _STRING,
@@ -145,6 +163,23 @@ SESSIONS_RESULT = {"type": "object", "properties": {
 DEVICES_RESULT = {"type": "object", "properties": {"schema": _STRING, "devices": {
     "type": "array", "items": {"type": "object", "properties": {
         "id": _STRING, "name": _STRING, "type": _STRING}}}}}
+
+_DISCOVERED_CANDIDATE = {"type": "object", "properties": {
+    "pid": {"type": "integer"},
+    "role": {"type": "string", "enum": [*process_discovery.KNOWN_ROLES,
+                                        process_discovery.UNKNOWN_ROLE]},
+    "attributable": {"type": "boolean",
+                     "description": "false for shared system processes (reported, never hooked)."},
+    "confirmed": {"type": "boolean"},
+    "untrusted": {"type": "object", "description": "Device strings (escaped, capped): "
+                  "process, package, evidence."}}}
+
+PROCESS_DISCOVERY_RESULT = {"type": "object", "properties": {
+    "schema": _STRING, "device": {"type": ["string", "null"]}, "package": _STRING,
+    "duration_s": {"type": "integer"}, "total": {"type": "integer"},
+    "candidates": {"type": "array", "items": _DISCOVERED_CANDIDATE},
+    "profile": {"type": "string", "description": "Saved profile path (write_profile)."},
+    "untrusted": {"type": "object"}}}
 
 APPS_RESULT = {"type": "object", "properties": {
     "schema": _STRING, "device": {"type": "object"}, "total": {"type": "integer"},
@@ -194,7 +229,26 @@ def _discovery_specs() -> list[ToolSpec]:
                  lambda p, ctx: discovery.list_apps(p.get("device"), p.get("host"),
                                                     p["running"], p["limit"], p.get("cursor")),
                  kind="discover", result_schema=APPS_RESULT),
+        ToolSpec("discover_processes", "Find the Android processes carrying an app's TLS "
+                 "(tlsLibHunter); can save a profile.", _discover_processes_params(),
+                 lambda p, ctx: process_discovery.discover_processes(p, ctx),
+                 kind="discover", mutating=True, result_schema=PROCESS_DISCOVERY_RESULT),
     ]
+
+
+def _discover_processes_params() -> dict[str, Any]:
+    return object_schema({
+        "package": {**_ANDROID_PACKAGE, "description": "Target app package (list_apps identifier)."},
+        "device": {"type": "string", "minLength": 1,
+                   "description": "adb serial; 'usb' or omitted = adb's default device."},
+        "duration_s": {"type": "integer", "minimum": process_discovery.MIN_DISCOVERY_S,
+                       "maximum": process_discovery.MAX_DISCOVERY_S,
+                       "default": process_discovery.DEFAULT_DISCOVERY_S,
+                       "description": "Seconds to sample the device; use the app meanwhile."},
+        "write_profile": {"type": "string", "minLength": 1,
+                          "description": "Save the profile as this .json path under the sandbox "
+                                         "root, for start_capture(profile=...)."},
+    }, required=("package",))
 
 
 def register_all(registry: "Registry") -> None:

@@ -101,7 +101,7 @@ class ThreadRecordingInstrument:
         self.called = threading.Event()
         self._raise_on = set(raise_on)
 
-    def __call__(self, session, handler):
+    def __call__(self, session, handler, is_main=None):
         self.calls += 1
         self.threads.append(threading.current_thread())
         try:
@@ -215,7 +215,7 @@ def test_resume_is_called_even_when_instrument_raises():
     the platform then reports as a watchdog kill (``0x8badf00d`` on iOS) rather
     than as friTap's failure to instrument.
     """
-    def boom(session, handler):
+    def boom(session, handler, is_main=None):
         raise RuntimeError("attach/load failed")
 
     obj = _make_logger(instrument=boom)
@@ -440,7 +440,7 @@ def test_gated_pid_is_tracked_until_the_worker_resumes_it():
     seen_in_flight = []
     obj = _make_logger()
 
-    def instrument(_session, _handler):
+    def instrument(_session, _handler, is_main=None):
         seen_in_flight.append(set(obj._suspended_pids))
 
     obj.instrument = instrument

@@ -22,6 +22,22 @@ def _make_inspection_config(parsed):
 
 def build_capture_config(parsed, install_lsass_hook):
     """The FriTapConfig for a capture session started from the CLI."""
+    config = _config_from_capture_flags(parsed, install_lsass_hook)
+    # --tap has no from_legacy_params parameter; it lives on OutputConfig only.
+    config.output.tap_output = getattr(parsed, "tap", None)
+    _apply_profile_flags(config.device, parsed)
+    return config
+
+
+def _apply_profile_flags(device, parsed):
+    """--profile / --discover / --also-package (no from_legacy_params parameters)."""
+    device.profile_path = getattr(parsed, "profile", None)
+    device.discover_seconds = getattr(parsed, "discover", None)
+    device.also_packages = list(getattr(parsed, "also_package", None) or [])
+
+
+def _config_from_capture_flags(parsed, install_lsass_hook):
+    """FriTapConfig.from_legacy_params over the parsed capture flags."""
     return FriTapConfig.from_legacy_params(
         app=parsed.exec,
         spawn_argv=getattr(parsed, "exec_argv", None),

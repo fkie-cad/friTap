@@ -20,7 +20,11 @@ const G = globalThis as any;
 test("gracefulDetach returns a v1 report once; dispose and later calls get repeat:true", () => {
     const sent: any[] = [];
     G.send = (m: any) => sent.push(m);
-    G.Interceptor.detachAll = () => { throw new Error("detach failed"); };
+    const markers = () => sent.flatMap((m) => m.detach_progress ? [m.detach_progress] : []);
+    G.Interceptor.detachAll = () => {
+        assert.deepEqual(markers().at(-1), { phase: "started", step: "interceptor-detach-all" });
+        throw new Error("detach failed");
+    };
     registerPreShutdownFlush(() => log("flushed before the flag"));
     registerDetachTeardown("probe", () => { log("inside teardown"); return { owned: 1 }; });
 
@@ -30,6 +34,10 @@ test("gracefulDetach returns a v1 report once; dispose and later calls get repea
     assert.equal(report.repeat, false);
     assert.deepEqual(JSON.parse(JSON.stringify(report)), report);
     const names: string[] = report.steps.map((s: any) => s.name);
+    assert.deepEqual(markers(), [
+        { phase: "entered", step: undefined },
+        ...names.flatMap((step) => [{ phase: "started", step }, { phase: "finished", step }]),
+    ]);
     assert.equal(names[0], "pre-shutdown-flush");
     assert.deepEqual(names.slice(-3), ["keylog-callbacks-restore", "interceptor-detach-all", "anchor-keylog-fields-restore"]);
     const probe = report.steps.find((s: any) => s.name === "teardown:probe");
@@ -46,7 +54,9 @@ test("gracefulDetach returns a v1 report once; dispose and later calls get repea
 
     const repeat = { version: 1, repeat: true, steps: [], logs: [], dropped_logs: 0, total_ms: 0 };
     assert.deepEqual(G.rpc.exports.gracefulDetach(), repeat);
+    const beforeDispose = markers();
     assert.doesNotThrow(() => G.rpc.exports.dispose());
+    assert.deepEqual(markers(), beforeDispose);
     // Capture scope is closed after the transaction: a late log is dropped, not captured.
     log("late");
     assert.equal(sent.some((m) => m.console === "late"), false);

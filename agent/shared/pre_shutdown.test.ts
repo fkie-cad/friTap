@@ -45,7 +45,7 @@ test("detach teardowns run in reverse install order, isolated, once", () => {
 
 test("releaseAgentHooks runs the flushes before it sets the shutdown flag", () => {
     const source = readFileSync(fileURLToPath(new URL("../fritap_agent.ts", import.meta.url)), "utf8");
-    const start = source.indexOf("function releaseAgentHooks(): DetachReport {");
+    const start = source.indexOf("function releaseAgentHooks(");
     assert.ok(start >= 0);
     const body = source.slice(start, source.indexOf("\n}\n", start));
     const flush = body.indexOf("runPreShutdownFlushes()");

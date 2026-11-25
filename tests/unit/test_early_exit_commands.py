@@ -189,3 +189,11 @@ def test_inspect_reports_failure_through_error_prefix():
 @pytest.mark.parametrize("value", [_LISTING, "", None], ids=["listing", "empty", "none"])
 def test_is_error_does_not_false_positive(value):
     assert LibraryInspector.is_error(value) is False
+
+
+def test_importing_cli_does_not_load_legacy_stack():
+    import subprocess
+    import sys
+    code = ("import sys, friTap.friTap; "
+            "sys.exit(int('friTap.legacy.ssl_logger_core' in sys.modules))")
+    assert subprocess.run([sys.executable, "-c", code], timeout=60).returncode == 0

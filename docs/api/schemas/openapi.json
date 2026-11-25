@@ -227,6 +227,9 @@
           "records": {
             "type": "integer"
           },
+          "requested_backend": {
+            "type": "string"
+          },
           "schema": {
             "type": "string"
           },
@@ -386,6 +389,102 @@
             "type": "object"
           },
           "truncated": {}
+        },
+        "type": "object"
+      },
+      "discover_processes_params": {
+        "additionalProperties": false,
+        "properties": {
+          "device": {
+            "description": "adb serial; 'usb' or omitted = adb's default device.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "duration_s": {
+            "default": 15,
+            "description": "Seconds to sample the device; use the app meanwhile.",
+            "maximum": 120,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "package": {
+            "description": "Target app package (list_apps identifier).",
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z0-9_]+)+$",
+            "type": "string"
+          },
+          "write_profile": {
+            "description": "Save the profile as this .json path under the sandbox root, for start_capture(profile=...).",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "package"
+        ],
+        "type": "object"
+      },
+      "discover_processes_result": {
+        "properties": {
+          "candidates": {
+            "items": {
+              "properties": {
+                "attributable": {
+                  "description": "false for shared system processes (reported, never hooked).",
+                  "type": "boolean"
+                },
+                "confirmed": {
+                  "type": "boolean"
+                },
+                "pid": {
+                  "type": "integer"
+                },
+                "role": {
+                  "enum": [
+                    "target",
+                    "sibling",
+                    "delegate",
+                    "sdk_sandbox",
+                    "shared_system",
+                    "unknown"
+                  ],
+                  "type": "string"
+                },
+                "untrusted": {
+                  "description": "Device strings (escaped, capped): process, package, evidence.",
+                  "type": "object"
+                }
+              },
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "device": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "duration_s": {
+            "type": "integer"
+          },
+          "package": {
+            "type": "string"
+          },
+          "profile": {
+            "description": "Saved profile path (write_profile).",
+            "type": "string"
+          },
+          "schema": {
+            "type": "string"
+          },
+          "total": {
+            "type": "integer"
+          },
+          "untrusted": {
+            "type": "object"
+          }
         },
         "type": "object"
       },
@@ -1555,6 +1654,18 @@
       "start_capture_params": {
         "additionalProperties": false,
         "properties": {
+          "also_package": {
+            "description": "Android device only: also spawn-gate and instrument these packages, e.g. a delegate app (--also-package).",
+            "items": {
+              "description": "Android package name, e.g. com.example.app.",
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z0-9_]+)+$",
+              "type": "string"
+            },
+            "maxItems": 16,
+            "type": "array"
+          },
           "anti_root": {
             "default": false,
             "description": "Android only: enable friTap's anti-root-detection hooks (-ar/--anti_root). Changes app behaviour; use only on authorized targets.",
@@ -1566,6 +1677,15 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "backend": {
+            "default": "frida",
+            "description": "frida (default) or experimental ebpf: Linux/Android OpenSSL 3 TLS plaintext, attach to a numeric PID, capture=plaintext only.",
+            "enum": [
+              "frida",
+              "ebpf"
+            ],
+            "type": "string"
           },
           "capture": {
             "default": "plaintext",
@@ -1596,6 +1716,11 @@
           },
           "host": {
             "description": "Remote frida-server as ip:port (wins over device).",
+            "minLength": 1,
+            "type": "string"
+          },
+          "profile": {
+            "description": "Android device only: tlsLibHunter discovery profile JSON under the sandbox root (discover_processes write_profile); also captures its siblings/delegates (--profile).",
             "minLength": 1,
             "type": "string"
           },
@@ -1641,7 +1766,7 @@
             "type": "object"
           },
           "protocols": {
-            "description": "Protocols to hook; omit for automatic detection.",
+            "description": "Protocols to hook; omit for automatic detection (backend=ebpf: tls only, the default).",
             "items": {
               "enum": [
                 "custom",
@@ -1657,8 +1782,7 @@
             "type": "array"
           },
           "spawn": {
-            "default": true,
-            "description": "Spawn the target (true) or attach to a running process.",
+            "description": "Spawn the target (true) or attach to a running process. Default: true; false for backend=ebpf (which cannot spawn).",
             "type": "boolean"
           },
           "target": {
@@ -1679,6 +1803,9 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "requested_backend": {
+            "type": "string"
           },
           "schema": {
             "type": "string"
@@ -1856,6 +1983,9 @@
           "records": {
             "type": "integer"
           },
+          "requested_backend": {
+            "type": "string"
+          },
           "schema": {
             "type": "string"
           },
@@ -1899,7 +2029,7 @@
   },
   "info": {
     "title": "friTap agent API",
-    "version": "2.6.8"
+    "version": "2.7.0"
   },
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "openapi": "3.1.0",
@@ -2160,6 +2290,108 @@
           "read"
         ],
         "x-fritap-mutating": false
+      }
+    },
+    "/v1/tools/discover_processes": {
+      "post": {
+        "operationId": "discover_processes",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/discover_processes_params"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/discover_processes_result"
+                }
+              }
+            },
+            "description": "Tool result"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid parameters or request body"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing or wrong bearer token"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Forbidden by server policy (sandbox root, capture, secrets)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unknown tool or resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict (e.g. capture still running)"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Request body too large"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Tool runtime error"
+          }
+        },
+        "summary": "Find the Android processes carrying an app's TLS (tlsLibHunter); can save a profile.",
+        "tags": [
+          "discover"
+        ],
+        "x-fritap-mutating": true
       }
     },
     "/v1/tools/export": {

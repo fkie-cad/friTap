@@ -7,12 +7,27 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from ..events import MAIN_PROCESS_ROLE
+from ..text_safety import visible_controls
 from .base import OutputHandler
 from .dedup import KeyDeduplicator
 from .formatters import format_data_header, format_hexdump
 
 if TYPE_CHECKING:
     from ..events import ConsoleEvent, DatalogEvent, EventBus, KeylogEvent
+
+
+def origin_prefix(event) -> str:
+    """``"[<pid> <process>] "`` for an event from a process other than the main target, else ``""``.
+
+    Single-process captures (and events without an origin) print exactly as before.
+    """
+    origin = getattr(event, "process_origin", None)
+    if not origin or origin.get("role") == MAIN_PROCESS_ROLE:
+        return ""
+    parts = (origin.get("pid"), origin.get("process"))
+    who = " ".join(visible_controls(part) for part in parts if part)
+    return f"[{who}] " if who else ""
 
 
 class ConsoleOutputHandler(OutputHandler):
@@ -34,7 +49,7 @@ class ConsoleOutputHandler(OutputHandler):
         if event.cancelled:
             return
         if event.key_data and self._dedup.is_new(event.key_data):
-            self._logger.info(event.key_data)
+            self._logger.info(origin_prefix(event) + event.key_data)
 
     def on_data(self, event: "DatalogEvent") -> None:
         if event.cancelled:
@@ -42,8 +57,9 @@ class ConsoleOutputHandler(OutputHandler):
         if not event.data:
             return
         self._logger.info(
-            format_data_header(event.function, event.src_addr, event.src_port,
-                               event.dst_addr, event.dst_port)
+            origin_prefix(event)
+            + format_data_header(event.function, event.src_addr, event.src_port,
+                                 event.dst_addr, event.dst_port)
         )
         self._logger.info(format_hexdump(event.data))
 

@@ -1,0 +1,13 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <permission android:name="${applicationId}.BIND" android:protectionLevel="signature" />
+    <uses-permission android:name="com.fritap.delegation.worker.BIND" />
+    <queries><package android:name="com.fritap.delegation.worker" /></queries>
+    <application android:label="TLS delegation fixture">
+        <activity android:name=".Driver" android:exported="true" />
+        <activity android:name=".Idle" android:exported="true"
+                  android:permission="${applicationId}.BIND" />
+        <service android:name=".Worker" android:exported="true"
+                 android:permission="${applicationId}.BIND" android:process=":worker" />
+    </application>
+</manifest>

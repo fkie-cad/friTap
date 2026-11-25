@@ -5,8 +5,8 @@ with ``--enable_child_gating`` (or spawn gating / a child's exec) the shutdown's
 graceful_detach, the detach report and the unload went to the LAST child
 instead of the main app — and the main agent was never gracefully detached.
 Now a child's agent is kept in ``_child_agents``; the shutdown detaches the
-main agent first, then the children (bounded, best effort, DEBUG only), and
-unloads the children after the main one.
+main agent and the children at once under one deadline (children best
+effort, DEBUG only), and unloads the children alongside the main one.
 """
 
 from __future__ import annotations
@@ -101,7 +101,7 @@ def test_exec_image_of_the_main_target_becomes_the_main_script():
     assert obj._child_agents == []
 
 
-def test_shutdown_detaches_the_main_agent_first_and_reports_only_it():
+def test_shutdown_detaches_every_agent_and_reports_only_the_main_one():
     order = []
     main = _FakeScript("main", lambda: (order.append("main"), MAIN_REPORT)[1])
     child = _FakeScript("child", lambda: (order.append("child"), CHILD_REPORT)[1])
@@ -112,12 +112,12 @@ def test_shutdown_detaches_the_main_agent_first_and_reports_only_it():
 
     obj._shutdown_agent_and_drain()
 
-    assert order == ["main", "child"]
+    assert sorted(order) == ["child", "main"]  # concurrent: any order, once each
     assert obj.detach_report == MAIN_REPORT
     assert obj._child_agents[0].graceful_outcome == SSL_Logger.GRACEFUL_OK
 
 
-def test_children_are_unloaded_after_the_main_agent_then_detached():
+def test_children_are_unloaded_with_the_main_agent_then_detached():
     main, child = _FakeScript("main", lambda: MAIN_REPORT), _FakeScript("child")
     obj = _make_logger([main, child])
     child_session = MagicMock(name="child-session")
@@ -128,7 +128,8 @@ def test_children_are_unloaded_after_the_main_agent_then_detached():
     obj._shutdown_agent_and_drain()
     obj.detach_with_timeout(timeout=5)
 
-    assert [c.args[0] for c in obj._backend.unload_script.call_args_list] == [main, child]
+    unloaded = [c.args[0] for c in obj._backend.unload_script.call_args_list]
+    assert sorted(unloaded, key=repr) == [child, main]  # concurrent: any order
     assert [c.args[0] for c in obj._backend.detach.call_args_list] == [obj.process, child_session]
     assert main.graceful_calls == child.graceful_calls == 1
     assert obj._child_agents == []
@@ -151,10 +152,10 @@ def test_cli_cleanup_routes_everything_to_the_main_agent(monkeypatch):
 
     assert obj.detach_report == MAIN_REPORT
     unloaded = [c.args[0] for c in obj._backend.unload_script.call_args_list]
-    assert unloaded == [main, child]
+    assert sorted(unloaded, key=repr) == [child, main]
 
 
-def test_a_wedged_child_is_bounded_and_left_to_process_exit():
+def test_a_wedged_child_is_bounded_then_released_with_unload_and_detach():
     release = threading.Event()
     main = _FakeScript("main", lambda: MAIN_REPORT)
     wedged = _FakeScript("wedged", lambda: release.wait(30))
@@ -168,9 +169,10 @@ def test_a_wedged_child_is_bounded_and_left_to_process_exit():
         assert time.monotonic() - started < 3
         assert obj._child_agents[0].graceful_outcome == SSL_Logger.GRACEFUL_TIMEOUT
 
+        # Still freed (frida-server drops the agent), once each, bounded.
         obj._release_child_agents()
-        obj._backend.unload_script.assert_not_called()
-        obj._backend.detach.assert_not_called()
+        obj._backend.unload_script.assert_called_once_with(wedged)
+        obj._backend.detach.assert_called_once_with(child_session)
     finally:
         release.set()
 
@@ -239,3 +241,142 @@ def test_finish_fritap_releases_the_children_after_the_main_agent():
 
     assert [c.args[0] for c in obj._backend.unload_script.call_args_list] == [main, child]
     assert child.graceful_calls == 1
+
+
+# --- teardown time does not grow with the number of agents ---------------------
+
+
+def _send_marker(obj, script, phase="entered"):
+    obj._internal_callback_wrapper(script)(
+        {"type": "send", "payload": {"detach_progress": {"phase": phase, "step": None}}}, None)
+
+
+def test_main_and_child_graceful_rpcs_share_one_deadline():
+    """A slow main and a slow child cost one wait, not one each."""
+    def slow(report):
+        def graceful():
+            time.sleep(0.8)
+            return report
+        return graceful
+
+    main, child = _FakeScript("main", slow(MAIN_REPORT)), _FakeScript("child", slow(CHILD_REPORT))
+    obj = _make_logger([main, child], timeout=5)
+    obj.instrument(obj.process, None)
+    _instrument_child(obj, MagicMock(name="child-session"))
+    obj._start_consumer_thread()
+
+    started = time.monotonic()
+    obj._shutdown_agent_and_drain()
+
+    assert time.monotonic() - started < 1.5  # not 2 x 0.8 s
+    assert obj.detach_report == MAIN_REPORT
+    assert obj._child_agents[0].graceful_outcome == SSL_Logger.GRACEFUL_OK
+
+
+def test_rpc_that_never_enters_its_agent_is_abandoned_early(caplog):
+    """A frozen/stopped target never runs gracefulDetach: give up at the entry bound."""
+    release = threading.Event()
+    main = _FakeScript("main", lambda: release.wait(30))
+    obj = _make_logger([main], timeout=20)
+    obj.GRACEFUL_ENTRY_TIMEOUT = 0.3
+    obj.instrument(obj.process, None)
+    try:
+        started = time.monotonic()
+        with caplog.at_level(logging.WARNING):
+            obj._detach_agent_gracefully()
+        assert time.monotonic() - started < 2
+        assert obj._graceful_detach_outcome == SSL_Logger.GRACEFUL_TIMEOUT
+        assert "frozen, stopped or unresponsive" in caplog.text
+    finally:
+        release.set()
+
+
+def test_rpc_that_entered_is_awaited_past_the_entry_bound():
+    """A busy agent that entered its RPC still gets the full timeout."""
+    def graceful():
+        _send_marker(obj, main)
+        time.sleep(0.6)
+        return MAIN_REPORT
+
+    main = _FakeScript("main", graceful)
+    obj = _make_logger([main], timeout=5)
+    obj.GRACEFUL_ENTRY_TIMEOUT = 0.2
+    obj.instrument(obj.process, None)
+
+    obj._detach_agent_gracefully()
+
+    assert obj._graceful_detach_outcome == SSL_Logger.GRACEFUL_OK
+    assert obj.detach_report == MAIN_REPORT
+
+
+def test_child_that_never_enters_does_not_hold_up_teardown():
+    release = threading.Event()
+    main = _FakeScript("main", lambda: (_send_marker(obj, main), MAIN_REPORT)[1])
+    frozen = _FakeScript("frozen", lambda: release.wait(30))
+    obj = _make_logger([main, frozen], timeout=20)
+    obj.GRACEFUL_ENTRY_TIMEOUT = 0.3
+    obj.instrument(obj.process, None)
+    _instrument_child(obj, MagicMock(name="child-session"))
+    try:
+        started = time.monotonic()
+        obj._detach_agent_gracefully()
+        assert time.monotonic() - started < 2
+        assert obj._graceful_detach_outcome == SSL_Logger.GRACEFUL_OK
+        assert obj._child_agents[0].graceful_outcome == SSL_Logger.GRACEFUL_TIMEOUT
+        obj._release_child_agents()
+        obj._backend.unload_script.assert_called_once_with(frozen)  # bounded release
+    finally:
+        release.set()
+
+
+def test_only_the_main_agents_markers_feed_its_progress_note():
+    main, child = _FakeScript("main"), _FakeScript("child")
+    obj = _make_logger([main, child])
+    obj.instrument(obj.process, None)
+
+    _send_marker(obj, child, "started")
+    assert obj._last_detach_progress is None
+    assert child in obj._detach_entered_scripts
+    _send_marker(obj, main)
+    assert obj._last_detach_progress == "RPC entered"
+
+
+def test_child_unloads_run_alongside_the_main_unload():
+    """Slow unloads (busy processes) cost one 5 s bound, not main + children."""
+    main, child = _FakeScript("main", lambda: MAIN_REPORT), _FakeScript("child")
+    obj = _make_logger([main, child])
+    child_session = MagicMock(name="child-session")
+    obj.instrument(obj.process, None)
+    _instrument_child(obj, child_session)
+    obj._start_consumer_thread()
+    obj._backend.unload_script.side_effect = lambda _script: time.sleep(0.8)
+
+    obj._shutdown_agent_and_drain()
+    started = time.monotonic()
+    obj.detach_with_timeout(timeout=5)
+
+    assert time.monotonic() - started < 1.5  # 0.2 s settle + one 0.8 s unload
+    assert obj._backend.unload_script.call_count == 2
+    assert [c.args[0] for c in obj._backend.detach.call_args_list] == [obj.process, child_session]
+
+
+def test_wedged_child_unloads_share_the_main_unload_bound(monkeypatch):
+    release = threading.Event()
+    main, child = _FakeScript("main", lambda: MAIN_REPORT), _FakeScript("child")
+    obj = _make_logger([main, child])
+    obj.CHILD_UNLOAD_TIMEOUT = 0.5
+    child_session = MagicMock(name="child-session")
+    obj.instrument(obj.process, None)
+    _instrument_child(obj, child_session)
+    obj._start_consumer_thread()
+    obj._backend.unload_script.side_effect = (
+        lambda script: release.wait(30) if script is child else None)
+    try:
+        obj._shutdown_agent_and_drain()
+        started = time.monotonic()
+        obj.detach_with_timeout(timeout=5)
+        assert time.monotonic() - started < 1.5
+        assert [c.args[0] for c in obj._backend.detach.call_args_list] == [obj.process]
+    finally:
+        release.set()
+

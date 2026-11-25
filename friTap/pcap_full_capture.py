@@ -10,6 +10,17 @@ import ntpath
 import traceback
 from threading import Event, Thread
 
+_SNIFFER_START_POLL_SECONDS = 0.05
+_SNIFFER_STOP_ATTEMPTS = 10
+_SNIFFER_STOP_WAIT_SECONDS = 0.5
+_DRAIN_TIMEOUT_SECONDS = 0.1
+
+
+def _async_sniffer_class():
+    """scapy's ``AsyncSniffer``; a seam so tests can substitute a fake."""
+    from scapy.sendrecv import AsyncSniffer
+    return AsyncSniffer
+
 
 def _pcap():
     """The ``friTap.pcap`` module, looked up at call time.
@@ -32,6 +43,10 @@ class FullCaptureThread(Thread):
         self.socket = None
         self.loopback_socket = None
         self.stop_capture = Event()
+        self.managed_local = False
+        self.ready = Event()
+        self.failure = None
+        self._cleaned_up = False
         self.tmp_pcap_name = self._get_tmp_pcap_name()
         self._file_linktype = None
         self._warned_linktype_drop = False
@@ -78,7 +93,10 @@ class FullCaptureThread(Thread):
             type(packet).__name__, self._file_linktype)
 
     def clean_up_and_exit(self):
-        """Gracefully exit the FullCaptureThread"""
+        """Gracefully exit the FullCaptureThread; later calls are no-ops."""
+        if self._cleaned_up:
+            return
+        self._cleaned_up = True
         pcap = self.pcap
         pcap.logger.info("Cleaning up FullCaptureThread resources.")
 
@@ -171,6 +189,7 @@ class FullCaptureThread(Thread):
             # RuntimeError: Windows without Npcap, where conf.L2listen is scapy's
             # _NotAvailableSocket raising RuntimeError("winpcap is not installed").
             # Caught before the generic handler so the user gets the Npcap hint.
+            self.failure = e
             pcap.logger.error(f"Full capture (-f) failed: {e}")
             pcap.logger.error(pcap_module._libpcap_hint())
             self.clean_up_and_exit()
@@ -209,12 +228,63 @@ class FullCaptureThread(Thread):
             filter_infrastructure=getattr(pcap, "filter_infrastructure", True),
             include_loopback=getattr(pcap, "include_loopback", False),
         )
-        pcap_module.sniff(
-            opened_socket=sockets if len(sockets) > 1 else self.socket,
-            filter=capture_bpf or None,
-            prn=self.write_packet_to_pcap,
-            stop_filter=self.stop_capture_thread
-        )
+        options = {
+            "opened_socket": sockets if len(sockets) > 1 else self.socket,
+            "filter": capture_bpf or None,
+            "prn": self.write_packet_to_pcap,
+            "stop_filter": self.stop_capture_thread,
+        }
+        if not self.managed_local:
+            pcap_module.sniff(**options)
+            return
+
+        options.pop("stop_filter")
+        self._sniff_managed(pcap_module, options)
+
+    def _sniff_managed(self, pcap_module, options):
+        """Run one AsyncSniffer until ``join`` requests a stop, then drain queued packets."""
+        sniffer = _async_sniffer_class()(**options, store=False,
+                                         started_callback=self.ready.set)
+        sniffer.start()
+        self._await_sniffer_start(sniffer)
+        self.stop_capture.wait()
+        self._stop_sniffer(sniffer)
+        # Opened sockets stay open after the sniffer stops; read what is still queued.
+        pcap_module.sniff(**options, store=False, timeout=_DRAIN_TIMEOUT_SECONDS)
+
+    def _await_sniffer_start(self, sniffer):
+        """Block until the sniffer is sniffing; re-raise its error when it died first."""
+        while not self.ready.wait(_SNIFFER_START_POLL_SECONDS):
+            if not sniffer.thread.is_alive():
+                sniffer.join()  # raises the sniffer's exception, if any
+                raise RuntimeError("packet sniffer exited before it started")
+
+    @staticmethod
+    def _stop_sniffer(sniffer):
+        """Stop and join *sniffer*; re-raises an error it hit while sniffing."""
+        for _ in range(_SNIFFER_STOP_ATTEMPTS):
+            FullCaptureThread._request_sniffer_stop(sniffer)
+            sniffer.thread.join(_SNIFFER_STOP_WAIT_SECONDS)
+            if not sniffer.thread.is_alive():
+                break
+        sniffer.join(0)
+
+    @staticmethod
+    def _request_sniffer_stop(sniffer):
+        """Ask a running sniffer to stop; tolerate it finishing on its own meanwhile."""
+        if not sniffer.running:
+            return
+        try:
+            sniffer.stop(join=False)
+        except Exception:
+            if sniffer.running:
+                raise
+
+    def wait_until_ready(self, timeout: float) -> None:
+        """Raise RuntimeError unless the managed sniffer started within *timeout* seconds."""
+        if not self.ready.wait(timeout) or self.failure is not None:
+            detail = self.failure or "timed out opening packet capture sockets"
+            raise RuntimeError(f"Full packet capture failed: {detail}")
 
     def _is_tearing_down(self) -> bool:
         """Whether a sniff() TypeError comes from the stop path closing the sockets."""
@@ -236,6 +306,7 @@ class FullCaptureThread(Thread):
         return False
 
     def _log_unexpected_failure(self, e):
+        self.failure = e
         logger = self.pcap.logger
         logger.error(f"Full capture (-f) failed with an unexpected error: {e}")
         logger.error(_pcap()._libpcap_hint())
@@ -251,7 +322,12 @@ class FullCaptureThread(Thread):
                 self.pcap.logger.debug(traceback.format_exc())
                 self.mobile_subprocess = -1
         else:
-            self.full_local_capture()
+            try:
+                self.full_local_capture()
+            finally:
+                if self.managed_local:
+                    self.clean_up_and_exit()
+                    self.ready.set()
 
     def join(self, timeout=None):
         pcap = self.pcap

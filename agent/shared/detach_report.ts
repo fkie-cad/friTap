@@ -105,8 +105,11 @@ export class DetachReportBuilder {
     private readonly logs: DetachLogEntry[] = [];
     private droppedLogs = 0;
 
+    constructor(private readonly progress?: (phase: "started" | "finished", name: string) => void) {}
+
     /** Run `fn` as a named step: timed, isolated, its return value kept as the summary. */
     step(name: string, fn: () => unknown): void {
+        this.progress?.("started", name);
         const started = Date.now();
         const entry: DetachStep = { name, ok: true, ms: 0 };
         try {
@@ -118,6 +121,7 @@ export class DetachReportBuilder {
         }
         entry.ms = Date.now() - started;
         this.steps.push(entry);
+        this.progress?.("finished", name);
     }
 
     addLog(level: DetachLogLevel, msg: unknown): void {

@@ -55,6 +55,17 @@ class DeviceConfig:
     # Upper bound (seconds) for the agent's blocking ``script.load()``. Without
     # it a wedged agent hangs the session silently. ``0`` disables the bound.
     script_load_timeout: float = 20.0
+    # Android multi-process capture (--profile / --discover / --also-package):
+    # a tlsLibHunter discovery profile names the delegate and sibling processes
+    # that carry the target's traffic; they are spawn-gated and instrumented too.
+    profile_path: Optional[str] = None
+    discover_seconds: Optional[float] = None
+    also_packages: List[str] = field(default_factory=list)
+
+    @property
+    def profile_capture_requested(self) -> bool:
+        """Whether --profile, --discover or --also-package asked for a multi-process capture."""
+        return bool(self.profile_path or self.discover_seconds or self.also_packages)
 
 
 @dataclass

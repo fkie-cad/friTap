@@ -8,7 +8,7 @@ import re
 import threading
 import time
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
@@ -334,23 +334,9 @@ class SSL_Logger(
 
     def _install_display_filter(self) -> None:
         """Install the headless display filter when one is configured."""
-        # Every headless entry point passes through here, so the policy is
-        # enforced once: an invalid expression, or one using flow-only fields
-        # (which would drop every data event), is logged and not installed.
-        if self._config.output.filter_expression:
-            try:
-                from ..filter.pipeline_filter import build_headless_filter
-                engine = build_headless_filter(self._config.output.filter_expression)
-                if isinstance(engine, str):
-                    self.logger.warning("%s", engine)
-                else:
-                    self._message_router.set_filter(engine)
-                    self.logger.info(
-                        "Display filter active: %s",
-                        self._config.output.filter_expression,
-                    )
-            except Exception as e:
-                self.logger.warning("Invalid filter expression: %s", e)
+        self._message_router.install_display_filter(
+            self._config.output.filter_expression, self.logger,
+        )
 
     def _init_capture_tracking(self) -> None:
         """Event-bus subscriptions plus the capture and crash-attribution state they feed."""
@@ -692,7 +678,15 @@ class SSL_Logger(
         from ..config import memory_scan_only
         return memory_scan_only(self._config)
 
-    def instrument(self, process, own_message_handler):
+    def instrument(self, process, own_message_handler, is_main: Optional[bool] = None):
+        """Load the friTap agent (and script plugins) into *process*.
+
+        ``is_main``: whether *process* is the main target, whose agent becomes
+        ``self.script``; otherwise the agent is registered as a child agent.
+        Callers that know it pass it (a gated delegate can be instrumented
+        before the main target is spawned); None infers it via
+        :meth:`_is_main_target` for callers that do not (public API, Wine).
+        """
         runtime = ScriptRuntime.QJS
         debug_port = 1337
         if self.debug:
@@ -743,7 +737,7 @@ class SSL_Logger(
 
         # self.script is the MAIN target's agent only (the one graceful_detach,
         # the detach report and the unload address). Child agents live in _child_agents.
-        is_main = self._is_main_target(process)
+        is_main = self._resolve_is_main(process, is_main)
 
         if not memory_scan_only:
             # Local handle: the steps below must act on the script just created, whichever process it is.
@@ -763,6 +757,7 @@ class SSL_Logger(
                 self._backend.on_message(script, self._provide_custom_hooking_handler(own_message_handler))
                 return script
             else:
+                self._expect_agent_ready(script, session=process)
                 self._backend.on_message(script, self._internal_callback_wrapper(script))
             self._load_script_bounded(script)
 
@@ -811,7 +806,7 @@ class SSL_Logger(
         if self._config.proxy:
             self._inject_proxy_redirector(process)
 
-        script = self.instrument(self.process, own_message_handler)
+        script = self.instrument(self.process, own_message_handler, is_main=True)
         return script
 
     @staticmethod

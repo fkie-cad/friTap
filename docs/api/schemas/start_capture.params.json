@@ -2,6 +2,18 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
+    "also_package": {
+      "description": "Android device only: also spawn-gate and instrument these packages, e.g. a delegate app (--also-package).",
+      "items": {
+        "description": "Android package name, e.g. com.example.app.",
+        "maxLength": 255,
+        "minLength": 1,
+        "pattern": "^[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z0-9_]+)+$",
+        "type": "string"
+      },
+      "maxItems": 16,
+      "type": "array"
+    },
     "anti_root": {
       "default": false,
       "description": "Android only: enable friTap's anti-root-detection hooks (-ar/--anti_root). Changes app behaviour; use only on authorized targets.",
@@ -13,6 +25,15 @@
         "type": "string"
       },
       "type": "array"
+    },
+    "backend": {
+      "default": "frida",
+      "description": "frida (default) or experimental ebpf: Linux/Android OpenSSL 3 TLS plaintext, attach to a numeric PID, capture=plaintext only.",
+      "enum": [
+        "frida",
+        "ebpf"
+      ],
+      "type": "string"
     },
     "capture": {
       "default": "plaintext",
@@ -43,6 +64,11 @@
     },
     "host": {
       "description": "Remote frida-server as ip:port (wins over device).",
+      "minLength": 1,
+      "type": "string"
+    },
+    "profile": {
+      "description": "Android device only: tlsLibHunter discovery profile JSON under the sandbox root (discover_processes write_profile); also captures its siblings/delegates (--profile).",
       "minLength": 1,
       "type": "string"
     },
@@ -88,7 +114,7 @@
       "type": "object"
     },
     "protocols": {
-      "description": "Protocols to hook; omit for automatic detection.",
+      "description": "Protocols to hook; omit for automatic detection (backend=ebpf: tls only, the default).",
       "items": {
         "enum": [
           "custom",
@@ -104,8 +130,7 @@
       "type": "array"
     },
     "spawn": {
-      "default": true,
-      "description": "Spawn the target (true) or attach to a running process.",
+      "description": "Spawn the target (true) or attach to a running process. Default: true; false for backend=ebpf (which cannot spawn).",
       "type": "boolean"
     },
     "target": {

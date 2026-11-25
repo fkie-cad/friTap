@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 #: Internal plumbing events that never reach a JSONL output (file or ``-j -``):
 #: breadcrumbs are a crash-attribution aid, FlowEvent carries a live (non-JSON)
 #: Flow object.
-INTERNAL_EVENTS = frozenset({"HookBreadcrumbEvent", "FlowEvent"})
+INTERNAL_EVENTS = frozenset({"HookBreadcrumbEvent", "FlowEvent", "CaptureLifecycleEvent"})
 
 
 def is_internal_event(event: "FriTapEvent") -> bool:
@@ -84,6 +84,8 @@ class JsonlOutputHandler(OutputHandler):
         for key, value in event.__dict__.items():
             if key.startswith("_") or key in ("timestamp", "protocol"):
                 continue
+            if key == "process_origin" and value is None:
+                continue  # additive: emitted only when the host stamped one
             if isinstance(value, bytes):
                 record[key] = value.hex()
             else:

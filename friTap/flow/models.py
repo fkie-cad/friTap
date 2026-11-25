@@ -418,6 +418,11 @@ class Flow:
     # Process / package identity (from the capture target / agent).
     process_name: str = ""
     package_name: str = ""
+    # Origin of the flow's first event when friTap follows several processes
+    # (FriTapEvent.process_origin): pid and role ("target", "child", "spawn").
+    # Persisted into the .tap meta only when set.
+    pid: Optional[int] = None
+    process_role: str = ""
 
     # Resolved SDK attribution (``--attribute-sdk``): the trusted ``{"sdk", "vendor", "category"}``
     # dict from the bundled signature table (friTap/analysis/attribution/sdk.py), or ``None``.

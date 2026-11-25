@@ -95,7 +95,11 @@ fritap -t 60 -k keys.log firefox
 
 #### `--enable_spawn_gating`
 Catch newly spawned processes matching the target app name (useful for Android
-multi-process apps).
+multi-process apps). On mobile devices a spawn matches only the exact package
+(`com.example.app`) or one of its `:process` siblings
+(`com.example.app:service`); a name that merely starts with the package
+(`com.example.appextra`) does not. Gate further packages with
+[`--also-package`](#-also-package-package).
 
 #### `--spawn_gating_all`
 Catch **all** newly spawned processes without filtering by target name.
@@ -163,6 +167,49 @@ when the target `exec()`s the capture ends as "target detached" (exit 3).
 ```bash
 fritap -s --follow-exec -k keys.log /opt/homebrew/bin/python3 script.py   # opt in
 fritap --follow-exec -k keys.log 4242      # attach mode as well
+```
+
+#### `--profile <profile.json>`
+Android (`-m`): capture every process a tlsLibHunter discovery profile
+(`tlslibhunter.profile/1`) lists -- the target, its `:process` siblings and
+delegate apps that carry its traffic (e.g. Google Search for Gemini). friTap
+spawn-gates the profile's packages, turns spawn gating on, *then* force-stops the
+delegate packages so they respawn instrumented, and attaches late to candidates
+that are still running. `shared_system` processes are only reported, never
+hooked. Package and process names in the profile must be valid Android names
+(`com.example.app`, `com.example.app:proc`); a profile with any other value is
+rejected. Needs no tlsLibHunter installation.
+
+With a profile the capture **continues while any instrumented delegate or
+sibling process stays alive**, even after the target itself exits; end it with
+Ctrl+C (or `-t`).
+
+```bash
+tlsLibHunter discover com.google.android.apps.bard --write-profile gemini.profile.json
+fritap -m --profile gemini.profile.json -k keys.log com.google.android.apps.bard
+```
+
+See [Android: Delegate Processes](../platforms/android.md#delegate-processes-discovery-profiles).
+
+#### `--discover <seconds>`
+Android (`-m`): run tlsLibHunter process discovery for `<seconds>` (use the app
+meanwhile), then capture as with `--profile`. Needs tlsLibHunter with its
+`discovery` package; mutually exclusive with `--profile`.
+
+```bash
+fritap -m --discover 20 -k keys.log com.google.android.apps.bard
+```
+
+#### `--also-package <package>`
+Android (`-m`): also spawn-gate and instrument `<package>` (repeatable), e.g. a
+delegate app that carries the target's traffic. The package is force-stopped once
+gating is on so that it respawns instrumented. Only valid Android package names
+are accepted. Combines with `--profile` / `--discover`; on its own it keeps the
+capture running while an instrumented process of the package lives, as with a
+profile.
+
+```bash
+fritap -m --also-package com.google.android.googlequicksearchbox -k keys.log com.google.android.apps.bard
 ```
 
 #### `-ed, --enable_default_fd`
@@ -1406,6 +1453,13 @@ banner, log lines, `-v` hexdumps and the output of a spawned target all go to
   `stream_end`, `usage_error`, the closing runtime `error`) carry neither
   `event` nor `event_type`. `bytes` values (the decrypted plaintext in `data`
   records) are hex-encoded.
+- `"process_origin"` (additive, only in multi-process captures, e.g. with
+  `--enable_child_gating`, `--enable_spawn_gating` or `--profile`):
+  `{"pid": <int>, "process": <name>, "role": <role>}` of the process the event
+  came from. `role` is `target` for the main target, `child`/`spawn` for gated
+  processes, or the profile role (`sibling`, `delegate`, `sdk_sandbox`). The key
+  is absent when the host stamped no origin. The verbose console prefixes
+  events from processes other than the target with `[<pid> <process>] `.
 
 **Key material** is in the stream only when it was explicitly requested with
 `-k` or `--json-keys`. Otherwise a `keylog` record keeps only `label` (and the

@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 
-"""eBPF instrumentation backend (stub).
+"""Legacy eBPF script interface.
 
-Plans to attach uprobes to TLS library functions (Linux only, kernel >= 4.18,
-x86_64/ARM64). Needs no code injection, so it suits hardened processes.
-Limitations: read-only, no Java/ObjC hooking.
+The Linux plaintext capture entrypoints use the native CaptureProducer.
+The script backend remains available for legacy device selection.
 """
 
 from __future__ import annotations
@@ -16,7 +15,7 @@ from .base import Backend
 
 
 class EBPFBackend(Backend):
-    """Stub backend; a real one needs BCC or libbpf for uprobes and perf buffers."""
+    """Compatibility backend for the legacy script interface."""
 
     def __init__(self) -> None:
         self._logger = logging.getLogger("friTap.backend.ebpf")
@@ -76,6 +75,10 @@ class EBPFBackend(Backend):
 
     def resume_thread(self, process: Any, thread_id: int) -> None:
         self._not_implemented("resume_thread")
+
+    def enumerate_devices(self) -> list:
+        """Legacy script-backend discovery; use CaptureBackend for readiness."""
+        return []
 
     def get_local_device(self) -> Any:
         return "local"  # eBPF only works locally

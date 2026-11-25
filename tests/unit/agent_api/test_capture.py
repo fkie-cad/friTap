@@ -565,7 +565,7 @@ def tool_registry(fake_manager, monkeypatch):
 
 def test_tool_names_and_result_schemas(tool_registry):
     assert tool_registry.names() == [
-        "capture_status", "list_apps", "list_devices", "list_sessions",
+        "capture_status", "discover_processes", "list_apps", "list_devices", "list_sessions",
         "mark_phase", "start_capture", "stop_capture"]
     assert all(spec.result_schema for spec in tool_registry.specs())
     protocols = tool_registry.get("start_capture").params_schema["properties"]["protocols"]

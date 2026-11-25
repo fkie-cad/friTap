@@ -202,6 +202,16 @@ decoded `Flow` ignores the top-level key and derives its id from the chunks.
     chunk-level `stream_id` key (and the ids derived from it) are the real
     transport ids.
 
+### Optional `pid` / `process_role`
+
+Multi-process captures (child/spawn gating, `--profile`) stamp each FLOW's JSON
+metadata with `"pid"` (the process the flow came from) and `"process_role"`
+(`target`, `child`, `spawn`, or a discovery-profile role such as `delegate`).
+For a process other than the main target, `process_name` is that process's own
+name (e.g. `com.example.app:remote`) instead of the capture target. Both keys are
+additive and written only when set; older readers ignore them. On read they set
+`Flow.pid` and `Flow.process_role`.
+
 ### Optional `truncated` flag
 
 The JSON metadata carries `"truncated": true` when the flow exceeded the

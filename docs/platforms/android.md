@@ -631,6 +631,38 @@ fritap -m --enable_spawn_gating -k service_keys.log com.example.app
 fritap -m -k keys.log com.example.app:service
 ```
 
+### Delegate Processes (Discovery Profiles)
+
+Some apps send their traffic through *other* apps: Gemini
+(`com.google.android.apps.bard`) hands its UI to the Google app, whose
+`:search` process makes the QUIC/HTTP/3 calls (with `:googleapp` and
+`:interactor` alongside). A [tlsLibHunter](https://github.com/monkeywave/tlsLibHunter)
+discovery profile lists those processes and their roles (`target`,
+`sibling`, `delegate`, `sdk_sandbox`, `shared_system`):
+
+```bash
+# Capture with a saved profile
+fritap -m -s --profile gemini_profile.json -k keys.log com.google.android.apps.bard
+
+# Discover for 20 s (use the app meanwhile), then capture (needs tlsLibHunter)
+fritap -m -s --discover 20 -k keys.log com.google.android.apps.bard
+
+# Gate an extra package by hand (repeatable)
+fritap -m -s --also-package com.google.android.googlequicksearchbox -k keys.log com.google.android.apps.bard
+```
+
+friTap spawn-gates every profile package, then force-stops the non-target
+delegate packages so they respawn under friTap and are hooked from their first
+connection. Profile processes still running afterwards are attached late
+(their existing connections cannot be decrypted). `shared_system` processes
+mix many apps' traffic and are only reported, never hooked. The capture keeps
+running after the target exits while an instrumented helper process lives.
+If the device has the USAP pool enabled, friTap prints the command to disable
+it, since pre-forked processes can escape spawn gating.
+
+Why apps delegate, how discovery assigns roles, the profile format and
+measured results: [Process discovery](../advanced/process-discovery.md).
+
 ### Storage Management
 
 Whenever we do a full capture with friTap we don't remove the generated pcap files stored by default to `/data/local/tmp/`.

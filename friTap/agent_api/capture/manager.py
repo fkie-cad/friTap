@@ -15,6 +15,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from friTap import android_discovery
 from friTap.agent_api import protocol_catalog
 from friTap.agent_api.capture.runner import CaptureRequest, build_argv, validate_request
 from friTap.agent_api.capture.session import CaptureSession
@@ -55,6 +56,8 @@ class SessionManager:
         check_capture_allowed(request.target, ctx)
         validate_request(request)
         request = sandbox_option_paths(request, ctx)
+        request = sandbox_profile_path(request, ctx)
+        check_profile_packages_allowed(request, ctx)
         with self._lock:
             self._check_capacity()
             session_id = new_session_id()
@@ -139,6 +142,43 @@ def _resolve_option_path(name: str, value: str, ctx: ToolContext) -> Path:
                         option=name, param=f"options.{name}") from error
 
 
+def sandbox_profile_path(request: CaptureRequest, ctx: ToolContext) -> CaptureRequest:
+    """Resolve ``profile`` under ``ctx.root`` (must exist and parse) to its absolute real path."""
+    if not request.profile:
+        return request
+    try:
+        path = resolve_under_root(request.profile, ctx.root, must_exist=True)
+    except ToolError as error:
+        raise ToolError(f"profile: {error.error}", error.error_type, hint=error.hint,
+                        param="profile") from error
+    return replace(request, profile=str(path))
+
+
+def check_profile_packages_allowed(request: CaptureRequest, ctx: ToolContext) -> None:
+    """Every package the capture instruments (profile + also_package) must pass the allow-list."""
+    for package in _instrumented_packages(request):
+        if not ctx.target_allowed(package):
+            raise ToolError(f"package {package!r} is not in the allow-list", "forbidden",
+                            hint="allowed: " + ", ".join(ctx.allow_targets))
+
+
+def _instrumented_packages(request: CaptureRequest) -> list[str]:
+    packages = list(request.also_packages)
+    if request.profile:
+        packages += android_discovery.non_shared_packages(_load_profile(request.profile))
+    return list(dict.fromkeys(packages))
+
+
+def _load_profile(path: str):
+    try:
+        return android_discovery.load_profile(path)
+    except ValueError as exc:
+        raise ToolError(f"profile: {android_discovery.untrusted_excerpt(exc)}", "bad_param",
+                        param="profile",
+                        hint="pass a tlslibhunter.profile/1 file (discover_processes "
+                             "write_profile)") from exc
+
+
 def _with_session_dir(request: CaptureRequest, session_dir: Path) -> CaptureRequest:
     return replace(request, session_dir=session_dir)
 
@@ -154,5 +194,5 @@ def tap_path_for(session_id: str) -> Path:
 
 
 __all__ = ["SessionManager", "default_manager", "tap_path_for", "check_capture_allowed",
-           "sandbox_option_paths",
+           "sandbox_option_paths", "sandbox_profile_path", "check_profile_packages_allowed",
            "sessions_root", "SESSIONS_DIRNAME", "DEFAULT_MAX_SESSIONS"]

@@ -10,7 +10,6 @@ import sys
 
 from .backends.base import BackendName
 from .fritap_utility import Failure
-from .legacy.ssl_logger_core import WINE_BASENAMES
 
 # Capture-output flags that produce nothing in probe mode, paired with the
 # spelling the user typed so the warning quotes their own command line back.
@@ -348,7 +347,9 @@ def _maybe_prepend_wine(parsed, logger):
     if not argv:
         return
     first = argv[0]
-    # Same launcher set SSL_Logger._target_is_wine uses for routing.
+    # Same launcher set SSL_Logger._target_is_wine uses for routing; imported
+    # here so CLI paths that never touch Wine skip the legacy stack.
+    from .legacy.ssl_logger_core import WINE_BASENAMES
     if os.path.basename(first).lower() in WINE_BASENAMES:
         return  # already a wine command
 

@@ -3,6 +3,7 @@ import { collectContributedHooks } from "../shared/hook_contributors.js";
 import { selected_protocols, use_modern, scan_results, quic_only } from "../fritap_agent.js";
 import { processScanResults } from "../shared/library_scanner.js";
 import { log, devlog } from "../util/log.js";
+import { beginAsyncInstall } from "../shared/install_readiness.js";
 import { getModuleNames, ssl_library_loader, hookDynamicLoader, installOhttpHooks } from "../shared/shared_functions.js";
 import { Platform, PLATFORM_LINUX } from "../shared/shared_structures.js";
 // Modern (definition-based) executors
@@ -106,8 +107,10 @@ export function load_linux_hooking_agent(skipLoaderHook: boolean = false) {
             fn: () => hookDynamicLoader(linuxLoaderConfig, hookRegistry, getModuleNames(), false, selected_protocols),
         });
 
+        // Readiness: the host holds a spawn-gated process suspended until every phase ran.
+        const phasesDone = beginAsyncInstall();
         const runPhase = (i: number) => {
-            if (i >= phases.length) return;
+            if (i >= phases.length) { phasesDone(); return; }
             setTimeout(() => {
                 try { phases[i].fn(); }
                 catch (e) { devlog("[Linux/quic-only] install phase " + phases[i].label + " threw: " + e); }

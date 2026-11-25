@@ -14,12 +14,22 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple, Type
 
+#: Payload key the host stamps on every agent message with its process origin
+#: ({pid, process, role}); the router copies it to FriTapEvent.process_origin.
+PROCESS_ORIGIN_KEY = "process_origin"
+#: process_origin role of the main target (children: "child" / "spawn").
+MAIN_PROCESS_ROLE = "target"
+
 
 @dataclass
 class FriTapEvent:
     """Base class for all friTap events."""
     timestamp: float = field(default_factory=time.time)
     protocol: str = "tls"
+    # {pid, process, role} of the instrumented process the event came from; None
+    # when unknown (e.g. synthetic events). Not ``origin``: ConsoleEvent.origin is
+    # its diagnostics tag. Keyword-only so subclasses' positional fields keep their order.
+    process_origin: Optional[Dict[str, Any]] = field(default=None, kw_only=True)
     _cancelled: bool = field(default=False, init=False, repr=False, compare=False)
 
     def cancel(self) -> None:

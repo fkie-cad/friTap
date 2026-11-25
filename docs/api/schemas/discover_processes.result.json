@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "candidates": {
+      "items": {
+        "properties": {
+          "attributable": {
+            "description": "false for shared system processes (reported, never hooked).",
+            "type": "boolean"
+          },
+          "confirmed": {
+            "type": "boolean"
+          },
+          "pid": {
+            "type": "integer"
+          },
+          "role": {
+            "enum": [
+              "target",
+              "sibling",
+              "delegate",
+              "sdk_sandbox",
+              "shared_system",
+              "unknown"
+            ],
+            "type": "string"
+          },
+          "untrusted": {
+            "description": "Device strings (escaped, capped): process, package, evidence.",
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "device": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "duration_s": {
+      "type": "integer"
+    },
+    "package": {
+      "type": "string"
+    },
+    "profile": {
+      "description": "Saved profile path (write_profile).",
+      "type": "string"
+    },
+    "schema": {
+      "type": "string"
+    },
+    "total": {
+      "type": "integer"
+    },
+    "untrusted": {
+      "type": "object"
+    }
+  },
+  "title": "discover_processes result",
+  "type": "object"
+}

@@ -24,8 +24,8 @@ from unittest.mock import MagicMock
 import pytest
 
 import friTap.legacy.ssl_logger_core as core
-from friTap.api import FriTapSession
 from friTap.legacy.ssl_logger_core import SSL_Logger, _PayloadModWatcher
+from tests.unit._api_session_helpers import embedded_api_session
 
 REPORT = {"version": 1, "repeat": False, "total_ms": 3,
           "steps": [{"name": "detachAll", "ok": True, "ms": 1}],
@@ -95,7 +95,7 @@ def test_embedded_target_death_finalizes_outputs_without_exiting(tmp_path, exits
 def test_embedded_target_death_lets_wait_return(tmp_path, exits):
     obj = _make_logger(tmp_path)
     obj.set_embedded(True)
-    session = FriTapSession(obj, obj._event_bus)
+    session = embedded_api_session(obj)
     waiter = threading.Thread(target=session.wait, daemon=True)
     waiter.start()
 
@@ -112,7 +112,7 @@ def test_embedded_target_death_then_stop_is_harmless(tmp_path, exits):
     obj.set_embedded(True)
     obj.on_detach("process-terminated")
 
-    FriTapSession(obj, obj._event_bus).stop()
+    embedded_api_session(obj).stop()
 
     assert exits == []
 

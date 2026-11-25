@@ -2,6 +2,10 @@ import { log, devlog } from "../../util/log.js";
 import { execute as conscrypt_execute } from "../platforms/android/conscrypt.js";
 import { isAndroid } from "../../util/process_infos.js";
 import { Java } from "../../shared/javalib.js";
+import { makeJavaHookTracker } from "../../shared/java_hook_tracker.js";
+
+// Reverted on graceful detach, before dispose (java_hook_tracker.ts).
+const providerHooks = makeJavaHookTracker("java-ssl-providers", () => Java);
 
 export class SSL_Java {
 
@@ -89,6 +93,8 @@ export class SSL_Java {
                             return this.addProvider(provider)
                         }
                     }
+                    providerHooks.track(Security.insertProviderAt);
+                    providerHooks.track(Security.addProvider);
                   } catch (e) {
                     devlog(`[java] provider hook install failed, skipping Java TLS provider hooks: ${e}`);
                   }

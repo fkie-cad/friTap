@@ -479,19 +479,19 @@ class FridaBackend(Backend):
         script.post({"type": msg_type, "payload": payload})
 
     def detach(self, process: Any) -> None:
-        # Detach races with the target exiting; the type is logged for real bugs.
-        try:
-            process.detach()
-        except Exception as e:
-            self._logger.debug(
-                "Detach error (may be expected): %s: %s", type(e).__name__, e,
-            )
+        process.detach()
 
     def enable_child_gating(self, process: Any) -> None:
         process.enable_child_gating()
 
     def enable_spawn_gating(self, device: Any) -> None:
         device.enable_spawn_gating()
+
+    def disable_spawn_gating(self, device: Any) -> None:
+        device.disable_spawn_gating()
+
+    def enumerate_pending_spawn(self, device: Any) -> list:
+        return list(device.enumerate_pending_spawn())
 
     def on_child_added(self, device: Any, callback: Callable) -> None:
         device.on("child_added", callback)

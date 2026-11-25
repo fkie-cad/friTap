@@ -14,6 +14,9 @@ from friTap.agent_api.capture.manager import default_manager
 from friTap.agent_api.capture.runner import (
     DEFAULT_CAPTURE_MODE,
     DEFAULT_DURATION_S,
+    EBPF_BACKEND,
+    EBPF_PROTOCOLS,
+    FRIDA_BACKEND,
     CaptureRequest,
     build_argv,
 )
@@ -32,20 +35,29 @@ DISPLAY_COMMAND = "fritap"
 
 
 def request_from_params(params: dict[str, Any]) -> CaptureRequest:
-    """Build a request from validated tool params (session_dir set by the manager)."""
+    """Build a request from validated tool params (session_dir set by the manager).
+
+    With ``backend=ebpf`` an omitted ``spawn`` means attach and omitted ``protocols`` mean ``tls``;
+    explicit unsupported values are left for :func:`validate_request` to reject.
+    """
+    backend = params.get("backend", FRIDA_BACKEND)
+    ebpf = backend == EBPF_BACKEND
     return CaptureRequest(
         target=params["target"],
         session_dir=Path("."),
         args=tuple(params.get("args") or ()),
         device=params.get("device"),
         host=params.get("host"),
-        spawn=params.get("spawn", True),
-        protocols=tuple(dict.fromkeys(params.get("protocols") or ())),
+        backend=backend,
+        spawn=params.get("spawn", not ebpf),
+        protocols=tuple(dict.fromkeys(params.get("protocols") or (EBPF_PROTOCOLS if ebpf else ()))),
         protocol_options=dict(params.get("protocol_options") or {}),
         capture=params.get("capture", DEFAULT_CAPTURE_MODE),
         duration_s=params.get("duration_s", DEFAULT_DURATION_S),
         follow_exec=params.get("follow_exec", False),
         anti_root=params.get("anti_root", False),
+        profile=params.get("profile"),
+        also_packages=tuple(dict.fromkeys(params.get("also_package") or ())),
     )
 
 
@@ -54,6 +66,7 @@ def start_capture(params: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
     return ok(START_SCHEMA, {
         "session_id": session.session_id,
         "state": session.state,
+        "requested_backend": session.request.backend,
         "tap": str(session.request.tap_path),
         "session_dir": str(session.session_dir),
         "argv": display_argv(session.request),

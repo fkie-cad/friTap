@@ -151,6 +151,7 @@ class CaptureSession:
         doc: dict[str, Any] = {
             "session_id": self.session_id,
             "target": req.target,
+            "requested_backend": req.backend,
             "pid": self._process.pid if self._process else None,
             "elapsed_s": round(self._elapsed(), 3),
             "duration_s": req.duration_s,

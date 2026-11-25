@@ -41,6 +41,7 @@ import { runPreShutdownFlushes } from "./shared/pre_shutdown.js";
 import { DetachReport, DetachReportBuilder, repeatDetachReport, withTeardownCapture } from "./shared/detach_report.js";
 import { installLearnedPlaintextCache } from "./tls/shared/learned_plaintext_cache.js";
 import { installLearnedModuleCache } from "./shared/learned_module_cache.js";
+import { AGENT_READY_CONTENT_TYPE, onInstallsSettled } from "./shared/install_readiness.js";
 
 // global address which stores the addresses of the hooked modules which aren't loaded via the dynamic loader
 (globalThis as any).init_addresses = {};
@@ -76,6 +77,11 @@ function initStage<T>(stage: string, fn: () => T, fatal: boolean = true): T | un
 /** Set by the first releaseAgentHooks(); later calls only report a repeat. */
 let agentHooksReleased = false;
 
+function sendDetachProgress(phase: "entered" | "started" | "finished", step?: string): void {
+    // Teardown diagnostics still need IPC after the shutdown flag is set.
+    try { send({ detach_progress: { phase, step } }); } catch (_e) { /* host already gone */ }
+}
+
 /**
  * Shared teardown for the gracefulDetach RPC and Frida's `dispose` hook.
  * Runs once: a second call (dispose after graceful_detach) returns a
@@ -84,10 +90,10 @@ let agentHooksReleased = false;
  * from just after the shutdown flag to the end are captured into it (sends
  * are dropped by then). Never throws.
  */
-function releaseAgentHooks(): DetachReport {
+function releaseAgentHooks(reportProgress = false): DetachReport {
     if (agentHooksReleased) return repeatDetachReport();
     agentHooksReleased = true;
-    const report = new DetachReportBuilder();
+    const report = new DetachReportBuilder(reportProgress ? sendDetachProgress : undefined);
     // Held data must go out while sendDatalog still sends, i.e. before the flag.
     report.step("pre-shutdown-flush", () => runPreShutdownFlushes());   // each flush is isolated
     // Set the shutdown flag BEFORE Interceptor.detachAll so any callback
@@ -152,7 +158,8 @@ rpc.exports = {
     gracefulDetach(): DetachReport {
         // The report is the RPC reply: the host reads it while it blocks on
         // this call, independent of the message channel (JSON-serialisable).
-        return releaseAgentHooks();
+        sendDetachProgress("entered");
+        return releaseAgentHooks(true);
     },
     //@ts-ignore
     dispose(): void {
@@ -750,6 +757,16 @@ function load_os_specific_agent() {
 }
 
 initStage("platform-load", () => load_os_specific_agent(), /* fatal */ false);
+
+// Tell the host once the platform loader's hooks are all in, including the
+// setTimeout-phased installs that finish AFTER script.load() returned. The host
+// waits (bounded) for this before resuming a spawn-gated process, so its
+// startup handshakes run against installed keylog hooks. Registered after
+// platform-load so a failed or probe-only load still reports (nothing pending).
+onInstallsSettled(() => {
+    hookBreadcrumb("agent-init: hooks-installed");
+    send({ contentType: AGENT_READY_CONTENT_TYPE });
+});
 
 // Optional generic memory-region key scan (PUBLIC engine, agent/shared/scan/).
 // Runs only when the host passed --scan-keys-region (carried via

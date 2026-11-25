@@ -52,14 +52,23 @@ from .events import (
 from .pcap_utility import PCAP_FORMAT_AUTO, PCAP_FORMAT_PCAPNG
 
 if TYPE_CHECKING:
+    from .session import Session
     from .ssl_logger import SSL_Logger
 
 
 class FriTapSession:
-    """Handle to a running capture session, returned by :meth:`FriTap.start`."""
+    """Handle to a running capture session, returned by :meth:`FriTap.start`.
 
-    def __init__(self, ssl_logger: "SSL_Logger", event_bus: EventBus, flow_collector=None) -> None:
+    The capture coordinator owns the lifecycle; *ssl_logger* is the legacy
+    instrumentation it drives (``None`` for producer backends such as eBPF).
+    """
+
+    def __init__(
+        self, ssl_logger: "SSL_Logger | None", event_bus: EventBus, flow_collector=None,
+        *, coordinator: "Session",
+    ) -> None:
         self._logger_instance = ssl_logger
+        self._coordinator = coordinator
         self._event_bus = event_bus
         self._flow_collector = flow_collector  # kept alive to prevent GC
 
@@ -70,25 +79,18 @@ class FriTapSession:
 
     @property
     def is_running(self) -> bool:
-        return self._logger_instance.running
+        return self._coordinator.is_running
 
     def stop(self) -> None:
         """Stop the session with the CLI's teardown (detach, outputs finalized) without exiting the interpreter.
 
         Calling it again is harmless.
         """
-        self._logger_instance.stop_fritap_session()
+        self._coordinator.stop()
 
     def wait(self) -> None:
         """Block until the session is stopped or its teardown has completed (e.g. target died)."""
-        logger = self._logger_instance
-        done_event = getattr(logger, "_done_event", None)
-        while logger.running:
-            if done_event is not None and done_event.wait(0.1):
-                return
-            if done_event is None:
-                import time
-                time.sleep(0.1)
+        self._coordinator.wait()
 
 
 class FriTap:
@@ -102,6 +104,7 @@ class FriTap:
         # Ordered protocol selection; the first entry is the primary protocol.
         self._protocols: List[str] = ["tls"]
         self._backend_name = "frida"
+        self._backend_explicit = False
         self._debug = False
         self._debug_output = False
         self._custom_hook_script: Optional[str] = None
@@ -308,6 +311,7 @@ class FriTap:
     def backend(self, backend: str) -> "FriTap":
         """Set the instrumentation backend: frida, ebpf, gdb, lldb."""
         self._backend_name = backend
+        self._backend_explicit = True
         return self
 
 
@@ -413,6 +417,7 @@ class FriTap:
             protocol=self._protocols[0],
             protocols=list(self._protocols),
             backend=self._backend_name,
+            backend_explicit=self._backend_explicit,
             debug=self._debug,
             debug_output=self._debug_output,
             custom_hook_script=self._custom_hook_script,
@@ -423,9 +428,24 @@ class FriTap:
 
     def start(self) -> FriTapSession:
         """Build the config, create the SSL_Logger, wire the event bus and start; returns the session handle."""
-        from .ssl_logger import SSL_Logger
+        from .backends.capture import (
+            create_legacy_capture_session,
+        )
 
         config = self.build_config()
+        if config.backend == "ebpf":
+            from .core import CoreController
+
+            if self._script_plugins:
+                raise ValueError("eBPF does not support Frida script plugins")
+            coordinator = CoreController().create_session(config)
+            self._subscribe_callbacks(coordinator.lifecycle_bus)
+            self._forward_capture_lifecycle(coordinator.lifecycle_bus)
+            flow_collector = self._wire_flow_callbacks(coordinator.lifecycle_bus)
+            coordinator.start()
+            return FriTapSession(None, coordinator.lifecycle_bus, flow_collector, coordinator=coordinator)
+
+        from .ssl_logger import SSL_Logger
 
         ssl_log = SSL_Logger(config=config)
         # This interpreter belongs to the caller: a target death must finalize
@@ -433,6 +453,27 @@ class FriTap:
         ssl_log._embedded = True  # see SSL_Logger.set_embedded
 
         event_bus = ssl_log._event_bus
+        self._subscribe_callbacks(event_bus)
+        for plugin in self._script_plugins:
+            ssl_log._plugin_loader.register_builtin(plugin, event_bus)
+
+        flow_collector = self._wire_flow_callbacks(event_bus)
+
+        # Never take over the host's signals unless asked (the CLI's handler
+        # would os._exit the embedding program; the embedded one stops only).
+        if self._install_signal_handler:
+            ssl_log.install_signal_handler()
+        coordinator = create_legacy_capture_session(config, ssl_log, embedded=True)
+        coordinator.start()
+        # A numeric-PID attach resolves the real process name during
+        # start_fritap_session(); re-target this collector with it.
+        resolved_name = getattr(ssl_log, "resolved_process_name", None)
+        if flow_collector is not None and resolved_name:
+            flow_collector.set_capture_target(self._target, process_name=resolved_name)
+
+        return FriTapSession(ssl_log, event_bus, flow_collector=flow_collector, coordinator=coordinator)
+
+    def _subscribe_callbacks(self, event_bus: EventBus) -> None:
         for cb in self._keylog_callbacks:
             event_bus.subscribe(KeylogEvent, cb)
         for cb in self._data_callbacks:
@@ -442,9 +483,22 @@ class FriTap:
         for cb in self._session_callbacks:
             event_bus.subscribe(SessionEvent, cb)
 
-        for plugin in self._script_plugins:
-            ssl_log._plugin_loader.register_builtin(plugin, event_bus)
+    def _forward_capture_lifecycle(self, event_bus: EventBus) -> None:
+        """Hand the coordinator's start/stop to on_session callbacks only.
 
+        Not re-emitted on the bus: output handlers count SessionEvents as TLS sessions.
+        """
+        from .session import CaptureLifecycleEvent
+
+        def as_session_event(callback):
+            # One subscription per callback: the bus isolates a failing one.
+            return lambda event: callback(
+                SessionEvent(event_type=event.event_type, session_id=event.session_id))
+
+        for cb in self._session_callbacks:
+            event_bus.subscribe(CaptureLifecycleEvent, as_session_event(cb))
+
+    def _wire_flow_callbacks(self, event_bus: EventBus):
         # on_message needs the collector to reassemble bytes and run the live Signal decryptor.
         flow_collector = None
         if self._flow_callbacks or self._message_callbacks:
@@ -460,15 +514,4 @@ class FriTap:
             for cb in self._message_callbacks:
                 event_bus.subscribe(MessageEvent, cb)
 
-        # Never take over the host's signals unless asked (the CLI's handler
-        # would os._exit the embedding program; the embedded one stops only).
-        if self._install_signal_handler:
-            ssl_log.install_signal_handler()
-        ssl_log.start_fritap_session()
-        # A numeric-PID attach resolves the real process name during
-        # start_fritap_session(); re-target this collector with it.
-        resolved_name = getattr(ssl_log, "resolved_process_name", None)
-        if flow_collector is not None and resolved_name:
-            flow_collector.set_capture_target(self._target, process_name=resolved_name)
-
-        return FriTapSession(ssl_log, event_bus, flow_collector=flow_collector)
+        return flow_collector

@@ -51,6 +51,14 @@ parameters as a JSON object (snake_case keys, e.g. `duration_s`).
    `host` (`ip:port`) for a remote frida-server. Page `list_apps` with
    `--cursor <next_cursor>`.
 
+   Android apps whose TLS runs in sibling or delegate processes: run
+   `fritap q discover_processes --package com.example.app --device usb
+   --duration-s 20 --write-profile profile.json` (use the app meanwhile; needs
+   tlsLibHunter discovery, else `missing_dependency`), then pass
+   `"profile": "profile.json"` (and/or `"also_package": [...]`) to
+   `start_capture`. Candidate names come from the device: they sit under
+   `untrusted`.
+
 2. **Choose protocols.**
 
    ```bash

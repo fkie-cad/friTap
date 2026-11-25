@@ -305,10 +305,10 @@ def _add_json_handler(config, session_data, handlers):
                                  include_agent_dev_logs=include_dev_logs))
 
 
-def _add_tap_handler(config, logger, handlers):
+def _add_tap_handler(config, logger, handlers, *, defer_full_capture=True):
     """Wire --tap; under -f the .tap is built after the capture (offline/auto_tap.py) instead."""
     tap_cls = _tap_handler_class(config.output)
-    if tap_cls is not None and config.output.full_capture:
+    if tap_cls is not None and config.output.full_capture and defer_full_capture:
         _log_tap_deferred_to_full_capture(config.output.tap_output, logger)
     elif tap_cls is not None:
         handlers.append(tap_cls(config.output.tap_output, target=config.target or ""))
@@ -381,6 +381,20 @@ class OutputHandlerFactory:
                     _tap_handler_class(output_config),
                     _live_handler_class(output_config))
         return any(cls is not None and cls.consumes_plaintext for cls in selected)
+
+    @staticmethod
+    def create_producer_handlers(config, session_data, logger, protocol_registry):
+        """Record outputs of an eBPF producer session (legacy sessions manage their own)."""
+        from .ebpf_pcap import EbpfFullCaptureOutputHandler, EbpfPcapOutputHandler
+
+        handlers = []
+        if config.output.full_capture:
+            handlers.append(EbpfFullCaptureOutputHandler(config.output))
+        elif config.output.pcap:
+            handlers.append(EbpfPcapOutputHandler(config.output))
+        _add_json_handler(config, session_data, handlers)
+        _add_tap_handler(config, logger, handlers, defer_full_capture=False)
+        return handlers
 
     @staticmethod
     def create_handlers(config, pcap_obj, protocol_handler, session_data, logger,

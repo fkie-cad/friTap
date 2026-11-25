@@ -127,6 +127,16 @@ mismatch into a startup error.
      `--protocol-options '{"pairip_safe": true}'`.
    - `--enable_spawn_gating`: multi-process apps (WebView, `:service`
      processes).
+   - `--profile profile.json` / `--discover <seconds>` / `--also-package <pkg>`:
+     apps whose traffic runs through delegate apps (e.g. Gemini via Google
+     Search). Gates the profile's packages, force-stops delegates so they
+     respawn hooked, attaches late to survivors, never hooks `shared_system`
+     processes. `--discover` needs tlsLibHunter with discovery support:
+     `fritap -m -s --profile profile.json -k keys.log com.example.app`.
+     Agent API: `fritap q discover_processes --package com.example.app
+     --device emulator-5556 --write-profile profile.json` (candidates with
+     `role`; device strings under `untrusted`), then `start_capture` with
+     `"profile": "profile.json"` or `"also_package": ["com.example.delegate"]`.
    - Flutter, Cronet, Chrome/WebView and other stripped or statically linked
      BoringSSL builds are matched by built-in patterns. When those miss for a
      new app version, supply `--patterns` / `--offsets` / `--force-scan`

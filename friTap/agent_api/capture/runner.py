@@ -4,6 +4,9 @@ A capture is never run in-process: ``SSL_Logger`` teardown ends in ``os._exit``,
 MCP/REST server. :func:`build_argv` (pure) turns a :class:`CaptureRequest` into the argv of
 ``python -m friTap.friTap`` with machine-friendly flags (``-j -`` JSONL on stdout, ``--tap``,
 ``--duration``, ``--non-interactive``, ``-q``); :func:`validate_request` holds the catalog-dependent checks.
+
+The ``ebpf`` backend attaches to one PID and only writes files (no ``-j -`` stream, no ``-s``,
+protocol ``tls`` only): its status comes from the process exit and the ``.tap`` file size.
 """
 
 from __future__ import annotations
@@ -21,10 +24,20 @@ DEFAULT_CAPTURE_MODE = "plaintext"
 MIN_DURATION_S = 1
 MAX_DURATION_S = 3600
 DEFAULT_DURATION_S = 60
+#: Upper bound on ``also_package`` entries of one capture.
+MAX_ALSO_PACKAGES = 16
 
 LOCAL_DEVICE = "local"
 USB_DEVICE = "usb"
 AUTO_PROTOCOL = "auto"
+
+FRIDA_BACKEND = "frida"
+EBPF_BACKEND = "ebpf"
+CAPTURE_BACKENDS = (FRIDA_BACKEND, EBPF_BACKEND)
+#: The only protocol (and the default) of an eBPF capture.
+EBPF_PROTOCOLS = ("tls",)
+#: eBPF writes plaintext only: no keylog (``keys``/``full`` would report an empty keys.log).
+EBPF_CAPTURE_MODES = ("plaintext",)
 
 TAP_NAME = "capture.tap"
 KEYLOG_NAME = "keys.log"
@@ -41,6 +54,8 @@ class CaptureRequest:
     ``"usb"`` = first USB device, else a Frida device id (``-m``). ``host`` is a remote ``ip:port``
     (``-H``). Empty ``protocols`` = ``--protocol auto``. ``capture`` (``keys``/``plaintext``/``full``) is
     what is written to disk. ``follow_exec`` is off by default: Frida child gating can crash fork children.
+    ``profile`` (a tlsLibHunter discovery profile path) and ``also_packages`` map onto
+    ``--profile`` / ``--also-package`` (Android device captures only).
     """
 
     target: str
@@ -55,6 +70,9 @@ class CaptureRequest:
     duration_s: int = DEFAULT_DURATION_S
     follow_exec: bool = False
     anti_root: bool = False
+    backend: str = FRIDA_BACKEND
+    profile: Optional[str] = None
+    also_packages: tuple[str, ...] = ()
 
     @property
     def tap_path(self) -> Path:
@@ -77,6 +95,8 @@ def fritap_command() -> list[str]:
 def build_argv(req: CaptureRequest, command: Optional[list[str]] = None) -> list[str]:
     """Return the full argv of the capture subprocess (pure)."""
     argv = list(command if command is not None else fritap_command())
+    if req.backend == EBPF_BACKEND:
+        return argv + _ebpf_argv(req)
     argv += _device_flags(req.device, req.host)
     argv += ["-s"] if req.spawn else []
     argv += ["--protocol", ",".join(req.protocols) or AUTO_PROTOCOL]
@@ -85,7 +105,25 @@ def build_argv(req: CaptureRequest, command: Optional[list[str]] = None) -> list
     argv += ["--follow-exec"] if req.follow_exec else []
     argv += ["--anti_root"] if req.anti_root else []
     argv += _option_flags(req.protocol_options)
+    argv += _profile_flags(req)
     return argv + ["--", req.target, *req.args]
+
+
+def _profile_flags(req: CaptureRequest) -> list[str]:
+    """``--profile`` / repeated ``--also-package`` of an Android multi-process capture."""
+    flags = ["--profile", req.profile] if req.profile else []
+    for package in req.also_packages:
+        flags += ["--also-package", package]
+    return flags
+
+
+def _ebpf_argv(req: CaptureRequest) -> list[str]:
+    """eBPF attach flags: file outputs only (the CLI rejects ``-j -``), never ``-s``."""
+    argv = ["--backend", EBPF_BACKEND, *_device_flags(req.device, req.host)]
+    argv += ["--protocol", ",".join(req.protocols or EBPF_PROTOCOLS)]
+    argv += _output_flags(req)
+    argv += ["--duration", str(req.duration_s), "--non-interactive", "-q"]
+    return argv + ["--", req.target]
 
 
 def device_selector(device: Optional[str]) -> Union[bool, str]:
@@ -164,13 +202,72 @@ def validate_request(req: CaptureRequest) -> None:
     if req.args and not req.spawn:
         raise ToolError("args are only used when spawning", "bad_param",
                         hint="set spawn=true or drop args", param="args")
+    if req.backend not in CAPTURE_BACKENDS:
+        raise ToolError(f"unknown backend {req.backend!r}", "bad_param",
+                        hint=f"one of: {', '.join(CAPTURE_BACKENDS)}", param="backend")
+    if req.backend == EBPF_BACKEND:
+        _validate_ebpf_request(req)
+    _validate_profile_request(req)
     if req.protocols or req.protocol_options:
             protocol_catalog.validate_protocol_options(list(req.protocols), dict(req.protocol_options))
 
 
+def _validate_ebpf_request(req: CaptureRequest) -> None:
+    """eBPF attaches to one local/ADB PID and captures TLS plaintext only."""
+    _reject_ebpf(req.spawn, "spawn", "eBPF capture attaches to a running process",
+                 "set spawn=false (or omit it) and pass the numeric PID as target")
+    if not _is_pid(req.target):
+        raise ToolError("eBPF capture requires one positive numeric PID as target", "bad_param",
+                        hint="find the PID with list_apps / ps", param="target")
+    unsupported = [p for p in req.protocols if p not in EBPF_PROTOCOLS]
+    _reject_ebpf(unsupported, "protocols", f"eBPF capture does not support {', '.join(unsupported)}",
+                 "use protocols=[\"tls\"] (the default) or backend=frida")
+    _reject_ebpf(req.capture not in EBPF_CAPTURE_MODES, "capture",
+                 f"eBPF capture does not write key material (capture={req.capture!r})",
+                 "use capture=plaintext or backend=frida")
+    _reject_ebpf(req.host, "host", "eBPF capture does not support remote hosts",
+                 "use device (ADB serial) or the local system")
+    for name in ("follow_exec", "anti_root", "protocol_options", "profile"):
+        _reject_ebpf(getattr(req, name), name, f"eBPF capture does not support {name}",
+                     "drop it or use backend=frida")
+    _reject_ebpf(req.also_packages, "also_package", "eBPF capture does not support also_package",
+                 "drop it or use backend=frida")
+
+
+def _validate_profile_request(req: CaptureRequest) -> None:
+    """``profile``/``also_package`` need an Android device (``-m``); packages must be well-formed."""
+    from friTap.android_discovery import is_valid_android_package, untrusted_excerpt
+
+    requested = [name for name, value in (("profile", req.profile),
+                                          ("also_package", req.also_packages)) if value]
+    if not requested:
+        return
+    if req.host or device_selector(req.device) is False:
+        raise ToolError(f"{requested[0]} needs an Android device capture", "bad_param",
+                        hint="set device to 'usb' or the device id (not local / host)",
+                        param=requested[0])
+    if len(req.also_packages) > MAX_ALSO_PACKAGES:
+        raise ToolError(f"at most {MAX_ALSO_PACKAGES} also_package entries", "bad_param",
+                        param="also_package")
+    for package in req.also_packages:
+        if not is_valid_android_package(package):
+            raise ToolError(f"also_package: invalid Android package name "
+                            f"{untrusted_excerpt(package)!r}", "bad_param", param="also_package",
+                            hint="e.g. com.google.android.googlequicksearchbox")
+
+
+def _reject_ebpf(condition: Any, param: str, message: str, hint: str) -> None:
+    if condition:
+        raise ToolError(message, "bad_param", hint=hint, param=param)
+
+
+def _is_pid(target: str) -> bool:
+    return target.isascii() and target.isdigit() and 0 < int(target) <= 2**31 - 1
+
+
 __all__ = [
     "CaptureRequest", "build_argv", "validate_request", "fritap_command", "session_keylog_files",
-    "device_selector",
+    "device_selector", "CAPTURE_BACKENDS", "FRIDA_BACKEND", "EBPF_BACKEND", "EBPF_PROTOCOLS",
     "CAPTURE_MODES", "DEFAULT_CAPTURE_MODE", "MIN_DURATION_S", "MAX_DURATION_S",
     "DEFAULT_DURATION_S", "LOCAL_DEVICE", "USB_DEVICE", "TAP_NAME", "KEYLOG_NAME",
 ]

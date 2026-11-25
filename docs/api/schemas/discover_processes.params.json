@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "device": {
+      "description": "adb serial; 'usb' or omitted = adb's default device.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "duration_s": {
+      "default": 15,
+      "description": "Seconds to sample the device; use the app meanwhile.",
+      "maximum": 120,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "package": {
+      "description": "Target app package (list_apps identifier).",
+      "maxLength": 255,
+      "minLength": 1,
+      "pattern": "^[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z0-9_]+)+$",
+      "type": "string"
+    },
+    "write_profile": {
+      "description": "Save the profile as this .json path under the sandbox root, for start_capture(profile=...).",
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "package"
+  ],
+  "title": "discover_processes parameters",
+  "type": "object"
+}

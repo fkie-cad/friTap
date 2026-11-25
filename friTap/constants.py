@@ -204,6 +204,10 @@ class ContentType:
     PLAINTEXT_API_LEARNED = "plaintext_api_learned"
     # Named function RVAs and layout ints of a module, for the same cache.
     MODULE_OFFSETS_LEARNED = "module_offsets_learned"
+    # The agent's hooks are all installed, setTimeout-phased ones included
+    # (agent/shared/install_readiness.ts). Consumed on Frida's callback thread to
+    # release a spawn-gated process; never routed as an event.
+    AGENT_READY = "agent_ready"
     ERROR = "error"
 
 

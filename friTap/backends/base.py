@@ -295,6 +295,14 @@ class Backend(ABC):
         """Enable spawn gating on the device."""
         raise NotImplementedError(f"{self.name} backend does not support spawn gating")
 
+    def disable_spawn_gating(self, device: Any) -> None:
+        """Disable spawn gating on the device."""
+        raise NotImplementedError(f"{self.name} backend does not support spawn gating")
+
+    def enumerate_pending_spawn(self, device: Any) -> list:
+        """Spawns the device holds for this client's spawn gating (each has ``.pid``)."""
+        return []
+
     def on_child_added(self, device: Any, callback: Callable) -> None:
         """Register a callback for child process events."""
         raise NotImplementedError(f"{self.name} backend does not support child events")

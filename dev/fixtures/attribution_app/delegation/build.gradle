@@ -1,0 +1,29 @@
+plugins {
+    id "com.android.application"
+}
+
+android {
+    namespace = "com.fritap.delegation"
+    compileSdk = 36
+    defaultConfig {
+        minSdk = 30
+        targetSdk = 36
+    }
+    def testCaResources = providers.gradleProperty("fixtureCaResources").orNull
+    buildTypes.debug.manifestPlaceholders.fixtureTrust = testCaResources ?
+        "@xml/fixture_local_trust" : "@xml/fixture_trust"
+    if (testCaResources) {
+        sourceSets.debug.res.srcDir(testCaResources)
+    }
+    flavorDimensions += "role"
+    productFlavors {
+        client {
+            dimension = "role"
+            applicationId = "com.fritap.delegation.client"
+        }
+        worker {
+            dimension = "role"
+            applicationId = "com.fritap.delegation.worker"
+        }
+    }
+}

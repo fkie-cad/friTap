@@ -46,7 +46,8 @@ docker build -f dev/Dockerfile .
 
 | Script | Purpose |
 |---|---|
-| `compile_agent.sh` / `compile_agent.bat` | Compile the TypeScript agent to JavaScript |
+| `compile_agent.sh` / `compile_agent.bat` | Build Frida bundles. On Linux, `compile_agent.sh ebpf` builds the native eBPF agent. |
+| `ebpf/test-lima.sh` | Build and test eBPF in the privileged Ubuntu Lima fixture |
 | `generate_agent_types.py` | Generate `agent/schemas/messages.ts` from Pydantic models |
 | `derive_boringssl_keylog_offset.py` | Derive the Apple BoringSSL `SSL_CTX.keylog_callback` offset from iOS Simulator runtimes |
 | `run_tests.py` | Unified test runner (unit, integration, agent, coverage) |

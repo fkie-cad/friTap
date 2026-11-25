@@ -145,6 +145,8 @@ class FakeScript:
                 self.timed_out = True
                 return
         self.handshake_complete.set()
+        # Like the real agent: report hooks-installed after load (install_readiness.ts).
+        self.handler({'type': 'send', 'payload': {'contentType': 'agent_ready'}}, None)
 
 
 class FakeProcess:

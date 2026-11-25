@@ -11,9 +11,11 @@ import threading
 from typing import Optional
 
 from ..backends.base import BackendTransportError
-from ..events import DetachEvent
+from ..events import MAIN_PROCESS_ROLE, DetachEvent
 from ..exit_codes import EXIT_RUNTIME_ERROR
+from ..text_safety import visible_controls
 from .exec_follow import HeldExecWatchdog, ProcessTracker, ResumeWorker, agent_answers
+from .spawn_matching import spawn_matches_packages
 from .ssl_logger_state import _ChildAgent, _InstrumentRequest
 
 
@@ -140,10 +142,22 @@ class ProcessFollowingMixin:
 
     def _on_child_detached(self, pid, session, reason, crash=None) -> None:
         """A child's session ended: a hand-over if it exec()ed, else the child is gone."""
+        self._release_agent_ready_for_session(session)  # its agent can no longer report ready
         if reason == "process-replaced" and self._on_process_replaced(pid):
             return
         if self._forget_process(pid, session):
+            self._log_child_exit(pid, reason)
             self.logger.debug("Instrumented child pid %s detached (%s)", pid, reason)
+            self._end_if_last_child_gone()
+
+    def _log_child_exit(self, pid, reason) -> None:
+        """One INFO line when a tracked child/delegate process ended, e.g. ``delegate pid 42 (pkg:search) exited``."""
+        if reason != "process-terminated":
+            return
+        origin = self.origin_for_pid(pid) or {}
+        self.logger.info("%s pid %s (%s) exited",
+                         visible_controls(origin.get("role") or self.DEFAULT_CHILD_ROLE),
+                         pid, visible_controls(origin.get("process") or "unknown"))
 
     def _forget_process(self, pid, session=None) -> bool:
         forgotten = self._tracker.forget(pid, session)
@@ -394,11 +408,18 @@ class ProcessFollowingMixin:
         strand the app suspended, which the platform reports as a watchdog kill.
         """
         try:
-            self.logger.info("Attached to %s with pid %s", request.label, request.pid)
+            self.logger.debug("Attaching to %s with pid %s", request.label, request.pid)
+            self._note_instrumented_origin(request)
             session = self._backend.attach(self.device, str(request.pid))
+            self.logger.info("Attached to %s with pid %s", request.label, request.pid)
             if request.watch_as_main is not None:
                 self._watch_process(session, request.pid, request.watch_as_main)
-            self.instrument(session, self.own_message_handler)
+            script = self.instrument(session, self.own_message_handler,
+                                     is_main=request.watch_as_main)
+            if request.resume:
+                # The agent installs some hooks after load() returns; resuming
+                # before they are in loses the keys of the startup handshakes.
+                self.wait_for_agent_ready(script, f"{request.label} pid {request.pid}")
         except Exception as exc:
             if not request.exec_handover:
                 raise
@@ -503,14 +524,32 @@ class ProcessFollowingMixin:
         self._drain_instrument_queue()
         self._resume_suspended_pids()
 
+    @property
+    def _extra_spawn_packages(self) -> "set[str]":
+        """Packages gated besides the target; created lazily so ``__new__``-built test instances have one."""
+        return self.__dict__.setdefault("_extra_spawn_packages_set", set())
+
+    def add_spawn_packages(self, *packages: str) -> None:
+        """Also instrument spawns of *packages* (and their ``:process`` variants) on mobile."""
+        self._extra_spawn_packages.update(pkg for pkg in packages if pkg)
+
+    @property
+    def spawn_packages(self) -> frozenset:
+        """The packages whose spawns are instrumented on mobile: the target plus any added."""
+        return self._spawn_package_set()
+
+    def _spawn_package_set(self) -> frozenset:
+        target = {self.target_app} if self.target_app else set()
+        return frozenset(target | self._extra_spawn_packages)
+
     def _should_instrument_spawn(self, identifier):
-        """Whether a spawned process's identifier matches the target app."""
+        """Whether a spawned process's identifier matches the target app (mobile: a gated package)."""
         if not identifier:
             return False
 
         # Mobile: the identifier is a package name, e.g. "com.example.app:service".
         if self.mobile:
-            return identifier.startswith(self.target_app)
+            return spawn_matches_packages(identifier, self._spawn_package_set())
 
         # Desktop: the identifier may be a path or executable name.
         target_name = self.target_app.split()[-1] if ' ' in self.target_app else self.target_app
@@ -521,13 +560,21 @@ class ProcessFollowingMixin:
 
         return target_name.lower() in identifier.lower()
 
+    def _resolve_is_main(self, process, is_main: Optional[bool]) -> bool:
+        """The caller's explicit main-ness of *process*, else the inferred one."""
+        if is_main is not None:
+            return bool(is_main)
+        return self._is_main_target(process)
+
     def _is_main_target(self, process) -> bool:
         """Whether *process* is the main target, whose agent is ``self.script``.
 
         That is ``self.process``: the spawned or attached session or its exec'd image
         (``_watch_process`` moves it before instrumenting). Every other session is a
         child. Without a main session (the Wine process watcher) the first
-        instrumented process is the main one.
+        instrumented process is the main one. Only a fallback for callers that
+        do not pass ``is_main`` to ``instrument()``: before the main target is
+        spawned, "no script yet" would wrongly make a gated delegate the main one.
         """
         main_session = getattr(self, "process", None)
         if main_session is not None:
@@ -557,3 +604,91 @@ class ProcessFollowingMixin:
             if entry is not None and entry.session is session:
                 return pid
         return None
+
+    # Event origin: every agent message is stamped with the process it came from
+    # ({pid, process, role}) before it is queued (see _internal_callback_wrapper).
+
+    MAIN_ORIGIN_ROLE = MAIN_PROCESS_ROLE
+    DEFAULT_CHILD_ROLE = "child"
+    _ROLE_BY_INSTRUMENT_LABEL = {"spawned process": "spawn"}
+
+    @property
+    def _process_origins_lock(self) -> threading.Lock:
+        """Guards ``_process_origins``; created lazily so ``__new__``-built test instances have one."""
+        return self.__dict__.setdefault("_process_origins_lock_obj", threading.Lock())
+
+    @property
+    def _process_origins(self) -> "dict[int, dict]":
+        """``pid -> {pid, process, role}`` registered via set_process_origin; mutate only under the lock."""
+        return self.__dict__.setdefault("_process_origins_map", {})
+
+    def set_process_origin(self, pid: int, process: Optional[str] = None,
+                           role: Optional[str] = None) -> None:
+        """Record the process name and role that events from *pid* are tagged with."""
+        with self._process_origins_lock:
+            self._process_origins[pid] = {"pid": pid, "process": process, "role": role}
+
+    def origin_for_pid(self, pid) -> Optional[dict]:
+        """A copy of the origin registered for *pid*, else None."""
+        with self._process_origins_lock:
+            entry = self._process_origins.get(pid)
+            return dict(entry) if entry is not None else None
+
+    def _note_instrumented_origin(self, request) -> None:
+        """Register a gated process's identifier as its origin name unless one is known already."""
+        if not request.identifier or self.origin_for_pid(request.pid) is not None:
+            return
+        identifier = str(request.identifier)
+        role = self._process_roles.get(identifier) or self._ROLE_BY_INSTRUMENT_LABEL.get(
+            request.label, self.DEFAULT_CHILD_ROLE)
+        self.set_process_origin(request.pid, identifier, role)
+
+    @property
+    def _process_roles(self) -> "dict[str, str]":
+        """``process name -> role`` from a discovery profile; created lazily for ``__new__`` instances."""
+        return self.__dict__.setdefault("_process_roles_map", {})
+
+    def set_process_roles(self, roles: "dict[str, str]") -> None:
+        """Tag gated processes named in *roles* (e.g. ``pkg:service -> delegate``) with that role."""
+        self._process_roles.update(roles)
+
+    def instrument_running(self, pid: int, process: str, role: str) -> None:
+        """Attach to an already running *pid* (not gated): connections it opened earlier stay opaque."""
+        self.logger.warning(
+            "%s pid %s (%s) attached late: existing connections not decryptable",
+            visible_controls(process), pid, visible_controls(role))
+        self.set_process_origin(pid, process, role)
+        self._enqueue_instrumentation(pid, "running process", process,
+                                      resume=False, watch_as_main=False)
+
+    def tracked_child_pids(self) -> "set[int]":
+        """Instrumented processes other than the main target that have not detached."""
+        tracker = getattr(self, "_tracker", None)
+        if tracker is None:
+            return set()
+        return tracker.pids() - {getattr(self, "pid", None)}
+
+    def _main_process_name(self) -> Optional[str]:
+        """The main target's display name: the name resolved after a PID attach, else the target."""
+        return getattr(self, "resolved_process_name", None) or getattr(self, "target_app", None) or None
+
+    def _child_pid_of_script(self, script) -> Optional[int]:
+        """The pid of the child agent *script*, else None."""
+        with self._child_agents_lock:
+            for child in self._child_agents:
+                if child.script is script:
+                    return child.pid
+        return None
+
+    def _origin_for_script(self, script) -> Optional[dict]:
+        """``{pid, process, role}`` of the process *script* runs in; None for an unknown script."""
+        if script is None:
+            return None
+        if script is getattr(self, "script", None):
+            pid = getattr(self, "pid", None)
+            return {"pid": pid, "process": self._main_process_name(), "role": self.MAIN_ORIGIN_ROLE}
+        pid = self._child_pid_of_script(script)
+        registered = self.origin_for_pid(pid) if pid is not None else None
+        registered = registered or {}
+        return {"pid": pid, "process": registered.get("process"),
+                "role": registered.get("role") or self.DEFAULT_CHILD_ROLE}

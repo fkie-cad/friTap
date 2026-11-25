@@ -7,6 +7,7 @@ Collector constants are read through ``_collector()`` at call time so patches ta
 import re
 from typing import Optional
 
+from ..events import MAIN_PROCESS_ROLE
 from .attribution import (
     CHROMIUM_FAMILY_KINDS,
     SOURCE_NATIVE_STACK,
@@ -270,6 +271,7 @@ class FlowMetadataMixin:
         self._stamp_caller_attribution(flow)
         flow.process_name = self._process_name
         flow.package_name = self._package_name
+        self._stamp_process_origin(flow, event)
         # Hook origin: prefer the first chunk's function, fall back to event.
         hook = ""
         if flow.chunks:
@@ -279,6 +281,21 @@ class FlowMetadataMixin:
         flow.hook_function = hook
         (flow.local_addr, flow.local_port,
          flow.remote_addr, flow.remote_port) = self._local_remote_endpoints(flow, event)
+
+    @staticmethod
+    def _stamp_process_origin(flow: Flow, event) -> None:
+        """Copy the event's process origin (multi-process captures) onto *flow*.
+
+        A child process's own name replaces the capture target's; the main target keeps it.
+        """
+        origin = getattr(event, "process_origin", None)
+        if not origin:
+            return
+        pid = origin.get("pid")
+        flow.pid = pid if isinstance(pid, int) and not isinstance(pid, bool) else None
+        flow.process_role = origin.get("role") or ""
+        if flow.process_role != MAIN_PROCESS_ROLE and origin.get("process"):
+            flow.process_name = origin["process"]
 
     def _local_remote_endpoints(self, flow: Flow, event) -> tuple:
         """``(local_addr, local_port, remote_addr, remote_port)`` for *flow*.

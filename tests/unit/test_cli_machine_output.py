@@ -747,3 +747,16 @@ def test_module_apps_unknown_device_exits_one():
         cwd=REPO_ROOT, capture_output=True, text=True, timeout=120)
     assert proc.returncode == EXIT_RUNTIME_ERROR, proc.stderr
     assert json.loads(proc.stdout)["exit_code"] == EXIT_RUNTIME_ERROR
+
+
+def test_jsonl_file_skips_capture_lifecycle_events(tmp_path):
+    from friTap.output.jsonl_handler import JsonlOutputHandler
+    from friTap.session import CAPTURE_STARTED, CaptureLifecycleEvent
+    path = tmp_path / "out.jsonl"
+    handler, bus = JsonlOutputHandler(str(path)), EventBus()
+    handler.setup(bus)
+    bus.emit(CaptureLifecycleEvent(event_type=CAPTURE_STARTED))
+    bus.emit(SessionEvent(event_type="started"))
+    handler.close()
+    lines = [json.loads(line) for line in path.read_text().splitlines()]
+    assert [line["event_type"] for line in lines] == ["started"]

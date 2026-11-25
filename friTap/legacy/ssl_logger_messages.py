@@ -19,7 +19,9 @@ from ..agent_socket_fields import (
     get_addr_string,
     resolve_ss_family,
 )
+from ..constants import ContentType
 from ..events import (
+    PROCESS_ORIGIN_KEY,
     AntiTamperDetectedEvent,
     HookBreadcrumbEvent,
     PlatformReportEvent,
@@ -29,6 +31,11 @@ from ..text_safety import safe_terminal_text
 
 # Breadcrumb the agent sends after its synchronous top-level init succeeded.
 AGENT_INIT_COMPLETE_BREADCRUMB = "agent-init: complete"
+
+# How long a suspended process is held for its agent's hooks-installed report
+# before it is resumed anyway. Well under Android's 10 s process-start timeout,
+# which kills a spawn-gated app process that is held too long.
+AGENT_READY_RESUME_TIMEOUT_S = 6.0
 
 # Frida message queue bounds. The count cap alone lets a hostile or runaway
 # agent park MESSAGE_QUEUE_MAX_MESSAGES x payload size in this process, so
@@ -400,11 +407,114 @@ class AgentMessagesMixin:
     def _provide_custom_hooking_handler(self, handler):
         return handler
 
+    # Agent readiness: one Event per agent script loaded through instrument(), set
+    # when that agent reports its hooks installed (ContentType.AGENT_READY), or
+    # released early when the script's session detaches (its process is gone).
+
+    @property
+    def _agent_ready_lock(self) -> threading.Lock:
+        """Guards the readiness maps below; created lazily so ``__new__``-built test instances have one."""
+        return self.__dict__.setdefault("_agent_ready_lock_obj", threading.Lock())
+
+    @property
+    def _agent_ready_events(self) -> "dict":
+        """``script -> threading.Event`` for agents whose readiness is awaited; mutate only under the lock."""
+        return self.__dict__.setdefault("_agent_ready_events_map", {})
+
+    @property
+    def _agent_ready_sessions(self) -> "dict":
+        """``script -> session`` it was loaded into, so a session detach finds its scripts; under the lock."""
+        return self.__dict__.setdefault("_agent_ready_sessions_map", {})
+
+    @property
+    def _agent_gone_scripts(self) -> "set":
+        """Awaited scripts whose process ended / session detached before reporting; under the lock."""
+        return self.__dict__.setdefault("_agent_gone_scripts_set", set())
+
+    def _expect_agent_ready(self, script, session=None) -> None:
+        """Register *script* (loaded into *session*) as an agent that will report hooks-installed."""
+        with self._agent_ready_lock:
+            self._agent_ready_events.setdefault(script, threading.Event())
+            if session is not None:
+                self._agent_ready_sessions[script] = session
+
+    def _agent_ready_event(self, script) -> "threading.Event | None":
+        """*script*'s readiness Event; None when it was never expected."""
+        with self._agent_ready_lock:
+            return self._agent_ready_events.get(script)
+
+    def _forget_agent_ready(self, script) -> None:
+        """Stop tracking *script*'s readiness (after its wait)."""
+        with self._agent_ready_lock:
+            self._agent_ready_events.pop(script, None)
+            self._agent_ready_sessions.pop(script, None)
+            self._agent_gone_scripts.discard(script)
+
+    def _note_agent_ready(self, script) -> None:
+        """Set *script*'s readiness Event; a script nobody waits for is ignored."""
+        event = self._agent_ready_event(script)
+        if event is not None:
+            event.set()
+
+    def _release_agent_ready(self, script, gone: bool = True) -> None:
+        """Wake a wait on *script* without a ready report; *gone* marks its process as ended."""
+        with self._agent_ready_lock:
+            event = self._agent_ready_events.get(script)
+            if event is None:
+                return
+            if gone:
+                self._agent_gone_scripts.add(script)
+        event.set()
+
+    def _release_agent_ready_for_session(self, session) -> None:
+        """*session* detached: release every awaited script loaded into it as gone."""
+        if session is None:
+            return
+        with self._agent_ready_lock:
+            scripts = [s for s, owner in self._agent_ready_sessions.items() if owner is session]
+        for script in scripts:
+            self._release_agent_ready(script, gone=True)
+
+    def _agent_process_gone(self, script) -> bool:
+        """True when *script* was released because its process ended / session detached."""
+        with self._agent_ready_lock:
+            return script in self._agent_gone_scripts
+
+    def wait_for_agent_ready(self, script, description: str,
+                             timeout: float = AGENT_READY_RESUME_TIMEOUT_S) -> bool:
+        """Before resuming a suspended process: wait up to *timeout* s for *script*'s hooks-installed report.
+
+        Returns True when it arrived or nothing is awaited (no agent, a custom
+        message handler, a non-Frida backend); False after warning on a timeout,
+        e.g. an older bundle without the report. Returns False without a warning
+        when the process ended during the wait (the detach/exit report covers it).
+        """
+        event = self._agent_ready_event(script) if script is not None else None
+        if event is None:
+            return True
+        started = time.monotonic()
+        try:
+            ready = event.wait(timeout)
+            gone = self._agent_process_gone(script)
+        finally:
+            self._forget_agent_ready(script)
+        if gone:
+            self.logger.debug("%s: process ended after %.2f s while waiting for its agent's "
+                              "hooks", description, time.monotonic() - started)
+            return False
+        if ready:
+            self.logger.debug("%s: agent hooks installed after %.2f s",
+                              description, time.monotonic() - started)
+            return True
+        self.logger.warning(
+            "%s: agent did not report its hooks installed within %.0f s; resuming "
+            "anyway (handshakes made at startup may lack keys)", description, timeout)
+        return False
+
     def _internal_callback_wrapper(self, script=None):
         """Build the Frida on_message handler for ``script``.
 
-        ``script`` is captured so a handshake is answered on the script that asked; a child
-        agent is never ``self.script`` (the main target's).
+        ``script`` identifies the sender for startup replies and main-agent detach progress.
         """
         def wrapped_handler(message, data):
             # Answer the startup handshake here on the Frida callback thread, never
@@ -413,6 +523,15 @@ class AgentMessagesMixin:
             # the queue, and the reply would be dropped if the queue were full.
             if isinstance(message, dict) and message.get('type') == 'send':
                 payload = message.get('payload')
+                if isinstance(payload, dict) and payload.get("contentType") == ContentType.AGENT_READY:
+                    # Here, not via the queue: a gated process waits on it to resume.
+                    self._note_agent_ready(script)
+                    return
+                if isinstance(payload, dict) and "detach_progress" in payload:
+                    # A timeout needs the latest marker even if the queue is full;
+                    # any agent's marker also proves its RPC entered (entry watchdog).
+                    self._note_detach_progress(script, payload["detach_progress"])
+                    return
                 if isinstance(payload, str):
                     try:
                         if self._answer_startup_handshake(payload, script):
@@ -423,6 +542,7 @@ class AgentMessagesMixin:
                         self.logger.exception("Failed to answer startup handshake")
                         return
 
+            self._stamp_origin(message, script)
             # Everything else is only enqueued: return from the callback thread
             # fast to avoid GIL contention that starves the TUI thread.
             try:
@@ -431,6 +551,27 @@ class AgentMessagesMixin:
                 self._record_queue_drop()
 
         return wrapped_handler
+
+    def _stamp_origin(self, message, script) -> None:
+        """Tag a ``send`` payload dict with ``process_origin`` ({pid, process, role}) of *script*'s process; an existing one wins.
+
+        Runs on Frida's callback thread: cheap lookups only, never raises.
+        """
+        if not isinstance(message, dict) or message.get('type') != 'send':
+            return
+        payload = message.get('payload')
+        if not isinstance(payload, dict) or PROCESS_ORIGIN_KEY in payload:
+            return
+        origin_for_script = getattr(self, "_origin_for_script", None)
+        if origin_for_script is None:
+            return
+        try:
+            origin = origin_for_script(script)
+        except Exception:
+            self.logger.debug("Could not resolve the message origin", exc_info=True)
+            return
+        if origin is not None:
+            payload[PROCESS_ORIGIN_KEY] = origin
 
     def _record_queue_drop(self) -> None:
         """Count a message dropped at the full queue and log the total at most once per MESSAGE_QUEUE_DROP_LOG_INTERVAL.

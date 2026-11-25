@@ -20,9 +20,9 @@ from unittest.mock import MagicMock
 import pytest
 
 import friTap.legacy.ssl_logger_core as core
-from friTap.api import FriTapSession
 from friTap.legacy.ssl_logger_core import SSL_Logger
 from friTap.output.json_handler import JsonOutputHandler
+from tests.unit._api_session_helpers import embedded_api_session
 
 REPORT = {"version": 1, "repeat": False, "total_ms": 3,
           "steps": [{"name": "detachAll", "ok": True, "ms": 1}],
@@ -80,7 +80,7 @@ def test_api_stop_completes_the_json_document_with_the_detach_report(tmp_path, e
     obj = _make_logger(tmp_path)
     closes = _count_closes(_json_handler(obj))
 
-    FriTapSession(obj, obj._event_bus).stop()
+    embedded_api_session(obj).stop()
 
     doc = json.loads((tmp_path / "out.json").read_text())
     assert doc["detach_report"] == REPORT
@@ -93,7 +93,7 @@ def test_api_stop_completes_the_json_document_with_the_detach_report(tmp_path, e
 def test_second_stop_is_harmless(tmp_path, exits):
     obj = _make_logger(tmp_path)
     closes = _count_closes(_json_handler(obj))
-    session = FriTapSession(obj, obj._event_bus)
+    session = embedded_api_session(obj)
 
     session.stop()
     unloads_after_first = obj._backend.unload_script.call_count
@@ -127,7 +127,7 @@ def test_api_stop_runs_the_cli_finalizers_then_releases_host_resources(tmp_path,
     obj._backend.detach.side_effect = record("session_detach")
     obj._backend.off_process_crashed.side_effect = record("off_process_crashed")
 
-    FriTapSession(obj, obj._event_bus).stop()
+    embedded_api_session(obj).stop()
 
     assert order == ["pcap_cleanup", "learned_offsets", "live_scan", "close", "sidecar",
                      "plaintext_pcap", "session_detach", "off_process_crashed"]

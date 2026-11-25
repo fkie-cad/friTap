@@ -2,6 +2,7 @@
 
 import argparse
 import atexit
+import functools
 import logging
 import sys
 import threading
@@ -26,12 +27,6 @@ try:
 except Exception:
     pass
 
-try:
-    from AndroidFridaManager import FridaBasedException
-except ImportError:
-    # Create a dummy exception for testing environments
-    class FridaBasedException(Exception):
-        pass
 from .about import __author__, __version__
 from .backends.base import BackendName
 from .cli_config import _make_inspection_config, build_capture_config
@@ -46,7 +41,9 @@ from .cli_dispatch import (  # noqa: F401 - re-exported for callers and tests
     _selects_tap_subcommand,
 )
 from .cli_duration import (  # noqa: F401 - re-exported for callers and tests
+    _announce_duration,
     _capture_already_stopping,
+    _note_duration_elapsed,
     _start_duration_timer,
     _stop_capture_after_duration,
 )
@@ -95,7 +92,7 @@ from .cli_stream import (  # noqa: F401 - re-exported for callers and tests
     _stop_signal_received,
     _stream_hint,
 )
-from .config import FriTapConfig, UnsupportedProtocolBackendError
+from .config import DeviceConfig, FriTapConfig, UnsupportedProtocolBackendError
 from .exit_codes import (
     EXIT_OK,
     EXIT_RUNTIME_ERROR,
@@ -112,7 +109,40 @@ from .fritap_utility import (
 )
 from .inspector import LibraryInspector
 from .pcap_utility import PCAP_FORMAT_AUTO, PCAP_FORMAT_CHOICES
-from .ssl_logger import SSL_Logger
+
+
+@functools.cache
+def _frida_based_exception():
+    """AndroidFridaManager's exception, or a stand-in when it is not installed."""
+    try:
+        from AndroidFridaManager import FridaBasedException
+    except ImportError:
+        class FridaBasedException(Exception):
+            pass
+    return FridaBasedException
+
+
+@functools.cache
+def _legacy_ssl_logger():
+    """The legacy SSL_Logger, imported on first use so ``--backend ebpf`` and
+    ``--backend-readiness`` never load the legacy capture stack."""
+    from .legacy.ssl_logger_core import SSL_Logger
+    return SSL_Logger
+
+
+def _ssl_logger_class():
+    """SSL_Logger as seen by this module; a test's monkeypatched one wins."""
+    return globals().get("SSL_Logger") or _legacy_ssl_logger()
+
+
+# Lazily resolved re-exports (``from friTap.friTap import SSL_Logger`` etc.).
+_LAZY_EXPORTS = {"FridaBasedException": _frida_based_exception, "SSL_Logger": _legacy_ssl_logger}
+
+
+def __getattr__(name):
+    if name not in _LAZY_EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return _LAZY_EXPORTS[name]()
 
 
 def _repair_shadowed_package_path():
@@ -254,7 +284,7 @@ class LsassHookManager:
                     custom_hook_script=custom_hook_script, json_output=json_output,
                     full_capture=full_capture, json_keys=json_keys,
                     pcap_format=pcap_format)
-                self.lsass_logger = SSL_Logger(config=config)
+                self.lsass_logger = _ssl_logger_class()(config=config)
                 
                 self.lsass_process, self.lsass_script = self.lsass_logger.start_fritap_session()
                 self.lsass_device = self.lsass_logger.device
@@ -414,7 +444,7 @@ def _is_non_interactive(parsed):
 def _record_capture_exit_status(ssl_log, exit_code):
     """Hand the capture's outcome to the logger, whose cleanup() owns the final
     os._exit (see SSL_Logger.set_exit_status for the first-non-zero-wins rule)."""
-    if exit_code is None or not isinstance(ssl_log, SSL_Logger):
+    if exit_code is None or ssl_log is None or not isinstance(ssl_log, _ssl_logger_class()):
         return
     ssl_log.set_exit_status(exit_code)
 
@@ -436,7 +466,7 @@ def _run_early_exit_command(label, action_fn, logger, special_logger):
     except BackendTransportError as fe:
         logger.error(f"Backend transport error: {fe}")
         _note_stream_runtime_error(fe)
-    except FridaBasedException as e:
+    except _frida_based_exception() as e:
         logger.error(f"Backend error: {e}")
         _note_stream_runtime_error(e)
     except Exception as e:
@@ -646,13 +676,62 @@ def _add_gating_and_target_arguments(args):
                            "and attach mode; e.g. a launcher exec()ing the real binary). "
                            "Skips child gating, which costs ~40-50 ms per fork. "
                            "This is already the default.")
-    args.add_argument("exec", metavar="<executable/app name/pid>", nargs="+",
+    _add_profile_capture_arguments(args)
+    args.add_argument("exec", metavar="<executable/app name/pid>", nargs="*",
                       help="executable/app whose SSL calls to log. Accepts a "
                            "command with arguments for spawn mode, e.g. "
                            "'wine /path/to/application.exe' (issue #66). If the "
                            "target's own arguments start with '-', put the target "
                            "after '--', e.g. 'fritap -s -k keys.log -- wine app.exe "
                            "-sk https://example.com'.")
+
+
+def _add_profile_capture_arguments(args):
+    """Android multi-process capture driven by a tlsLibHunter discovery profile (-m only)."""
+    args.add_argument("--profile", metavar="<profile.json>", required=False, default=None,
+                      help="Android (-m): capture the processes a tlsLibHunter discovery "
+                           "profile lists (target, siblings, delegate apps such as Google "
+                           "Search for Gemini). Their packages are spawn-gated, delegates "
+                           "are force-stopped so they respawn under friTap, and shared "
+                           "system processes are only reported, never hooked. The capture "
+                           "keeps running while any instrumented delegate/sibling process "
+                           "stays alive, even after the target exits (Ctrl+C to end).")
+    args.add_argument("--discover", metavar="<seconds>", type=float, required=False,
+                      default=None,
+                      help="Android (-m): run tlsLibHunter process discovery for <seconds> "
+                           "(use the app meanwhile), then capture as with --profile. "
+                           "Needs tlsLibHunter with discovery support.")
+    args.add_argument("--also-package", metavar="<package>", action="append",
+                      required=False, default=None, dest="also_package",
+                      help="Android (-m): also spawn-gate and instrument this package "
+                           "(repeatable), e.g. a delegate app that carries the target's "
+                           "traffic.")
+
+
+def _validate_profile_capture_options(parsed, parser):
+    """--profile/--discover/--also-package need -m; --profile and --discover exclude each other."""
+    requested = [flag for flag, value in (("--profile", parsed.profile),
+                                          ("--discover", parsed.discover),
+                                          ("--also-package", parsed.also_package))
+                 if value is not None]
+    if not requested:
+        return
+    if not parsed.mobile:
+        parser.error(f"{', '.join(requested)} requires -m (Android device capture)")
+    if parsed.profile is not None and parsed.discover is not None:
+        parser.error("--profile and --discover are mutually exclusive")
+    if parsed.discover is not None and parsed.discover <= 0:
+        parser.error("--discover needs a positive number of seconds")
+    _validate_also_packages(parsed.also_package or (), parser)
+
+
+def _validate_also_packages(packages, parser):
+    """Every --also-package must be an Android package name (they reach ``adb shell``)."""
+    from .android_discovery import is_valid_android_package, untrusted_excerpt
+    for package in packages:
+        if not is_valid_android_package(package):
+            parser.error(f"--also-package: invalid Android package name "
+                         f"{untrusted_excerpt(package)!r}")
 
 
 def _add_hooking_arguments(args):
@@ -911,6 +990,9 @@ def _add_inspection_and_platform_arguments(args):
                       help="Set a timeout in seconds for the process. After the timeout, the process will be resumed automatically. If not set, the process will resume immediately.")
     # default=None (not FRIDA) so we can tell whether the user explicitly chose a
     # backend; resolved to FRIDA right after parse_args (see cli()).
+    args.add_argument("--ebpf-kernel-helper", metavar="TARGET_PATH",
+                      help="Override the native helper for target-free eBPF readiness.")
+    args.add_argument("--backend-readiness", action="store_true", help="Print backend readiness as JSON. For local eBPF attach preflight, pass a PID.")
     args.add_argument("--backend", choices=[b.value for b in BackendName], default=None,
                       help="Instrumentation backend to use (default: frida)")
     args.add_argument("--wine", choices=_WINE_MODES, nargs="?", const="auto", default="auto",
@@ -1072,6 +1154,14 @@ def cli():
     logger = logging.getLogger('friTap')
 
     parser, parsed = _parse_capture_args()
+    if parsed.ebpf_kernel_helper and not (parsed.backend_readiness and parsed.backend == BackendName.EBPF):
+        parser.error("--ebpf-kernel-helper requires --backend ebpf --backend-readiness")
+    if parsed.backend_readiness:
+        _print_backend_readiness(parsed, parser)
+        return
+    if parsed.backend == BackendName.EBPF:
+        _run_ebpf_capture(parsed, parser)
+        return
     logger, special_logger = _configure_logging_and_target(parsed)
     _run_library_inspection_commands(parsed, logger, special_logger)
 
@@ -1093,10 +1183,123 @@ def cli():
     _run_capture_session(parsed, logger, special_logger, install_lsass_hook)
 
 
+def _print_backend_readiness(parsed, parser):
+    """--backend-readiness: print the selected backend's diagnosis as JSON."""
+    import json
+    from dataclasses import asdict
+
+    from .core import CoreController
+
+    device = DeviceConfig(mobile=parsed.mobile, host=parsed.host)
+    try:
+        report = CoreController().capture_readiness(
+            parsed.backend, device, diagnostic=True,
+            kernel_helper=parsed.ebpf_kernel_helper, target=_readiness_target(parsed),
+        )
+    except BackendInvalidArgumentError as exc:
+        parser.error(str(exc))
+    except ValueError:
+        parser.error("Readiness is available for Frida and eBPF")
+    print(json.dumps(asdict(report)))
+
+
+def _readiness_target(parsed):
+    """The PID an eBPF attach preflight checks; None for target-free readiness."""
+    if parsed.exec and parsed.backend == BackendName.EBPF:
+        return " ".join(parsed.exec)
+    return None
+
+
+def _run_ebpf_capture(parsed, parser):
+    """Drive a ``--backend ebpf`` capture through a core Session (no legacy stack)."""
+    logger = _configure_console_logging(parsed)[0]
+    _prime_debug_log_if_requested(parsed, logger)
+    _reject_unsupported_ebpf_options(parsed, parser)
+    _reject_invalid_headless_filter(parsed.filter, logger)
+    session = _create_ebpf_session(parsed, parser)
+    stop_requested = threading.Event()
+    previous_handlers = _install_ebpf_stop_handlers(session, stop_requested)
+    try:
+        session.start()
+        if session.is_running:
+            print(f"eBPF capture running for PID {session.config.target}", file=sys.stderr, flush=True)
+        _wait_for_ebpf_session(session, parsed.duration, stop_requested, logger)
+    except (BackendInvalidOperationError, OSError, RuntimeError) as exc:
+        parser.exit(EXIT_RUNTIME_ERROR, f"fritap: {exc}\n")
+    finally:
+        session.stop()
+        session.wait()
+        _restore_signal_handlers(previous_handlers)
+    if session.failure:
+        parser.exit(EXIT_RUNTIME_ERROR, f"fritap: {session.failure}\n")
+
+
+def _reject_unsupported_ebpf_options(parsed, parser):
+    """Fail with a usage error for flags the eBPF driver cannot honour."""
+    if parsed.json == "-":
+        parser.error("eBPF capture supports TAP and JSON files")
+    if parsed.list_libraries or parsed.extract_libraries:
+        parser.error("eBPF capture does not support library inspection commands")
+
+
+def _create_ebpf_session(parsed, parser):
+    """Build the eBPF capture Session; configuration errors exit with a runtime error."""
+    from .core import CoreController
+
+    try:
+        config = build_capture_config(parsed, install_lsass_hook=False)
+        return CoreController().create_session(config)
+    except (BackendInvalidArgumentError, BackendInvalidOperationError, ValueError) as exc:
+        parser.exit(EXIT_RUNTIME_ERROR, f"fritap: {exc}\n")
+
+
+def _install_ebpf_stop_handlers(session, stop_requested):
+    """SIGINT/SIGTERM stop the session; returns the handlers to restore.
+
+    session.stop() runs on a helper thread: a signal handler runs on the main
+    thread, which may hold the session's (non-reentrant) lock at that moment.
+    """
+    import signal
+
+    def request_stop(signum, frame):
+        stop_requested.set()
+        threading.Thread(target=session.stop, name="fritap-ebpf-stop", daemon=True).start()
+
+    return {sig: signal.signal(sig, request_stop) for sig in (signal.SIGINT, signal.SIGTERM)}
+
+
+def _restore_signal_handlers(previous_handlers):
+    import signal
+
+    for sig, handler in previous_handlers.items():
+        signal.signal(sig, handler)
+
+
+_EBPF_WAIT_SLICE_SECONDS = 1.0
+
+
+def _wait_for_ebpf_session(session, duration, stop_requested, logger):
+    """Block until the session ends; with --duration, stop it once that elapses."""
+    if not duration:
+        # Bounded slices keep Ctrl+C deliverable on Windows hosts (adb/Android).
+        while not session.wait_timeout(_EBPF_WAIT_SLICE_SECONDS):
+            pass
+        return
+    _announce_duration(duration, logger)
+    if not session.wait_timeout(duration):
+        _note_duration_elapsed(duration, logger, ended_by_duration=not stop_requested.is_set())
+        session.stop()
+
+
 def _parse_capture_args():
     """Parse ``sys.argv`` and normalise the result. Returns ``(parser, parsed)``."""
     parser = build_capture_parser()
     parsed = parser.parse_args(_normalize_bare_wine_flag(sys.argv[1:]))
+    if not parsed.exec and not parsed.backend_readiness:
+        parser.error("the following arguments are required: <executable/app name/pid>")
+    if parsed.backend_readiness:
+        _resolve_backend_choice(parsed)
+        return parser, parsed
     _claim_stdout_for_json_stream(parsed)
     _apply_decoder_isolation_flag(parsed)
     _apply_non_interactive_flag(parsed)
@@ -1112,11 +1315,7 @@ def _configure_logging_and_target(parsed):
 
     Returns ``(logger, special_logger)``.
     """
-    # Configure logging after parsing arguments to respect debug flags
-    logger, special_logger = setup_fritap_logging(
-        debug=parsed.debug, debug_output=parsed.debug_output
-    )
-    _apply_quiet_console(parsed.quiet)
+    logger, special_logger = _configure_console_logging(parsed)
 
     # Wine synthesis: turn a bare Windows target (a .exe/PE given without an
     # explicit `wine` launcher) into a `wine <exe>` command so the normal Wine
@@ -1126,6 +1325,16 @@ def _configure_logging_and_target(parsed):
     from friTap.platform_support.macos_targets import prepare_macos_spawn_target
     prepare_macos_spawn_target(parsed, logger)
     _prime_debug_log_if_requested(parsed, logger)
+    return logger, special_logger
+
+
+def _configure_console_logging(parsed):
+    """Console logging for --debug/--debug-output and -q. Returns ``(logger, special_logger)``."""
+    # Configure logging after parsing arguments to respect debug flags
+    logger, special_logger = setup_fritap_logging(
+        debug=parsed.debug, debug_output=parsed.debug_output
+    )
+    _apply_quiet_console(parsed.quiet)
     return logger, special_logger
 
 
@@ -1161,14 +1370,14 @@ def _run_library_inspection_commands(parsed, logger, special_logger):
     if parsed.list_libraries:
         _run_early_exit_command(
             "Listing loaded libraries (scanning loaded modules for TLS patterns)...",
-            lambda: SSL_Logger(config=_make_inspection_config(parsed)).inspect_libraries(),
+            lambda: _ssl_logger_class()(config=_make_inspection_config(parsed)).inspect_libraries(),
             logger, special_logger)
 
     if parsed.extract_libraries:
         _run_early_exit_command(
             f"Extracting TLS libraries to {parsed.extract_libraries} "
             "(scanning loaded modules for TLS patterns)...",
-            lambda: SSL_Logger(config=_make_inspection_config(parsed)).extract_libraries(
+            lambda: _ssl_logger_class()(config=_make_inspection_config(parsed)).extract_libraries(
                 parsed.extract_libraries),
             logger, special_logger)
 
@@ -1211,6 +1420,7 @@ def _validate_capture_options(parsed, parser, logger):
     for line in _probe_conflict_warnings(parsed):
         logger.warning(line)
 
+    _validate_profile_capture_options(parsed, parser)
     if parsed.full_capture and parsed.pcap is None:
         parser.error("--full_capture requires -p to set the pcap name")
     if parsed.pcap_format != PCAP_FORMAT_AUTO and parsed.pcap is None:
@@ -1299,9 +1509,7 @@ def _run_capture_session(parsed, logger, special_logger, install_lsass_hook):
         # --filter was already validated by _reject_invalid_headless_filter()
         # right after argument parsing, before the banners above.
 
-        config.output.tap_output = parsed.tap
-
-        ssl_log = SSL_Logger(config=config)
+        ssl_log = _ssl_logger_class()(config=config)
         _register_stream_exit_status(ssl_log)
 
         # Read by legacy/ssl_logger_core.py via getattr(self, 'use_modern', False)
@@ -1310,7 +1518,10 @@ def _run_capture_session(parsed, logger, special_logger, install_lsass_hook):
             ssl_log.use_modern = True
 
         ssl_log.install_signal_handler()
-        ssl_log.start_fritap_session()
+        from .backends.capture import create_legacy_capture_session
+
+        coordinator = create_legacy_capture_session(config, ssl_log, embedded=False)
+        coordinator.start()
 
         # --duration: a probe run exits on its own, so only arm it for captures.
         if not parsed.probe:
@@ -1354,7 +1565,7 @@ def _run_capture_session(parsed, logger, special_logger, install_lsass_hook):
         for line in hint_lines:
             logger.error(line)
         _note_stream_runtime_error(pe, hint_lines[1:])
-    except FridaBasedException as e:
+    except _frida_based_exception() as e:
         logger.error(f"Backend error: {e}")
         _note_stream_runtime_error(e)
     except BackendTimedOutError as te:
@@ -1389,7 +1600,7 @@ def _run_capture_session(parsed, logger, special_logger, install_lsass_hook):
         return
     finally:
         _record_capture_exit_status(locals().get("ssl_log"), capture_exit_code)
-        if 'ssl_log' in locals() and isinstance(ssl_log, SSL_Logger):
+        if 'ssl_log' in locals() and isinstance(ssl_log, _ssl_logger_class()):
             ssl_log.pcap_cleanup(parsed.full_capture,parsed.mobile,parsed.pcap)
             ssl_log.cleanup(live=parsed.live, socket_trace=parsed.socket_tracing, full_capture=parsed.full_capture, debug_output=parsed.debug_output, debug=parsed.debug)
     

@@ -11,6 +11,7 @@ import time
 
 from ..events import DetachReportEvent
 from ..pcap import PCAP
+from .android_unfreeze import unfreeze_android_pids
 from .ssl_logger_state import _ChildAgent
 from .ssl_logger_state import core_module as _core
 
@@ -21,7 +22,10 @@ class TeardownMixin:
 
     # Shutdown sequence, shared by SIGINT, --duration, target death, API stop
     # and the TUI:
-    #   1. stop the instrumentation thread;
+    #   0. disable spawn gating and resume the spawns it still holds, so no
+    #      unrelated app is held (or "skipped") while teardown runs;
+    #   1. stop the instrumentation thread; on Android, thaw the instrumented
+    #      processes the cached-apps freezer froze (they cannot run the RPC);
     #   2. graceful_detach RPC while the consumer runs and outputs are open
     #      (its reply is the DetachReport);
     #   3. stop the consumer and drain the queue; everything sent before the
@@ -29,9 +33,11 @@ class TeardownMixin:
     #   4./5. cleanup steps, output close, finalizers (_run_cleanup_steps);
     #   6. unload + session.detach on a daemon thread (detach_with_timeout),
     #      without a second graceful_detach.
-    # Steps 2 and 6 target the main agent (self.script). Each gated child agent
-    # gets its own graceful_detach right after the main one and is unloaded
-    # after it (_detach_child_agents_gracefully, _release_child_agents).
+    # Steps 2 and 6 target the main agent (self.script) and every gated child
+    # agent together: their graceful_detach RPCs run at once under one deadline
+    # (_detach_all_agents_gracefully), and their unloads run at once under one
+    # 5 s deadline (_unload_main_script_bounded, _release_child_agents), so
+    # teardown time does not grow with the number of processes.
 
     # Default bound for the graceful RPC and for the unload/detach thread;
     # --timeout overrides both (see _detach_timeout).
@@ -42,6 +48,7 @@ class TeardownMixin:
     detach_report = None
     # None = not attempted yet; else one of the GRACEFUL_* outcomes below.
     _graceful_detach_outcome = None
+    _last_detach_progress = None
     _agent_shutdown_done = False
     # Set by _end_session: the target is gone, so its script cannot answer.
     _target_gone = False
@@ -50,6 +57,15 @@ class TeardownMixin:
     GRACEFUL_FAILED = "failed"          # the RPC raised (e.g. script destroyed)
     GRACEFUL_TIMEOUT = "timeout"        # the RPC is wedged on the agent side
     GRACEFUL_SKIPPED = "skipped"        # no script / dead script / no export
+
+    # A graceful_detach RPC that has not entered its agent (no detach_progress
+    # marker, sent as gracefulDetach's first statement) within this many
+    # seconds is abandoned as GRACEFUL_TIMEOUT: the target cannot run the
+    # agent's JS thread (process frozen by Android's cached-app freezer,
+    # stopped, or wedged in a hook), so waiting the full timeout only delays
+    # teardown. Bounded by the RPC timeout itself.
+    GRACEFUL_ENTRY_TIMEOUT = 10.0
+    _GRACEFUL_POLL_SECONDS = 0.05
 
     def _detach_timeout(self) -> int:
         """--timeout when set (> 0), else DEFAULT_DETACH_TIMEOUT."""
@@ -85,18 +101,45 @@ class TeardownMixin:
         wedged agent from blocking teardown: after *timeout* the RPC is abandoned
         (GRACEFUL_TIMEOUT). Records ``detach_report`` and the outcome.
         """
+        main = self._start_main_graceful_detach()
+        if main is None:
+            return
+        self._await_graceful_workers([(self.script, main[0])], timeout)
+        self._graceful_detach_outcome = self._graceful_outcome_of(*main, timeout)
+
+    def _start_main_graceful_detach(self):
+        """Start the main agent's graceful_detach once; ``(worker, result)``, or None when skipped."""
         if self._graceful_detach_outcome is not None:
-            return  # never call graceful_detach a second time
+            return None  # never call graceful_detach a second time
         self._graceful_detach_outcome = self.GRACEFUL_SKIPPED
         if self._script_is_dead():
             self.logger.debug("graceful_detach skipped: script missing or target gone")
-            return
+            return None
         graceful = self._graceful_detach_export()
         if graceful is None:
-            return
-        worker, result = self._start_graceful_detach_worker(graceful)
-        worker.join(timeout)
-        self._graceful_detach_outcome = self._graceful_outcome_of(worker, result, timeout)
+            return None
+        return self._start_graceful_detach_worker(graceful)
+
+    def _await_graceful_workers(self, workers, timeout) -> None:
+        """Wait for ``(script, worker)`` RPC workers under one *timeout* deadline.
+
+        Stops waiting for a worker whose RPC has not entered its agent by
+        GRACEFUL_ENTRY_TIMEOUT; returns as soon as nothing is left to wait for."""
+        started = time.monotonic()
+        deadline = started + timeout
+        entry_deadline = started + min(self.GRACEFUL_ENTRY_TIMEOUT, timeout)
+        waiting = [(script, worker) for script, worker in workers if worker.is_alive()]
+        while waiting:
+            now = time.monotonic()
+            if now >= deadline:
+                return
+            if now >= entry_deadline:
+                waiting = [(script, worker) for script, worker in waiting
+                           if script in self._detach_entered_scripts]
+                if not waiting:
+                    return
+            waiting[0][1].join(min(self._GRACEFUL_POLL_SECONDS, deadline - now))
+            waiting = [(script, worker) for script, worker in waiting if worker.is_alive()]
 
     @staticmethod
     def _start_graceful_detach_worker(graceful):
@@ -115,11 +158,40 @@ class TeardownMixin:
         worker.start()
         return worker, result
 
+    @property
+    def _detach_entered_scripts(self) -> "set":
+        """Scripts whose agent sent a detach_progress marker (their RPC entered the agent)."""
+        return self.__dict__.setdefault("_detach_entered_scripts_set", set())
+
+    def _note_detach_progress(self, script, marker) -> None:
+        """A detach_progress *marker* from *script*'s agent; runs on Frida's callback thread."""
+        if script is None or not isinstance(marker, dict):
+            return
+        self._detach_entered_scripts.add(script)
+        if script is self.script:
+            self._record_detach_progress(marker)
+
+    def _record_detach_progress(self, marker) -> None:
+        if not isinstance(marker, dict):
+            return
+        phase, step = marker.get("phase"), marker.get("step")
+        if phase == "entered":
+            self._last_detach_progress = "RPC entered"
+        elif phase in ("started", "finished") and isinstance(step, str):
+            self._last_detach_progress = f"{phase} step {step[:200]!r}"
+
     def _graceful_outcome_of(self, worker, result, timeout) -> str:
         if worker.is_alive():
-            self.logger.warning(
-                "Agent graceful_detach did not return within %ss; continuing the "
-                "teardown without it", timeout)
+            if self._last_detach_progress is None:
+                self.logger.warning(
+                    "Agent graceful_detach did not return: no RPC-entry marker arrived "
+                    "within %ss (the target process may be frozen, stopped or "
+                    "unresponsive); continuing teardown",
+                    min(self.GRACEFUL_ENTRY_TIMEOUT, timeout))
+            else:
+                self.logger.warning(
+                    "Agent graceful_detach did not return within %ss (%s); continuing teardown",
+                    timeout, self._last_detach_progress)
             return self.GRACEFUL_TIMEOUT
         if "error" in result:
             self.logger.debug("graceful_detach RPC failed: %s", result["error"])
@@ -129,8 +201,8 @@ class TeardownMixin:
         return self.GRACEFUL_OK
 
     def _detach_agent_gracefully(self) -> None:
-        """Step 2: the bounded graceful_detach RPC, then render its report."""
-        self._call_graceful_detach_bounded(self._detach_timeout())
+        """Step 2: the bounded graceful_detach RPCs (main and child agents at once), then render the main report."""
+        self._detach_all_agents_gracefully(self._detach_timeout())
         if self._graceful_detach_outcome == self.GRACEFUL_OK:
             from ..detach_report import log_detach_report
             try:
@@ -165,6 +237,31 @@ class TeardownMixin:
         One daemon worker per child, all under one shared *timeout* deadline so
         many or wedged children cannot multiply teardown time. Results go to
         DEBUG only; ``detach_report`` stays the main target's."""
+        pending = self._start_child_graceful_detaches()
+        self._await_graceful_workers([(child.script, worker) for child, worker, _ in pending],
+                                     timeout)
+        self._classify_child_graceful_detaches(pending)
+
+    def _detach_all_agents_gracefully(self, timeout) -> None:
+        """graceful_detach on the main agent and every child agent at once; idempotent.
+
+        One shared *timeout* deadline (and GRACEFUL_ENTRY_TIMEOUT for an RPC
+        that never enters its agent), so a wedged or frozen process delays
+        teardown once, not once per agent. Only the main RPC sets
+        ``detach_report`` and the outcome; child results go to DEBUG."""
+        self._unfreeze_android_targets()
+        main = self._start_main_graceful_detach()
+        children = self._start_child_graceful_detaches()
+        workers = [(child.script, worker) for child, worker, _ in children]
+        if main is not None:
+            workers.insert(0, (self.script, main[0]))
+        self._await_graceful_workers(workers, timeout)
+        if main is not None:
+            self._graceful_detach_outcome = self._graceful_outcome_of(*main, timeout)
+        self._classify_child_graceful_detaches(children)
+
+    def _start_child_graceful_detaches(self) -> list:
+        """Start graceful_detach on every child agent not yet attempted; ``[(child, worker, result)]``."""
         pending = []
         for child in self._child_agents_snapshot():
             if child.graceful_outcome is not None:
@@ -174,9 +271,10 @@ class TeardownMixin:
                         else self._graceful_detach_export(child.script))
             if graceful is not None:
                 pending.append((child, *self._start_graceful_detach_worker(graceful)))
-        deadline = time.monotonic() + timeout
+        return pending
+
+    def _classify_child_graceful_detaches(self, pending) -> None:
         for child, worker, result in pending:
-            worker.join(max(0.0, deadline - time.monotonic()))
             child.graceful_outcome = self._child_graceful_outcome(child, worker, result)
 
     def _child_graceful_outcome(self, child, worker, result) -> str:
@@ -193,34 +291,71 @@ class TeardownMixin:
         self.logger.debug("child pid %s: %s", child.pid, summary_line(result.get("report")))
         return self.GRACEFUL_OK
 
-    # Bound for the unloads of all child agents together (the main agent's
-    # unload has its own 5 s bound in detach_with_timeout).
+    # Bound for the unloads of all child agents together. They start alongside
+    # the main agent's unload (its own 5 s bound), so both bounds overlap.
     CHILD_UNLOAD_TIMEOUT = 5.0
+
+    @property
+    def _child_unloads_in_flight(self) -> "list":
+        """``(child, worker)`` unloads started but not yet joined; mutate only under _child_agents_lock."""
+        return self.__dict__.setdefault("_child_unloads_in_flight_list", [])
+
+    def _start_child_unloads(self) -> None:
+        """Start the unload of every registered child agent on its own daemon worker; never raises.
+
+        A failed or destroyed child is left to process exit; a wedged one (RPC
+        timed out) gets a bounded unload + detach (_release_wedged_agent). The first
+        start of a batch sets the batch's shared CHILD_UNLOAD_TIMEOUT deadline."""
+        with self._child_agents_lock:
+            children = list(self._child_agents)
+            self._child_agents.clear()
+        started = []
+        for child in children:
+            if (child.graceful_outcome == self.GRACEFUL_FAILED
+                    or getattr(child.script, "is_destroyed", False)):
+                self.logger.debug("child pid %s: agent gone; not unloading it", child.pid)
+                continue
+            if child.graceful_outcome == self.GRACEFUL_TIMEOUT:
+                # Unload + detach at once inside the worker (bounded); no
+                # second detach afterwards (see _release_child_agents).
+                self._wedged_child_releases.add(id(child))
+                worker = threading.Thread(
+                    target=self._release_wedged_agent,
+                    args=(child.script, child.session, f"child pid {child.pid}"),
+                    daemon=True, name="fritap-child-wedged-release")
+                worker.start()
+                started.append((child, worker))
+                continue
+            worker = threading.Thread(target=self._backend.unload_script, args=(child.script,),
+                                      daemon=True, name="fritap-child-unload")
+            worker.start()
+            started.append((child, worker))
+        with self._child_agents_lock:
+            if started and not self._child_unloads_in_flight:
+                self._child_unload_deadline = time.monotonic() + self.CHILD_UNLOAD_TIMEOUT
+            self._child_unloads_in_flight.extend(started)
 
     def _release_child_agents(self) -> None:
         """Unload every child agent, then detach its session; idempotent, never raises.
 
         Same rules as the main agent: a wedged, failed or destroyed child is
-        left to process exit, unloads share one deadline, and a session is
-        detached only after its unload returned."""
+        left to process exit, unloads share one deadline (also those already
+        started alongside the main unload), and a session is detached only
+        after its unload returned."""
+        self._start_child_unloads()
         with self._child_agents_lock:
-            children = list(self._child_agents)
-            self._child_agents.clear()
-        unloads = []
-        for child in children:
-            if (child.graceful_outcome in (self.GRACEFUL_TIMEOUT, self.GRACEFUL_FAILED)
-                    or getattr(child.script, "is_destroyed", False)):
-                self.logger.debug("child pid %s: agent wedged or gone; not unloading it",
-                                  child.pid)
-                continue
-            worker = threading.Thread(target=self._backend.unload_script, args=(child.script,),
-                                      daemon=True, name="fritap-child-unload")
-            worker.start()
-            unloads.append((child, worker))
-        deadline = time.monotonic() + self.CHILD_UNLOAD_TIMEOUT
+            unloads = list(self._child_unloads_in_flight)
+            self._child_unloads_in_flight.clear()
+            deadline = self._child_unload_deadline
         for child, worker in unloads:
             worker.join(max(0.0, deadline - time.monotonic()))
+            if id(child) in self._wedged_child_releases:
+                continue  # its worker already detached the session (bounded)
             if worker.is_alive():
+                # Seen on a Pixel 5 (GSA children re-gated after the main target
+                # died): unload never returns and a session.detach does not either,
+                # so the inert agent (hooks already reverted by graceful_detach)
+                # stays mapped until the process exits.
                 self.logger.debug("child pid %s: unload did not return in time; "
                                   "leaving its session", child.pid)
                 continue
@@ -230,14 +365,84 @@ class TeardownMixin:
                 self.logger.debug("child pid %s: session detach failed", child.pid,
                                   exc_info=True)
 
+    _child_unload_deadline = 0.0
+
+    @property
+    def _wedged_child_releases(self) -> "set":
+        """ids of children released by _release_wedged_agent (unload + detach in one worker)."""
+        return self.__dict__.setdefault("_wedged_child_releases_set", set())
+
+    # Set by session_manager when it turned Frida spawn gating on.
+    _spawn_gating_enabled = False
+    _spawn_gating_disabled_for_teardown = False
+
+    def _disable_spawn_gating_for_teardown(self) -> None:
+        """Step 0: turn spawn gating off, then resume the spawns it still holds; idempotent, never raises.
+
+        Without this, unrelated apps spawned after Ctrl+C were held and only
+        resumed one by one ("Skipping unrelated spawn") until teardown ended."""
+        if not self._spawn_gating_enabled or self._spawn_gating_disabled_for_teardown:
+            return
+        self._spawn_gating_disabled_for_teardown = True
+        device = getattr(self, "device", None)
+        try:
+            self._backend.disable_spawn_gating(device)
+        except Exception:  # noqa: BLE001 - device gone, backend without gating
+            self.logger.debug("disable_spawn_gating failed", exc_info=True)
+            return
+        self._resume_pending_spawns(device)
+
+    def _resume_pending_spawns(self, device) -> None:
+        """Resume every spawn still held by our gating; the instrument worker is stopping anyway."""
+        try:
+            pending = self._backend.enumerate_pending_spawn(device)
+        except Exception:  # noqa: BLE001
+            self.logger.debug("enumerate_pending_spawn failed", exc_info=True)
+            return
+        for spawn in pending:
+            pid = getattr(spawn, "pid", None)
+            if pid is None:
+                continue
+            self.logger.debug("Teardown: resuming held spawn pid %s (%s)", pid,
+                              getattr(spawn, "identifier", "?"))
+            self._resume_suspended(pid)
+
+    _android_unfreeze_done = False
+
+    def _unfreeze_android_targets(self) -> None:
+        """Android: thaw the main target and every child before their RPCs; once, bounded, never raises.
+
+        A process frozen by the cached-apps freezer cannot run graceful_detach
+        or unload (see android_unfreeze). Needs adb and root; otherwise a no-op."""
+        if self._android_unfreeze_done:
+            return
+        self._android_unfreeze_done = True
+        try:
+            if getattr(self, "_target_gone", False) or not self._is_android_target():
+                return
+            pids = [self._main_target_pid()] + [c.pid for c in self._child_agents_snapshot()]
+            from .profile_capture import adb_serial_of
+            unfreeze_android_pids(adb_serial_of(self), pids)
+        except Exception:  # noqa: BLE001 - best effort, must not break teardown
+            self.logger.debug("unfreeze before detach failed", exc_info=True)
+
+    def _main_target_pid(self):
+        """The main target's pid: ``self.pid``, else the Frida session's."""
+        pid = getattr(self, "pid", None)
+        if pid:
+            return pid
+        impl = getattr(getattr(self, "process", None), "_impl", None)
+        return getattr(impl, "pid", None)
+
     def _shutdown_agent_and_drain(self) -> None:
         """Steps 1-3 of the shutdown sequence; idempotent."""
         if self._agent_shutdown_done:
             return
         self._agent_shutdown_done = True
+        self._disable_spawn_gating_for_teardown()  # step 0: before any agent goes
         self._stop_instrument_thread()  # also resumes every pid left suspended
-        self._detach_agent_gracefully()
-        # Children after the main agent, while the consumer still takes their messages.
+        self._detach_agent_gracefully()  # the main agent and its children at once
+        # Any child not covered above, while the consumer still takes their messages.
         self._detach_child_agents_gracefully(self._detach_timeout())
         self._stop_consumer_thread()  # drains everything sent before the reply
 
@@ -248,6 +453,7 @@ class TeardownMixin:
         and a heavily hooked process (Chrome QUIC) can stay busy >5 s after
         Ctrl+C, causing spurious "Detach process timed out" warnings.
         """
+        self._disable_spawn_gating_for_teardown()  # no-op after _shutdown_agent_and_drain
         # For the post-detach crash report: did the target outlive the teardown so far?
         note_alive = getattr(self, "_note_target_alive_at_detach", None)
         if callable(note_alive):
@@ -274,9 +480,8 @@ class TeardownMixin:
             if self.debug_output:
                 self.logger.warning(f"Detach process timed out after {timeout} seconds.")
             # Frida offers no forced detach; the thread is left to finish.
-        else:
-            if self.debug_output:
-                self.logger.debug("Detached friTap from process successfully.")
+        elif self._main_session_detached and self.debug_output:
+            self.logger.debug("Detached friTap from process successfully.")
 
     def _detach_main_agent(self, timeout) -> None:
         """Steps 1-4 for the main agent, run on detach_with_timeout's thread."""
@@ -298,20 +503,20 @@ class TeardownMixin:
         # _shutdown_agent_and_drain, so a no-op here; direct callers still get it.
         # The agent sets its shutdown flag before Interceptor.detachAll, so queued
         # callbacks short-circuit at sendDatalog / emit.
-        self._call_graceful_detach_bounded(timeout)
-        # Child agents too (idempotent per child); unloaded in the finally.
-        self._detach_child_agents_gracefully(timeout)
+        # Child agents too (idempotent per child), at once with the main agent;
+        # unloaded alongside the main unload, joined in the finally.
+        self._detach_all_agents_gracefully(timeout)
         outcome = self._graceful_detach_outcome
-        if outcome == self.GRACEFUL_FAILED and not unloaded_by_us:
-            # A destroyed script raises "script has been destroyed": target gone.
-            script_dead = True
+        script_dead = script_dead or self._target_gone or (
+            not unloaded_by_us and bool(getattr(self.script, "is_destroyed", False)))
         if outcome == self.GRACEFUL_TIMEOUT:
-            # Agent wedged in gracefulDetach: unload and session.detach would
-            # serialize behind it. Leave the session to process exit / frida-server.
-            if self.debug_output or self.debug:
-                self.logger.debug(
-                    "graceful_detach is wedged — skipping unload + "
-                    "session.detach()")
+            # Agent wedged in gracefulDetach (or its process frozen): a plain
+            # unload would serialize behind it. Still free what we can: unload
+            # and session.detach at once, bounded by WEDGED_RELEASE_TIMEOUT, so
+            # frida-server drops the agent instead of leaving it mapped.
+            self._start_child_unloads()  # alongside, not after, the main release
+            if not script_dead:
+                self._release_wedged_main_agent()
             return
 
         # Target gone: return now so cleanup() exits without delay.
@@ -321,6 +526,9 @@ class TeardownMixin:
                     "target/script already gone — skipping unload + "
                     "session.detach()"
                 )
+            return
+        if outcome == self.GRACEFUL_FAILED and not unloaded_by_us:
+            self.logger.warning("Skipping unload and session detach after graceful_detach RPC failure.")
             return
 
         # Step 2: let pending JS callbacks drain (each is one shutdown-flag
@@ -338,18 +546,58 @@ class TeardownMixin:
         # capture). Hooks are already gone via gracefulDetach's detachAll, so a
         # wedged unload is left to process exit / frida-server.
         if unload_thread is not None and unload_thread.is_alive():
-            if self.debug_output or self.debug:
-                self.logger.debug(
-                    "script.unload() did not return within 5s; skipping "
-                    "session.detach() to avoid racing the busy session "
-                    "(hooks already removed via gracefulDetach; unload "
-                    "thread will exit when the JS message loop drains)"
-                )
+            self.logger.warning(
+                "script.unload() did not return within 5s; skipping session.detach()."
+            )
         else:
             self._detach_main_session_once()
 
+    # Bound for releasing an agent whose graceful_detach timed out: its unload
+    # and session.detach run at once, so the detach can end a stuck unload.
+    WEDGED_RELEASE_TIMEOUT = 2.0
+
+    def _release_wedged_agent(self, script, session, label) -> bool:
+        """Unload *script* and detach *session* concurrently within WEDGED_RELEASE_TIMEOUT.
+
+        True when the session detach returned. Never raises; a call still
+        stuck at the bound is left to process exit (daemon threads)."""
+        outcome = {}
+
+        def detach_session():
+            try:
+                self._backend.detach(session)
+                outcome["detached"] = True
+            except Exception:  # noqa: BLE001 - best effort
+                self.logger.debug("%s: session detach failed", label, exc_info=True)
+
+        workers = [threading.Thread(target=self._backend.unload_script, args=(script,),
+                                    daemon=True, name="fritap-wedged-unload")]
+        if session is not None:
+            workers.append(threading.Thread(target=detach_session, daemon=True,
+                                            name="fritap-wedged-detach"))
+        for worker in workers:
+            worker.start()
+        deadline = time.monotonic() + self.WEDGED_RELEASE_TIMEOUT
+        for worker in workers:
+            worker.join(max(0.0, deadline - time.monotonic()))
+        self.logger.debug("%s: wedged agent released (session detach %s)", label,
+                          "returned" if outcome.get("detached") else "did not return")
+        return bool(outcome.get("detached"))
+
+    def _release_wedged_main_agent(self) -> None:
+        """The main agent's graceful_detach timed out: bounded concurrent unload + detach."""
+        if self._main_session_detach_attempted:
+            return
+        self._main_session_detach_attempted = True
+        session = self.process
+        self._main_session_detached = self._release_wedged_agent(
+            self.script, session, "main target")
+
     def _unload_main_script_bounded(self, unloaded_by_us):
-        """Step 3: unload the main script on a daemon thread joined for 5 s; the thread, or None."""
+        """Step 3: unload the main script on a daemon thread joined for 5 s; the thread, or None.
+
+        The child agents' unloads start right after the main one, so they run
+        concurrently instead of after it (_release_child_agents joins them)."""
         # script.unload() has no native timeout and blocks forever on a busy JS
         # thread. Skipped without a main script (memory-scan-only run, whose
         # plugin scripts unload via the plugin loader). None lets step 4's
@@ -361,19 +609,27 @@ class TeardownMixin:
                 daemon=True,
             )
             unload_thread.start()
+        self._start_child_unloads()
+        if unload_thread is not None:
             unload_thread.join(timeout=5)
         return unload_thread
 
     # Class-level defaults so bare ``SSL_Logger.__new__`` test instances have them.
     _main_script_unloaded = False
+    _main_session_detach_attempted = False
     _main_session_detached = False
 
     def _detach_main_session_once(self) -> None:
         """``session.detach()`` the main session, at most once per session."""
-        if self._main_session_detached or self.process is None:
+        if self._main_session_detach_attempted or self.process is None:
             return
-        self._main_session_detached = True
-        self._backend.detach(self.process)
+        self._main_session_detach_attempted = True
+        try:
+            self._backend.detach(self.process)
+        except Exception as exc:
+            self.logger.error("Backend session detach failed: %s", exc)
+        else:
+            self._main_session_detached = True
 
     def pcap_cleanup(self, is_full_capture, is_mobile, pcap_name):
         self._session_manager.pcap_cleanup(is_full_capture, is_mobile, pcap_name)

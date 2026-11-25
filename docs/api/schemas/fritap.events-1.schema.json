@@ -36,6 +36,16 @@
     "protocol": {
       "type": "string",
       "description": "Protocol of the event (e.g. `tls`, `ssh`, `mtproto`). Present on event records."
+    },
+    "process_origin": {
+      "type": "object",
+      "description": "Additive, multi-process captures only: the process the event came from. Absent when the host stamped no origin. `role` is `target` for the main target, `child`/`spawn` for gated processes, or a discovery-profile role (`sibling`, `delegate`, `sdk_sandbox`).",
+      "properties": {
+        "pid": {"type": ["integer", "null"]},
+        "process": {"type": ["string", "null"]},
+        "role": {"type": ["string", "null"], "examples": ["target", "child", "spawn", "delegate"]}
+      },
+      "additionalProperties": true
     }
   },
   "additionalProperties": true,

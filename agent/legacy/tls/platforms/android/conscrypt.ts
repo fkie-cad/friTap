@@ -4,6 +4,7 @@ import {OpenSSL_BoringSSL } from "../../../tls/libs/openssl_boringssl.js";
 import { socket_library } from "../../../../platforms/android.js";
 import { isSymbolAvailable } from "../../../../shared/shared_functions.js";
 import { Java, JavaMethod, JavaWrapper } from "../../../../shared/javalib.js";
+import { makeJavaHookTracker } from "../../../../shared/java_hook_tracker.js";
 import { patterns, isPatternReplaced, experimental } from "../../../../fritap_agent.js";
 import { sendKeylog } from "../../../../shared/shared_structures.js";
 import { installBoringSSLSymbolHook, boringSslDumpKeys, isResolvedSymbol } from "../../../../shared/boringssl_symbol_hook.js";
@@ -100,6 +101,10 @@ export function conscrypt_native_execute(moduleName:string, is_base_hook: boolea
     }
 }
 
+// Reverted on graceful detach, before dispose: ClassLoader.loadClass is hot, and
+// leaving it to the implicit dispose-time restore stalled unload (java_hook_tracker.ts).
+const providerInstallerHooks = makeJavaHookTracker("conscrypt-provider-installer", () => Java);
+
 /**
  * Block ProviderInstallerImpl.insertProvider() and ProviderInstaller.installIfNeeded()
  * to prevent the Conscrypt provider from being updated at runtime.
@@ -121,10 +126,12 @@ function blockProviderInstaller(): void {
                         providerInstallerImpl.insertProvider.implementation = function () {
                             log("ProviderinstallerImpl redirection/blocking");
                         };
+                        providerInstallerHooks.track(providerInstallerImpl.insertProvider);
                     }
                 }
                 return retval;
             };
+            providerInstallerHooks.track(javaClassLoader.loadClass.overload("java.lang.String"));
         } catch (error) {
             devlog_error(`Failed to hook ClassLoader.loadClass: ${error}`);
             devlog("Attempting fallback: hooking ProviderInstallerImpl via class enumeration");
@@ -137,6 +144,7 @@ function blockProviderInstaller(): void {
                                 providerInstallerImpl.insertProvider.implementation = function() {
                                     log("ProviderinstallerImpl redirection/blocking (fallback)");
                                 };
+                                providerInstallerHooks.track(providerInstallerImpl.insertProvider);
                                 devlog("Successfully hooked ProviderInstallerImpl via fallback");
                             } catch (hookError) {
                                 devlog_error(`Failed to hook ProviderInstallerImpl in fallback: ${hookError}`);
@@ -162,6 +170,8 @@ function blockProviderInstaller(): void {
                 devlog("ProviderinstallerAsync redirection/blocking");
                 callback.onProviderInstalled();
             };
+            providerInstallerHooks.track(providerInstaller.installIfNeeded);
+            providerInstallerHooks.track(providerInstaller.installIfNeededAsync);
         } catch (error) {
             try {
                 var providerInstallerFromClassloder = findProviderInstallerFromClassloaders(javaClassLoader, backupImplementation);
@@ -177,6 +187,7 @@ function blockProviderInstaller(): void {
                         providerInstallerImpl2.insertProvider.implementation = function () {
                             devlog("ProviderinstallerImpl redirection/blocking");
                         };
+                        providerInstallerHooks.track(providerInstallerImpl2.insertProvider);
                     } else {
                         providerInstallerFromClassloder.installIfNeeded.implementation = function (context: any) {
                             devlog("Providerinstaller redirection/blocking");
@@ -185,6 +196,8 @@ function blockProviderInstaller(): void {
                             devlog("ProviderinstallerAsync redirection/blocking");
                             callback.onProviderInstalled();
                         };
+                        providerInstallerHooks.track(providerInstallerFromClassloder.installIfNeeded);
+                        providerInstallerHooks.track(providerInstallerFromClassloder.installIfNeededAsync);
                     }
                 }
             } catch (error2) {

@@ -233,6 +233,26 @@ On a cold run, before the stream id offset is learned, the agent holds such
 bodies back (up to 3 s, 256 records or 1 MiB) so most of them still get their
 stream id.
 
+## Gemini / Google app (GSA)
+
+Gemini (`com.google.android.apps.bard`) does not send its chat traffic
+itself. It hands off to the Google app (`com.google.android.googlequicksearchbox`,
+process `:search`), which speaks HTTP/3 through Cronet in
+`/apex/com.android.tethering/lib64/libhttpengine.so`. Attaching to Gemini, or
+late to the Google app, yields no keys: Cronet opens and pools its QUIC
+connections at startup. Capture with a discovery profile so the Google app is
+restarted under spawn gating and hooked before its first handshake:
+
+```bash
+tlslibhunter discover com.google.android.apps.bard --serial <SERIAL> \
+    --duration 30 --write-profile gemini.json
+fritap -m <SERIAL> --profile gemini.json -k keys.log -s com.google.android.apps.bard
+```
+
+On a Pixel 5 (Android 14) this keyed all startup handshakes and decrypted the
+Gemini backend `robinfrontend-pa.googleapis.com` over HTTP/3. Details:
+[Process discovery](../advanced/process-discovery.md).
+
 ## Limitations
 
 - **`stream` mode shows ciphertext-shaped bytes only.** No header parsing,

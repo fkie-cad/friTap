@@ -1,5 +1,5 @@
 📦
-1594383 /agent/fritap_agent.js
+1597839 /agent/fritap_agent.js
 ✄
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -490,12 +490,17 @@ function sanitizeDetachSummary(value) {
   return kept > 0 ? summary : void 0;
 }
 var DetachReportBuilder = class {
+  progress;
   startedAt = Date.now();
   steps = [];
   logs = [];
   droppedLogs = 0;
+  constructor(progress) {
+    this.progress = progress;
+  }
   /** Run `fn` as a named step: timed, isolated, its return value kept as the summary. */
   step(name, fn) {
+    this.progress?.("started", name);
     const started2 = Date.now();
     const entry = { name, ok: true, ms: 0 };
     try {
@@ -508,6 +513,7 @@ var DetachReportBuilder = class {
     }
     entry.ms = Date.now() - started2;
     this.steps.push(entry);
+    this.progress?.("finished", name);
   }
   addLog(level, msg) {
     if (this.logs.length >= DETACH_LOG_LIMIT) {
@@ -3101,6 +3107,34 @@ function runInstallPhases(platformLabel, phases, runFirstSync = true) {
 
 // agent/platforms/android.ts
 init_shared_structures();
+
+// agent/shared/install_readiness.ts
+init_node_globals();
+var AGENT_READY_CONTENT_TYPE = "agent_ready";
+var pendingInstalls = 0;
+var settledCallback = null;
+function fireIfSettled() {
+  if (pendingInstalls !== 0 || settledCallback === null)
+    return;
+  const callback = settledCallback;
+  settledCallback = null;
+  callback();
+}
+function beginAsyncInstall() {
+  pendingInstalls++;
+  let finished = false;
+  return () => {
+    if (finished)
+      return;
+    finished = true;
+    pendingInstalls--;
+    fireIfSettled();
+  };
+}
+function onInstallsSettled(callback) {
+  settledCallback = callback;
+  fireIfSettled();
+}
 
 // agent/tls/shared/library_identification.ts
 init_node_globals();
@@ -16676,6 +16710,40 @@ function httpengine_execute_modern(moduleName, is_base_hook) {
 // agent/tls/platforms/android/conscrypt.ts
 init_node_globals();
 
+// agent/shared/java_hook_tracker.ts
+init_node_globals();
+function overloadsOf(method) {
+  try {
+    const overloads = method?.overloads;
+    if (Array.isArray(overloads) && overloads.length > 0)
+      return overloads;
+  } catch (_e) {
+  }
+  return method ? [method] : [];
+}
+function makeJavaHookTracker(label, getBridge, register = registerDetachTeardown) {
+  const swapped = [];
+  let registered = false;
+  function revertAll() {
+    registered = false;
+    const overloads = swapped.splice(0);
+    revertJavaOverloads(getBridge(), overloads, label);
+  }
+  return {
+    track(method) {
+      for (const overload of overloadsOf(method)) {
+        if (!swapped.includes(overload))
+          swapped.push(overload);
+      }
+      if (!registered && swapped.length > 0) {
+        registered = true;
+        register(label, revertAll);
+      }
+    },
+    pending: () => swapped.length
+  };
+}
+
 // agent/shared/rtld_notifier_probe.ts
 init_node_globals();
 function decodeThumbBranchWTarget(address, hw1, hw2) {
@@ -17479,6 +17547,7 @@ function conscrypt_native_execute(moduleName, is_base_hook) {
     }
   }
 }
+var providerInstallerHooks = makeJavaHookTracker("conscrypt-provider-installer", () => Java);
 function blockProviderInstaller() {
   Java.perform(function() {
     var javaClassLoader = Java.use("java.lang.ClassLoader");
@@ -17495,10 +17564,12 @@ function blockProviderInstaller() {
             providerInstallerImpl.insertProvider.implementation = function() {
               log("ProviderinstallerImpl redirection/blocking");
             };
+            providerInstallerHooks.track(providerInstallerImpl.insertProvider);
           }
         }
         return retval;
       };
+      providerInstallerHooks.track(javaClassLoader.loadClass.overload("java.lang.String"));
     } catch (error) {
       devlog_error(`Failed to hook ClassLoader.loadClass: ${error}`);
       devlog("Attempting fallback: hooking ProviderInstallerImpl via class enumeration");
@@ -17511,6 +17582,7 @@ function blockProviderInstaller() {
                 providerInstallerImpl.insertProvider.implementation = function() {
                   log("ProviderinstallerImpl redirection/blocking (fallback)");
                 };
+                providerInstallerHooks.track(providerInstallerImpl.insertProvider);
                 devlog("Successfully hooked ProviderInstallerImpl via fallback");
               } catch (hookError) {
                 devlog_error(`Failed to hook ProviderInstallerImpl in fallback: ${hookError}`);
@@ -17534,6 +17606,8 @@ function blockProviderInstaller() {
         devlog("ProviderinstallerAsync redirection/blocking");
         callback.onProviderInstalled();
       };
+      providerInstallerHooks.track(providerInstaller.installIfNeeded);
+      providerInstallerHooks.track(providerInstaller.installIfNeededAsync);
     } catch (error) {
       try {
         var providerInstallerFromClassloder = findProviderInstallerFromClassloaders(javaClassLoader, backupImplementation);
@@ -17548,6 +17622,7 @@ function blockProviderInstaller() {
             providerInstallerImpl2.insertProvider.implementation = function() {
               devlog("ProviderinstallerImpl redirection/blocking");
             };
+            providerInstallerHooks.track(providerInstallerImpl2.insertProvider);
           } else {
             providerInstallerFromClassloder.installIfNeeded.implementation = function(context) {
               devlog("Providerinstaller redirection/blocking");
@@ -17556,6 +17631,8 @@ function blockProviderInstaller() {
               devlog("ProviderinstallerAsync redirection/blocking");
               callback.onProviderInstalled();
             };
+            providerInstallerHooks.track(providerInstallerFromClassloder.installIfNeeded);
+            providerInstallerHooks.track(providerInstallerFromClassloder.installIfNeededAsync);
           }
         }
       } catch (error2) {
@@ -17635,6 +17712,7 @@ function conscrypt_execute_modern(moduleName, is_base_hook) {
   def.libraryType = "boringssl";
   executeFromDefinition(def, moduleName, socket_library, is_base_hook, enable_default_fd);
 }
+var providerInstallerHooks2 = makeJavaHookTracker("conscrypt-provider-installer-modern", () => Java);
 function blockProviderInstaller2() {
   Java.perform(function() {
     try {
@@ -17644,6 +17722,8 @@ function blockProviderInstaller2() {
       providerInstaller.installIfNeededAsync.implementation = function(context, callback) {
         callback.onProviderInstalled();
       };
+      providerInstallerHooks2.track(providerInstaller.installIfNeeded);
+      providerInstallerHooks2.track(providerInstaller.installIfNeededAsync);
     } catch (error) {
     }
   });
@@ -22108,6 +22188,7 @@ function execute2() {
 
 // agent/legacy/tls/libs/java_ssl_libs.ts
 init_node_globals();
+var providerHooks = makeJavaHookTracker("java-ssl-providers", () => Java);
 var SSL_Java = class {
   install_java_hooks() {
     if (Java.available) {
@@ -22158,6 +22239,8 @@ var SSL_Java = class {
                 return this.addProvider(provider);
               }
             };
+            providerHooks.track(Security.insertProviderAt);
+            providerHooks.track(Security.addProvider);
           } catch (e) {
             devlog(`[java] provider hook install failed, skipping Java TLS provider hooks: ${e}`);
           }
@@ -35626,9 +35709,12 @@ function load_linux_hooking_agent(skipLoaderHook = false) {
       label: "loader",
       fn: () => hookDynamicLoader(linuxLoaderConfig2, hookRegistry, getModuleNames(), false, selected_protocols)
     });
+    const phasesDone = beginAsyncInstall();
     const runPhase = (i) => {
-      if (i >= phases.length)
+      if (i >= phases.length) {
+        phasesDone();
         return;
+      }
       setTimeout(() => {
         try {
           phases[i].fn();
@@ -37480,6 +37566,22 @@ function load_android_hooking_agent() {
   const phases = [];
   if (pairip_safe)
     log("[*] --pairip-safe: symbol-only keylog on libssl/libjavacrypto/conscrypt; loader hook, pattern scan, Java & OHTTP hooks disabled.");
+  if (!pairip_safe)
+    phases.push({
+      label: "loader",
+      fn: () => {
+        if (useStealthLoader) {
+          log("[!] EXPERIMENTAL: stealth loader enabled \u2014 watching android_dlopen_ext via hardware");
+          log("[!] breakpoint (no linker code patch). Unvalidated against PairIP; see friTap#64.");
+          if (!installStealthDynamicLoader(androidLoaderConfig, hookRegistry, getModuleNames, selected_protocols)) {
+            log("[-] Stealth loader failed to arm \u2014 TLS libraries loaded later will NOT be hooked.");
+            log("[-] Re-run in attach mode (no -s) or with root frida-server. See friTap#64.");
+          }
+        } else if (installInlineLoaderHook) {
+          hookDynamicLoader(androidLoaderConfig, hookRegistry, getModuleNames(), false, selected_protocols);
+        }
+      }
+    });
   const linkerNotifierBroken = !quic_only && !pairip_safe && isTlsFamilyRequested() && isJavaBlockedByBrokenLinkerNotifier();
   if (linkerNotifierBroken) {
   } else if (!quic_only && !pairip_safe && isTlsFamilyRequested()) {
@@ -37498,18 +37600,8 @@ function load_android_hooking_agent() {
     });
   if (!pairip_safe)
     phases.push({
-      label: "loader+patterns",
+      label: "patterns",
       fn: () => {
-        if (useStealthLoader) {
-          log("[!] EXPERIMENTAL: stealth loader enabled \u2014 watching android_dlopen_ext via hardware");
-          log("[!] breakpoint (no linker code patch). Unvalidated against PairIP; see friTap#64.");
-          if (!installStealthDynamicLoader(androidLoaderConfig, hookRegistry, getModuleNames, selected_protocols)) {
-            log("[-] Stealth loader failed to arm \u2014 TLS libraries loaded later will NOT be hooked.");
-            log("[-] Re-run in attach mode (no -s) or with root frida-server. See friTap#64.");
-          }
-        } else if (installInlineLoaderHook) {
-          hookDynamicLoader(androidLoaderConfig, hookRegistry, getModuleNames(), false, selected_protocols);
-        }
         if (isPatternReplaced())
           install_pattern_based_hooks();
       }
@@ -37544,9 +37636,12 @@ function load_android_hooking_agent() {
         }
       }
     });
+  const phasesDone = beginAsyncInstall();
   const runPhase = (i) => {
-    if (i >= phases.length)
+    if (i >= phases.length) {
+      phasesDone();
       return;
+    }
     setTimeout(() => {
       try {
         phases[i].fn();
@@ -42839,11 +42934,17 @@ function initStage(stage, fn, fatal = true) {
   }
 }
 var agentHooksReleased = false;
-function releaseAgentHooks() {
+function sendDetachProgress(phase, step) {
+  try {
+    send({ detach_progress: { phase, step } });
+  } catch (_e) {
+  }
+}
+function releaseAgentHooks(reportProgress = false) {
   if (agentHooksReleased)
     return repeatDetachReport();
   agentHooksReleased = true;
-  const report = new DetachReportBuilder();
+  const report = new DetachReportBuilder(reportProgress ? sendDetachProgress : void 0);
   report.step("pre-shutdown-flush", () => runPreShutdownFlushes());
   setIsShuttingDown(true);
   try {
@@ -42879,7 +42980,8 @@ rpc.exports = {
   },
   //@ts-ignore
   gracefulDetach() {
-    return releaseAgentHooks();
+    sendDetachProgress("entered");
+    return releaseAgentHooks(true);
   },
   //@ts-ignore
   dispose() {
@@ -43115,6 +43217,10 @@ initStage(
   /* fatal */
   false
 );
+onInstallsSettled(() => {
+  hookBreadcrumb("agent-init: hooks-installed");
+  send({ contentType: AGENT_READY_CONTENT_TYPE });
+});
 initStage(
   "region-scan",
   () => {

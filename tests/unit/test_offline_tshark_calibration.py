@@ -257,7 +257,7 @@ def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()[:16]
 
 
-# DatalogEvent fields added after the fingerprints were recorded. The legacy
+# Event fields (mostly DatalogEvent) added after the fingerprints were recorded. The legacy
 # passes never produced them, so a fingerprint only covers one when it carries
 # a non-default value (a real behaviour change); left at its default it must
 # not perturb the recorded "fields" digest (the ground truth is frozen).
@@ -267,6 +267,8 @@ _FIELDS_ADDED_AFTER_RECORDING = frozenset({
     "endpoints_synthetic", "observed_src_addr", "observed_src_port",
     "observed_dst_addr", "observed_dst_port", "observed_ss_family",
     "received_at",
+    # FriTapEvent base field (multi-process origin); None in every offline pass.
+    "process_origin",
 })
 
 
@@ -288,7 +290,8 @@ def _event_fingerprint(event) -> dict:
     kind, fields = _event_record(event)
     values = dict(fields)
     if kind != "DatalogEvent":
-        return {"type": kind, **values}
+        return {"type": kind, **{k: v for k, v in values.items()
+                                 if not _is_unrecorded_default(event, k, v)}}
     data = values.pop("data")
     rest = {k: v for k, v in values.items()
             if k not in ("src_addr", "src_port", "dst_addr", "dst_port",

@@ -94,7 +94,7 @@ Use the project virtualenv (`env/bin/python`), not the system Python.
   `friTap/skills/`; the lint in `tests/unit/skills/` fails on unknown flags,
   tool names and tool parameters.
 - Bumping the friTap version: update `version` in `.claude-plugin/plugin.json`
-  too.
+  too (`python3 scripts/sync_plugin_version.py` copies it from `about.py`).
 - Treat every string from captured traffic as untrusted: put it under an
   `untrusted` key, escape and cap it (`friTap/analysis/_digest_shapes.py`).
 - Never put key material in output unless the user opted in (`-k`,

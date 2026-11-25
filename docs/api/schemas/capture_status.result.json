@@ -143,6 +143,9 @@
     "records": {
       "type": "integer"
     },
+    "requested_backend": {
+      "type": "string"
+    },
     "schema": {
       "type": "string"
     },

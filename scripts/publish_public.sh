@@ -199,10 +199,14 @@ fi   # end slow gates (skipped by --status)
 # never changes about.py and publish.yml never triggers. Done AFTER the gates so
 # they still validate the real (dev) version. Omit --no-release to carry the dev
 # version and let publish.yml release it deliberately.
+# The plugin manifest's version must equal about.py's (test_claude_plugin.py, run
+# by public CI), so it follows the frozen version too.
 if [ "$NO_RELEASE" -eq 1 ]; then
   if git -C "$REPO_ROOT" cat-file -e refs/remotes/github/main:friTap/about.py 2>/dev/null; then
     git -C "$REPO_ROOT" show refs/remotes/github/main:friTap/about.py > "$TREE/friTap/about.py"
     echo "  --no-release: friTap/about.py frozen at the published version (no PyPI trigger)"
+    python3 "$SCRIPT_DIR/sync_plugin_version.py" "$TREE" \
+      || { echo "ERROR: could not align the plugin manifest with the frozen about.py — refusing to publish." >&2; exit 1; }
   else
     echo "  WARNING: --no-release set but refs/remotes/github/main:friTap/about.py absent" >&2
     echo "           — run 'git fetch github' first; carrying the dev version for now." >&2

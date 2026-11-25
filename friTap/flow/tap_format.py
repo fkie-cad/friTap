@@ -595,6 +595,11 @@ def _encode_enrichment(flow: "Flow", meta: dict) -> None:
         meta["process_name"] = flow.process_name
     if getattr(flow, "package_name", ""):
         meta["package_name"] = flow.package_name
+    # Process origin (multi-process captures): additive, written only when set.
+    if getattr(flow, "pid", None) is not None:
+        meta["pid"] = flow.pid
+    if getattr(flow, "process_role", ""):
+        meta["process_role"] = flow.process_role
     # Omitted when None so a flow without it is byte-identical to a pre-attribution record.
     if getattr(flow, "sdk", None):
         meta["sdk"] = flow.sdk
@@ -864,6 +869,9 @@ def decode_flow(payload: bytes) -> "Flow":
     flow.remote_port = meta.get("remote_port", 0)
     flow.process_name = meta.get("process_name", "")
     flow.package_name = meta.get("package_name", "")
+    pid = meta.get("pid")
+    flow.pid = pid if isinstance(pid, int) and not isinstance(pid, bool) else None
+    flow.process_role = str(meta.get("process_role") or "")
     flow.sdk = meta.get("sdk", None)
     # Hand-crafted .tap files may carry junk: re-bound the stack, coerce the flag.
     flow.caller_stack = sanitize_caller_stack(meta.get("caller_stack"))

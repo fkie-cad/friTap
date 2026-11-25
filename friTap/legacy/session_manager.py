@@ -190,6 +190,23 @@ class SessionManager:
             self._logger.debug("Could not resolve process name for pid %s: %s",
                                target, exc)
 
+    @staticmethod
+    def _enable_spawn_gating(logger) -> None:
+        """Turn Frida spawn gating on and route new spawns to ``on_spawn_added``."""
+        logger._backend.enable_spawn_gating(logger.device)
+        # Teardown disables it again first (_disable_spawn_gating_for_teardown).
+        logger._spawn_gating_enabled = True
+        logger._backend.on_spawn_added(logger.device, logger.on_spawn_added)
+
+    def _profile_capture_or_abort(self, logger):
+        """The --profile/--discover/--also-package workflow (None if not asked); exit 1 if it cannot load."""
+        from ..android_discovery import DiscoveryFailedError, DiscoveryUnavailableError
+        from .profile_capture import ProfileCaptureWorkflow
+        try:
+            return ProfileCaptureWorkflow.for_logger(logger)
+        except (OSError, ValueError, DiscoveryUnavailableError, DiscoveryFailedError) as exc:
+            self._abort_startup(logger, exc, f"Cannot use the discovery profile: {exc}")
+
     def start_session(self, own_message_handler=None):
         """Start a capture session; returns ``(process, script)``."""
         logger = self._l
@@ -215,9 +232,12 @@ class SessionManager:
         logger.note_remote_frida_server_version()
 
         self._register_child_handler(logger)
-        if logger.enable_spawn_gating or logger.spawn_gating_all:
-            logger._backend.enable_spawn_gating(logger.device)
-            logger._backend.on_spawn_added(logger.device, logger.on_spawn_added)
+        profile_capture = self._profile_capture_or_abort(logger)
+        if profile_capture is not None:
+            # Gating must be on before the delegates are force-stopped (they respawn in ~0.1 s).
+            profile_capture.prepare(enable_gating=lambda: self._enable_spawn_gating(logger))
+        elif logger.enable_spawn_gating or logger.spawn_gating_all:
+            self._enable_spawn_gating(logger)
         if logger.spawn:
             self._logger.info(f"spawning {logger.target_app}")
             # device_id counts as remote too: otherwise resolve_spawn_target would
@@ -280,7 +300,9 @@ class SessionManager:
             logger._load_script_bounded(script)
             logger.script = script
         else:
-            script = logger.instrument(logger.process, own_message_handler)
+            script = logger.instrument(logger.process, own_message_handler, is_main=True)
+        if profile_capture is not None:
+            profile_capture.attach_survivors()
         if not logger.spawn:
             # Attach mode: the hooks are in, the capture has started.
             logger.start_capture()
@@ -311,6 +333,8 @@ class SessionManager:
             self._logger.info("Timeout reached. Resuming execution...")
 
         if logger.spawn:
+            # Same race as a gated child: some hooks land after load() returned.
+            logger.wait_for_agent_ready(script, f"spawned target pid {pid}")
             # A target lost before or by this resume is a startup failure (exit 1),
             # after it a detach (exit 3).
             logger.start_capture(lambda: logger._backend.resume(logger.device, pid))
@@ -324,6 +348,8 @@ class SessionManager:
     def finish(self):
         """Stop the session and clean up resources."""
         logger = self._l
+        # First: no new spawn may be held while the agents go away.
+        logger._disable_spawn_gating_for_teardown()
         logger._stop_payload_mod_watcher()
 
         if logger.script:

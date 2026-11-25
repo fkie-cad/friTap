@@ -7,6 +7,9 @@
       },
       "type": "array"
     },
+    "requested_backend": {
+      "type": "string"
+    },
     "schema": {
       "type": "string"
     },

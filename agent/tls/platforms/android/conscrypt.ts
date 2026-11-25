@@ -4,6 +4,7 @@ import { devlog_error } from "../../../util/log.js";
 import { executeFromDefinition } from "../../../core/loader.js";
 import { createOpenSslDefinition, createBoringSSLKeylogApproach } from "../../definitions/openssl.js";
 import { Java } from "../../../shared/javalib.js";
+import { makeJavaHookTracker } from "../../../shared/java_hook_tracker.js";
 import { isJavaBlockedByBrokenLinkerNotifier } from "../../../shared/rtld_notifier_probe.js";
 
 export function conscrypt_execute_modern(moduleName: string, is_base_hook: boolean) {
@@ -42,6 +43,9 @@ export function conscrypt_execute_modern(moduleName: string, is_base_hook: boole
 // Re-export the legacy execute for bouncycastle provider blocking
 export { execute } from "../../../legacy/tls/platforms/android/conscrypt.js";
 
+// Reverted on graceful detach, before dispose (java_hook_tracker.ts).
+const providerInstallerHooks = makeJavaHookTracker("conscrypt-provider-installer-modern", () => Java);
+
 /**
  * Block ProviderInstallerImpl.insertProvider() and ProviderInstaller.installIfNeeded()
  * to prevent the Conscrypt provider from being updated at runtime.
@@ -56,6 +60,8 @@ function blockProviderInstaller(): void {
             providerInstaller.installIfNeededAsync.implementation = function (context: any, callback: any) {
                 callback.onProviderInstalled();
             };
+            providerInstallerHooks.track(providerInstaller.installIfNeeded);
+            providerInstallerHooks.track(providerInstaller.installIfNeededAsync);
         } catch (error) {
             // ProviderInstaller not available, skip
         }

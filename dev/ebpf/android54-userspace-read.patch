@@ -1,0 +1,15 @@
+diff --git a/kernel/trace/bpf_trace.c b/kernel/trace/bpf_trace.c
+--- a/kernel/trace/bpf_trace.c
++++ b/kernel/trace/bpf_trace.c
+@@ -148,7 +148,10 @@ BPF_CALL_3(bpf_probe_read, void *, dst, u32, size, const void *, unsafe_ptr)
+ 	if (ret < 0)
+ 		goto out;
+ 
+-	ret = probe_kernel_read(dst, unsafe_ptr, size);
++	if ((unsigned long)unsafe_ptr < TASK_SIZE)
++		ret = probe_user_read(dst, (const void __user *)unsafe_ptr, size);
++	else
++		ret = probe_kernel_read(dst, unsafe_ptr, size);
+ 	if (unlikely(ret < 0))
+ out:
+ 		memset(dst, 0, size);

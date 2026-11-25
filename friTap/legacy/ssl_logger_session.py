@@ -16,12 +16,15 @@ from ..backends.frida_remote_limits import (
 )
 from ..events import DetachEvent
 from ..exit_codes import EXIT_OK, EXIT_RUNTIME_ERROR, EXIT_TARGET_DETACHED
+from .profile_capture import capture_continues_after_main_detach
 
 
 class SessionLifecycleMixin:
     """Capture phases, exit status and the end-of-session paths."""
 
     def on_detach(self, reason, crash=None):
+        # The main session's agent can no longer report readiness: end a resume wait now.
+        self._release_agent_ready_for_session(getattr(self, "process", None))
         if not self.running:
             return
 
@@ -38,12 +41,45 @@ class SessionLifecycleMixin:
             self._report_target_crash(reason, crash or self._pending_crash)
             self._pending_crash = None  # a stale Crash must not leak into a later detach
 
+        if self._defer_end_to_children(reason):
+            return
+
         phase = self._claim_detach_classification(reason)
         if phase == self._PHASE_RESUMING:
             # The resume needs Frida's event loop, which this callback occupies,
             # so never wait here; the resuming thread finishes this detach.
             return
         self._finish_detach(reason, captured=phase == self._PHASE_CAPTURING)
+
+    # Profile capture (--profile/--discover/--also-package): the target's helper
+    # processes outlive it, so its detach ends the capture only with the last one.
+    _profile_capture_active = False
+
+    def keep_capture_while_children_alive(self) -> None:
+        """Let the main target's detach wait for every instrumented child/spawn to go."""
+        self._profile_capture_active = True
+
+    def _defer_end_to_children(self, reason) -> bool:
+        """True when the main detach leaves the capture running for live children."""
+        children = self.tracked_child_pids()
+        if not capture_continues_after_main_detach(
+                self._profile_capture_active, self.capture_started(), children):
+            return False
+        self._main_detach_reason = reason
+        self.logger.warning(
+            "Target pid %s detached (%s); the capture continues while %d profile "
+            "process(es) run.", self.pid, reason, len(children))
+        self._end_if_last_child_gone()  # a child may have gone meanwhile
+        return True
+
+    def _end_if_last_child_gone(self) -> None:
+        """After a deferred main detach: end the session once no child is left (once only)."""
+        if getattr(self, "_main_detach_reason", None) is None or self.tracked_child_pids():
+            return
+        reason = self.__dict__.pop("_main_detach_reason", None)  # atomic: one caller wins
+        if reason is not None:
+            self.logger.info("Last profile process detached; ending the capture.")
+            self._finish_detach(reason, captured=True)
 
     def _finish_detach(self, reason, captured: bool) -> None:
         """Classify a detach (exit 1 before the capture, else 3) and end the session."""

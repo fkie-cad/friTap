@@ -97,3 +97,26 @@ Every success is a JSON object whose first key is
 `fritap.findings/1`, `fritap.flow/1`, `fritap.protocols/1`, `fritap.export/1`,
 `fritap.capture_protocols/1`, ...). Read results add `source` and, when they
 copy traffic, a `notice` about `untrusted` values.
+
+For eBPF environment diagnostics, run `fritap --backend ebpf --backend-readiness`
+and add `--mobile <adb-serial>` for Android. `start_capture` defaults to Frida.
+For one owned Linux OpenSSL 3 fixture, add its numeric PID to readiness
+to check the actual capture attachments under the capture identity. After
+readiness reports `ready`, use
+`fritap --backend ebpf --protocol tls --tap <path> <pid>`, or
+`start_capture` with `backend: "ebpf"` and the PID as `target` (attach only,
+TLS only, `capture: plaintext`; status has no live counters, watch `tap_bytes`).
+
+Target-free Linux readiness automatically runs the native kernel helper when
+it is available. It reports map creation and program-load results under the
+current execution identity.
+
+Use `-p <path>` for plaintext PCAP or PCAPNG output. eBPF uses synthetic TCP
+endpoints in plaintext PCAP files when the real tuple is unavailable. Add
+`-f` for original wire packets and `--loopback` to include loopback traffic.
+With `-k`, eBPF reports that key extraction is currently unavailable and
+continues capturing.
+
+For Android OpenSSL 3 plaintext, use `--mobile <adb-serial>` with the
+numeric PID. PID readiness checks the deployed loader and the actual
+uprobes under the same ADB shell identity as capture.

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Rebuild the friTap Frida agent bundles from agent/*.ts. Idempotent: re-running
+# Build the friTap instrumentation agents. Frida builds are idempotent: re-running
 # without changes produces byte-identical output (CI's agent-build-check job runs
 # this script bare and asserts `git diff --exit-code -- friTap/fritap_agent.js`,
 # so the intercept bundle MUST stay byte-identical — see .github/workflows/ci.yml).
@@ -11,11 +11,13 @@
 #     (the hook-free heap secret scanner, -ms/--memory-scan; gitignored artifact)
 #
 # Usage:  ./dev/compile_agent.sh [target]
-#   both        (DEFAULT) build the intercept and memory-scan agents, plus the
-#               full agent when agent/fritap_agent_full.ts exists (private
-#               clones only; silently skipped otherwise)   (alias: all)
+#   frida       (DEFAULT) build the intercept, memory-scan, and Wine agents,
+#               plus the full agent when its source exists (aliases: both, all)
+#   ebpf        build the native eBPF agent using the build host's Linux BTF
+#               and toolchain (agent_ebpf/Makefile)
 #   intercept   build only the intercept agent   (aliases: agent, main, tls)
 #   ms          build only the memory-scan agent (aliases: memory_scan, memscan)
+#   wine        build only the slim Wine agent
 #   full        build the full/private intercept agent
 #               (agent/fritap_agent_full.ts -> friTap/fritap_agent_full.js;
 #                only present in a private clone)
@@ -25,9 +27,9 @@
 # written with the sha256 of friTap/fritap_agent.js. At runtime friTap only
 # auto-loads the full bundle if that hash still matches the public bundle.
 #
-# Back-compat escape hatch: if ENTRY and/or OUT are set in the environment, a
-# single custom bundle is built from them EXACTLY as before (the target arg is
-# ignored), so existing invocations keep working:
+# Frida compatibility: if ENTRY and/or OUT are set in the environment, a
+# single custom Frida bundle is built from them EXACTLY as before (the target
+# arg is ignored, including `ebpf`), so existing invocations keep working:
 #   ENTRY=agent/fritap_agent_full.ts OUT=friTap/fritap_agent_full.js ./dev/compile_agent.sh
 #   ENTRY=agent/memory_scan_agent.ts OUT=friTap/fritap_memscan.js    ./dev/compile_agent.sh
 #
@@ -35,11 +37,43 @@
 # exact-pinned in package.json. Run `npm ci` once before this script to
 # guarantee package-lock.json is honored.
 set -euo pipefail
-cd "$(dirname "$0")/.."
+script="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+cd "$(dirname "$script")/.."
 
 usage() {
-    sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,/^set -euo pipefail/{ /^set -euo pipefail/d; p; }' "$script" | sed 's/^# \{0,1\}//'
 }
+
+# ENTRY and/or OUT set => single custom Frida build; the target arg is ignored.
+custom_frida_build_requested() {
+    [ -n "${ENTRY:-}" ] || [ -n "${OUT:-}" ]
+}
+
+build_ebpf() {
+    if [ "$(uname -s)" != Linux ]; then
+        echo "[compile_agent.sh] The default eBPF build uses Linux kernel BTF and a native toolchain. On macOS, use dev/ebpf/test-lima.sh." >&2
+        exit 1
+    fi
+    exec make -C agent_ebpf
+}
+
+TARGET="${1:-frida}"
+case "$TARGET" in
+    -h|--help|help) usage; exit 0 ;;
+esac
+
+# The custom ENTRY/OUT override takes precedence over every target, so only
+# validate and dispatch the target (including the native eBPF build) without it.
+if ! custom_frida_build_requested; then
+    case "$TARGET" in
+        ebpf) build_ebpf ;;
+        frida|both|all|intercept|agent|main|tls|ms|memory_scan|memscan|wine|full) ;;
+        *)
+            echo "[compile_agent.sh] unknown target '$TARGET' (see --help)" >&2
+            exit 2
+            ;;
+    esac
+fi
 
 # Always use the pinned Node frida-compile from node_modules (the same binary
 # `npm run build` uses), NOT whatever `frida-compile` a PATH shim resolves to
@@ -49,11 +83,6 @@ FRIDA_COMPILE="./node_modules/.bin/frida-compile"
 if [ ! -x "$FRIDA_COMPILE" ]; then
     FRIDA_COMPILE="frida-compile"
 fi
-
-TARGET="${1:-both}"
-case "$TARGET" in
-    -h|--help|help) usage; exit 0 ;;
-esac
 
 # Bridge install is the only non-deterministic step here. Skip it if both
 # bridges are already present in node_modules — frida-pm doesn't pin via
@@ -156,7 +185,7 @@ resolve_tool_path() {
 
 # Explicit ENTRY/OUT override => a single custom build, historical behavior
 # (defaults reproduce the old bare invocation for anything still relying on it).
-if [ -n "${ENTRY:-}" ] || [ -n "${OUT:-}" ]; then
+if custom_frida_build_requested; then
     resolved_out="${OUT:-$INTERCEPT_OUT}"
     build_one "${ENTRY:-$INTERCEPT_ENTRY}" "$resolved_out" "custom"
     # When the custom build targets the full bundle, keep its hash sidecar in
@@ -168,7 +197,7 @@ if [ -n "${ENTRY:-}" ] || [ -n "${OUT:-}" ]; then
 fi
 
 case "$TARGET" in
-    both|all)
+    frida|both|all)
         # Intercept first so CI's byte-identity check on fritap_agent.js sees the
         # exact same build as before; then the memory-scan agent.
         build_one "$INTERCEPT_ENTRY" "$INTERCEPT_OUT" "intercept agent"
@@ -195,11 +224,6 @@ case "$TARGET" in
             exit 1
         fi
         build_full
-        ;;
-    *)
-        echo "[compile_agent.sh] unknown target '$TARGET'" >&2
-        echo "  valid targets: both (default) | intercept | ms | wine | full  (see --help)" >&2
-        exit 2
         ;;
 esac
 

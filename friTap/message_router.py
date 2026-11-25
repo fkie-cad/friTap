@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from typing import get_args
 
@@ -35,6 +36,7 @@ from .constants import DIRECTION_READ, ContentType, direction_for_function
 from .endpoint_pinner import EndpointPinner, RecordEndpoints, ResolvedEndpoints
 from .events import (
     AGENT_DEV_ORIGIN,
+    PROCESS_ORIGIN_KEY,
     AntiTamperDetectedEvent,
     CallerStackEvent,
     ConsoleEvent,
@@ -111,6 +113,27 @@ def _with_normalized_client_random(payload: dict) -> dict:
     return {**payload, "client_random": normalize_client_random(payload["client_random"])}
 
 
+#: Cap for the process name / role strings of an event's process origin.
+_ORIGIN_TEXT_LIMIT = 120
+
+
+def _origin_text(value) -> str | None:
+    return capped_text(value, _ORIGIN_TEXT_LIMIT) if isinstance(value, str) else None
+
+
+def _origin_of(payload: dict) -> dict | None:
+    """The ``{pid, process, role}`` the host stamped on *payload*, escaped and capped; None when absent or malformed."""
+    origin = payload.get(PROCESS_ORIGIN_KEY)
+    if not isinstance(origin, dict):
+        return None
+    pid = origin.get("pid")
+    return {
+        "pid": pid if isinstance(pid, int) and not isinstance(pid, bool) else None,
+        "process": _origin_text(origin.get("process")),
+        "role": _origin_text(origin.get("role")),
+    }
+
+
 class _CanonicalProxy:
     """Minimal proxy satisfying DataCanonical canonical accessors (src, dst, protocol)."""
     __slots__ = ("src", "dst", "protocol")
@@ -131,6 +154,8 @@ class MessageRouter:
     def __init__(self, event_bus: "EventBus", active_protocol=None) -> None:
         self._event_bus = event_bus
         self._logger = logging.getLogger("friTap.router")
+        # Process origin of the payload being routed (per thread), stamped by _publish.
+        self._routing = threading.local()
         self._data_filter = None  # Optional FilterEngine for network-level filtering
         # Receives plaintext_api_learned / module_offsets_learned payloads; None
         # drops them. A callable keeps the router free of cache I/O.
@@ -157,6 +182,22 @@ class MessageRouter:
         """Set a display filter engine. Only network-level fields are checked."""
         self._data_filter = filter_engine
 
+    def install_display_filter(self, expression: str | None, logger) -> None:
+        """Install a filter suitable for headless capture events."""
+        if not expression:
+            return
+        try:
+            from .filter.pipeline_filter import build_headless_filter
+
+            engine = build_headless_filter(expression)
+            if isinstance(engine, str):
+                logger.warning("%s", engine)
+                return
+            self.set_filter(engine)
+            logger.info("Display filter active: %s", expression)
+        except Exception as exc:
+            logger.warning("Invalid filter expression: %s", exc)
+
     def set_learned_offsets_sink(self, sink) -> None:
         """Forward ``plaintext_api_learned`` / ``module_offsets_learned`` payloads to *sink* (None disables)."""
         self._learned_offsets_sink = sink
@@ -164,6 +205,20 @@ class MessageRouter:
     def route(self, payload: dict, data: bytes) -> None:
         """Parse an agent message payload and emit the corresponding event."""
         payload = _with_normalized_client_random(payload)
+        self._routing.origin = _origin_of(payload)
+        try:
+            self._dispatch(payload, data)
+        finally:
+            self._routing.origin = None
+
+    def _publish(self, event) -> None:
+        """Emit *event* tagged with the routed payload's process origin (an origin already set wins)."""
+        if event.process_origin is None:
+            event.process_origin = getattr(self._routing, "origin", None)
+        self._event_bus.emit(event)
+
+    def _dispatch(self, payload: dict, data: bytes) -> None:
+        """Emit the event for one normalized payload by its ``contentType``."""
         content_type = payload.get("contentType")
 
         if content_type == "keylog" and payload.get("keylog"):
@@ -227,7 +282,7 @@ class MessageRouter:
             self._logger.debug("learned offsets: recording failed", exc_info=True)
 
     def _emit_keylog(self, payload: dict) -> None:
-        self._event_bus.emit(KeylogEvent(
+        self._publish(KeylogEvent(
             key_data=payload["keylog"],
             protocol=payload_protocol(payload, "tls"),
         ))
@@ -297,7 +352,7 @@ class MessageRouter:
                 return
 
         timestamp, received_at = held_capture_times(payload.get("held_ms"), time.time())
-        self._event_bus.emit(DatalogEvent(
+        self._publish(DatalogEvent(
             timestamp=timestamp,
             received_at=received_at,
             data=data,
@@ -321,7 +376,7 @@ class MessageRouter:
         ))
 
     def _emit_library_detected(self, payload: dict) -> None:
-        self._event_bus.emit(LibraryDetectedEvent(
+        self._publish(LibraryDetectedEvent(
             library=payload.get("library", ""),
             path=payload.get("path", ""),
             protocol=payload_protocol(payload, "tls"),
@@ -339,7 +394,7 @@ class MessageRouter:
             banner = build_anti_tamper_banner(name, note, skipped, reason)
             # ERROR maps to red in CustomFormatter; _colorize opts this record in.
             self._logger.error(banner, extra={"_colorize": True})
-        self._event_bus.emit(AntiTamperDetectedEvent(
+        self._publish(AntiTamperDetectedEvent(
             library=payload.get("library", ""),
             name=name,
             skipped_loader_hook=skipped,
@@ -347,7 +402,7 @@ class MessageRouter:
 
     def _emit_console(self, payload: dict, level: str = "info") -> None:
         # Sinks print agent text verbatim: escape control sequences (ANSI/OSC injection).
-        self._event_bus.emit(ConsoleEvent(
+        self._publish(ConsoleEvent(
             message=safe_terminal_text(payload.get("console", "")),
             level=level,
         ))
@@ -356,7 +411,7 @@ class MessageRouter:
         # Agent dev diagnostics (console_dev, devlog_*) are debug level with an
         # origin tag: they reach --debug-log and -d/-do only, never the normal
         # console, TUI log or non-debug JSONL. *message* must already be escaped.
-        self._event_bus.emit(ConsoleEvent(
+        self._publish(ConsoleEvent(
             message=message,
             level="debug",
             origin=AGENT_DEV_ORIGIN,
@@ -378,7 +433,7 @@ class MessageRouter:
     def _emit_hook_breadcrumb(self, payload: dict) -> None:
         # Never printed: SSL_Logger keeps the last one so on_detach can name the
         # hook that was running if the target dies inside it.
-        self._event_bus.emit(HookBreadcrumbEvent(
+        self._publish(HookBreadcrumbEvent(
             marker=payload.get("hook_breadcrumb", ""),
         ))
 
@@ -390,7 +445,7 @@ class MessageRouter:
         except (TypeError, ValueError):
             # A non-numeric ABI is still worth reporting; only the version is unknown.
             abi = 0
-        self._event_bus.emit(PlatformReportEvent(
+        self._publish(PlatformReportEvent(
             platform=safe_terminal_text(payload.get("platform", "")),
             target=safe_terminal_text(payload.get("target", "")),
             probe=bool(payload.get("probe", False)),
@@ -408,7 +463,7 @@ class MessageRouter:
         if not key_type or not key_data:
             return
         line = f"{key_type} {key_data}"
-        self._event_bus.emit(KeylogEvent(
+        self._publish(KeylogEvent(
             key_data=line,
             protocol=payload_protocol(payload, "ssh"),
         ))
@@ -419,7 +474,7 @@ class MessageRouter:
         The formatter renders ``<cookie> SHARED_SECRET <hex>``; Wireshark runs
         the RFC 4253 §7.2 KDF itself.
         """
-        self._event_bus.emit(KeylogEvent(
+        self._publish(KeylogEvent(
             protocol="ssh",
             payload={
                 "cookie": str(payload.get("cookie", "")),
@@ -437,7 +492,7 @@ class MessageRouter:
         on-wire order); the formatter renders one ``ikev2_decryption_table`` row.
         """
         keys = payload.get("keys") or {}
-        self._event_bus.emit(KeylogEvent(
+        self._publish(KeylogEvent(
             protocol="ipsec",
             payload={
                 "record": "ike",
@@ -462,7 +517,7 @@ class MessageRouter:
 
         SPI and keys are lowercase hex in on-wire order (no byte-swap).
         """
-        self._event_bus.emit(KeylogEvent(
+        self._publish(KeylogEvent(
             protocol="ipsec",
             payload={
                 "record": "esp",
@@ -496,7 +551,7 @@ class MessageRouter:
                 auth_key_id = hashlib.sha1(bytes.fromhex(auth_key)).digest()[-8:].hex()
             except ValueError:
                 pass
-        self._event_bus.emit(KeylogEvent(
+        self._publish(KeylogEvent(
             protocol=protocol,
             payload={
                 "auth_key_id": auth_key_id,
@@ -511,7 +566,7 @@ class MessageRouter:
 
         Always ``protocol="telegram"``, in the same keylog as the MTProto cloud keys.
         """
-        self._event_bus.emit(KeylogEvent(
+        self._publish(KeylogEvent(
             protocol="telegram",
             payload={
                 "shared_key": str(payload.get("shared_key", "")),
@@ -531,9 +586,9 @@ class MessageRouter:
             return
         fields = {
             k: v for k, v in payload.items()
-            if k not in ("contentType", "classifier")
+            if k not in ("contentType", "classifier", PROCESS_ORIGIN_KEY)
         }
-        self._event_bus.emit(KeylogEvent(protocol=classifier, payload=fields))
+        self._publish(KeylogEvent(protocol=classifier, payload=fields))
 
     def _emit_private_plaintext(self, payload: dict, data: bytes) -> None:
         """Emit decrypted plaintext as a DatalogEvent tagged with the payload's ``classifier``.
@@ -544,7 +599,7 @@ class MessageRouter:
         if not classifier:
             return
         src_addr_str, src_port, dst_addr_str, dst_port, ss_family, src_addr, dst_addr = self._resolve_addresses(payload)
-        self._event_bus.emit(DatalogEvent(
+        self._publish(DatalogEvent(
             data=data,
             function=str(payload.get("function", "decrypt")),
             direction=payload.get("direction", "read"),
@@ -567,7 +622,7 @@ class MessageRouter:
         ``ssl_session_id`` gives each Secret-Chat id its own flow, as offline does.
         """
         src_addr_str, src_port, dst_addr_str, dst_port, ss_family, src_addr, dst_addr = self._resolve_addresses(payload)
-        self._event_bus.emit(DatalogEvent(
+        self._publish(DatalogEvent(
             data=data,
             function=str(payload.get("function", "")),
             direction=str(payload.get("direction", "read")),
@@ -587,10 +642,10 @@ class MessageRouter:
         """Forward SSH newkeys activation notifications to the console handler."""
         direction = payload.get("direction", "")
         msg = payload.get("message") or f"SSH newkeys activated ({direction})"
-        self._event_bus.emit(ConsoleEvent(message=msg, level="info"))
+        self._publish(ConsoleEvent(message=msg, level="info"))
 
     def _emit_ohttp(self, payload: dict, data: bytes) -> None:
-        self._event_bus.emit(OhttpEvent(
+        self._publish(OhttpEvent(
             data=data,
             direction=payload.get("direction", ""),
             source=payload.get("source", ""),
@@ -649,7 +704,7 @@ class MessageRouter:
         identity = self._caller_stack_identity(payload)
         self._log_caller_stack(identity["client_random"], payload, sdk)
         src_addr_str, src_port, dst_addr_str, dst_port, *_ = self._resolve_addresses(payload)
-        self._event_bus.emit(CallerStackEvent(
+        self._publish(CallerStackEvent(
             ssl_session_id=str(payload.get("ssl_session_id", "")),
             src_addr=src_addr_str,
             src_port=src_port,
@@ -706,7 +761,7 @@ class MessageRouter:
                 "request_context dropped: invalid event/req_id (event=%s)",
                 capped_text(event, UNTRUSTED_TEXT_LIMIT) or "-")
             return
-        self._event_bus.emit(RequestContextEvent(
+        self._publish(RequestContextEvent(
             event=event,
             protocol=payload_protocol(payload, "tls"),
             **request_context_fields(payload),
@@ -732,7 +787,7 @@ class MessageRouter:
         # is offline-only, produced by offline/tshark.py from the full handshake.
         # The live SessionEvent carries identity + lifecycle and leaves those
         # fields at "" so live and offline metadata cannot drift.
-        self._event_bus.emit(SessionEvent(
+        self._publish(SessionEvent(
             session_id=str(payload.get("ssl_session_id", "")),
             event_type=payload.get("event", ""),
             client_random=client_random,
